@@ -1,0 +1,1 @@
+import{S as e,p as t}from"./index-DeUuVMI_.js";import{t as n}from"./_plugin-vue_export-helper-CSBScHBl.js";var r={},i={class:`index`};function a(n,r){return e(),t(`div`,i,`index`)}var o=n(r,[[`render`,a],[`__scopeId`,`data-v-59d597a6`]]);export{o as default};

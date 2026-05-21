@@ -1,0 +1,153 @@
+[2026-05-21 15:10:37.642] INFO background-preinit org.hibernate.validator.internal.util.Version[21] - HV000001: Hibernate Validator 8.0.1.Final 
+[2026-05-21 15:10:37.725] INFO main com.jts.gjcxfzksh.Application[50] - Starting Application using Java 21.0.9 with PID 62087 (/Users/a../模型算法/新公交平台/backend/target/classes started by a.. in /Users/a../模型算法/新公交平台/backend) 
+[2026-05-21 15:10:37.734] INFO main com.jts.gjcxfzksh.Application[654] - No active profile set, falling back to 1 default profile: "default" 
+[2026-05-21 15:10:39.515] INFO main io.undertow.servlet[372] - Initializing Spring embedded WebApplicationContext 
+[2026-05-21 15:10:39.703] INFO main com.jts.gjcxfzksh.config.MatsimConfig[93] - 共找到1个方案 
+[2026-05-21 15:10:41.281] INFO main io.undertow[120] - starting server: Undertow - 2.3.13.Final 
+[2026-05-21 15:10:41.292] INFO main org.xnio[95] - XNIO version 3.8.8.Final 
+[2026-05-21 15:10:41.311] INFO main org.xnio.nio[58] - XNIO NIO Implementation Version 3.8.8.Final 
+[2026-05-21 15:10:41.353] INFO main org.jboss.threads[55] - JBoss Threads version 3.5.0.Final 
+[2026-05-21 15:10:41.494] INFO main com.jts.gjcxfzksh.Application[56] - Started Application in 4.282 seconds (process running for 5.526) 
+[2026-05-21 15:10:44.222] INFO XNIO-1 task-2 io.undertow.servlet[372] - Initializing Spring DispatcherServlet 'dispatcherServlet' 
+[2026-05-21 15:10:44.486] INFO XNIO-1 task-2 com.jts.gjcxfzksh.api.service.impl.SchemeServiceImpl[57] - [广州市/广州市抽样模型]已加载，无需重复加载 
+[2026-05-21 15:10:44.523] INFO XNIO-1 task-2 org.matsim.core.utils.io.IOUtils[224] - Resolved /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_config_reduced.xml to /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_config_reduced.xml 
+[2026-05-21 15:10:44.528] INFO XNIO-1 task-2 org.matsim.core.config.Config[550] - setting context to [file:/Users/a../%E6%A8%A1%E5%9E%8B%E7%AE%97%E6%B3%95/%E6%96%B0%E5%85%AC%E4%BA%A4%E5%B9%B3%E5%8F%B0/backend/] 
+[2026-05-21 15:10:44.598] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[170] - starting to parse xml from url file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_config_reduced.xml ... 
+[2026-05-21 15:10:44.671] INFO XNIO-1 task-2 org.matsim.core.config.ConfigReader[105] - using config_v2-reader 
+[2026-05-21 15:10:44.671] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/config_v2.dtd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:10:45.286] INFO XNIO-1 task-2 org.matsim.core.config.groups.GlobalConfigGroup[93] - setting number of threads to: 8 
+[2026-05-21 15:10:45.293] WARN XNIO-1 task-2 org.matsim.core.config.groups.RoutingConfigGroup[403] - The first mode routing (= teleported mode) params that are explicitly defined clear the default mode routing (= teleported mode) params.  If you want to avoid this  
+[2026-05-21 15:10:45.294] WARN XNIO-1 task-2 org.matsim.core.config.groups.RoutingConfigGroup[404] -     warning, use clearTeleportedModeParams(true) in code, and "clearDefaultTeleportedModeParams"=true in xml config. 
+[2026-05-21 15:10:45.310] INFO XNIO-1 task-2 org.matsim.core.config.groups.ScoringConfigGroup[560] - scoring parameters for subpopulation null were just replaced. 
+[2026-05-21 15:10:45.312] INFO XNIO-1 task-2 org.matsim.core.config.Config[550] - setting context to [file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_config_reduced.xml] 
+[2026-05-21 15:10:45.318] INFO XNIO-1 task-2 org.matsim.core.config.Config[550] - setting context to [file:/Users/a../%E6%A8%A1%E5%9E%8B%E7%AE%97%E6%B3%95/%E6%96%B0%E5%85%AC%E4%BA%A4%E5%B9%B3%E5%8F%B0/backend/] 
+[2026-05-21 15:10:45.321] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[153] - starting to parse xml from file /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_config_reduced.xml ... 
+[2026-05-21 15:10:45.322] INFO XNIO-1 task-2 org.matsim.core.utils.io.IOUtils[224] - Resolved /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_config_reduced.xml to /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_config_reduced.xml 
+[2026-05-21 15:10:45.323] INFO XNIO-1 task-2 org.matsim.core.config.ConfigReader[105] - using config_v2-reader 
+[2026-05-21 15:10:45.323] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/config_v2.dtd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:10:45.590] INFO XNIO-1 task-2 org.matsim.core.config.groups.GlobalConfigGroup[93] - setting number of threads to: 8 
+[2026-05-21 15:10:45.592] WARN XNIO-1 task-2 org.matsim.core.config.groups.RoutingConfigGroup[403] - The first mode routing (= teleported mode) params that are explicitly defined clear the default mode routing (= teleported mode) params.  If you want to avoid this  
+[2026-05-21 15:10:45.593] WARN XNIO-1 task-2 org.matsim.core.config.groups.RoutingConfigGroup[404] -     warning, use clearTeleportedModeParams(true) in code, and "clearDefaultTeleportedModeParams"=true in xml config. 
+[2026-05-21 15:10:45.594] INFO XNIO-1 task-2 org.matsim.core.config.groups.ScoringConfigGroup[560] - scoring parameters for subpopulation null were just replaced. 
+[2026-05-21 15:10:45.628] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[135] - loading network from file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_network.xml.gz 
+[2026-05-21 15:10:45.630] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[170] - starting to parse xml from url file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_network.xml.gz ... 
+[2026-05-21 15:10:45.652] INFO XNIO-1 task-2 org.matsim.core.network.io.MatsimNetworkReader[122] - using network_v2-reader. 
+[2026-05-21 15:10:45.653] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/network_v2.dtd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:10:46.089] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 1 
+[2026-05-21 15:10:46.090] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 4 
+[2026-05-21 15:10:46.090] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 16 
+[2026-05-21 15:10:46.092] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 64 
+[2026-05-21 15:10:46.109] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 256 
+[2026-05-21 15:10:46.121] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 1024 
+[2026-05-21 15:10:46.136] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 4096 
+[2026-05-21 15:10:46.183] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 16384 
+[2026-05-21 15:10:46.507] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 65536 
+[2026-05-21 15:10:47.375] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[165] -  node # 262144 
+[2026-05-21 15:10:50.548] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 1 
+[2026-05-21 15:10:50.550] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 4 
+[2026-05-21 15:10:50.550] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 16 
+[2026-05-21 15:10:50.551] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 64 
+[2026-05-21 15:10:50.553] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 256 
+[2026-05-21 15:10:50.577] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 1024 
+[2026-05-21 15:10:50.602] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 4096 
+[2026-05-21 15:10:50.709] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 16384 
+[2026-05-21 15:10:51.292] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 65536 
+[2026-05-21 15:10:54.199] INFO XNIO-1 task-2 org.matsim.core.network.NetworkImpl[161] -  link # 262144 
+[2026-05-21 15:11:03.720] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[160] - loading facilities from file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_facilities.xml.gz 
+[2026-05-21 15:11:03.725] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[170] - starting to parse xml from url file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_facilities.xml.gz ... 
+[2026-05-21 15:11:03.729] INFO XNIO-1 task-2 org.matsim.facilities.MatsimFacilitiesReader[143] - using facilities_v2-reader. 
+[2026-05-21 15:11:03.729] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/facilities_v2.dtd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:04.150] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[169] - loaded 0 facilities from file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_facilities.xml.gz 
+[2026-05-21 15:11:04.150] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[188] - no facility-attributes file set in config, not loading any facility attributes 
+[2026-05-21 15:11:04.151] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[196] - loading population from file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_plans.xml.gz 
+[2026-05-21 15:11:04.156] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[170] - starting to parse xml from url file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_plans.xml.gz ... 
+[2026-05-21 15:11:04.158] INFO XNIO-1 task-2 org.matsim.core.population.io.PopulationReader[135] - using population_v6-reader. 
+[2026-05-21 15:11:04.159] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/population_v6.dtd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:04.811] WARN XNIO-1 task-2 org.matsim.core.population.io.PopulationReaderMatsimV6[227] - coordinate transformation defined both in config and in input file: setting from input file will be used 
+[2026-05-21 15:11:04.811] INFO XNIO-1 task-2 org.matsim.core.population.io.ParallelPopulationReaderMatsimV6[168] - Start parallel population reading... 
+[2026-05-21 15:11:04.814] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 1 
+[2026-05-21 15:11:04.819] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 4 
+[2026-05-21 15:11:04.827] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 16 
+[2026-05-21 15:11:04.860] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 64 
+[2026-05-21 15:11:04.936] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 256 
+[2026-05-21 15:11:05.136] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 1024 
+[2026-05-21 15:11:05.911] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 4096 
+[2026-05-21 15:11:08.875] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 16384 
+[2026-05-21 15:11:21.746] INFO XNIO-1 task-2 org.matsim.core.population.PopulationImpl[107] -  person # 65536 
+[2026-05-21 15:11:44.602] INFO XNIO-1 task-2 org.matsim.core.population.io.ParallelPopulationReaderMatsimV6[238] - Finished parallel population reading... 
+[2026-05-21 15:11:44.604] INFO XNIO-1 task-2 org.matsim.core.population.PopulationUtils[1122] -  person # 199488 
+[2026-05-21 15:11:44.604] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[244] - no person-attributes file set in config, not loading any person attributes 
+[2026-05-21 15:11:44.604] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[258] - no households file set in config, not loading households 
+[2026-05-21 15:11:44.609] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[170] - starting to parse xml from url file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_transitSchedule.xml.gz ... 
+[2026-05-21 15:11:44.612] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/transitSchedule_v2.dtd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:47.649] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[329] - loading transit vehicles from /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_transitVehicles.xml.gz 
+[2026-05-21 15:11:47.652] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[170] - starting to parse xml from url file:/Volumes/USB%20DISK/pt_data/广州市/广州市抽样模型/output/output_transitVehicles.xml.gz ... 
+[2026-05-21 15:11:47.680] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/vehicleDefinitions_v2.0.xsd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:48.036] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/matsimCommon.xsd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:48.623] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/vehicleDefinitionsEnumTypes.xsd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:49.062] INFO XNIO-1 task-2 org.matsim.vehicles.MatsimVehicleReader[77] - Found following schemaLocation in vehicle definition file: http://www.matsim.org/files/dtd http://www.matsim.org/files/dtd/vehicleDefinitions_v2.0.xsd 
+[2026-05-21 15:11:49.062] INFO XNIO-1 task-2 org.matsim.vehicles.VehicleReaderV2[24] - Using org.matsim.vehicles.VehicleReaderV2 
+[2026-05-21 15:11:49.066] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 1 
+[2026-05-21 15:11:49.067] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 2 
+[2026-05-21 15:11:49.067] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 4 
+[2026-05-21 15:11:49.068] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 8 
+[2026-05-21 15:11:49.068] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 16 
+[2026-05-21 15:11:49.068] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 32 
+[2026-05-21 15:11:49.069] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 64 
+[2026-05-21 15:11:49.070] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 128 
+[2026-05-21 15:11:49.072] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 256 
+[2026-05-21 15:11:49.074] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 512 
+[2026-05-21 15:11:49.076] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 1024 
+[2026-05-21 15:11:49.078] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 2048 
+[2026-05-21 15:11:49.082] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 4096 
+[2026-05-21 15:11:49.091] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 8192 
+[2026-05-21 15:11:49.107] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 16384 
+[2026-05-21 15:11:49.137] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 32768 
+[2026-05-21 15:11:49.210] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 65536 
+[2026-05-21 15:11:49.339] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 131072 
+[2026-05-21 15:11:49.375] INFO XNIO-1 task-2 org.matsim.core.scenario.ScenarioLoaderImpl[339] - loading vehicles from /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_vehicles.xml.gz 
+[2026-05-21 15:11:49.375] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[170] - starting to parse xml from url file:/Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_vehicles.xml.gz ... 
+[2026-05-21 15:11:49.377] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/vehicleDefinitions_v2.0.xsd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:49.812] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/matsimCommon.xsd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:50.182] INFO XNIO-1 task-2 org.matsim.core.utils.io.MatsimXmlParser[296] - Trying to load http://www.matsim.org/files/dtd/vehicleDefinitionsEnumTypes.xsd. In some cases (e.g. network interface up but no connection), this may take a bit. 
+[2026-05-21 15:11:50.591] INFO XNIO-1 task-2 org.matsim.vehicles.MatsimVehicleReader[77] - Found following schemaLocation in vehicle definition file: http://www.matsim.org/files/dtd http://www.matsim.org/files/dtd/vehicleDefinitions_v2.0.xsd 
+[2026-05-21 15:11:50.592] INFO XNIO-1 task-2 org.matsim.vehicles.VehicleReaderV2[24] - Using org.matsim.vehicles.VehicleReaderV2 
+[2026-05-21 15:11:50.592] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 1 
+[2026-05-21 15:11:50.592] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 2 
+[2026-05-21 15:11:50.592] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 4 
+[2026-05-21 15:11:50.592] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 8 
+[2026-05-21 15:11:50.592] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 16 
+[2026-05-21 15:11:50.593] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 32 
+[2026-05-21 15:11:50.593] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 64 
+[2026-05-21 15:11:50.593] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 128 
+[2026-05-21 15:11:50.593] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 256 
+[2026-05-21 15:11:50.594] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 512 
+[2026-05-21 15:11:50.595] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 1024 
+[2026-05-21 15:11:50.597] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 2048 
+[2026-05-21 15:11:50.602] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 4096 
+[2026-05-21 15:11:50.612] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 8192 
+[2026-05-21 15:11:50.631] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 16384 
+[2026-05-21 15:11:50.679] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 32768 
+[2026-05-21 15:11:50.753] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 65536 
+[2026-05-21 15:11:50.909] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 131072 
+[2026-05-21 15:11:51.248] INFO XNIO-1 task-2 org.matsim.core.utils.misc.Counter[70] - [VehiclesImpl] added vehicle # 262144 
+[2026-05-21 15:11:51.799] INFO XNIO-1 task-2 org.matsim.core.utils.io.IOUtils[224] - Resolved /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_events.xml.gz to /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_events.xml.gz 
+[2026-05-21 15:11:51.800] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[92] - 开始解析：/Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_events.xml.gz 
+[2026-05-21 15:11:51.800] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 1 
+[2026-05-21 15:11:51.800] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 4 
+[2026-05-21 15:11:51.802] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 16 
+[2026-05-21 15:11:51.802] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 64 
+[2026-05-21 15:11:51.803] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 256 
+[2026-05-21 15:11:51.812] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 1024 
+[2026-05-21 15:11:51.822] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 4096 
+[2026-05-21 15:11:51.848] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 16384 
+[2026-05-21 15:11:51.931] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 65536 
+[2026-05-21 15:11:52.271] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 262144 
+[2026-05-21 15:11:53.861] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 1048576 
+[2026-05-21 15:12:00.732] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 4194304 
+[2026-05-21 15:12:36.050] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 16777216 
+[2026-05-21 15:15:36.093] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[106] -  event # 67108864 
+[2026-05-21 15:19:54.586] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[98] - 完成解析，耗时 482784ms 
+[2026-05-21 15:19:54.590] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.read.EventReader[86] - 解析耗时:482792ms 
+[2026-05-21 15:19:54.904] INFO XNIO-1 task-2 com.jts.gjcxfzksh.data.Datasource[97] - 加载[广州市/广州市抽样模型]耗时: 550417ms 
+[2026-05-21 15:20:08.527] INFO XNIO-1 task-2 com.jts.gjcxfzksh.api.service.impl.NetworkServiceImpl[123] - 读取 link 流量 1015617 条: /Volumes/USB DISK/pt_data/广州市/广州市抽样模型/output/output_links.csv.gz 
