@@ -45,6 +45,10 @@ function networkLineMinPixels() {
   return Math.max(0.22, runtimeNumber("networkLineMinPixels", 0.8));
 }
 
+function networkLineSoftEdgePixels() {
+  return Math.max(0, runtimeNumber("networkLineSoftEdgePixels", 0.75));
+}
+
 function webMercatorToTile(x, y, z = TILE_ZOOM) {
   const scale = Math.pow(2, z);
   const col = Math.floor(((EARTH_RADIUS + Number(x)) * scale) / (EARTH_RADIUS * 2));
@@ -906,6 +910,7 @@ export class NetworkLayer extends Layer {
     }
 
     const lineColor = colorToRgba(this.color, this.opacity);
+    const softEdgePixels = networkLineSoftEdgePixels();
     const commonProps = {
       coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
       beforeId: this.map?.buildingLayerId,
@@ -917,8 +922,30 @@ export class NetworkLayer extends Layer {
         depthTest: false,
         blend: true,
       },
+      capRounded: true,
+      jointRounded: true,
+      miterLimit: 2,
     };
     this.publishDebug(data, attributes);
+    const layers = [];
+    if (softEdgePixels > 0) {
+      layers.push(new LineLayer({
+        ...commonProps,
+        id: `${this.layerId}-soft-edge`,
+        data: {
+          length: data.count,
+          attributes,
+        },
+        opacity: 0.28,
+        widthScale: this.flowControl
+          ? widthScale * (1 + softEdgePixels / Math.max(1, zoomWidth))
+          : widthScale,
+        getColor: lineColor,
+        getWidth: this.flowControl ? getWidth : getWidth + softEdgePixels,
+        widthMinPixels: networkLineMinPixels() + softEdgePixels,
+        widthMaxPixels: 54,
+      }));
+    }
     const layer = new LineLayer({
       ...commonProps,
       id: this.layerId,
@@ -931,7 +958,8 @@ export class NetworkLayer extends Layer {
       widthMinPixels: networkLineMinPixels(),
       widthMaxPixels: 50,
     });
-    setSharedDeckLayer(this.map, this.layerId, layer);
+    layers.push(layer);
+    setSharedDeckLayer(this.map, this.layerId, layers);
   }
 
   setLineWidth(lineWidth) {
