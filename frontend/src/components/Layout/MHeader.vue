@@ -21,12 +21,12 @@ const headerMenus = [
     to: { name: "datavisualization" },
   },
   {
-    title: "线路修改",
-    to: { name: "lineedit" },
+    title: "场景搭建",
+    to: { name: "scenarioedit" },
   },
   {
-    title: "线路对比",
-    to: { name: "linecomparison" },
+    title: "场景对比",
+    to: { name: "scenariocomparison" },
   },
 ];
 </script>

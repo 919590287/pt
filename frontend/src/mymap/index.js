@@ -5,3 +5,4 @@ export * from "./main/Layer";
 // 图层类
 export * from "./layers/MapLayer";
 export * from "./layers/OutlineLayer";
+export * from "./layers/CityBuildingsLayer";

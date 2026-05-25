@@ -28,3 +28,11 @@ a {
     height: 0 !important;
   }
 }
+
+#mapRoot {
+  .deckgl-overlay,
+  .deck-canvas {
+    z-index: 20 !important;
+    pointer-events: none !important;
+  }
+}

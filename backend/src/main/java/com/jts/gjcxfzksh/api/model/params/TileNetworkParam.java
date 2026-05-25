@@ -9,5 +9,8 @@ public class TileNetworkParam extends DatasourceParam {
 
     private int x;
     private int y;
+    private int z;
+    private Double minFlow;
+    private Integer maxLinks;
 
 }

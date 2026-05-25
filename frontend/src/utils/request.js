@@ -8,10 +8,20 @@ export let isRelogin = {
 };
 
 axios.defaults.headers["Content-Type"] = "application/json;charset=utf-8";
+
+const configuredBaseApi = import.meta.env.VITE_APP_BASE_API;
+const runtimeConfig = typeof window !== "undefined" ? window.APP_CONFIG || {} : {};
+const runtimeBackendPort = runtimeConfig.backendPort || 8090;
+const runtimeBaseApi =
+  runtimeConfig.apiBaseUrl ||
+  (typeof window !== "undefined" && window.location?.hostname
+    ? `${window.location.protocol}//${window.location.hostname}:${runtimeBackendPort}`
+    : "");
+
 // 创建axios实例
 const service = axios.create({
   // axios中请求配置有baseURL选项，表示请求URL公共部分
-  baseURL: import.meta.env.VITE_APP_BASE_API,
+  baseURL: configuredBaseApi || runtimeBaseApi,
   // 超时
   timeout: 1000 * 60 * 60,
 });
@@ -114,7 +124,7 @@ service.interceptors.response.use(
           confirmButtonText: "确定",
           callback: (action) => {
             isRelogin.show = false;
-            window.location.href = process.env.VITE_APP_BASE_API + `/h5/auth/index`;
+            window.location.href = `${configuredBaseApi || runtimeBaseApi}/h5/auth/index`;
           },
         });
       }

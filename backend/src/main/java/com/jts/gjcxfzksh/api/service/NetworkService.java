@@ -9,4 +9,6 @@ public interface NetworkService {
 
     List<PTLink> tile(TileNetworkParam param);
 
+    List<PTLink> full(TileNetworkParam param);
+
 }

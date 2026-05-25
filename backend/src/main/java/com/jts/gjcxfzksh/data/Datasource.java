@@ -1,11 +1,11 @@
 package com.jts.gjcxfzksh.data;
 
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
+import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.MatsimOutFile;
 import com.jts.gjcxfzksh.data.entry.Scheme;
-import com.jts.gjcxfzksh.data.handler.PTHandler;
-import com.jts.gjcxfzksh.data.read.EventReader;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
@@ -27,7 +27,6 @@ import org.matsim.vehicles.VehicleType;
 import org.matsim.vehicles.VehicleUtils;
 import org.matsim.vehicles.Vehicles;
 
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -106,11 +105,9 @@ public class Datasource {
     }
 
     private static void loadEvent(MatsimData data) {
-        PTHandler ptHandler = new PTHandler(data.getSchedule());
-        EventReader reader = new EventReader(ptHandler);
         try {
-            reader.read(data.getOutfile().getEvents());
-            data.personTracks = new LinkedHashSet<>(ptHandler.getPersonTracks());
+            MatsimAnalysisCache.prepareOnModelLoad(data);
+            MatsimPrecomputedCache.prepareOnModelLoad(data);
         } catch (Exception e) {
             log.error("event加载失败: {}", e.getMessage());
             throw new RuntimeException(e);

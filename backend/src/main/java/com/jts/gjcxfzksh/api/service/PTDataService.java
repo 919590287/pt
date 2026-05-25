@@ -9,5 +9,8 @@ public interface PTDataService {
 
     Map<String, Object> info(DatasourceParam param);
     PTCoord center(DatasourceParam param);
+    Map<String, Object> trajectory(DatasourceParam param);
+    Map<String, Object> trajectoryChunk(DatasourceParam param, int start);
+    byte[] trajectoryChunkBinary(DatasourceParam param, int start);
 
 }

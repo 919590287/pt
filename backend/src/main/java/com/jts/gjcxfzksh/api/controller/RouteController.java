@@ -1,18 +1,25 @@
 package com.jts.gjcxfzksh.api.controller;
 
 import com.jts.gjcxfzksh.api.common.AjaxResult;
+import com.jts.gjcxfzksh.api.common.TileBinaryEncoder;
 import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.model.params.RouteChartParam;
 import com.jts.gjcxfzksh.api.model.params.RouteInfoParam;
 import com.jts.gjcxfzksh.api.model.params.RouteListParam;
+import com.jts.gjcxfzksh.api.model.params.TileNetworkParam;
 import com.jts.gjcxfzksh.api.service.RouteService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 @RestController
 @RequestMapping("/pt/route")
@@ -22,10 +29,37 @@ public class RouteController {
     @Resource
     private RouteService routeService;
 
+    private final ConcurrentMap<String, byte[]> fullBinaryCache = new ConcurrentHashMap<>();
+
     @Operation(summary = "全部线路")
     @PostMapping("/lineAll")
     public AjaxResult lineAll(@RequestBody DatasourceParam param) {
         return AjaxResult.ok(routeService.lineAll(param));
+    }
+
+    @Operation(summary = "线路瓦片, zoom level12")
+    @PostMapping("/tile")
+    public AjaxResult routeTile(@RequestBody TileNetworkParam param) {
+        return AjaxResult.ok(routeService.routeTile(param));
+    }
+
+    @Operation(summary = "二进制线路瓦片")
+    @PostMapping(value = "/tile.bin", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> routeTileBinary(@RequestBody TileNetworkParam param) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(TileBinaryEncoder.encodeLinks(routeService.routeTile(param)));
+    }
+
+    @Operation(summary = "二进制全量线路")
+    @PostMapping(value = "/full.bin", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> routeFullBinary(@RequestBody TileNetworkParam param) {
+        String cacheKey = String.valueOf(param.getDatasource());
+        byte[] data = fullBinaryCache.computeIfAbsent(cacheKey,
+                ignored -> TileBinaryEncoder.encodeLinks(routeService.routeFull(param)));
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .body(data);
     }
 
     @Operation(summary = "线路列表")

@@ -11,12 +11,16 @@
     "type-check": "vue-tsc --build"
   },
   "dependencies": {
+    "@deck.gl/core": "^9.3.2",
+    "@deck.gl/layers": "^9.3.2",
+    "@deck.gl/mapbox": "^9.3.2",
     "@vueuse/components": "^14.2.1",
     "@vueuse/core": "^14.2.1",
     "axios": "^1.11.0",
     "echarts": "^6.0.0",
     "element-plus": "^2.13.7",
     "file-saver": "^2.0.5",
+    "maplibre-gl": "^5.24.0",
     "pinia": "^3.0.4",
     "proj4": "^2.20.8",
     "sass": "^1.91.0",

@@ -8,6 +8,8 @@ import org.matsim.api.core.v01.network.Link;
 public class PTLink {
 
     String linkId;
+    PTCoord from;
+    PTCoord to;
     Double flow;
     Double length;
     Double lanes;
@@ -36,8 +38,6 @@ public class PTLink {
     @Data
     @EqualsAndHashCode(callSuper = true)
     private static class BaseImpl extends PTLink {
-        PTCoord from;
-        PTCoord to;
     }
 
     @Data

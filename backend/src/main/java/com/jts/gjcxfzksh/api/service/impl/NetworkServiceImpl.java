@@ -5,7 +5,11 @@ import com.jts.gjcxfzksh.api.model.params.TileNetworkParam;
 import com.jts.gjcxfzksh.api.model.pt.PTLink;
 import com.jts.gjcxfzksh.api.service.NetworkService;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
+import com.jts.gjcxfzksh.data.entry.TileNetwork;
 import lombok.extern.slf4j.Slf4j;
+import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.api.core.v01.network.Network;
 import org.springframework.stereotype.Service;
@@ -27,27 +31,53 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
     @Override
     public List<PTLink> tile(TileNetworkParam param) {
         MatsimData data = matsim_data(param);
+        List<Object> cached = MatsimPrecomputedCache.readNetworkTile(data, param.getZ(), param.getX(), param.getY());
+        if (cached != null) {
+            return (List<PTLink>) (List<?>) cached;
+        }
+        if (MatsimAnalysisCache.isTrajectoryBuildActive()) {
+            log.warn("轨迹缓存生成中，临时跳过全量路网返回: datasource={}, x={}, y={}",
+                    param.getDatasource(), param.getX(), param.getY());
+            return List.of();
+        }
+
         Network network = data.getNetwork();
         Map<String, Double> linkFlows = linkFlows(data);
-        List<PTLink> result = new Vector<>();
-//        TileNetwork tileNetwork = data.getDatabase().tile_network();
-//        TileNetwork.Row row = tileNetwork.getRows().get(param.getX());
-//        if (row != null) {
-//            TileNetwork.Col col = row.getCols().get(param.getY());
-//            if (col != null) {
-//                col.getLinks().parallelStream().forEach(linkId -> {
-//                    Link link = network.getLinks().get(linkId);
-//                    if (link != null) {
-//                        result.add(PTLink.base(link, linkFlows.getOrDefault(linkId.toString(), 0D)));
-//                    }
-//                });
-//            }
-//        }
-        network.getLinks().entrySet().parallelStream().forEach(entry -> {
-            Link link = entry.getValue();
+        int tileX = param.getX();
+        int tileY = param.getY();
+        if (tileX == 0 && tileY == 0 && data.getCenter() != null) {
+            int[] centerTile = TileNetwork.coordInTile(data.getCenter());
+            tileX = centerTile[0];
+            tileY = centerTile[1];
+        }
+
+        List<Id<Link>> linkIds = tile_network(param).getTileLinks().get(tileX, tileY);
+        if (linkIds == null || linkIds.isEmpty()) {
+            return List.of();
+        }
+
+        List<PTLink> result = new ArrayList<>(linkIds.size());
+        for (Id<Link> id : linkIds) {
+            Link link = network.getLinks().get(id);
+            if (link == null) {
+                continue;
+            }
             String linkId = link.getId().toString();
             result.add(PTLink.base(link, linkFlows.getOrDefault(linkId, 0D)));
-        });
+        }
+        return result;
+    }
+
+    @Override
+    public List<PTLink> full(TileNetworkParam param) {
+        MatsimData data = matsim_data(param);
+        Network network = data.getNetwork();
+        Map<String, Double> linkFlows = linkFlows(data);
+        List<PTLink> result = new ArrayList<>(network.getLinks().size());
+        for (Link link : network.getLinks().values()) {
+            String linkId = link.getId().toString();
+            result.add(PTLink.base(link, linkFlows.getOrDefault(linkId, 0D)));
+        }
         return result;
     }
 

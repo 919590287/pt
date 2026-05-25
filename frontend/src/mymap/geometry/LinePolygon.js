@@ -382,10 +382,32 @@ export class LineSegmentPolygonGeometry extends THREE.BufferGeometry {
 
 export class LinePolygonMaterial extends THREE.MeshBasicMaterial {
 	  constructor(argu) {
-	    const { lineStyle = LINE_STYLE.SOLID, lineWidth = 50, lineOffset = 0, useFlowControl = false, hasFlowData = false, flowMin = 0, flowMax = 0, flowMinWidth = 1, flowMaxWidth = 40, flowWidthStep = 20, resolution = null, ...params } = argu || {};
-    super(params);
-    this.depthTest = false;
-    this.depthWrite = false;
+	    const {
+	      lineStyle = LINE_STYLE.SOLID,
+	      lineWidth = 50,
+	      lineOffset = 0,
+	      useFlowControl = false,
+	      hasFlowData = false,
+	      flowMin = 0,
+	      flowMax = 0,
+	      flowMinWidth = 1,
+	      flowMaxWidth = 40,
+	      flowWidthStep = 20,
+	      resolution = null,
+	      depthTest = true,
+	      depthWrite = false,
+	      transparent = true,
+	      polygonOffset = true,
+	      polygonOffsetFactor = -1,
+	      polygonOffsetUnits = -1,
+	      ...params
+	    } = argu || {};
+    super({ transparent, polygonOffset, polygonOffsetFactor, polygonOffsetUnits, ...params });
+    // Keep depth testing so 3D buildings can occlude lines, but do not let
+    // road/route layers write depth and fight each other on the same plane.
+    this.depthTest = depthTest;
+    this.depthWrite = depthWrite;
+    this.forceSinglePass = true;
     this.userData.lineWidth = lineWidth;
     this.userData.lineOffset = lineOffset;
 	    this.userData.lineStyle = lineStyle;

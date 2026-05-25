@@ -7,6 +7,8 @@ import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.api.service.PTDataService;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.RouteId;
 import com.jts.gjcxfzksh.data.id.VehicleId;
@@ -31,19 +33,38 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 public class PTDataServiceImpl extends DatasourceService implements PTDataService {
 
+    private static final String TRAJECTORY_CACHE_VERSION = MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION;
+
     final BigDecimal _100 = new BigDecimal("100");
+    private final ConcurrentMap<String, TrajectoryBuildState> trajectoryStates = new ConcurrentHashMap<>();
+    private final ExecutorService trajectoryExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "trajectory-cache-builder");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     @Override
     public Map<String, Object> info(DatasourceParam param) {
-        Map<String, Object> result = new HashMap<>();
         MatsimData matsim_data = matsim_data(param);
+        Map<String, Object> cached = MatsimPrecomputedCache.readInfo(matsim_data);
+        if (cached != null) {
+            return cached;
+        }
+        Map<String, Object> result = new HashMap<>();
         // 总体水平
         // 常驻人口密度   人*km2
         int personCount = matsim_data.getPersonTracks().stream().collect(Collectors.groupingBy(PTPersonTrack::getPersonId)).size();
@@ -116,6 +137,182 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
     public PTCoord center(DatasourceParam param) {
         MatsimData matsim_data = matsim_data(param);
         return new PTCoord(matsim_data.getCenter());
+    }
+
+    @Override
+    public Map<String, Object> trajectory(DatasourceParam param) {
+        MatsimData data = matsim_data(param);
+        Map<String, Object> manifest = MatsimAnalysisCache.readReadyTrajectoryManifest(data);
+        if (manifest != null) {
+            return manifest;
+        }
+
+        String cacheKey = MatsimAnalysisCache.trajectoryCacheKey(data);
+        TrajectoryBuildState state = trajectoryStates.computeIfAbsent(cacheKey, key -> new TrajectoryBuildState(data));
+        if (state.isFailed()) {
+            trajectoryStates.remove(cacheKey, state);
+            state = trajectoryStates.computeIfAbsent(cacheKey, key -> new TrajectoryBuildState(data));
+        }
+        if (state.start()) {
+            TrajectoryBuildState buildState = state;
+            trajectoryExecutor.submit(() -> {
+                try {
+                    Map<String, Object> readyManifest = MatsimAnalysisCache.ensureTrajectoryCache(data, buildState::markPoint);
+                    buildState.ready(readyManifest);
+                    trajectoryStates.remove(cacheKey, buildState);
+                } catch (Throwable e) {
+                    buildState.fail(e);
+                    log.error("轨迹缓存生成失败: {}", e.getMessage(), e);
+                }
+            });
+        }
+        return state.toPayload();
+    }
+
+    @Override
+    public Map<String, Object> trajectoryChunk(DatasourceParam param, int start) {
+        MatsimData data = matsim_data(param);
+        Map<String, Object> chunk = MatsimAnalysisCache.readTrajectoryChunk(data, start);
+        if (chunk == null) {
+            Map<String, Object> status = trajectory(param);
+            status.put("vehicles", List.of());
+            status.put("chunk", MatsimAnalysisCache.chunkInfo(MatsimAnalysisCache.normalizeChunkStart(start), 0, 0));
+            return status;
+        }
+        return chunk;
+    }
+
+    @Override
+    public byte[] trajectoryChunkBinary(DatasourceParam param, int start) {
+        MatsimData data = matsim_data(param);
+        byte[] chunk = MatsimAnalysisCache.readTrajectoryBinaryChunk(data, start);
+        if (chunk == null) {
+            trajectory(param);
+        }
+        return chunk;
+    }
+
+    private static Map<String, Long> emptyLongModeMap() {
+        Map<String, Long> result = new LinkedHashMap<>();
+        result.put("bus", 0L);
+        result.put("subway", 0L);
+        result.put("car", 0L);
+        return result;
+    }
+
+    private static class TrajectoryBuildState {
+        private final AtomicBoolean started = new AtomicBoolean(false);
+        private final String modelName;
+        private final String eventsFile;
+        private final long eventsModified;
+        private final long eventsSize;
+        private volatile String status = "generating";
+        private volatile String message = "轨迹缓存生成中";
+        private volatile long startedAt = System.currentTimeMillis();
+        private volatile long parsedPoints = 0;
+        private volatile int vehicleCount = 0;
+        private volatile int minTime = Integer.MAX_VALUE;
+        private volatile int maxTime = Integer.MIN_VALUE;
+        private volatile Map<String, Object> readyManifest;
+
+        private TrajectoryBuildState(MatsimData data) {
+            this.modelName = data.getName();
+            this.eventsFile = data.getOutfile().getEvents();
+            this.eventsModified = lastModifiedStatic(eventsFile);
+            this.eventsSize = fileSizeStatic(eventsFile);
+        }
+
+        private boolean start() {
+            return started.compareAndSet(false, true);
+        }
+
+        private boolean isFailed() {
+            return "failed".equals(status);
+        }
+
+        private void markPoint(int time, int currentVehicleCount) {
+            parsedPoints++;
+            vehicleCount = currentVehicleCount;
+            minTime = Math.min(minTime, time);
+            maxTime = Math.max(maxTime, time);
+        }
+
+        private void ready(Map<String, Object> manifest) {
+            readyManifest = manifest;
+            status = "ready";
+            message = "轨迹缓存已生成";
+        }
+
+        private void fail(Throwable e) {
+            status = "failed";
+            message = e.getMessage() == null ? "轨迹缓存生成失败" : e.getMessage();
+        }
+
+        private Map<String, Object> toPayload() {
+            if (readyManifest != null) {
+                return readyManifest;
+            }
+            Map<String, Object> progress = new LinkedHashMap<>();
+            progress.put("pointCount", parsedPoints);
+            progress.put("vehicleCount", vehicleCount);
+            progress.put("elapsedMs", System.currentTimeMillis() - startedAt);
+            progress.put("minTime", minTime == Integer.MAX_VALUE ? 0 : minTime);
+            progress.put("maxTime", maxTime == Integer.MIN_VALUE ? 0 : maxTime);
+
+            Map<String, Object> timeRange = new LinkedHashMap<>();
+            timeRange.put("min", minTime == Integer.MAX_VALUE ? 0 : minTime);
+            timeRange.put("max", maxTime == Integer.MIN_VALUE ? 86400 : maxTime);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", status);
+            result.put("cacheVersion", TRAJECTORY_CACHE_VERSION);
+            result.put("message", message);
+            result.put("model", modelName);
+            result.put("eventsFile", eventsFile);
+            result.put("eventsModified", eventsModified);
+            result.put("eventsSize", eventsSize);
+            result.put("progress", progress);
+            result.put("timeRange", timeRange);
+            result.put("summary", Map.of(
+                    "totalVehicles", vehicleCount,
+                    "vehicleCountByMode", emptyLongModeMap(),
+                    "pointCount", parsedPoints,
+                    "chunks", List.of()
+            ));
+            result.put("passengerSeries", List.of());
+            result.put("vehicles", List.of());
+            return result;
+        }
+
+        private static long lastModifiedStatic(String filePath) {
+            if (filePath == null || filePath.isBlank()) {
+                return 0L;
+            }
+            try {
+                Path path = Path.of(filePath);
+                if (!Files.exists(path)) {
+                    return 0L;
+                }
+                return Files.getLastModifiedTime(path).toMillis();
+            } catch (Exception e) {
+                return 0L;
+            }
+        }
+
+        private static long fileSizeStatic(String filePath) {
+            if (filePath == null || filePath.isBlank()) {
+                return 0L;
+            }
+            try {
+                Path path = Path.of(filePath);
+                if (!Files.exists(path)) {
+                    return 0L;
+                }
+                return Files.size(path);
+            } catch (Exception e) {
+                return 0L;
+            }
+        }
     }
 
     public double ptNetworkLength(TransitSchedule schedule, Network network) {

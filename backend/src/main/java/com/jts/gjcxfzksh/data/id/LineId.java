@@ -50,6 +50,18 @@ public class LineId extends Id<TransitLine> implements Serializable {
         }
     }
 
+    public static LineId create(String obj) {
+        synchronized (cache) {
+            Id<TransitLine> id = Id.create(obj, TransitLine.class);
+            LineId lineId = cache.get(id);
+            if (lineId == null) {
+                lineId = new LineId(id);
+                cache.put(id, lineId);
+            }
+            return lineId;
+        }
+    }
+
 
     @Override
     public int index() {

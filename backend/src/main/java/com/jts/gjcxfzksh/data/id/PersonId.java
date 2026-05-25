@@ -53,6 +53,18 @@ public class PersonId extends Id<Person> implements Serializable {
         }
     }
 
+    public static PersonId create(String obj) {
+        synchronized (cache) {
+            Id<Person> id = Id.create(obj, Person.class);
+            PersonId personId = cache.get(id);
+            if (personId == null) {
+                personId = new PersonId(id);
+                cache.put(id, personId);
+            }
+            return personId;
+        }
+    }
+
 
     @Override
     public int index() {

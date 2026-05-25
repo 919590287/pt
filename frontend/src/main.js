@@ -1,4 +1,5 @@
 import "./assets/styles/main.scss";
+import "maplibre-gl/dist/maplibre-gl.css";
 
 import { createApp } from "vue";
 import { createPinia } from "pinia";
@@ -8,7 +9,11 @@ import router from "./router";
 
 // echarts
 import VChart from "vue-echarts";
-import * as echarts from "echarts";
+import { graphic, use } from "echarts/core";
+import { BarChart, GaugeChart, PieChart } from "echarts/charts";
+import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from "echarts/components";
+import { LabelLayout } from "echarts/features";
+import { CanvasRenderer } from "echarts/renderers";
 
 import ElementPlus, { ElMessage, ElMessageBox } from "element-plus";
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
@@ -19,8 +24,20 @@ import '@/assets/styles/element.scss'
 
 const app = createApp(App);
 
+use([
+  BarChart,
+  GaugeChart,
+  PieChart,
+  GridComponent,
+  LegendComponent,
+  TitleComponent,
+  TooltipComponent,
+  LabelLayout,
+  CanvasRenderer,
+]);
+
 // 全局方法挂载
-app.config.globalProperties.$echarts = echarts;
+app.config.globalProperties.$echarts = { graphic };
 app.config.globalProperties.$message = ElMessage
 app.config.globalProperties.$alert = ElMessageBox.alert
 app.config.globalProperties.$confirm = ElMessageBox.confirm

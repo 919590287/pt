@@ -12,3 +12,21 @@ export function getTileNetwork(data) {
     data: data
   })
 }
+
+export function getTileNetworkBinary(data) {
+  return request({
+    url: `/pt/network/tile.bin`,
+    method: 'POST',
+    data: data,
+    responseType: 'arraybuffer'
+  })
+}
+
+export function getFullNetworkBinary(data) {
+  return request({
+    url: `/pt/network/full.bin`,
+    method: 'POST',
+    data: data,
+    responseType: 'arraybuffer'
+  })
+}

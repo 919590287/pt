@@ -1,13 +1,13 @@
 <!-- 数据总览 -->
 <template>
   <div class="SJZL" v-bind="$attrs">
-    <MCard class="card" v-for="item in list">
+    <MCard class="card" v-for="item in list" :key="item.title">
       <template #title="attrs">
         <div :class="`title ${attrs.class}`">{{ item.title }}</div>
         <el-switch v-model="item.switch" :active-value="true" :inactive-value="false" @click.stop />
       </template>
       <template #body>
-        <el-checkbox v-for="item2 in item.children" v-model="item2.check" :disabled="!item.switch || item2.disabled">{{ item2.title }}</el-checkbox>
+        <el-checkbox v-for="item2 in item.children" :key="item2.title" v-model="item2.check" :disabled="!item.switch || item2.disabled">{{ item2.title }}</el-checkbox>
       </template>
     </MCard>
   </div>
@@ -51,7 +51,7 @@
             <div class="title">车站300m人口覆盖率</div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="ztsp_fgl_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="ztsp_fgl_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -60,7 +60,7 @@
             <div class="title">万人保有量</div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="ztsp_byl_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="ztsp_byl_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -69,7 +69,7 @@
             <div class="title">出行分担率</div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="ztsp_fdl_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="ztsp_fdl_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -150,7 +150,7 @@
             <div class="title">线路满载率</div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="xlxy_mzl_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="xlxy_mzl_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -163,7 +163,7 @@
             </div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="xlxy_klqd_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="xlxy_klqd_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -172,7 +172,7 @@
             <div class="title">车公里运营成本</div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="xlxy_glyycb_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="xlxy_glyycb_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -185,7 +185,7 @@
             </div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="xlxy_rcyycb_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="xlxy_rcyycb_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -207,7 +207,7 @@
             </div>
             <el-auto-resizer class="chart_box">
               <template #default="{ height, width }">
-                <VChart class="chart" :option="yyfw_sdb_options" autoresize :update-options="{ notMerge: true }" />
+                <VChart v-if="width > 0 && height > 0" class="chart" :option="yyfw_sdb_options" autoresize :update-options="{ notMerge: true }" />
               </template>
             </el-auto-resizer>
           </div>
@@ -251,7 +251,6 @@ import RKICON from "@/assets/images/sjzl/rk.svg";
 import XLICON from "@/assets/images/sjzl/xl.svg";
 
 import { NetworkLayer } from "../layers/NetworkLayer.js";
-import { getTileNetwork } from "@/api/network.js";
 
 import { injectSync } from "@/utils";
 
@@ -259,6 +258,17 @@ const props = defineProps({
   model: String,
 });
 const { proxy } = getCurrentInstance();
+
+const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
+const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref("数据总览"));
+
+function setRightPanelForOverview(visible) {
+  if (activeDatavisualizationTab.value === "数据总览") {
+    rightPanelHasContent.value = visible;
+  }
+}
+
+setRightPanelForOverview(true);
 
 const list = ref([
   {
@@ -459,13 +469,6 @@ const ztsp_byl_options = computed(() => {
         title: {
           show: false, // 隐藏默认的 title（我们把它放在 detail 下方或者直接用 detail 的 rich 文本）
         },
-        // 专门控制底部 "标台 / 万人" 的样式
-        name: {
-          offsetCenter: [0, "40%"], // 调整到底部
-          fontSize: 14,
-          color: "#333",
-        },
-
         // --- 数据配置 ---
         min: 0,
         max: 25,
@@ -659,13 +662,6 @@ const xlxy_mzl_options = computed(() => {
         title: {
           show: false, // 隐藏默认的 title（我们把它放在 detail 下方或者直接用 detail 的 rich 文本）
         },
-        // 专门控制底部 "标台 / 万人" 的样式
-        name: {
-          offsetCenter: [0, "40%"], // 调整到底部
-          fontSize: 14,
-          color: "#333",
-        },
-
         // --- 数据配置 ---
         min: 0,
         max: 100,
@@ -862,9 +858,7 @@ const _NetworkLayer = new NetworkLayer({
 });
 injectSync("MapRef").then((MapRef) => {
   MapRef.value?.addLayer(_NetworkLayer);
-});
-getTileNetwork({ datasource: props.model }).then((res) => {
-  _NetworkLayer.setData(res.data);
+  _NetworkLayer.setTileSource(props.model);
 });
 watch(LineWidthRef, (value) => {
   _NetworkLayer.setLineWidth(value);
@@ -874,6 +868,11 @@ watch(FlowWidthStepRef, (value) => {
 });
 watch(FlowControlRef, (value) => {
   _NetworkLayer.setFlowControl(value);
+});
+watch(() => props.model, (model) => {
+  if (model) {
+    _NetworkLayer.setTileSource(model);
+  }
 });
 
 import { dataInfo } from "@/api/data.js";
@@ -886,6 +885,7 @@ dataInfo({ datasource: props.model }).then((res) => {
 /******************************** 地图图层 ********************************/
 onUnmounted(() => {
   _NetworkLayer.dispose();
+  setRightPanelForOverview(false);
 });
 </script>
 

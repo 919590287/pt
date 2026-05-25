@@ -26,6 +26,20 @@ export default defineConfig(({ mode, command }) => {
     build: {
       outDir: fileURLToPath(new URL("./gjcxfzksh_web_dist", import.meta.url)),
       emptyOutDir: true,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes("node_modules")) return undefined;
+            if (id.includes("echarts") || id.includes("zrender")) return "vendor-echarts";
+            if (id.includes("element-plus") || id.includes("@element-plus")) return "vendor-element";
+            if (id.includes("maplibre-gl")) return "vendor-maplibre";
+            if (id.includes("three")) return "vendor-three";
+            if (id.includes("@deck.gl") || id.includes("@luma.gl") || id.includes("@loaders.gl")) return "vendor-deck";
+            if (id.includes("vue")) return "vendor-vue";
+            return "vendor";
+          },
+        },
+      },
     },
     resolve: {
       alias: {

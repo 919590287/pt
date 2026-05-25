@@ -5,6 +5,7 @@ import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.api.model.vo.FacilityVO;
 import com.jts.gjcxfzksh.api.service.FacilityService;
+import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import org.matsim.api.core.v01.Id;
 import org.matsim.pt.transitSchedule.api.TransitStopFacility;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,10 @@ public class FacilityServiceImpl extends DatasourceService implements FacilitySe
 
     @Override
     public List<FacilityVO> facilityAll(DatasourceParam param) {
+        List<Object> cached = MatsimPrecomputedCache.readStations(matsim_data(param));
+        if (cached != null) {
+            return (List<FacilityVO>) (List<?>) cached;
+        }
         List<FacilityVO> facilityVoList = new ArrayList<>();
         Map<Id<TransitStopFacility>, TransitStopFacility> facilityMap = schedule(param).getFacilities();
         for (Id<TransitStopFacility> facilityId : facilityMap.keySet()) {

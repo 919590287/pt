@@ -6,12 +6,15 @@ import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.model.params.RouteChartParam;
 import com.jts.gjcxfzksh.api.model.params.RouteInfoParam;
 import com.jts.gjcxfzksh.api.model.params.RouteListParam;
+import com.jts.gjcxfzksh.api.model.params.TileNetworkParam;
+import com.jts.gjcxfzksh.api.model.pt.PTLink;
 import com.jts.gjcxfzksh.api.model.vo.FacilityFlowVO;
 import com.jts.gjcxfzksh.api.model.vo.LineVO;
 import com.jts.gjcxfzksh.api.model.vo.RouteDetailVO;
 import com.jts.gjcxfzksh.api.model.vo.RouteVO;
 import com.jts.gjcxfzksh.api.service.RouteService;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.*;
 import com.jts.gjcxfzksh.exception.BusinessException;
@@ -63,6 +66,10 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public RouteDetailVO routeDetail(RouteInfoParam param) {
         MatsimData matsim_data = matsim_data(param);
+        RouteDetailVO cached = MatsimPrecomputedCache.readRouteDetail(matsim_data, param.getRouteId());
+        if (cached != null) {
+            return cached;
+        }
         Network network = network(param);
         if (param.getRouteId() == null) {
             throw new BusinessException("routeId 不能为空");
@@ -129,8 +136,13 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
 
     @Override
     public List<LineVO> lineAll(DatasourceParam param) {
+        MatsimData matsim_data = matsim_data(param);
+        List<Object> cached = MatsimPrecomputedCache.readLines(matsim_data);
+        if (cached != null) {
+            return (List<LineVO>) (List<?>) cached;
+        }
         List<LineVO> lineList = new ArrayList<>();
-        Network network = network(param);
+        Network network = matsim_data.getNetwork();
         Map<Id<TransitLine>, TransitLine> transitLines = schedule(param).getTransitLines();
         for (Map.Entry<Id<TransitLine>, TransitLine> line : transitLines.entrySet()) {
             TransitLine transitLine = line.getValue();
@@ -147,6 +159,47 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
             lineList.add(vo);
         }
         return lineList;
+    }
+
+    @Override
+    public List<PTLink> routeTile(TileNetworkParam param) {
+        MatsimData matsimData = matsim_data(param);
+        List<Object> cached = MatsimPrecomputedCache.readRouteTile(matsimData, param.getZ(), param.getX(), param.getY());
+        if (cached != null) {
+            return (List<PTLink>) (List<?>) cached;
+        }
+        return List.of();
+    }
+
+    @Override
+    public List<PTLink> routeFull(TileNetworkParam param) {
+        MatsimData matsimData = matsim_data(param);
+        Network network = matsimData.getNetwork();
+        Set<Id<Link>> routeLinkIds = new LinkedHashSet<>();
+        for (TransitLine line : matsimData.getSchedule().getTransitLines().values()) {
+            for (TransitRoute transitRoute : line.getRoutes().values()) {
+                Route route = transitRoute.getRoute();
+                if (route instanceof NetworkRoute networkRoute) {
+                    addRouteLink(routeLinkIds, networkRoute.getStartLinkId());
+                    routeLinkIds.addAll(networkRoute.getLinkIds());
+                    addRouteLink(routeLinkIds, networkRoute.getEndLinkId());
+                }
+            }
+        }
+        List<PTLink> result = new ArrayList<>(routeLinkIds.size());
+        for (Id<Link> linkId : routeLinkIds) {
+            Link link = network.getLinks().get(linkId);
+            if (link != null) {
+                result.add(PTLink.base(link, 0D));
+            }
+        }
+        return result;
+    }
+
+    private void addRouteLink(Set<Id<Link>> routeLinkIds, Id<Link> linkId) {
+        if (linkId != null) {
+            routeLinkIds.add(linkId);
+        }
     }
 
     @Override

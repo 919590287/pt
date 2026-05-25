@@ -27,14 +27,16 @@
           </svg>
         </div>
         <div class="tab_list" ref="box1Handle">
-          <el-button type="primary" :plain="activeTab != '数据总览'" @click="handleSetActiveTab('数据总览')">数据总览</el-button>
-          <el-button type="primary" :plain="activeTab != '线路总览'" @click="handleSetActiveTab('线路总览')">线路总览</el-button>
-          <el-button type="primary" :plain="activeTab != '站点总览'" @click="handleSetActiveTab('站点总览')">站点总览</el-button>
+          <el-button type="primary" :plain="activeTab != '数据总览'" @pointerdown.stop @click="handleSetActiveTab('数据总览')">数据总览</el-button>
+          <el-button type="primary" :plain="activeTab != '线路分析'" @pointerdown.stop @click="handleSetActiveTab('线路分析')">线路分析</el-button>
+          <el-button type="primary" :plain="activeTab != '站点分析'" @pointerdown.stop @click="handleSetActiveTab('站点分析')">站点分析</el-button>
+          <el-button type="primary" :plain="activeTab != '轨迹演示'" @pointerdown.stop @click="handleSetActiveTab('轨迹演示')">轨迹演示</el-button>
         </div>
         <el-scrollbar class="flex_column_scroll_box">
-          <SJZL v-if="activeTab == '数据总览'" :model="selectModel.name" />
-          <XLZL v-if="activeTab == '线路总览'" :model="selectModel.name" />
-          <ZDZL v-if="activeTab == '站点总览'" :model="selectModel.name" />
+          <SJZL v-if="activeTab == '数据总览'" :key="`sjzl-${selectModel.name}`" :model="selectModel.name" />
+          <XLZL v-else-if="activeTab == '线路分析'" :key="`xlzl-${selectModel.name}`" :model="selectModel.name" />
+          <ZDZL v-else-if="activeTab == '站点分析'" :key="`zdzl-${selectModel.name}`" :model="selectModel.name" />
+          <GJYS v-else-if="activeTab == '轨迹演示'" :key="`gjys-${selectModel.name}`" :model="selectModel.name" />
         </el-scrollbar>
       </div>
       <div :class="['box2', isRightCollapsed ? 'collapsed' : '']" v-show="isRightPanelVisible">
@@ -81,7 +83,11 @@
 
         <!-- Block 2: Line Settings Toggle & Floating Popover -->
         <div class="control-block settings-block">
-          <button :class="['control-btn', showLineWidthPopover ? 'active' : '']" @click="handleToggleLineWidthPopover" title="线形设置">
+          <button
+            :class="['control-btn', showLineWidthPopover ? 'active' : '']"
+            @click="handleToggleLineWidthPopover"
+            :title="activeTab === '站点分析' ? '站点大小设置' : activeTab === '轨迹演示' ? '车辆模型设置' : '线形设置'"
+          >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <line x1="4" y1="7" x2="20" y2="7"></line>
               <circle cx="15" cy="7" r="1.5" fill="currentColor"></circle>
@@ -96,16 +102,43 @@
         <!-- Floating Popover for Line Width -->
         <Transition name="popover-fade">
           <div v-if="showLineWidthPopover" class="line-width-popover" @click.stop>
-            <div class="popover-title">线形设置</div>
+            <div class="popover-title">{{ activeTab === '站点分析' ? '站点大小设置' : activeTab === '轨迹演示' ? '车辆模型设置' : '线形设置' }}</div>
             <div class="popover-content">
-	              <div class="slider-row">
-	                <span class="label">
-	                  <span>线宽</span>
-	                  <span class="val-text">{{ `${lineWidth}px` }}</span>
-	                </span>
-	                <el-slider v-model="lineWidth" :min="3" :max="40" :step="1" @input="handleLineWidthChange" />
-	              </div>
-              <div class="flow-control-row">
+              <div class="slider-row" v-if="activeTab === '站点分析'">
+                <span class="label">
+                  <span>站点大小</span>
+                  <span class="val-text">{{ `${stationSize}px` }}</span>
+                </span>
+                <el-slider v-model="stationSize" :min="minStationSize" :max="maxStationSize" :step="1" @input="handleStationSizeChange" />
+              </div>
+              <div class="slider-row" v-else-if="activeTab === '轨迹演示'">
+                <span class="label">
+                  <span>车辆模型</span>
+                  <span class="val-text">{{ `${vehicleSize}px` }}</span>
+                </span>
+                <el-slider v-model="vehicleSize" :min="minVehicleSize" :max="maxVehicleSize" :step="1" @input="handleVehicleSizeChange" />
+              </div>
+              <template v-else>
+                <div class="slider-row">
+                  <span class="label">
+                    <span>线宽</span>
+                    <span class="val-text">{{ `${lineWidth}px` }}</span>
+                  </span>
+                  <el-slider v-model="lineWidth" :min="minLineWidth" :max="maxLineWidth" :step="1" @input="handleLineWidthChange" />
+                </div>
+              </template>
+              <div class="vehicle-visibility-row" v-if="activeTab === '轨迹演示'">
+                <span>可视化范围</span>
+                <el-select v-model="vehicleVisibilityMode" size="small" @change="handleVehicleVisibilityModeChange">
+                  <el-option
+                    v-for="item in vehicleVisibilityOptions"
+                    :key="item.value"
+                    :label="item.label"
+                    :value="item.value"
+                  />
+                </el-select>
+              </div>
+              <div class="flow-control-row" v-else-if="activeTab !== '线路分析' && activeTab !== '站点分析'">
                 <span>按流量控制</span>
                 <el-switch v-model="flowControl" @change="handleFlowControlChange" />
               </div>
@@ -177,6 +210,7 @@ import { dataCenter } from "@/api/data.js";
 import SJZL from "./components/SJZL.vue";
 import XLZL from "./components/XLZL.vue";
 import ZDZL from "./components/ZDZL.vue";
+import GJYS from "./components/GJYS.vue";
 
 import { useDraggable } from "@vueuse/core";
 import { HighlightSegmentLayer } from "./layers/HighlightSegmentLayer.js";
@@ -247,6 +281,27 @@ const activeTab = ref("数据总览");
 function handleSetActiveTab(tabName) {
   activeTab.value = tabName;
 }
+provide("activeDatavisualizationTab", activeTab);
+
+const rightPanelHasContent = ref(true);
+provide("rightPanelHasContent", rightPanelHasContent);
+
+watch(activeTab, (tab) => {
+  rightPanelHasContent.value = false;
+  if (tab === "线路分析") {
+    lineWidth.value = 42;
+  } else if (tab === "数据总览") {
+    rightPanelHasContent.value = true;
+    showRightPanel.value = true;
+    isRightCollapsed.value = false;
+    lineWidth.value = 20;
+  } else {
+    lineWidth.value = 20;
+  }
+  applyLineWidth();
+  applyStationSize();
+  scheduleLayerSyncBurst(4);
+});
 
 // Map Controls State & Logic
 const mapZoom = ref(10.74);
@@ -258,9 +313,14 @@ const showRightPanel = ref(true);
 const isLeftCollapsed = ref(false);
 const isRightCollapsed = ref(false);
 const flowControl = ref(false);
+const vehicleVisibilityMode = ref("all");
+const vehicleVisibilityOptions = [
+  { label: "全部车辆", value: "all" },
+  { label: "仅公共交通", value: "public" },
+  { label: "仅私家车", value: "private" },
+];
 
-const hasRightPanelContent = computed(() => activeTab.value === "数据总览");
-const isRightPanelVisible = computed(() => showRightPanel.value && hasRightPanelContent.value);
+const isRightPanelVisible = computed(() => showRightPanel.value && rightPanelHasContent.value);
 const isInfoActive = computed(() => isRightPanelVisible.value);
 const is3DActive = ref(false);
 
@@ -402,8 +462,22 @@ watch(selectedSegment, (segment) => {
 
 const showLineWidthPopover = ref(false);
 const lineWidth = ref(20);
+const stationSize = ref(22);
+const vehicleSize = ref(36);
 const referenceZoom = ref(10.74);
 let isZoomCaptured = false;
+
+const minLineWidth = computed(() => {
+  return activeTab.value === '线路分析' ? 18 : 3;
+});
+
+const maxLineWidth = computed(() => {
+  return activeTab.value === '线路分析' ? 120 : 40;
+});
+const minStationSize = computed(() => 10);
+const maxStationSize = computed(() => 36);
+const minVehicleSize = computed(() => 20);
+const maxVehicleSize = computed(() => 72);
 
 const lineWidthZoomScale = computed(() => Math.pow(2, 0.5 * (referenceZoom.value - mapZoom.value)));
 const computedLineWidth = computed(() => {
@@ -414,6 +488,9 @@ const computedFlowWidthStep = computed(() => 20 * lineWidthZoomScale.value);
 provide("LineWidthRef", computedLineWidth);
 provide("FlowWidthStepRef", computedFlowWidthStep);
 provide("FlowControlRef", flowControl);
+provide("StationSizeRef", stationSize);
+provide("VehicleSizeRef", vehicleSize);
+provide("VehicleVisibilityModeRef", vehicleVisibilityMode);
 
 watch(computedLineWidth, (val) => {
   applyLineWidth();
@@ -424,8 +501,74 @@ watch(computedLineWidth, (val) => {
 watch(computedFlowWidthStep, () => {
   applyFlowWidthStep();
 });
+watch(stationSize, () => {
+  applyStationSize();
+});
+watch(vehicleSize, () => {
+  applyVehicleSize();
+});
+watch(vehicleVisibilityMode, () => {
+  applyVehicleVisibilityMode();
+});
+
+let fpsFrameId = null;
+let fpsLastAt = 0;
+let fpsWindowStart = 0;
+let fpsFrames = 0;
+let lastMapMotionAt = 0;
+const perfSamples = [];
+
+function publishPerfProbe(fps = 0, now = performance.now()) {
+  const moving = now - lastMapMotionAt < 220;
+  const sample = {
+    fps: Math.round(fps * 10) / 10,
+    hz: Math.round(fps),
+    samples: perfSamples.slice(-120),
+    tab: activeTab.value,
+    moving,
+    timestamp: now,
+  };
+  window.__GJ_VIS_PERF__ = sample;
+  document.documentElement.dataset.gjVisFps = String(sample.fps);
+  document.documentElement.dataset.gjVisHz = String(sample.hz);
+  document.documentElement.dataset.gjVisMoving = moving ? "1" : "0";
+  document.documentElement.dataset.gjVisTab = activeTab.value;
+}
+
+function startPerfProbe() {
+  if (fpsFrameId || typeof requestAnimationFrame !== "function") return;
+  fpsLastAt = performance.now();
+  fpsWindowStart = fpsLastAt;
+  fpsFrames = 0;
+  const tick = (now) => {
+    const delta = now - fpsLastAt;
+    fpsLastAt = now;
+    fpsFrames += 1;
+    if (delta > 0 && delta < 1000) {
+      perfSamples.push(1000 / delta);
+      if (perfSamples.length > 240) {
+        perfSamples.splice(0, perfSamples.length - 240);
+      }
+    }
+    if (now - fpsWindowStart >= 500) {
+      publishPerfProbe((fpsFrames * 1000) / Math.max(1, now - fpsWindowStart), now);
+      fpsWindowStart = now;
+      fpsFrames = 0;
+    }
+    fpsFrameId = requestAnimationFrame(tick);
+  };
+  fpsFrameId = requestAnimationFrame(tick);
+}
+
+function stopPerfProbe() {
+  if (fpsFrameId) {
+    cancelAnimationFrame(fpsFrameId);
+    fpsFrameId = null;
+  }
+}
 
 let zoomListenerId = null;
+let centerListenerId = null;
 let rotateListenerId = null;
 
 function handleZoomIn() {
@@ -492,10 +635,82 @@ function applyFlowWidthStep() {
   }
 }
 
+function applyStationSize() {
+  if (MapRef.value && MapRef.value.layers) {
+    MapRef.value.layers.forEach((layer) => {
+      if (typeof layer.setMarkerSize === "function") {
+        layer.setMarkerSize(stationSize.value);
+      }
+    });
+  }
+}
+
+function applyVehicleSize() {
+  if (MapRef.value && MapRef.value.layers) {
+    MapRef.value.layers.forEach((layer) => {
+      if (typeof layer.setVehicleSize === "function") {
+        layer.setVehicleSize(vehicleSize.value);
+      }
+    });
+  }
+}
+
+function applyVehicleVisibilityMode() {
+  if (MapRef.value && MapRef.value.layers) {
+    MapRef.value.layers.forEach((layer) => {
+      if (typeof layer.setVehicleVisibilityMode === "function") {
+        layer.setVehicleVisibilityMode(vehicleVisibilityMode.value);
+      }
+    });
+  }
+}
+
+let syncLayersRetryTimer = null;
+
+function syncAllLayerSettings() {
+  applyLineWidth();
+  applyFlowWidthStep();
+  applyFlowControl();
+  applyStationSize();
+  applyVehicleSize();
+  applyVehicleVisibilityMode();
+}
+
+function scheduleLayerSyncBurst(remaining = 6) {
+  if (syncLayersRetryTimer) {
+    clearTimeout(syncLayersRetryTimer);
+    syncLayersRetryTimer = null;
+  }
+  const run = (left) => {
+    syncAllLayerSettings();
+    if (left > 1) {
+      syncLayersRetryTimer = setTimeout(() => run(left - 1), 240);
+    } else {
+      syncLayersRetryTimer = null;
+    }
+  };
+  run(remaining);
+}
+
 function handleLineWidthChange(val) {
   lineWidth.value = val;
   applyLineWidth();
   applyFlowWidthStep();
+}
+
+function handleStationSizeChange(val) {
+  stationSize.value = val;
+  applyStationSize();
+}
+
+function handleVehicleSizeChange(val) {
+  vehicleSize.value = val;
+  applyVehicleSize();
+}
+
+function handleVehicleVisibilityModeChange(val) {
+  vehicleVisibilityMode.value = val;
+  applyVehicleVisibilityMode();
 }
 
 function applyFlowControl() {
@@ -517,6 +732,13 @@ watch(MapRef, (mapInstance) => {
   setMapCenter();
   
   if (mapInstance) {
+    nextTick(() => {
+      mapInstance.map?.resize();
+    });
+    setTimeout(() => {
+      mapInstance.map?.resize();
+    }, 450);
+
     mapZoom.value = mapInstance.zoom;
     if (!isZoomCaptured) {
       referenceZoom.value = mapInstance.zoom;
@@ -530,6 +752,9 @@ watch(MapRef, (mapInstance) => {
     if (zoomListenerId) {
       mapInstance.removeEventListener("update:zoom", zoomListenerId);
     }
+    if (centerListenerId) {
+      mapInstance.removeEventListener("update:center", centerListenerId);
+    }
     if (rotateListenerId) {
       mapInstance.removeEventListener("update:camera:rotate", rotateListenerId);
     }
@@ -540,9 +765,14 @@ watch(MapRef, (mapInstance) => {
     
     // Add new listeners
     zoomListenerId = mapInstance.addEventListener("update:zoom", (e) => {
+      lastMapMotionAt = performance.now();
       mapZoom.value = e.data;
     });
+    centerListenerId = mapInstance.addEventListener("update:center", () => {
+      lastMapMotionAt = performance.now();
+    });
     rotateListenerId = mapInstance.addEventListener("update:camera:rotate", (e) => {
+      lastMapMotionAt = performance.now();
       mapPitch.value = e.data.newPitch;
       mapRotation.value = e.data.newRotation;
       if (e.data.newPitch !== 90 || e.data.newRotation !== 0) {
@@ -555,22 +785,49 @@ watch(MapRef, (mapInstance) => {
       clickListenerId = mapInstance.addEventListener("handle:click", handleMapClick);
     }
     
-    applyLineWidth();
-    applyFlowWidthStep();
-    applyFlowControl();
+    scheduleLayerSyncBurst(5);
   }
 });
+
+watch(isRightPanelVisible, (visible) => {
+  if (visible && (activeTab.value === "数据总览" || activeTab.value === "轨迹演示")) {
+    isRightCollapsed.value = false;
+  }
+});
+
+watch(rightPanelHasContent, (hasContent) => {
+  if (hasContent && activeTab.value === "轨迹演示") {
+    showRightPanel.value = true;
+    isRightCollapsed.value = false;
+  }
+});
+
+// 监听标签切换和左右侧边栏折叠状态，动态触发地图重绘 resize，解决底图只渲染局部区域的经典Bug
+watch(
+  [activeTab, isLeftCollapsed, isRightCollapsed, showRightPanel, rightPanelHasContent],
+  () => {
+    if (MapRef.value && MapRef.value.map) {
+      // 1. 立即响应状态变化，重绘视口
+      nextTick(() => {
+        MapRef.value?.map?.resize();
+      });
+      // 2. 在 400ms 的 CSS 伸缩过渡动画结束后再次重绘，确保底图瓦片完全填满全屏
+      setTimeout(() => {
+        MapRef.value?.map?.resize();
+      }, 450);
+    }
+  }
+);
 
 const ins = setInterval(() => {
   handleGetSchemeList();
   handleGetModelList();
 }, 1000 * 20);
 
-let syncLayersInterval = null;
-
 handleGetSchemeList();
 
 onMounted(() => {
+  startPerfProbe();
   handleGetSchemeList()
     .then(() => {
       datebase.value.scheme = schemeList.value[0];
@@ -579,18 +836,16 @@ onMounted(() => {
     .then(() => {
       datebase.value.model = modelList.value[0].name;
     });
-    
-  syncLayersInterval = setInterval(() => {
-    applyLineWidth();
-    applyFlowWidthStep();
-    applyFlowControl();
-  }, 1000);
+
+  scheduleLayerSyncBurst(8);
 });
 onUnmounted(() => {
+  stopPerfProbe();
   sessionStorage.removeItem("request_params");
   clearInterval(ins);
-  if (syncLayersInterval) {
-    clearInterval(syncLayersInterval);
+  if (syncLayersRetryTimer) {
+    clearTimeout(syncLayersRetryTimer);
+    syncLayersRetryTimer = null;
   }
   if (MapRef.value) {
     if (zoomListenerId) {
@@ -598,6 +853,9 @@ onUnmounted(() => {
     }
     if (rotateListenerId) {
       MapRef.value.removeEventListener("update:camera:rotate", rotateListenerId);
+    }
+    if (centerListenerId) {
+      MapRef.value.removeEventListener("update:center", centerListenerId);
     }
     if (clickListenerId) {
       MapRef.value.removeEventListener("handle:click", clickListenerId);
@@ -677,6 +935,7 @@ onUnmounted(() => {
   box-sizing: border-box;
   padding: 10px;
   position: fixed;
+  z-index: 1300;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -686,7 +945,7 @@ onUnmounted(() => {
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   
   &.collapsed {
-    transform: translateX(calc(-100% - 30px)) !important;
+    transform: translateX(calc(-100% + 24px)) !important;
   }
   
   .handle {
@@ -712,6 +971,7 @@ onUnmounted(() => {
 
 .box2 {
   position: fixed;
+  z-index: 1300;
   right: 16px;
   top: 67px;
   max-height: calc((100vh - 85px) / 0.8);
@@ -721,7 +981,7 @@ onUnmounted(() => {
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   
   &.collapsed {
-    transform: translateX(calc(100% + 30px)) !important;
+    transform: translateX(calc(100% - 8px)) !important;
   }
   
   #datavisualization_index_box2 {
@@ -901,16 +1161,22 @@ onUnmounted(() => {
       }
     }
 
-    .flow-control-row {
+    .flow-control-row,
+    .vehicle-visibility-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 12px;
       margin-top: 12px;
       padding-top: 10px;
       border-top: 1px solid rgba(0, 0, 0, 0.05);
       font-size: 11px;
       font-weight: 600;
       color: #7f8c8d;
+
+      .el-select {
+        width: 126px;
+      }
     }
   }
 }

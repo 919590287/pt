@@ -16,7 +16,7 @@ import java.util.List;
 @Slf4j
 public class TileNetwork {
 
-    public static final int ZOOM = 1;
+    public static final int ZOOM = 12;
     public static final double EARTH_RADIUS = 20037508.3427892;
 
     private Table<Integer, Integer, List<Id<Link>>> tileLinks = HashBasedTable.create();

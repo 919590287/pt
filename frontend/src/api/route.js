@@ -46,3 +46,31 @@ export function getLineAll(data) {
     data: data
   })
 }
+
+// 线路瓦片
+// POST /pt/route/tile
+export function getRouteTile(data) {
+  return request({
+    url: `/pt/route/tile`,
+    method: 'POST',
+    data: data
+  })
+}
+
+export function getRouteTileBinary(data) {
+  return request({
+    url: `/pt/route/tile.bin`,
+    method: 'POST',
+    data: data,
+    responseType: 'arraybuffer'
+  })
+}
+
+export function getRouteFullBinary(data) {
+  return request({
+    url: `/pt/route/full.bin`,
+    method: 'POST',
+    data: data,
+    responseType: 'arraybuffer'
+  })
+}

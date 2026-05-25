@@ -10,7 +10,7 @@
 <script setup>
 import { inject, shallowRef } from "vue";
 import MHeader from "./MHeader.vue";
-import { MyMap, MapLayer, DEFAULT_MAP_LAYER_STYLE } from "@/mymap/index.js";
+import { MyMap, MapLayer, DEFAULT_MAP_LAYER_STYLE, CityBuildingsLayer } from "@/mymap/index.js";
 
 defineOptions({
   name: "MapLayout",
@@ -32,6 +32,15 @@ onMounted(() => {
 
   const _MapLayer = new MapLayer({ tileClass: DEFAULT_MAP_LAYER_STYLE, zIndex: -1 });
   MapRef.value.addLayer(_MapLayer);
+
+  const buildingLayerConfig = window.CITY_BUILDINGS_LAYER || {};
+  if (buildingLayerConfig.enabled !== false) {
+    const _CityBuildingsLayer = new CityBuildingsLayer({
+      ...buildingLayerConfig,
+      zIndex: buildingLayerConfig.zIndex ?? 8,
+    });
+    MapRef.value.addLayer(_CityBuildingsLayer);
+  }
 });
 </script>
 

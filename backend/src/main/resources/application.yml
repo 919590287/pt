@@ -1,7 +1,7 @@
 server:
   compression:
     enabled: true
-    mime-types: application/javascript,text/css,application/json,application/xml,text/html,text/xml,text/plain
+    mime-types: application/javascript,text/css,application/json,application/xml,text/html,text/xml,text/plain,application/octet-stream
   port: 8090
   undertow:
     no-request-timeout: 1800000
