@@ -36,6 +36,15 @@ const FLOW_STYLE_STOPS = [
   { limit: Infinity, color: [215, 25, 28], widthStep: 3 },
 ];
 
+function runtimeNumber(name, fallback) {
+  const value = Number(typeof window !== "undefined" ? window.APP_CONFIG?.[name] : undefined);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function networkLineMinPixels() {
+  return Math.max(0.22, runtimeNumber("networkLineMinPixels", 0.8));
+}
+
 function webMercatorToTile(x, y, z = TILE_ZOOM) {
   const scale = Math.pow(2, z);
   const col = Math.floor(((EARTH_RADIUS + Number(x)) * scale) / (EARTH_RADIUS * 2));
@@ -770,13 +779,14 @@ export class NetworkLayer extends Layer {
   currentLineWidthPixels() {
     const baseWidth = lineWidthToPixels(this.lineWidth);
     const zoom = Number(this.map?.zoom);
-    if (!Number.isFinite(zoom)) return baseWidth;
-    return interpolate(zoom, [
+    const minPixels = networkLineMinPixels();
+    if (!Number.isFinite(zoom)) return Math.max(minPixels, baseWidth);
+    return Math.max(minPixels, interpolate(zoom, [
       [7, Math.max(0.35, baseWidth * 0.22)],
       [9, Math.max(0.45, baseWidth * 0.32)],
       [11, Math.max(0.7, baseWidth * 0.55)],
       [13, baseWidth],
-    ]);
+    ]));
   }
 
   flowStyleAttributes(data) {
@@ -918,7 +928,7 @@ export class NetworkLayer extends Layer {
       },
       getColor: lineColor,
       getWidth,
-      widthMinPixels: 0.22,
+      widthMinPixels: networkLineMinPixels(),
       widthMaxPixels: 50,
     });
     setSharedDeckLayer(this.map, this.layerId, layer);

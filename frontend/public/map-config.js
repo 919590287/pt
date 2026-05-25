@@ -4,11 +4,11 @@
 const appConfig = window.APP_CONFIG || {};
 const defaultBuildingShpPath = "/Users/a../数据/四维路网数据/可视化数据20251128/建筑物-旧v2/Buildingguagnzhou84.shp";
 
-function tileUrlFromTemplate(template, scope) {
+function tileUrlFromTemplate(template, xyz) {
   return template
-    .replace(/\{z\}/g, scope.zoom)
-    .replace(/\{x\}/g, scope.col)
-    .replace(/\{y\}/g, scope.row);
+    .replace(/\{z\}/g, xyz.z)
+    .replace(/\{x\}/g, xyz.x)
+    .replace(/\{y\}/g, xyz.y);
 }
 
 window.DEFAULT_MAP_LAYER_STYLE_INDEX = 0;
@@ -20,7 +20,11 @@ window.MAP_LAYER_STYLE = [
     max_zoom: 18,
     getUrl() {
       if (appConfig.mapTileUrlTemplate) {
-        return tileUrlFromTemplate(appConfig.mapTileUrlTemplate, this);
+        return tileUrlFromTemplate(appConfig.mapTileUrlTemplate, {
+          z: this.zoom,
+          x: this.row,
+          y: this.col,
+        });
       }
       return `https://basemaps.cartocdn.com/light_all/${this.zoom}/${this.row}/${this.col}@2x.png`;
       // Offline tile path:

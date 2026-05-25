@@ -10,5 +10,6 @@
     cityBuildingsHeightField: "HEIGHT",
     cityBuildingsMaxFeatures: 20000,
     mapTileUrlTemplate: "",
+    networkLineMinPixels: 0.8,
   });
 })();
