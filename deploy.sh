@@ -199,6 +199,11 @@ build_all() {
   prepare_runtime_assets
 }
 
+build_frontend_only() {
+  build_frontend
+  prepare_runtime_assets
+}
+
 start_backend() {
   ensure_dirs
   require_cmd "$JAVA_CMD"
@@ -269,15 +274,29 @@ stop_all() {
   stop_one backend "$BACKEND_PID"
 }
 
+stop_frontend() {
+  stop_one frontend "$FRONTEND_PID"
+}
+
 start_all() {
   prepare_runtime_assets
   start_backend
   start_frontend
 }
 
+start_frontend_only() {
+  prepare_runtime_assets
+  start_frontend
+}
+
 restart_all() {
   stop_all
   start_all
+}
+
+restart_frontend() {
+  stop_frontend
+  start_frontend_only
 }
 
 serve_all() {
@@ -477,10 +496,15 @@ Usage: ./deploy.sh [command]
 
 Commands:
   deploy              Build latest backend/frontend, restart both services (default)
+  deploy-frontend     Build latest frontend and restart frontend only
   build               Build backend/frontend and write runtime config
+  build-frontend      Build frontend and write runtime config
   start               Start existing built artifacts without rebuilding
+  start-frontend      Start frontend only from existing built artifacts
   stop                Stop frontend and backend
+  stop-frontend       Stop frontend only
   restart             Restart existing built artifacts without rebuilding
+  restart-frontend    Restart frontend only without rebuilding
   serve               Start existing artifacts and keep them supervised
   status              Show process status and configured ports
   logs [all|backend|frontend]
@@ -502,18 +526,37 @@ main() {
       restart_all
       status_all
       ;;
+    deploy-frontend|frontend)
+      build_frontend_only
+      restart_frontend
+      status_all
+      ;;
     build)
       build_all
+      ;;
+    build-frontend)
+      build_frontend_only
       ;;
     start)
       start_all
       status_all
       ;;
+    start-frontend)
+      start_frontend_only
+      status_all
+      ;;
     stop)
       stop_all
       ;;
+    stop-frontend)
+      stop_frontend
+      ;;
     restart)
       restart_all
+      status_all
+      ;;
+    restart-frontend)
+      restart_frontend
       status_all
       ;;
     serve)
