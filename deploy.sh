@@ -276,6 +276,19 @@ restart_all() {
   start_all
 }
 
+serve_all() {
+  trap 'stop_all; exit 0' INT TERM
+  start_all
+  while true; do
+    if ! is_running "$BACKEND_PID" || ! is_running "$FRONTEND_PID"; then
+      say "A service exited; stopping remaining services"
+      stop_all
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
 print_one_status() {
   local name="$1"
   local pid_file="$2"
@@ -371,7 +384,7 @@ install_autostart_macos() {
   <key>ProgramArguments</key>
   <array>
     <string>$(xml_escape "$SCRIPT_PATH")</string>
-    <string>start</string>
+    <string>serve</string>
   </array>
   <key>WorkingDirectory</key>
   <string>$(xml_escape "$ROOT_DIR")</string>
@@ -462,6 +475,7 @@ Commands:
   start               Start existing built artifacts without rebuilding
   stop                Stop frontend and backend
   restart             Restart existing built artifacts without rebuilding
+  serve               Start existing artifacts and keep them supervised
   status              Show process status and configured ports
   logs [all|backend|frontend]
   init-config         Create deploy.local.env from the example
@@ -495,6 +509,9 @@ main() {
     restart)
       restart_all
       status_all
+      ;;
+    serve)
+      serve_all
       ;;
     status)
       status_all
