@@ -1,18 +1,18 @@
 <!-- Scenario Construction (场景搭建) View -->
 <template>
-  <div ref="panelRef" :style="panelStyle" class="scenario-panel">
-    <!-- Panel Header / Drag Handle (Unified MCard2 Style) -->
-    <div ref="handleRef" class="panel-header">
-      <div class="header-title">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-          <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
-          <line x1="12" y1="22.08" x2="12" y2="12"></line>
-        </svg>
-        <span>场景搭建器 (Scenario Builder)</span>
+  <div class="scenario-builder-wrapper">
+    <div ref="panelRef" :style="panelStyle" class="scenario-panel">
+      <!-- Panel Header / Drag Handle (Unified MCard2 Style) -->
+      <div ref="handleRef" class="panel-header">
+        <div class="header-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+          </svg>
+          <span>场景搭建器 (Scenario Builder)</span>
+        </div>
       </div>
-      <div class="header-subtitle">纯前端控制台</div>
-    </div>
 
     <el-scrollbar class="panel-content">
       <div class="inner-container">
@@ -310,59 +310,6 @@
             </div>
           </el-popover>
 
-          <!-- The parameter form that appears AFTER selecting a sub-option from the menu -->
-          <Transition name="fade-slide">
-            <div v-if="showQgisParamsForm" class="qgis-nested-builder params-only-builder">
-              <div class="builder-title-row">
-                <span>配置: {{ getSubName(activeQgisCat, activeQgisSub) }}</span>
-              </div>
-              
-              <div class="qgis-right-content params-box-content">
-                <!-- Contextual Sub Parameter Inputs -->
-                <div class="sub-params-box">
-                  <!-- Station Name Input -->
-                  <div v-if="showInputName" class="param-row">
-                    <label class="form-label">站点/线路/路段名称</label>
-                    <el-input v-model="qgisParams.name" placeholder="请输入名称" size="small" />
-                  </div>
-
-                  <!-- General Desc Text Input -->
-                  <div v-if="showInputDesc" class="param-row">
-                    <label class="form-label">操作描述/更改细节</label>
-                    <el-input v-model="qgisParams.desc" placeholder="请输入修改描述..." size="small" />
-                  </div>
-
-                  <!-- Value Percentage Slider -->
-                  <div v-if="showValueSlider" class="param-row">
-                    <div class="slider-header-sub">
-                      <span>幅度/参数调整</span>
-                      <span class="slider-val">{{ qgisParams.percent > 0 ? '+' : '' }}{{ qgisParams.percent }}%</span>
-                    </div>
-                    <el-slider v-model="qgisParams.percent" :min="-50" :max="50" :step="5" />
-                  </div>
-
-                  <!-- Dropdown Select -->
-                  <div v-if="showValueSelect" class="param-row">
-                    <label class="form-label">具体类别配置</label>
-                    <el-select v-model="qgisParams.selectVal" size="small" class="block-select">
-                      <el-option 
-                        v-for="item in currentParamSelects" 
-                        :key="item"
-                        :label="item"
-                        :value="item"
-                      />
-                    </el-select>
-                  </div>
-                </div>
-              </div>
-              
-              <!-- Action Bottom Row -->
-              <div class="builder-actions">
-                <button class="action-btn secondary-btn" @click="cancelQgisParams">取消</button>
-                <button class="action-btn primary-btn" @click="confirmAddModification">确认添加</button>
-              </div>
-            </div>
-          </Transition>
         </div>
 
         <!-- STEP 3: Run -->
@@ -403,6 +350,149 @@
         </div>
       </div>
     </Transition>
+    </div>
+    
+    <!-- New Right Panel for Parameter Config -->
+    <Transition name="fade-slide">
+      <div v-if="showQgisParamsForm" class="scenario-right-panel">
+        <div class="panel-header">
+          <div class="header-title">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+              <path d="M18.5 2.5a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+            </svg>
+            <span>配置参数编辑</span>
+          </div>
+        </div>
+
+        <div class="panel-content">
+          <div class="inner-container">
+            <div class="qgis-nested-builder params-only-builder">
+              <div class="builder-title-row font-bold">
+                <span>正在配置: {{ getSubName(activeQgisCat, activeQgisSub) }}</span>
+              </div>
+              
+              <div class="qgis-right-content params-box-content">
+                <!-- Contextual Sub Parameter Inputs -->
+                <div class="sub-params-box">
+                  <!-- Custom rendering for New Station ("新增站点") -->
+                  <template v-if="activeQgisCat === 'station' && activeQgisSub === 'add'">
+                    <!-- Creation Mode selection -->
+                    <div class="param-row">
+                      <label class="form-label">创建方式</label>
+                      <el-radio-group v-model="qgisParams.creationMode" size="small" class="creation-mode-group">
+                        <el-radio-button value="click" label="click">在地图上点选位置</el-radio-button>
+                        <el-radio-button value="manual" label="manual">手动输入84经纬度</el-radio-button>
+                      </el-radio-group>
+                    </div>
+
+                    <!-- Station Name -->
+                    <div class="param-row">
+                      <label class="form-label">站点名称</label>
+                      <el-input v-model="qgisParams.name" placeholder="例如：科技园北公交枢纽" size="small" />
+                    </div>
+
+                    <!-- Station Type -->
+                    <div class="param-row">
+                      <label class="form-label">站点类型</label>
+                      <el-radio-group v-model="qgisParams.stationType" size="small">
+                        <el-radio value="bus" label="bus">公交站</el-radio>
+                        <el-radio value="subway" label="subway">地铁站</el-radio>
+                      </el-radio-group>
+                    </div>
+
+                    <!-- Longitude & Latitude -->
+                    <div class="param-row coordinates-row">
+                      <div class="coord-col">
+                        <label class="form-label">经度 (WGS84)</label>
+                        <el-input-number 
+                          v-model="qgisParams.lng" 
+                          :precision="6" 
+                          :step="0.0001" 
+                          placeholder="经度"
+                          size="small" 
+                          class="coord-input"
+                          :controls="false"
+                          :disabled="qgisParams.creationMode === 'click'"
+                        />
+                      </div>
+                      <div class="coord-col">
+                        <label class="form-label">纬度 (WGS84)</label>
+                        <el-input-number 
+                          v-model="qgisParams.lat" 
+                          :precision="6" 
+                          :step="0.0001" 
+                          placeholder="纬度"
+                          size="small" 
+                          class="coord-input"
+                          :controls="false"
+                          :disabled="qgisParams.creationMode === 'click'"
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Description/Details -->
+                    <div class="param-row">
+                      <label class="form-label">备注描述 (可选)</label>
+                      <el-input v-model="qgisParams.desc" placeholder="选填，如：服务周边写字楼客流" size="small" />
+                    </div>
+
+                    <!-- Click guidance -->
+                    <div v-if="qgisParams.creationMode === 'click'" class="click-guidance-box">
+                      <span class="guidance-dot pulse-ring-green"></span>
+                      <span>已启用底图点选：直接在左侧地图上鼠标点击，系统将自动捕获并填入上面的经纬度坐标。</span>
+                    </div>
+                  </template>
+
+                  <!-- Otherwise (standard form fields) -->
+                  <template v-else>
+                    <!-- Station Name Input -->
+                    <div v-if="showInputName" class="param-row">
+                      <label class="form-label">站点/线路/路段名称</label>
+                      <el-input v-model="qgisParams.name" placeholder="请输入名称" size="small" />
+                    </div>
+
+                    <!-- General Desc Text Input -->
+                    <div v-if="showInputDesc" class="param-row">
+                      <label class="form-label">操作描述/更改细节</label>
+                      <el-input v-model="qgisParams.desc" placeholder="请输入修改描述..." size="small" />
+                    </div>
+
+                    <!-- Value Percentage Slider -->
+                    <div v-if="showValueSlider" class="param-row">
+                      <div class="slider-header-sub">
+                        <span>幅度/参数调整</span>
+                        <span class="slider-val">{{ qgisParams.percent > 0 ? '+' : '' }}{{ qgisParams.percent }}%</span>
+                      </div>
+                      <el-slider v-model="qgisParams.percent" :min="-50" :max="50" :step="5" />
+                    </div>
+
+                    <!-- Dropdown Select -->
+                    <div v-if="showValueSelect" class="param-row">
+                      <label class="form-label">具体类别配置</label>
+                      <el-select v-model="qgisParams.selectVal" size="small" class="block-select">
+                        <el-option 
+                          v-for="item in currentParamSelects" 
+                          :key="item"
+                          :label="item"
+                          :value="item"
+                        />
+                      </el-select>
+                    </div>
+                  </template>
+                </div>
+              </div>
+              
+              <!-- Action Bottom Row -->
+              <div class="builder-actions">
+                <button class="action-btn secondary-btn" @click="cancelQgisParams">取消</button>
+                <button class="action-btn primary-btn" @click="confirmAddModification">确认添加</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -410,6 +500,10 @@
 import { ref, computed, inject, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { useDraggable } from "@vueuse/core";
 import { ElNotification } from "element-plus";
+import { getLineAll } from "@/api/route";
+import { getSchemeList, getModelList } from "@/api/scheme";
+import { StationLayer } from "@/views/datavisualization/layers/StationLayer.js";
+import { lngLatToWebMercator } from "@/mymap/index.js";
 
 // Inject the map reference
 const MapRef = inject("MapRef");
@@ -468,7 +562,11 @@ const qgisParams = ref({
   name: "",
   desc: "",
   percent: 20,
-  selectVal: ""
+  selectVal: "",
+  creationMode: "click",
+  stationType: "bus",
+  lng: 114.058,
+  lat: 22.543
 });
 
 // QGIS Primary Categories Predefinition
@@ -550,53 +648,87 @@ function closeQgisMenu() {
   showQgisMenu.value = false;
 }
 
-function selectQgisSub(catId, subId) {
-  activeQgisCat.value = catId;
-  activeQgisSub.value = subId;
-  resetSubParams();
-  showQgisMenu.value = false;
-  showQgisParamsForm.value = true;
-}
-
-function getSubName(catId, subId) {
-  const subs = qgisSubOptions[catId] || [];
-  const sub = subs.find(s => s.id === subId);
-  return sub ? sub.name : "配置项";
-}
-
+// Reset sub-category parameters
 function resetSubParams() {
   qgisParams.value.name = "";
   qgisParams.value.desc = "";
   qgisParams.value.percent = 20;
   qgisParams.value.selectVal = currentParamSelects.value.length > 0 ? currentParamSelects.value[0] : "";
+  
+  // Reset station creation variables
+  qgisParams.value.creationMode = "click";
+  qgisParams.value.stationType = "bus";
+  try {
+    const center = MapRef.value?.map?.getCenter() || { lng: 114.058, lat: 22.543 };
+    qgisParams.value.lng = Number(center.lng.toFixed(6));
+    qgisParams.value.lat = Number(center.lat.toFixed(6));
+  } catch (e) {
+    console.warn("Could not get map center", e);
+    qgisParams.value.lng = 114.058;
+    qgisParams.value.lat = 22.543;
+  }
+}
+
+function getSubName(catId, subId) {
+  const subs = qgisSubOptions[catId] || [];
+  const sub = subs.find((item) => item.id === subId);
+  return sub ? sub.name : "配置项";
 }
 
 function cancelQgisParams() {
   showQgisParamsForm.value = false;
+  disableMapCoordinatePicker();
+  cleanUpNewStationTempLayers();
+}
+
+function formatStationDetails() {
+  const name = qgisParams.value.name?.trim() || "未命名站点";
+  const stationTypeText = qgisParams.value.stationType === "subway" ? "地铁站" : "公交站";
+  const lng = Number(qgisParams.value.lng);
+  const lat = Number(qgisParams.value.lat);
+  const coordsText = Number.isFinite(lng) && Number.isFinite(lat)
+    ? `坐标: ${lng.toFixed(6)}, ${lat.toFixed(6)}`
+    : "坐标待确认";
+  const desc = qgisParams.value.desc?.trim();
+  return [name, stationTypeText, coordsText, desc].filter(Boolean).join(" / ");
 }
 
 function confirmAddModification() {
   if (!activeQgisSub.value) return;
 
-  const currentCat = qgisCategories.find(c => c.id === activeQgisCat.value);
-  const currentSub = currentSubOptions.value.find(s => s.id === activeQgisSub.value);
+  const currentCat = qgisCategories.find((item) => item.id === activeQgisCat.value);
+  const currentSub = currentSubOptions.value.find((item) => item.id === activeQgisSub.value);
 
-  // Compile detailed text based on selected inputs
   let detailsText = "";
-  if (showInputName.value && qgisParams.value.name) {
-    detailsText += qgisParams.value.name;
-  }
-  if (showInputDesc.value && qgisParams.value.desc) {
-    detailsText += detailsText ? ` (${qgisParams.value.desc})` : qgisParams.value.desc;
-  }
-  if (showValueSlider.value) {
-    detailsText += ` 幅度: ${qgisParams.value.percent > 0 ? '+' : ''}${qgisParams.value.percent}%`;
-  }
-  if (showValueSelect.value && qgisParams.value.selectVal) {
-    detailsText += ` 配置: ${qgisParams.value.selectVal}`;
+  let previewStationId = "";
+  if (activeQgisCat.value === "station" && activeQgisSub.value === "add") {
+    const stationPreview = buildStationPreviewFromParams();
+    if (!stationPreview) {
+      ElNotification({
+        title: "站点坐标无效",
+        message: "请先在地图上点选位置，或切换为手动输入并填写有效经纬度。",
+        type: "warning",
+        duration: 3000
+      });
+      return;
+    }
+    previewStationId = addStationPreviewToMap(stationPreview);
+    detailsText = formatStationDetails();
+  } else {
+    if (showInputName.value && qgisParams.value.name) {
+      detailsText += qgisParams.value.name;
+    }
+    if (showInputDesc.value && qgisParams.value.desc) {
+      detailsText += detailsText ? ` (${qgisParams.value.desc})` : qgisParams.value.desc;
+    }
+    if (showValueSlider.value) {
+      detailsText += ` 幅度: ${qgisParams.value.percent > 0 ? "+" : ""}${qgisParams.value.percent}%`;
+    }
+    if (showValueSelect.value && qgisParams.value.selectVal) {
+      detailsText += ` 配置: ${qgisParams.value.selectVal}`;
+    }
   }
 
-  // Fallback defaults
   if (!detailsText) {
     detailsText = "默认调节参数";
   }
@@ -607,22 +739,367 @@ function confirmAddModification() {
     categoryText: currentCat ? currentCat.name : "未知",
     sub: activeQgisSub.value,
     subText: currentSub ? currentSub.name : "配置项",
-    details: detailsText
+    details: detailsText,
+    previewStationId
   });
 
   showQgisParamsForm.value = false;
+  disableMapCoordinatePicker();
+  cleanUpNewStationTempLayers();
   ElNotification({
     title: "修改项添加成功",
-    message: `已向配置队列中追加了一行操作：[${currentSub ? currentSub.name : ''}]`,
+    message: `已向配置队列中追加了一行操作：[${currentSub ? currentSub.name : ""}]`,
     type: "success",
     duration: 3000
   });
 }
 
+// Select Sub-Category
+function selectQgisSub(catId, subId) {
+  try {
+    disableMapCoordinatePicker();
+    cleanUpNewStationTempLayers();
+    activeQgisCat.value = catId;
+    activeQgisSub.value = subId;
+    resetSubParams();
+    showQgisMenu.value = false;
+    showQgisParamsForm.value = true;
+
+    if (catId === 'station' && subId === 'add') {
+      // Show all stations
+      try {
+        ensureEditStationLayer();
+        loadExistingStations();
+      } catch (e) {
+        console.error("Error setting up station layer:", e);
+      }
+      
+      // Auto enable map click coordinate picker
+      nextTick(() => {
+        enableMapCoordinatePicker();
+      });
+    }
+  } catch (e) {
+    console.error("selectQgisSub error:", e);
+    showQgisMenu.value = false;
+    showQgisParamsForm.value = true;
+  }
+}
+
+// ---------------- ADD STATION & MAP INTERACTIVE PICKER LOGIC ----------------
+let editStationLayer = null;
+const existingStations = ref([]);
+const addedStationPreviews = ref([]);
+let mapClickPickerListener = null;
+
+const NEW_STATION_SOURCE_ID = "new-station-temp-source";
+const NEW_STATION_LAYER_ID = "new-station-temp-layer";
+const NEW_STATION_INNER_LAYER_ID = "new-station-temp-inner-layer";
+const ADDED_STATION_RING_SOURCE_ID = "added-station-ring-source";
+const ADDED_STATION_RING_LAYER_ID = "added-station-ring-layer";
+
+function ensureEditStationLayer() {
+  if (!editStationLayer && MapRef.value) {
+    editStationLayer = new StationLayer({ markerSize: 22 });
+    MapRef.value.addLayer(editStationLayer);
+  }
+}
+
+function syncEditStationLayerData() {
+  if (editStationLayer) {
+    editStationLayer.setData([...existingStations.value, ...addedStationPreviews.value]);
+  }
+}
+
+async function loadExistingStations() {
+  try {
+    let modelName = "";
+    const schemeRes = await getSchemeList();
+    if (schemeRes.data && schemeRes.data.length > 0) {
+      const firstScheme = schemeRes.data[0];
+      const modelRes = await getModelList({ schemeName: firstScheme });
+      if (modelRes.data && modelRes.data.length > 0) {
+        modelName = modelRes.data[0].name;
+      }
+    }
+
+    if (!modelName) {
+      console.warn("No active model found, falling back to mock existing stations");
+      generateMockExistingStations();
+      return;
+    }
+
+    const res = await getLineAll({ datasource: modelName });
+    const data = res.data || [];
+    const stationsList = [];
+    const coordsSet = new Set();
+    const stationByCoord = new Map();
+    
+    data.forEach((line) => {
+      if (line.routes) {
+        line.routes.forEach((route) => {
+          if (route.facilities) {
+            route.facilities.forEach((fac) => {
+              if (fac.coord && fac.facilityName && fac.coord.x && fac.coord.y) {
+                const key = `${fac.coord.x.toFixed(2)}_${fac.coord.y.toFixed(2)}`;
+                const text = [line.lineName, line.lineId, route.routeName, route.routeId].filter(Boolean).join(" ").toLowerCase();
+                const type = /地铁|轨道|metro|subway|rail|mtr/.test(text) ? "subway" : "bus";
+                
+                if (!coordsSet.has(key)) {
+                  coordsSet.add(key);
+                  const station = {
+                    name: fac.facilityName,
+                    x: fac.coord.x,
+                    y: fac.coord.y,
+                    type,
+                  };
+                  stationByCoord.set(key, station);
+                  stationsList.push(station);
+                } else if (type === "subway") {
+                  const station = stationByCoord.get(key);
+                  if (station) station.type = "subway";
+                }
+              }
+            });
+          }
+        });
+      }
+    });
+
+    existingStations.value = stationsList;
+    syncEditStationLayerData();
+  } catch (e) {
+    console.error("Failed to load existing stations:", e);
+    generateMockExistingStations();
+  }
+}
+
+function generateMockExistingStations() {
+  const center = MapRef.value?.map?.getCenter() || { lng: 114.058, lat: 22.543 };
+  const mockList = [];
+  const names = ["市民中心站", "少年宫站", "会展中心站", "岗厦站", "华强北站", "购物公园站", "福田站", "莲花西站"];
+  const types = ["subway", "subway", "bus", "bus", "subway", "bus", "subway", "bus"];
+  
+  names.forEach((name, idx) => {
+    const offsetLng = (idx * 0.008 - 0.024) + (Math.random() - 0.5) * 0.002;
+    const offsetLat = (idx * 0.004 - 0.012) + (Math.random() - 0.5) * 0.002;
+    const lng = center.lng + offsetLng;
+    const lat = center.lat + offsetLat;
+    const mercator = lngLatToWebMercator(lng, lat);
+    mockList.push({
+      name,
+      x: mercator[0],
+      y: mercator[1],
+      type: types[idx]
+    });
+  });
+  
+  existingStations.value = mockList;
+  syncEditStationLayerData();
+}
+
+function buildStationPreviewFromParams() {
+  const lng = Number(qgisParams.value.lng);
+  const lat = Number(qgisParams.value.lat);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+
+  const [x, y] = lngLatToWebMercator(lng, lat);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+  return {
+    id: `added-station-${Date.now()}-${Math.round(Math.random() * 10000)}`,
+    name: qgisParams.value.name?.trim() || "未命名站点",
+    x,
+    y,
+    lng,
+    lat,
+    type: qgisParams.value.stationType || "bus",
+  };
+}
+
+function addedStationRingGeojson() {
+  return {
+    type: "FeatureCollection",
+    features: addedStationPreviews.value.map((station) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [station.lng, station.lat] },
+      properties: {
+        id: station.id,
+        name: station.name,
+      }
+    }))
+  };
+}
+
+function updateAddedStationRings() {
+  if (!MapRef.value || !MapRef.value.map) return;
+  const map = MapRef.value.map;
+  const geojson = addedStationRingGeojson();
+
+  if (!map.getSource(ADDED_STATION_RING_SOURCE_ID)) {
+    map.addSource(ADDED_STATION_RING_SOURCE_ID, {
+      type: "geojson",
+      data: geojson
+    });
+
+    map.addLayer({
+      id: ADDED_STATION_RING_LAYER_ID,
+      type: "circle",
+      source: ADDED_STATION_RING_SOURCE_ID,
+      paint: {
+        "circle-radius": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          10,
+          2,
+          12,
+          5,
+          14,
+          10,
+          16,
+          17,
+        ],
+        "circle-color": "rgba(250, 204, 21, 0.03)",
+        "circle-stroke-color": "#facc15",
+        "circle-stroke-width": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          10,
+          1.2,
+          13,
+          3,
+          16,
+          5.5,
+        ],
+        "circle-stroke-opacity": 0.95,
+      }
+    });
+  } else {
+    map.getSource(ADDED_STATION_RING_SOURCE_ID).setData(geojson);
+  }
+}
+
+function cleanUpAddedStationRings() {
+  if (!MapRef.value || !MapRef.value.map) return;
+  const map = MapRef.value.map;
+  if (map.getLayer(ADDED_STATION_RING_LAYER_ID)) map.removeLayer(ADDED_STATION_RING_LAYER_ID);
+  if (map.getSource(ADDED_STATION_RING_SOURCE_ID)) map.removeSource(ADDED_STATION_RING_SOURCE_ID);
+}
+
+function addStationPreviewToMap(station) {
+  ensureEditStationLayer();
+  addedStationPreviews.value.push(station);
+  syncEditStationLayerData();
+  updateAddedStationRings();
+  return station.id;
+}
+
+function removeStationPreviewFromMap(stationId) {
+  if (!stationId) return;
+  addedStationPreviews.value = addedStationPreviews.value.filter((station) => station.id !== stationId);
+  syncEditStationLayerData();
+  updateAddedStationRings();
+}
+
+function updateNewStationTempDot(lng, lat) {
+  if (!MapRef.value || !MapRef.value.map) return;
+  const map = MapRef.value.map;
+  
+  const geojson = {
+    type: "Feature",
+    geometry: { type: "Point", coordinates: [lng, lat] },
+    properties: {}
+  };
+
+  if (!map.getSource(NEW_STATION_SOURCE_ID)) {
+    map.addSource(NEW_STATION_SOURCE_ID, {
+      type: "geojson",
+      data: geojson
+    });
+    
+    map.addLayer({
+      id: NEW_STATION_LAYER_ID,
+      type: "circle",
+      source: NEW_STATION_SOURCE_ID,
+      paint: {
+        "circle-radius": 14,
+        "circle-color": "#10b981",
+        "circle-opacity": 0.4,
+        "circle-stroke-width": 2,
+        "circle-stroke-color": "#ffffff"
+      }
+    });
+
+    map.addLayer({
+      id: NEW_STATION_INNER_LAYER_ID,
+      type: "circle",
+      source: NEW_STATION_SOURCE_ID,
+      paint: {
+        "circle-radius": 6,
+        "circle-color": "#059669",
+        "circle-stroke-width": 1.5,
+        "circle-stroke-color": "#ffffff"
+      }
+    });
+  } else {
+    map.getSource(NEW_STATION_SOURCE_ID).setData(geojson);
+  }
+}
+
+function cleanUpNewStationTempLayers() {
+  if (!MapRef.value || !MapRef.value.map) return;
+  const map = MapRef.value.map;
+  if (map.getLayer(NEW_STATION_LAYER_ID)) map.removeLayer(NEW_STATION_LAYER_ID);
+  if (map.getLayer(NEW_STATION_INNER_LAYER_ID)) map.removeLayer(NEW_STATION_INNER_LAYER_ID);
+  if (map.getSource(NEW_STATION_SOURCE_ID)) map.removeSource(NEW_STATION_SOURCE_ID);
+}
+
+function enableMapCoordinatePicker() {
+  if (!MapRef.value || !MapRef.value.map) return;
+  const map = MapRef.value.map;
+  map.getCanvas().style.cursor = "crosshair";
+  
+  if (mapClickPickerListener) {
+    MapRef.value.removeEventListener("handle:click", mapClickPickerListener);
+  }
+  
+  mapClickPickerListener = MapRef.value.addEventListener("handle:click", (e) => {
+    if (qgisParams.value.creationMode !== 'click') return;
+    const [lng, lat] = e.data.lngLat;
+    
+    qgisParams.value.lng = Number(lng.toFixed(6));
+    qgisParams.value.lat = Number(lat.toFixed(6));
+    
+    updateNewStationTempDot(lng, lat);
+    
+    ElNotification({
+      title: "已捕获经纬度",
+      message: `坐标设定为：[${lng.toFixed(6)}, ${lat.toFixed(6)}]`,
+      type: "success",
+      duration: 2500
+    });
+  });
+}
+
+function disableMapCoordinatePicker() {
+  if (MapRef.value && mapClickPickerListener) {
+    MapRef.value.removeEventListener("handle:click", mapClickPickerListener);
+    mapClickPickerListener = null;
+  }
+  if (MapRef.value && MapRef.value.map) {
+    MapRef.value.map.getCanvas().style.cursor = "";
+  }
+}
+
+
+
 // Undo specific modification (撤回)
 function undoModification(index) {
   const item = activeModifications.value[index];
   activeModifications.value.splice(index, 1);
+  removeStationPreviewFromMap(item.previewStationId);
   ElNotification({
     title: "操作已撤回",
     message: `成功撤回配置项：[${item.subText}] ${item.details}`,
@@ -1207,6 +1684,14 @@ watch(MapRef, (newMap) => {
 onUnmounted(() => {
   stopDrawingEvents();
   cleanUpMapLayers();
+  
+  if (editStationLayer) {
+    editStationLayer.dispose();
+    editStationLayer = null;
+  }
+  disableMapCoordinatePicker();
+  cleanUpNewStationTempLayers();
+  cleanUpAddedStationRings();
 });
 </script>
 
@@ -2192,6 +2677,94 @@ onUnmounted(() => {
   color: #888;
   pointer-events: none;
 }
+
+/* Premium Right Sidebar Configuration Panel */
+.scenario-right-panel {
+  position: fixed;
+  z-index: 1300;
+  width: 360px;
+  right: 20px;
+  top: 120px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(21, 105, 222, 0.18);
+  box-shadow: 0 10px 30px rgba(15, 66, 125, 0.12);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  color: #2c3e50;
+  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+  user-select: none;
+  overflow: hidden;
+  scale: 0.8;
+  transform-origin: top right;
+  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+
+  &:hover {
+    border-color: rgba(21, 105, 222, 0.35);
+    box-shadow: 0 12px 35px rgba(15, 66, 125, 0.18);
+  }
+
+  .panel-header {
+    display: flex;
+    padding: 5px 12px;
+    gap: 10px;
+    align-items: center;
+    line-height: 32px;
+    background: linear-gradient(to bottom, rgba(21, 105, 222, 0.12) 0%, rgba(21, 105, 222, 0.04) 100%);
+    color: #1569de;
+    border-bottom: 1px solid rgba(21, 105, 222, 0.15);
+
+    &::before {
+      content: "";
+      display: block;
+      width: 3px;
+      height: 16px;
+      border-radius: 2px;
+      background-color: #1569de;
+    }
+
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      width: 0;
+      flex: 1;
+
+      .icon {
+        width: 17px;
+        height: 17px;
+        color: #1569de;
+      }
+    }
+  }
+
+  .qgis-nested-builder {
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin-top: 0;
+    background: transparent;
+
+    .builder-title-row {
+      font-size: 12px;
+      color: #1569de;
+      border-bottom: 1px solid rgba(21, 105, 222, 0.15);
+      padding-bottom: 6px;
+      margin-bottom: 8px;
+    }
+
+    .builder-actions {
+      border-top: 1px solid rgba(0, 0, 0, 0.05);
+      padding-top: 8px;
+      margin-top: 8px;
+    }
+  }
+}
 </style>
 
 <style>
@@ -2203,5 +2776,82 @@ onUnmounted(() => {
   border: 1px solid rgba(0, 0, 0, 0.1) !important;
   box-shadow: 0 5px 15px rgba(0, 0, 0, 0.15), 0 15px 35px rgba(0, 0, 0, 0.1) !important;
   border-radius: 6px !important;
+}
+
+/* Station configuration coordinate row styling */
+.coordinates-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.coordinates-row .coord-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3.5px;
+}
+
+.coordinates-row .coord-input {
+  width: 100%;
+}
+
+.coordinates-row .coord-input .el-input__wrapper {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+.coordinates-row .coord-input .el-input-number__increase,
+.coordinates-row .coord-input .el-input-number__decrease {
+  display: none;
+}
+
+.creation-mode-group {
+  width: 100%;
+  display: flex;
+}
+
+.creation-mode-group .el-radio-button {
+  flex: 1;
+}
+
+.creation-mode-group .el-radio-button__inner {
+  width: 100%;
+  font-size: 10.5px;
+  padding: 6px 12px;
+}
+
+/* Pulsing guidance box */
+.click-guidance-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(16, 185, 129, 0.06);
+  border: 1px dashed rgba(16, 185, 129, 0.25);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 4px;
+  color: #047857;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.click-guidance-box .guidance-dot {
+  width: 7px;
+  height: 7px;
+  background-color: #10b981;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pulse-ring-green {
+  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+  animation: pulse-ring-green-anim 1.6s infinite cubic-bezier(0.66, 0, 0, 1);
+}
+
+@keyframes pulse-ring-green-anim {
+  to {
+    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
+  }
 }
 </style>

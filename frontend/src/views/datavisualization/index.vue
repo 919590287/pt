@@ -28,15 +28,24 @@
         </div>
         <div class="tab_list" ref="box1Handle">
           <el-button type="primary" :plain="activeTab != '数据总览'" @pointerdown.stop @click="handleSetActiveTab('数据总览')">数据总览</el-button>
-          <el-button type="primary" :plain="activeTab != '线路分析'" @pointerdown.stop @click="handleSetActiveTab('线路分析')">线路分析</el-button>
-          <el-button type="primary" :plain="activeTab != '站点分析'" @pointerdown.stop @click="handleSetActiveTab('站点分析')">站点分析</el-button>
+          <el-button type="primary" :plain="activeTab != '公交分析'" @pointerdown.stop @click="handleSetActiveTab('公交分析')">公交分析</el-button>
           <el-button type="primary" :plain="activeTab != '轨迹演示'" @pointerdown.stop @click="handleSetActiveTab('轨迹演示')">轨迹演示</el-button>
+          <el-button type="primary" :plain="activeTab != '出行者分析'" @pointerdown.stop @click="handleSetActiveTab('出行者分析')">出行者分析</el-button>
         </div>
+        <Transition name="popover-fade">
+          <div v-if="activeTab === '公交分析'" class="sub_tab_list_wrapper">
+            <el-radio-group v-model="activeTransitSubTab" size="default" class="custom-sub-tabs">
+              <el-radio-button label="线路分析">线路分析</el-radio-button>
+              <el-radio-button label="站点分析">站点分析</el-radio-button>
+            </el-radio-group>
+          </div>
+        </Transition>
         <el-scrollbar class="flex_column_scroll_box">
           <SJZL v-if="activeTab == '数据总览'" :key="`sjzl-${selectModel.name}`" :model="selectModel.name" />
-          <XLZL v-else-if="activeTab == '线路分析'" :key="`xlzl-${selectModel.name}`" :model="selectModel.name" />
-          <ZDZL v-else-if="activeTab == '站点分析'" :key="`zdzl-${selectModel.name}`" :model="selectModel.name" />
+          <XLZL v-else-if="isRouteAnalysisActive" :key="`xlzl-${selectModel.name}`" :model="selectModel.name" />
+          <ZDZL v-else-if="isStationAnalysisActive" :key="`zdzl-${selectModel.name}`" :model="selectModel.name" />
           <GJYS v-else-if="activeTab == '轨迹演示'" :key="`gjys-${selectModel.name}`" :model="selectModel.name" />
+          <CXZFX v-else-if="activeTab == '出行者分析'" :key="`cxzfx-${selectModel.name}`" :model="selectModel.name" />
         </el-scrollbar>
       </div>
       <div :class="['box2', isRightCollapsed ? 'collapsed' : '']" v-show="isRightPanelVisible">
@@ -86,7 +95,7 @@
           <button
             :class="['control-btn', showLineWidthPopover ? 'active' : '']"
             @click="handleToggleLineWidthPopover"
-            :title="activeTab === '站点分析' ? '站点大小设置' : activeTab === '轨迹演示' ? '车辆模型设置' : '线形设置'"
+            :title="effectiveTab === '站点分析' ? '站点大小设置' : effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置'"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <line x1="4" y1="7" x2="20" y2="7"></line>
@@ -102,16 +111,16 @@
         <!-- Floating Popover for Line Width -->
         <Transition name="popover-fade">
           <div v-if="showLineWidthPopover" class="line-width-popover" @click.stop>
-            <div class="popover-title">{{ activeTab === '站点分析' ? '站点大小设置' : activeTab === '轨迹演示' ? '车辆模型设置' : '线形设置' }}</div>
+            <div class="popover-title">{{ effectiveTab === '站点分析' ? '站点大小设置' : effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置' }}</div>
             <div class="popover-content">
-              <div class="slider-row" v-if="activeTab === '站点分析'">
+              <div class="slider-row" v-if="effectiveTab === '站点分析'">
                 <span class="label">
                   <span>站点大小</span>
                   <span class="val-text">{{ `${stationSize}px` }}</span>
                 </span>
                 <el-slider v-model="stationSize" :min="minStationSize" :max="maxStationSize" :step="1" @input="handleStationSizeChange" />
               </div>
-              <div class="slider-row" v-else-if="activeTab === '轨迹演示'">
+              <div class="slider-row" v-else-if="effectiveTab === '轨迹演示'">
                 <span class="label">
                   <span>车辆模型</span>
                   <span class="val-text">{{ `${vehicleSize}px` }}</span>
@@ -127,7 +136,7 @@
                   <el-slider v-model="lineWidth" :min="minLineWidth" :max="maxLineWidth" :step="1" @input="handleLineWidthChange" />
                 </div>
               </template>
-              <div class="vehicle-visibility-row" v-if="activeTab === '轨迹演示'">
+              <div class="vehicle-visibility-row" v-if="effectiveTab === '轨迹演示'">
                 <span>可视化范围</span>
                 <el-select v-model="vehicleVisibilityMode" size="small" @change="handleVehicleVisibilityModeChange">
                   <el-option
@@ -138,7 +147,7 @@
                   />
                 </el-select>
               </div>
-              <div class="flow-control-row" v-else-if="activeTab !== '线路分析' && activeTab !== '站点分析'">
+              <div class="flow-control-row" v-else-if="effectiveTab !== '线路分析' && effectiveTab !== '站点分析'">
                 <span>按流量控制</span>
                 <el-switch v-model="flowControl" @change="handleFlowControlChange" />
               </div>
@@ -211,6 +220,7 @@ import SJZL from "./components/SJZL.vue";
 import XLZL from "./components/XLZL.vue";
 import ZDZL from "./components/ZDZL.vue";
 import GJYS from "./components/GJYS.vue";
+import CXZFX from "./components/CXZFX.vue";
 
 import { useDraggable } from "@vueuse/core";
 import { HighlightSegmentLayer } from "./layers/HighlightSegmentLayer.js";
@@ -278,15 +288,27 @@ function handleGetModelList() {
 }
 
 const activeTab = ref("数据总览");
+const activeTransitSubTab = ref("线路分析");
+
+const effectiveTab = computed(() => {
+  if (activeTab.value === "公交分析") {
+    return activeTransitSubTab.value;
+  }
+  return activeTab.value;
+});
+
+const isRouteAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "线路分析");
+const isStationAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "站点分析");
+
 function handleSetActiveTab(tabName) {
   activeTab.value = tabName;
 }
-provide("activeDatavisualizationTab", activeTab);
+provide("activeDatavisualizationTab", effectiveTab);
 
 const rightPanelHasContent = ref(true);
 provide("rightPanelHasContent", rightPanelHasContent);
 
-watch(activeTab, (tab) => {
+watch(effectiveTab, (tab) => {
   rightPanelHasContent.value = false;
   if (tab === "线路分析") {
     lineWidth.value = 42;
@@ -468,11 +490,11 @@ const referenceZoom = ref(10.74);
 let isZoomCaptured = false;
 
 const minLineWidth = computed(() => {
-  return activeTab.value === '线路分析' ? 18 : 3;
+  return effectiveTab.value === '线路分析' ? 18 : 3;
 });
 
 const maxLineWidth = computed(() => {
-  return activeTab.value === '线路分析' ? 120 : 40;
+  return effectiveTab.value === '线路分析' ? 120 : 40;
 });
 const minStationSize = computed(() => 10);
 const maxStationSize = computed(() => 36);
@@ -524,7 +546,7 @@ function publishPerfProbe(fps = 0, now = performance.now()) {
     fps: Math.round(fps * 10) / 10,
     hz: Math.round(fps),
     samples: perfSamples.slice(-120),
-    tab: activeTab.value,
+    tab: effectiveTab.value,
     moving,
     timestamp: now,
   };
@@ -532,7 +554,7 @@ function publishPerfProbe(fps = 0, now = performance.now()) {
   document.documentElement.dataset.gjVisFps = String(sample.fps);
   document.documentElement.dataset.gjVisHz = String(sample.hz);
   document.documentElement.dataset.gjVisMoving = moving ? "1" : "0";
-  document.documentElement.dataset.gjVisTab = activeTab.value;
+  document.documentElement.dataset.gjVisTab = effectiveTab.value;
 }
 
 function startPerfProbe() {
@@ -790,13 +812,13 @@ watch(MapRef, (mapInstance) => {
 });
 
 watch(isRightPanelVisible, (visible) => {
-  if (visible && (activeTab.value === "数据总览" || activeTab.value === "轨迹演示")) {
+  if (visible && (effectiveTab.value === "数据总览" || effectiveTab.value === "轨迹演示")) {
     isRightCollapsed.value = false;
   }
 });
 
 watch(rightPanelHasContent, (hasContent) => {
-  if (hasContent && activeTab.value === "轨迹演示") {
+  if (hasContent && effectiveTab.value === "轨迹演示") {
     showRightPanel.value = true;
     isRightCollapsed.value = false;
   }
@@ -804,7 +826,7 @@ watch(rightPanelHasContent, (hasContent) => {
 
 // 监听标签切换和左右侧边栏折叠状态，动态触发地图重绘 resize，解决底图只渲染局部区域的经典Bug
 watch(
-  [activeTab, isLeftCollapsed, isRightCollapsed, showRightPanel, rightPanelHasContent],
+  [effectiveTab, isLeftCollapsed, isRightCollapsed, showRightPanel, rightPanelHasContent],
   () => {
     if (MapRef.value && MapRef.value.map) {
       // 1. 立即响应状态变化，重绘视口
@@ -960,6 +982,54 @@ onUnmounted(() => {
     .el-button {
       flex: 1;
       margin: 0;
+    }
+  }
+
+  .sub_tab_list_wrapper {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    margin-top: 2px;
+    margin-bottom: 2px;
+    
+    .custom-sub-tabs {
+      width: 100%;
+      display: flex;
+      background-color: rgba(21, 105, 222, 0.05);
+      border-radius: 6px;
+      padding: 3px;
+      border: 1px solid rgba(21, 105, 222, 0.1);
+      
+      :deep(.el-radio-button) {
+        flex: 1;
+        display: flex;
+        
+        .el-radio-button__inner {
+          width: 100%;
+          border: none !important;
+          background: transparent !important;
+          color: #7f8c8d;
+          font-weight: 500;
+          font-size: 13px;
+          border-radius: 4px !important;
+          padding: 6px 0;
+          box-shadow: none !important;
+          transition: all 0.25s ease;
+          
+          &:hover {
+            color: #1569de;
+          }
+        }
+        
+        &.is-active {
+          .el-radio-button__inner {
+            background-color: #ffffff !important;
+            color: #1569de !important;
+            font-weight: bold;
+            box-shadow: 0 2px 6px rgba(21, 105, 222, 0.15) !important;
+          }
+        }
+      }
     }
   }
 
