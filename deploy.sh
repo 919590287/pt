@@ -33,6 +33,7 @@ CITY_BUILDINGS_HEIGHT_FIELD="${CITY_BUILDINGS_HEIGHT_FIELD:-HEIGHT}"
 CITY_BUILDINGS_MAX_FEATURES="${CITY_BUILDINGS_MAX_FEATURES:-20000}"
 MAP_TILE_URL_TEMPLATE="${MAP_TILE_URL_TEMPLATE:-}"
 NETWORK_LINE_MIN_PIXELS="${NETWORK_LINE_MIN_PIXELS:-0.8}"
+MAP_PIXEL_RATIO="${MAP_PIXEL_RATIO:-}"
 
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
@@ -158,7 +159,8 @@ write_runtime_config() {
     cityBuildingsHeightField: "$(js_escape "$CITY_BUILDINGS_HEIGHT_FIELD")",
     cityBuildingsMaxFeatures: Number("$(js_escape "$CITY_BUILDINGS_MAX_FEATURES")") || 20000,
     mapTileUrlTemplate: "$(js_escape "$MAP_TILE_URL_TEMPLATE")",
-    networkLineMinPixels: Number("$(js_escape "$NETWORK_LINE_MIN_PIXELS")") || 0.8
+    networkLineMinPixels: Number("$(js_escape "$NETWORK_LINE_MIN_PIXELS")") || 0.8,
+    mapPixelRatio: Number("$(js_escape "$MAP_PIXEL_RATIO")") || null
   });
 })();
 EOF
@@ -360,6 +362,7 @@ CITY_BUILDINGS_HEIGHT_FIELD=HEIGHT
 CITY_BUILDINGS_MAX_FEATURES=20000
 MAP_TILE_URL_TEMPLATE=""
 NETWORK_LINE_MIN_PIXELS=0.8
+MAP_PIXEL_RATIO=""
 FRONTEND_INSTALL=auto
 EOF
   fi

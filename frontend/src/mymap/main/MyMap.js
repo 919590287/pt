@@ -92,6 +92,12 @@ function urlTemplateFromConfig(config = {}) {
   return ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"];
 }
 
+function runtimeMapPixelRatio() {
+  const value = Number(window.APP_CONFIG?.mapPixelRatio);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return Math.max(1, Math.min(3, value));
+}
+
 function createMapStyle() {
   if (window.MAPLIBRE_STYLE) {
     return window.MAPLIBRE_STYLE;
@@ -184,6 +190,7 @@ export class MyMap extends EventListener {
       attributionControl: false,
       interactive: !noControls,
       antialias: true,
+      pixelRatio: runtimeMapPixelRatio(),
       preserveDrawingBuffer: false,
       minZoom: MAP_ZOOM_RANGE.MIN,
       maxZoom: MAP_ZOOM_RANGE.MAX,
