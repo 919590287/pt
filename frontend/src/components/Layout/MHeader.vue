@@ -1,7 +1,7 @@
 <!-- Header -->
 <template>
   <div class="header-container">
-    <div class="title-box">多智能体公交出行仿真可视化平台</div>
+    <div class="title-box">多智能体出行仿真可视化平台</div>
     <div class="nav-list">
       <RouterLink v-for="(item, index) in headerMenus" :to="item.to" active-class="active" class="item"> {{ item.title }} </RouterLink>
     </div>
