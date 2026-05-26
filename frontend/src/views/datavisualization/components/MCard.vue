@@ -1,11 +1,11 @@
 <!-- MCard -->
 <template>
   <div class="MCard">
-    <div class="MCard_title_box" @click="handleSetOpen(!s_open)">
+    <button class="MCard_title_box" type="button" :aria-expanded="s_open" @click="handleSetOpen(!s_open)">
       <slot v-if="$slots.title" name="title" class="MCard_title"></slot>
       <div class="MCard_title" v-else>{{ title }}</div>
       <el-icon class="MCard_open_btn" :class="{ open: s_open }"><ArrowDownBold /></el-icon>
-    </div>
+    </button>
     <!-- <transition name="el-zoom-in-top" :duration="100"> -->
     <div class="MCard_body_box" :class="wrapBodyClass" v-show="s_open">
       <slot name="body"></slot>
@@ -50,18 +50,26 @@ function handleSetOpen(open) {
   overflow: hidden;
   border: 1px solid var(--border-color);
   border-radius: var(--app-card-radius);
-  background-color: rgba(255, 255, 255, 0.94);
-  box-shadow: var(--app-shadow-sm);
+  background: var(--app-card-bg-tint);
 
   .MCard_title_box {
+    width: 100%;
+    border: 0;
     cursor: pointer;
     display: flex;
     padding: var(--space-xs) var(--space-sm);
     gap: var(--space-xs);
     align-items: center;
+    text-align: left;
     min-height: 36px;
-    background: linear-gradient(180deg, rgba(21, 105, 222, 0.09) 0%, rgba(21, 105, 222, 0.035) 100%);
+    background: rgba(21, 105, 222, 0.055);
     color: var(--app-blue);
+    transition: background-color var(--app-motion-normal) var(--app-ease-out);
+
+    &:hover {
+      background: rgba(21, 105, 222, 0.085);
+    }
+
     .MCard_title {
       width: 0;
       flex: 1;
@@ -74,7 +82,7 @@ function handleSetOpen(open) {
     }
     .MCard_open_btn {
       cursor: pointer;
-      transition: transform 0.3s;
+      transition: transform var(--app-motion-slow) var(--app-ease-out);
       &.open {
         transform: rotate(180deg);
       }

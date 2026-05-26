@@ -10,7 +10,7 @@
             <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
             <line x1="12" y1="22.08" x2="12" y2="12"></line>
           </svg>
-          <span>场景搭建器 (Scenario Builder)</span>
+          <span>场景搭建器</span>
         </div>
       </div>
 
@@ -29,11 +29,11 @@
               filterable
               clearable
               remote
-              placeholder="🔍 输入关键字打字搜线路或站点，如 M191、市民中心"
+              placeholder="输入线路或站点，如 M191、市民中心"
               class="block-select"
               @change="handleSearchLocate"
             >
-              <el-option-group label="公交线路 (打字搜索)">
+              <el-option-group label="公交线路">
                 <el-option
                   v-for="item in searchOptions.routes"
                   :key="item.name"
@@ -41,7 +41,7 @@
                   :value="item.name"
                 />
               </el-option-group>
-              <el-option-group label="公交站点 (打字搜索)">
+              <el-option-group label="公交站点">
                 <el-option
                   v-for="item in searchOptions.stations"
                   :key="item.name"
@@ -64,6 +64,8 @@
           <div class="mode-selector">
             <button 
               :class="['mode-btn', activeMode === 'draw' ? 'active' : '']" 
+              type="button"
+              :aria-pressed="activeMode === 'draw'"
               @click="setMode('draw')"
             >
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -74,6 +76,8 @@
             </button>
             <button 
               :class="['mode-btn', activeMode === 'upload' ? 'active' : '']" 
+              type="button"
+              :aria-pressed="activeMode === 'upload'"
               @click="setMode('upload')"
             >
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -90,7 +94,7 @@
             <div class="help-text">
               <span v-if="!isDrawing && !hasArea">在地图上连续点击，依次添加折点以形成封闭多边形。</span>
               <span v-else-if="isDrawing" class="highlight-warn">绘制中：请在地图上继续点击。已标记 {{ drawingPoints.length }} 个折点。</span>
-              <span v-else class="highlight-success">范围已锁定！可在下方清除或重新绘制。</span>
+              <span v-else class="highlight-success">范围已锁定，可在下方清除或重新绘制。</span>
             </div>
             
             <div class="btn-group">
@@ -113,7 +117,7 @@
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5">
                   <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                 </svg>
-                <span>完成手绘 (需 ≥3 点)</span>
+                <span>完成手绘</span>
               </button>
 
               <button 
@@ -139,24 +143,30 @@
               @dragleave="isDraggingFile = false"
               @drop.prevent="handleFileDrop"
               @click="triggerFileInput"
+              @keydown.enter.prevent="triggerFileInput"
+              @keydown.space.prevent="triggerFileInput"
+              role="button"
+              tabindex="0"
+              aria-label="上传SHP或GeoJSON研究范围文件"
             >
               <input 
                 ref="fileInputRef"
                 type="file" 
                 accept=".shp,.json,.geojson" 
                 class="hidden-input" 
+                aria-label="上传研究范围文件"
                 @change="handleFileSelect"
               />
               <template v-if="isUploading">
                 <div class="loader-spinner"></div>
-                <div class="upload-title text-pulse">正在解析 SHP 二进制数据...</div>
+                <div class="upload-title">正在解析文件...</div>
                 <div class="upload-sub">校验拓扑关系与投影坐标系</div>
               </template>
               <template v-else-if="hasArea">
                 <svg class="success-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                   <polyline points="20 6 9 17 4 12"></polyline>
                 </svg>
-                <div class="upload-title glow-green">文件解析完成！</div>
+                <div class="upload-title upload-success">文件已解析</div>
                 <div class="upload-sub">{{ fileName }} ({{ fileSize }})</div>
               </template>
               <template v-else>
@@ -222,12 +232,7 @@
             
             <el-scrollbar max-height="160px" class="queue-scrollbar">
               <div v-if="activeModifications.length === 0" class="empty-queue-placeholder">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="#bdc3c7" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="12" y1="8" x2="12" y2="12"></line>
-                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                </svg>
-                <span>无修改配置项，请在下方点击添加</span>
+                <span>暂无修改项</span>
               </div>
               <div v-else class="queue-list">
                 <TransitionGroup name="fade-slide">
@@ -317,36 +322,31 @@
           <button 
             class="build-scenario-btn" 
             :disabled="!hasArea || isBuilding"
+            :aria-busy="isBuilding"
             @click="buildScenario"
           >
-            <span class="pulse-ring" v-if="hasArea && !isBuilding"></span>
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" class="btn-icon">
               <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
             </svg>
-            <span>{{ isBuilding ? '正在构建微观场景...' : '生成并锁定仿真场景' }}</span>
+            <span>{{ isBuilding ? '正在生成场景...' : '生成仿真场景' }}</span>
           </button>
         </div>
       </div>
     </el-scrollbar>
 
-    <!-- HIGH-TECH LOADER OVERLAY (Light Theme Unification) -->
     <Transition name="fade">
       <div v-if="isBuilding" class="build-overlay">
-        <div class="loader-content">
-          <div class="tech-scanner"></div>
-          <div class="loader-title text-pulse">SCENARIO GENERATING</div>
+        <div class="loader-content" aria-live="polite">
+          <svg v-if="buildProgress >= 100" class="complete-check" viewBox="0 0 24 24" fill="none">
+            <path class="complete-check-path" d="M5 12.5l4.2 4.2L19 7" />
+          </svg>
+          <div v-else class="loader-spinner large"></div>
+          <div class="loader-title">正在生成仿真场景</div>
+          <div class="loader-status">{{ buildStatusText }}</div>
           <div class="loader-bar-bg">
             <div class="loader-bar" :style="{ width: `${buildProgress}%` }"></div>
           </div>
           <div class="progress-num">{{ buildProgress }}%</div>
-          
-          <!-- Terminal Logs -->
-          <div class="terminal-logs" ref="terminalRef">
-            <div v-for="(log, idx) in visibleLogs" :key="idx" :class="['log-line', log.type]">
-              <span class="timestamp">[{{ log.time }}]</span>
-              <span class="message">{{ log.msg }}</span>
-            </div>
-          </div>
         </div>
       </div>
     </Transition>
@@ -439,7 +439,7 @@
 
                     <!-- Click guidance -->
                     <div v-if="qgisParams.creationMode === 'click'" class="click-guidance-box">
-                      <span class="guidance-dot pulse-ring-green"></span>
+                      <span class="guidance-dot"></span>
                       <span>已启用底图点选：直接在左侧地图上鼠标点击，系统将自动捕获并填入上面的经纬度坐标。</span>
                     </div>
                   </template>
@@ -1025,7 +1025,7 @@ function updateNewStationTempDot(lng, lat) {
       source: NEW_STATION_SOURCE_ID,
       paint: {
         "circle-radius": 14,
-        "circle-color": "#10b981",
+        "circle-color": "#0f9f6e",
         "circle-opacity": 0.4,
         "circle-stroke-width": 2,
         "circle-stroke-color": "#ffffff"
@@ -1038,7 +1038,7 @@ function updateNewStationTempDot(lng, lat) {
       source: NEW_STATION_SOURCE_ID,
       paint: {
         "circle-radius": 6,
-        "circle-color": "#059669",
+        "circle-color": "#087a55",
         "circle-stroke-width": 1.5,
         "circle-stroke-color": "#ffffff"
       }
@@ -1143,22 +1143,12 @@ let mapMouseMoveListener = null;
 // Mock Build States
 const isBuilding = ref(false);
 const buildProgress = ref(0);
-const visibleLogs = ref([]);
-const terminalRef = ref(null);
-
-const terminalLogsPool = [
-  { time: "00:01.02", msg: "正在校验研究区域范围拓扑关系...", type: "info" },
-  { time: "00:01.85", msg: "边界闭合验证成功: 空间拓扑结构合规", type: "success" },
-  { time: "00:02.40", msg: "正在识别区域内公交基础设施... 发现 32 条公交线路", type: "info" },
-  { time: "00:03.10", msg: "正在提取区域内公交场站空间数据... 锁定 84 个站点", type: "info" },
-  { time: "00:03.95", msg: "正在加载福田核心区出行 OD 矩阵，编译 15,480 个多智能体...", type: "info" },
-  { time: "00:04.60", msg: "多智能体微观出行选择模型搭载完毕 (自适应通勤决策激活)", type: "success" },
-  { time: "00:05.10", msg: "正在写入场景策略控制队列中录入的各项参数修改...", type: "info" },
-  { time: "00:05.80", msg: "自适应网络交通拥堵状态参数计算中...", type: "info" },
-  { time: "00:06.40", msg: "正在生成仿真场景编译最终状态...", type: "info" },
-  { time: "00:06.90", msg: "场景控制边界锁定，底图渲染层 [study-area-stroke] 加载", type: "success" },
-  { time: "00:07.20", msg: "纯前端微观场景仿真搭建成功，准备就绪。", type: "success" }
-];
+const buildStatusText = computed(() => {
+  if (buildProgress.value < 25) return "校验研究范围";
+  if (buildProgress.value < 55) return "整理线路与站点数据";
+  if (buildProgress.value < 85) return "应用场景参数";
+  return "写入仿真配置";
+});
 
 // ---------------- QUICK POSITION SEARCH LOGIC ----------------
 
@@ -1192,7 +1182,7 @@ function handleSearchLocate(value) {
       essential: true
     });
 
-    // Add temporary high-tech locator pulse circle layer
+    // Add temporary locator circle layer
     if (map.getLayer(LOCATOR_LAYER_ID)) map.removeLayer(LOCATOR_LAYER_ID);
     if (map.getSource(LOCATOR_SOURCE_ID)) map.removeSource(LOCATOR_SOURCE_ID);
 
@@ -1205,7 +1195,7 @@ function handleSearchLocate(value) {
       }
     });
 
-    // Blue glowing locator ring
+    // Locator ring
     map.addLayer({
       id: LOCATOR_LAYER_ID,
       type: "circle",
@@ -1214,7 +1204,7 @@ function handleSearchLocate(value) {
         "circle-radius": 15,
         "circle-color": "rgba(21, 105, 222, 0.2)",
         "circle-stroke-width": 2,
-        "circle-stroke-color": "#1569de",
+        "circle-stroke-color": "#0b91b7",
         "circle-stroke-opacity": 0.8
       }
     });
@@ -1394,7 +1384,7 @@ function updateDrawingLayer(currentMouseLngLat = null) {
       type: "line",
       source: DRAWING_SOURCE_ID,
       paint: {
-        "line-color": "#409eff", // Blue active line
+        "line-color": "#0b91b7",
         "line-width": 2,
         "line-dasharray": [2, 2]
       },
@@ -1408,7 +1398,7 @@ function updateDrawingLayer(currentMouseLngLat = null) {
       source: DRAWING_SOURCE_ID,
       paint: {
         "circle-radius": 6,
-        "circle-color": ["case", ["get", "isStart"], "#10b981", "#1569de"],
+        "circle-color": ["case", ["get", "isStart"], "#0f9f6e", "#1569de"],
         "circle-stroke-width": 2,
         "circle-stroke-color": "#ffffff"
       },
@@ -1624,35 +1614,36 @@ function calculateMetrics(coords) {
   areaMetrics.value.perimeter = perimeter;
 }
 
-// ---------------- SCENARIO GENERATION SIMULATION ----------------
+// ---------------- BUILD FLOW ----------------
+
+let buildIntervalId = null;
+let buildFinishTimerId = null;
+
+function clearBuildTimers() {
+  if (buildIntervalId) {
+    clearInterval(buildIntervalId);
+    buildIntervalId = null;
+  }
+  if (buildFinishTimerId) {
+    clearTimeout(buildFinishTimerId);
+    buildFinishTimerId = null;
+  }
+}
 
 function buildScenario() {
-  if (!hasArea.value) return;
+  if (!hasArea.value || isBuilding.value) return;
   
+  clearBuildTimers();
   isBuilding.value = true;
   buildProgress.value = 0;
-  visibleLogs.value = [];
 
-  // Sequential simulated build progress
-  const interval = setInterval(() => {
+  buildIntervalId = setInterval(() => {
     buildProgress.value += 1;
-    
-    // Add logs based on progress threshold
-    const logIndex = Math.floor((buildProgress.value / 100) * terminalLogsPool.length);
-    if (logIndex > visibleLogs.value.length && logIndex <= terminalLogsPool.length) {
-      visibleLogs.value.push(terminalLogsPool[visibleLogs.value.length]);
-      
-      // Auto scroll terminal log window
-      nextTick(() => {
-        if (terminalRef.value) {
-          terminalRef.value.scrollTop = terminalRef.value.scrollHeight;
-        }
-      });
-    }
 
     if (buildProgress.value >= 100) {
-      clearInterval(interval);
-      setTimeout(() => {
+      clearBuildTimers();
+      buildFinishTimerId = setTimeout(() => {
+        buildFinishTimerId = null;
         isBuilding.value = false;
         
         ElNotification({
@@ -1682,6 +1673,7 @@ watch(MapRef, (newMap) => {
 });
 
 onUnmounted(() => {
+  clearBuildTimers();
   stopDrawingEvents();
   cleanUpMapLayers();
   
@@ -1700,13 +1692,11 @@ onUnmounted(() => {
 .scenario-panel {
   position: fixed;
   z-index: var(--z-panel);
-  width: 460px;
+  width: min(460px, calc((100vw - 40px) / var(--app-panel-scale)));
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
   background: var(--app-panel-bg);
   border: 1px solid var(--app-border);
-  box-shadow: var(--app-shadow-md);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--app-shadow-sm);
   border-radius: var(--app-panel-radius);
   display: flex;
   flex-direction: column;
@@ -1715,24 +1705,34 @@ onUnmounted(() => {
   overflow: hidden;
   scale: var(--app-panel-scale);
   transform-origin: top left;
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+  transition: border-color 0.2s ease;
   
   &:hover {
-    border-color: rgba(21, 105, 222, 0.35);
-    box-shadow: 0 12px 35px rgba(15, 66, 125, 0.18);
+    border-color: rgba(21, 105, 222, 0.28);
+  }
+}
+
+@media (max-width: 640px) {
+  .scenario-panel {
+    width: calc((100vw - 32px) / var(--app-panel-scale));
+    max-height: calc((100vh - 104px) / var(--app-panel-scale));
   }
 }
 
 .panel-header {
-  cursor: move;
+  cursor: grab;
   display: flex;
   padding: var(--space-xs) var(--space-md);
   gap: var(--space-sm);
   align-items: center;
   min-height: 42px;
-  background: linear-gradient(to bottom, rgba(21, 105, 222, 0.12) 0%, rgba(21, 105, 222, 0.04) 100%);
+  background: rgba(21, 105, 222, 0.055);
   color: var(--app-blue);
   border-bottom: 1px solid rgba(21, 105, 222, 0.15);
+
+  &:active {
+    cursor: grabbing;
+  }
 
   .header-title {
     display: flex;
@@ -1790,11 +1790,10 @@ onUnmounted(() => {
 
 /* Steps Cards styling (Unified card layout) */
 .section-card {
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(21, 105, 222, 0.11);
+  background: rgba(253, 254, 255, 0.72);
+  border: 1px solid rgba(21, 105, 222, 0.08);
   border-radius: var(--app-card-radius);
   padding: var(--space-sm);
-  transition: all 0.3s ease;
   position: relative;
   overflow: hidden;
 
@@ -1840,7 +1839,7 @@ onUnmounted(() => {
 /* Button & Tabs selectors */
 .mode-selector {
   display: flex;
-  background: #f4f6f8;
+  background: var(--app-surface-soft);
   border-radius: var(--app-card-radius);
   padding: var(--space-2xs);
   gap: var(--space-2xs);
@@ -1856,24 +1855,23 @@ onUnmounted(() => {
   gap: var(--space-2xs);
   background: transparent;
   border: none;
-  color: #7f8c8d;
+  color: var(--app-muted);
   font-size: 11px;
   font-weight: 600;
   min-height: 30px;
   padding: 0 var(--space-xs);
   border-radius: 4px;
   cursor: pointer;
-  transition: all 0.25s ease;
+  transition: background-color 0.2s ease, color 0.2s ease;
 
   &:hover {
-    color: #1a365d;
+    color: var(--app-ink);
     background: rgba(0, 0, 0, 0.03);
   }
 
   &.active {
-    color: #ffffff;
-    background: #1569de;
-    box-shadow: 0 2px 6px rgba(21, 105, 222, 0.2);
+    color: #f7fbff;
+    background: var(--app-blue);
   }
 }
 
@@ -1884,7 +1882,7 @@ onUnmounted(() => {
 
   .help-text {
     font-size: 10.5px;
-    color: #7f8c8d;
+    color: var(--app-muted);
     line-height: 1.4;
     background: rgba(21, 105, 222, 0.04);
     padding: var(--space-xs) var(--space-sm);
@@ -1897,7 +1895,7 @@ onUnmounted(() => {
     }
 
     .highlight-success {
-      color: #27ae60;
+      color: var(--app-emerald-strong);
       font-weight: bold;
     }
   }
@@ -1931,7 +1929,7 @@ onUnmounted(() => {
   border-radius: 4px;
   cursor: pointer;
   border: none;
-  transition: all 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
   outline: none;
 
   &:disabled {
@@ -1941,36 +1939,32 @@ onUnmounted(() => {
 }
 
 .primary-btn {
-  background: #1569de;
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(21, 105, 222, 0.2);
+  background: var(--app-blue);
+  color: #f7fbff;
 
   &:hover:not(:disabled) {
-    background: #2b7de9;
-    transform: translateY(-0.5px);
+    background: var(--app-blue-strong);
   }
 }
 
 .danger-btn {
-  background: #e74c3c;
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(231, 76, 60, 0.2);
+  background: var(--app-coral);
+  color: #fff8f8;
 
   &:hover:not(:disabled) {
-    background: #eb6e60;
-    transform: translateY(-0.5px);
+    background: #c63e4f;
   }
 }
 
 .secondary-btn {
-  background: #ffffff;
-  color: #555555;
-  border: 1px solid #d9d9d9;
+  background: var(--app-card-bg);
+  color: var(--app-muted);
+  border: 1px solid rgba(21, 105, 222, 0.14);
 
   &:hover:not(:disabled) {
-    background: #f5f7fa;
-    color: #333333;
-    border-color: #c0c0c0;
+    background: var(--app-cyan-soft);
+    color: var(--app-cyan-strong);
+    border-color: rgba(11, 145, 183, 0.34);
   }
 }
 
@@ -1981,7 +1975,7 @@ onUnmounted(() => {
   padding: var(--space-lg) var(--space-md);
   text-align: center;
   cursor: pointer;
-  transition: all 0.25s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
   background: rgba(21, 105, 222, 0.02);
   display: flex;
   flex-direction: column;
@@ -1993,13 +1987,12 @@ onUnmounted(() => {
     background: rgba(21, 105, 222, 0.05);
     
     .upload-icon {
-      color: #1569de;
-      transform: translateY(-1.5px);
+      color: var(--app-blue);
     }
   }
 
   &.dragging {
-    border-color: #2ecc71;
+    border-color: #0f9f6e;
     background: rgba(46, 204, 113, 0.06);
   }
 
@@ -2015,24 +2008,30 @@ onUnmounted(() => {
   .upload-icon {
     width: 26px;
     height: 26px;
-    color: #7f8c8d;
-    transition: all 0.25s ease;
+    color: var(--app-muted);
+    transition: color 0.2s ease;
   }
 
   .success-icon {
     width: 26px;
     height: 26px;
-    color: #2ecc71;
+    color: #0f9f6e;
+
+    polyline {
+      stroke-dasharray: 24;
+      stroke-dashoffset: 24;
+      animation: check-draw var(--app-motion-slow) var(--app-ease-out) forwards;
+    }
   }
 
   .upload-title {
     font-size: 11.5px;
     font-weight: 600;
-    color: #2c3e50;
+    color: var(--app-ink);
   }
 
-  .glow-green {
-    color: #27ae60;
+  .upload-success {
+    color: var(--app-emerald-strong);
   }
 
   .upload-sub {
@@ -2056,26 +2055,26 @@ onUnmounted(() => {
   }
 
   .metric-item {
-    background: #ffffff;
+    background: var(--app-card-bg);
     border-radius: 4px;
     padding: var(--space-xs);
     border: 1px solid rgba(21, 105, 222, 0.1);
 
     .m-label {
       font-size: 9px;
-      color: #7f8c8d;
+      color: var(--app-muted);
       margin-bottom: 1px;
     }
 
     .m-val {
       font-size: 12px;
       font-weight: 700;
-      color: #1a365d;
+      color: var(--app-ink);
       font-family: "Outfit", monospace;
 
       .unit {
         font-size: 9px;
-        color: #7f8c8d;
+        color: var(--app-muted);
         font-weight: normal;
         margin-left: 1px;
       }
@@ -2099,7 +2098,7 @@ onUnmounted(() => {
   .queue-title-row {
     font-size: 10.5px;
     font-weight: bold;
-    color: #7f8c8d;
+    color: var(--app-muted);
     margin-bottom: var(--space-xs);
     border-bottom: 1px solid rgba(0, 0, 0, 0.05);
     padding-bottom: 4px;
@@ -2107,11 +2106,9 @@ onUnmounted(() => {
 
   .empty-queue-placeholder {
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 24px 0;
-    gap: var(--space-xs);
+    padding: var(--space-md) 0;
     color: #95a5a6;
     font-size: 10.5px;
   }
@@ -2125,12 +2122,11 @@ onUnmounted(() => {
   .queue-item {
     display: flex;
     align-items: center;
-    background: #ffffff;
+    background: var(--app-card-bg);
     border: 1px solid rgba(0, 0, 0, 0.05);
     border-radius: 4px;
     padding: var(--space-xs);
     gap: var(--space-xs);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.02);
 
     .mod-badge {
       font-size: 9.5px;
@@ -2139,11 +2135,11 @@ onUnmounted(() => {
       border-radius: 3px;
       flex-shrink: 0;
 
-      &.station { background: #e8f8f5; color: #1abc9c; border: 1px solid rgba(26,188,156,0.3); }
-      &.route { background: #eaf2f8; color: #2980b9; border: 1px solid rgba(41,128,185,0.3); }
-      &.fare { background: #f5eef8; color: #9b59b6; border: 1px solid rgba(155,89,182,0.3); }
-      &.mode { background: #fdf2e9; color: #e67e22; border: 1px solid rgba(230,126,34,0.3); }
-      &.road { background: #fce4d6; color: #c55a11; border: 1px solid rgba(197,90,17,0.3); }
+      &.station { background: var(--app-emerald-soft); color: var(--app-emerald-strong); border: 1px solid rgba(15, 159, 110, 0.26); }
+      &.route { background: var(--app-blue-soft); color: var(--app-blue-strong); border: 1px solid rgba(21, 105, 222, 0.24); }
+      &.fare { background: var(--app-cyan-soft); color: var(--app-cyan-strong); border: 1px solid rgba(11, 145, 183, 0.24); }
+      &.mode { background: var(--app-amber-soft); color: var(--app-amber); border: 1px solid rgba(217,119,6,0.28); }
+      &.road { background: var(--app-coral-soft); color: var(--app-coral); border: 1px solid rgba(220,76,93,0.26); }
     }
 
     .mod-details {
@@ -2153,12 +2149,12 @@ onUnmounted(() => {
       .mod-type {
         font-size: 10.5px;
         font-weight: bold;
-        color: #2c3e50;
+        color: var(--app-ink);
       }
       
       .mod-desc {
         font-size: 9.5px;
-        color: #7f8c8d;
+        color: var(--app-muted);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2177,12 +2173,12 @@ onUnmounted(() => {
       gap: 3px;
       padding: 3px 6px;
       border-radius: 3px;
-      transition: all 0.2s ease;
+      transition: background-color 0.2s ease, color 0.2s ease;
       flex-shrink: 0;
 
       &:hover {
         background: #fdf2f2;
-        color: #e74c3c;
+        color: #dc4c5d;
       }
     }
   }
@@ -2190,25 +2186,24 @@ onUnmounted(() => {
 
 .add-item-trigger {
   margin-top: 6px;
-  background: #f8f9fa;
+  background: var(--app-surface-strong);
   border-style: dashed;
   border-width: 1.5px;
   
   &:hover:not(:disabled) {
     background: rgba(21, 105, 222, 0.04);
-    border-color: #1569de;
-    color: #1569de;
+    border-color: var(--app-cyan);
+    color: var(--app-cyan-strong);
   }
 }
 
 /* QGIS STYLE NESTED TWO-COLUMN BUILDER SYSTEM */
 .qgis-nested-builder {
-  background: #ffffff;
-  border: 1px solid rgba(21, 105, 222, 0.25);
+  background: var(--app-card-bg);
+  border: 1px solid rgba(21, 105, 222, 0.12);
   border-radius: var(--app-card-radius);
   padding: var(--space-sm);
   margin-top: var(--space-sm);
-  box-shadow: 0 4px 12px rgba(15, 66, 125, 0.08);
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
@@ -2223,7 +2218,7 @@ onUnmounted(() => {
 
   .qgis-columns {
     display: flex;
-    border: 1px solid #d9d9d9;
+    border: 1px solid rgba(21, 105, 222, 0.13);
     border-radius: 4px;
     overflow: hidden;
     height: 160px;
@@ -2232,8 +2227,8 @@ onUnmounted(() => {
   /* Left column: Categories selector */
   .qgis-left-col {
     width: 35%;
-    background: #f4f6f8;
-    border-right: 1px solid #d9d9d9;
+    background: var(--app-surface-soft);
+    border-right: 1px solid rgba(21, 105, 222, 0.13);
     display: flex;
     flex-direction: column;
   }
@@ -2242,21 +2237,21 @@ onUnmounted(() => {
     padding: var(--space-xs) var(--space-sm);
     font-size: 11px;
     font-weight: bold;
-    color: #555555;
+    color: var(--app-muted);
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    transition: all 0.2s ease;
+    transition: background-color 0.2s ease, color 0.2s ease;
     border-bottom: 1px solid rgba(0,0,0,0.03);
 
     &:hover {
       background: rgba(21, 105, 222, 0.04);
-      color: #1569de;
+      color: var(--app-blue);
     }
 
     &.active {
-      background: #ffffff;
+      background: var(--app-card-bg);
       color: var(--app-blue);
       box-shadow: inset 0 0 0 1px rgba(21, 105, 222, 0.12);
       
@@ -2267,7 +2262,7 @@ onUnmounted(() => {
     }
 
     .arrow {
-      color: #bdc3c7;
+      color: var(--app-muted-soft);
       opacity: 0.5;
     }
   }
@@ -2275,7 +2270,7 @@ onUnmounted(() => {
   /* Right column: Options & Parameters */
   .qgis-right-col {
     width: 65%;
-    background: #ffffff;
+    background: var(--app-card-bg);
     padding: var(--space-sm);
     box-sizing: border-box;
   }
@@ -2310,7 +2305,7 @@ onUnmounted(() => {
       justify-content: space-between;
       align-items: center;
       font-size: 10px;
-      color: #7f8c8d;
+      color: #60758e;
       font-weight: bold;
 
       .slider-val {
@@ -2353,7 +2348,7 @@ onUnmounted(() => {
   .form-label {
     font-size: 11px;
     font-weight: 600;
-    color: #7f8c8d;
+    color: #60758e;
   }
 
   .block-select {
@@ -2365,7 +2360,7 @@ onUnmounted(() => {
     justify-content: space-between;
     align-items: center;
     font-size: 11px;
-    color: #7f8c8d;
+    color: #60758e;
     font-weight: 600;
 
     .slider-val {
@@ -2383,7 +2378,7 @@ onUnmounted(() => {
 
 .form-label {
   font-size: 10px;
-  color: #7f8c8d;
+  color: #60758e;
   font-weight: 600;
 }
 
@@ -2405,25 +2400,25 @@ onUnmounted(() => {
 
   .switch-label {
     font-size: 11px;
-    color: #1a365d;
+    color: var(--app-ink);
     font-weight: bold;
   }
 
   .switch-desc {
     font-size: 9px;
-    color: #7f8c8d;
+    color: var(--app-muted);
   }
 
   :deep(.el-switch) {
-    --el-switch-on-color: #1569de;
+    --el-switch-on-color: var(--app-cyan);
   }
 }
 
 /* Compile Trigger Button */
 .build-scenario-btn {
   width: 100%;
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  color: #fff;
+  background: var(--app-emerald);
+  color: #f7fffb;
   border: none;
   min-height: 40px;
   border-radius: var(--app-card-radius);
@@ -2435,50 +2430,31 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: var(--space-xs);
-  box-shadow: 0 3px 8px rgba(16, 185, 129, 0.25);
-  overflow: hidden;
-  transition: all 0.2s ease;
-
-  &::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: -50%;
-    width: 200%;
-    height: 100%;
-    background: linear-gradient(to right, rgba(255,255,255,0) 0%, rgba(255,255,255,0.15) 50%, rgba(255,255,255,0) 100%);
-    transform: skewX(-25deg);
-    transition: 0.75s;
-  }
+  transition:
+    background-color var(--app-motion-normal) var(--app-ease-out),
+    transform var(--app-motion-fast) var(--app-ease-press);
 
   &:hover:not(:disabled) {
-    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.35);
-    transform: translateY(-0.5px);
+    background: var(--app-emerald-strong);
 
-    &::after {
-      left: 125%;
+    .btn-icon {
+      transform: translateX(1px);
     }
+  }
+
+  .btn-icon {
+    transition: transform var(--app-motion-normal) var(--app-ease-out);
   }
 
   &:disabled {
     opacity: 0.5;
-    background: #bdc3c7;
+    background: color-mix(in oklch, var(--app-muted-soft) 70%, white);
     box-shadow: none;
     cursor: not-allowed;
   }
 
-  .pulse-ring {
-    position: absolute;
-    width: 100%;
-    height: 100%;
-    border-radius: 6px;
-    border: 2px solid #10b981;
-    animation: btn-ripple 2.5s infinite;
-    pointer-events: none;
-  }
 }
 
-/* HIGH TECH TERMINAL LOADER OVERLAY (Light Theme Premium Unification) */
 .build-overlay {
   position: absolute;
   top: 0;
@@ -2500,39 +2476,56 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.tech-scanner {
-  width: 44px;
-  height: 44px;
-  border: 2.5px solid #1569de;
-  border-radius: 50%;
-  border-top-color: transparent;
-  border-bottom-color: transparent;
-  animation: rotate-spinner 1.2s linear infinite;
-  margin-bottom: 12px;
-}
-
 .loader-spinner {
   width: 18px;
   height: 18px;
   border: 2px solid #cbd5e1;
   border-radius: 50%;
-  border-top-color: #1569de;
+  border-top-color: var(--app-cyan);
   animation: rotate-spinner 0.8s linear infinite;
+
+  &.large {
+    width: 34px;
+    height: 34px;
+    border-width: 3px;
+    margin-bottom: 12px;
+  }
+}
+
+.complete-check {
+  width: 36px;
+  height: 36px;
+  margin-bottom: 12px;
+  color: var(--app-emerald);
+}
+
+.complete-check-path {
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 28;
+  stroke-dashoffset: 28;
+  animation: check-draw var(--app-motion-slow) var(--app-ease-out) forwards;
 }
 
 .loader-title {
-  font-family: "Outfit", sans-serif;
   font-size: 15px;
-  font-weight: 800;
-  letter-spacing: 1.5px;
-  color: #1569de;
+  font-weight: 700;
+  color: var(--app-blue);
+  margin-bottom: 4px;
+}
+
+.loader-status {
+  font-size: 12px;
+  color: var(--app-muted);
   margin-bottom: 10px;
 }
 
 .loader-bar-bg {
   width: 80%;
   height: 5px;
-  background: #e2e8f0;
+  background: color-mix(in oklch, var(--app-blue-soft) 65%, white);
   border-radius: 3px;
   overflow: hidden;
   margin-bottom: 4px;
@@ -2540,7 +2533,7 @@ onUnmounted(() => {
 
 .loader-bar {
   height: 100%;
-  background: linear-gradient(90deg, #1569de 0%, #10b981 100%);
+  background: var(--app-blue);
   border-radius: 3px;
   transition: width 0.1s linear;
 }
@@ -2549,61 +2542,7 @@ onUnmounted(() => {
   font-family: "Outfit", monospace;
   font-size: 11px;
   font-weight: bold;
-  color: #7f8c8d;
-  margin-bottom: 12px;
-}
-
-.terminal-logs {
-  width: 100%;
-  height: 140px;
-  background: rgba(21, 105, 222, 0.03);
-  border: 1px solid rgba(21, 105, 222, 0.15);
-  border-radius: 6px;
-  padding: 8px;
-  font-family: "Consolas", "Courier New", monospace;
-  font-size: 9.5px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  scroll-behavior: smooth;
-  box-sizing: border-box;
-
-  &::-webkit-scrollbar {
-    width: 4px;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: rgba(21, 105, 222, 0.15);
-    border-radius: 2px;
-  }
-
-  .log-line {
-    line-height: 1.35;
-    display: flex;
-    gap: 6px;
-
-    .timestamp {
-      color: #95a5a6;
-      flex-shrink: 0;
-    }
-
-    .message {
-      word-break: break-all;
-    }
-
-    &.info {
-      color: #2c3e50;
-    }
-
-    &.success {
-      color: #27ae60;
-      font-weight: bold;
-    }
-
-    &.error {
-      color: #c0392b;
-    }
-  }
+  color: var(--app-muted);
 }
 
 /* Animations */
@@ -2611,20 +2550,8 @@ onUnmounted(() => {
   to { transform: rotate(360deg); }
 }
 
-@keyframes btn-ripple {
-  0% { transform: scale(0.96); opacity: 0.8; }
-  50% { transform: scale(1.04); opacity: 0; }
-  100% { transform: scale(1.04); opacity: 0; }
-}
-
-.text-pulse {
-  animation: pulse-opacity 1.5s infinite;
-}
-
-@keyframes pulse-opacity {
-  0% { opacity: 0.6; }
-  50% { opacity: 1; }
-  100% { opacity: 0.6; }
+@keyframes check-draw {
+  to { stroke-dashoffset: 0; }
 }
 
 /* Transitions */
@@ -2636,7 +2563,7 @@ onUnmounted(() => {
 }
 
 .fade-slide-enter-active, .fade-slide-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 .fade-slide-enter-from, .fade-slide-leave-to {
   opacity: 0;
@@ -2658,11 +2585,11 @@ onUnmounted(() => {
   color: #333;
   font-size: 11.5px;
   border-radius: 4px;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .mac-menu-item:hover {
-  background: #0060df;
+  background: var(--app-blue);
   color: #fff;
 }
 
@@ -2689,9 +2616,7 @@ onUnmounted(() => {
   top: 120px;
   background: var(--app-panel-bg);
   border: 1px solid var(--app-border);
-  box-shadow: var(--app-shadow-md);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--app-shadow-sm);
   border-radius: var(--app-panel-radius);
   display: flex;
   flex-direction: column;
@@ -2700,11 +2625,10 @@ onUnmounted(() => {
   overflow: hidden;
   scale: var(--app-panel-scale);
   transform-origin: top right;
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+  transition: border-color 0.2s ease;
 
   &:hover {
-    border-color: rgba(21, 105, 222, 0.35);
-    box-shadow: 0 12px 35px rgba(15, 66, 125, 0.18);
+    border-color: rgba(21, 105, 222, 0.28);
   }
 
   .panel-header {
@@ -2713,7 +2637,7 @@ onUnmounted(() => {
     gap: var(--space-sm);
     align-items: center;
     min-height: 42px;
-    background: linear-gradient(to bottom, rgba(21, 105, 222, 0.12) 0%, rgba(21, 105, 222, 0.04) 100%);
+    background: rgba(21, 105, 222, 0.055);
     color: var(--app-blue);
     border-bottom: 1px solid rgba(21, 105, 222, 0.15);
 
@@ -2771,10 +2695,9 @@ onUnmounted(() => {
 /* Un-scoped CSS for el-popover teleported to body */
 .mac-os-popover {
   padding: var(--space-2xs) !important;
-  background: rgba(255, 255, 255, 0.96) !important;
-  backdrop-filter: blur(20px) !important;
+  background: var(--app-card-bg) !important;
   border: 1px solid rgba(21, 105, 222, 0.12) !important;
-  box-shadow: var(--app-shadow-md) !important;
+  box-shadow: var(--app-shadow-sm) !important;
   border-radius: var(--app-card-radius) !important;
 }
 
@@ -2839,19 +2762,9 @@ onUnmounted(() => {
 .click-guidance-box .guidance-dot {
   width: 7px;
   height: 7px;
-  background-color: #10b981;
+  background-color: #0f9f6e;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-.pulse-ring-green {
-  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-  animation: pulse-ring-green-anim 1.6s infinite cubic-bezier(0.66, 0, 0, 1);
-}
-
-@keyframes pulse-ring-green-anim {
-  to {
-    box-shadow: 0 0 0 8px rgba(16, 185, 129, 0);
-  }
-}
 </style>

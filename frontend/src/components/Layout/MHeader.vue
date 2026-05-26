@@ -1,17 +1,17 @@
 <!-- Header -->
 <template>
-  <div class="header-container" :class="{ 'has-model-selector': route.name === 'datavisualization' }">
+  <header class="header-container" :class="{ 'has-model-selector': route.name === 'datavisualization' }">
     <div class="title-box">多智能体出行仿真可视化平台</div>
-    <div class="nav-list">
+    <nav class="nav-list" aria-label="主导航">
       <RouterLink v-for="item in headerMenus" :key="item.title" :to="item.to" active-class="active" class="item">{{ item.title }}</RouterLink>
-    </div>
-    <div class="user-profile-btn" title="用户管理">
+    </nav>
+    <button class="user-profile-btn" type="button" title="用户管理" aria-label="用户管理" disabled>
       <svg class="user-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
         <circle cx="12" cy="7" r="4"></circle>
       </svg>
-    </div>
-  </div>
+    </button>
+  </header>
 </template>
 
 <script setup>
@@ -34,8 +34,6 @@ const headerMenus = [
 </script>
 
 <style scoped lang="scss">
-$white-color: #ffffff;
-
 .header-container {
   --header-height: var(--app-header-height);
   --header-padding-x: clamp(12px, 1.25vw, 24px);
@@ -56,14 +54,14 @@ $white-color: #ffffff;
   min-width: 0;
   padding: 0 var(--header-padding-x);
   box-sizing: border-box;
-  background-color: #e8f2ff;
+  background-color: var(--app-blue-soft);
   background-image: url("@/assets/images/header/header-bg.png");
   background-position: left center;
   background-repeat: no-repeat;
   background-size: 100% 100%;
   z-index: var(--z-header);
   user-select: none;
-  box-shadow: 0 10px 24px rgba($color: #8ab8ef, $alpha: 0.18);
+  box-shadow: 0 4px 14px rgba(15, 85, 159, 0.12);
 }
 
 .title-box {
@@ -74,10 +72,10 @@ $white-color: #ffffff;
   padding-right: var(--space-md);
   font-family: "PangMenZhengDaoBiaoTiTi";
   font-size: clamp(20px, 1.45vw, 25px);
-  color: #fff;
+  color: #f7fbff;
   font-weight: 400;
   letter-spacing: 0;
-  text-shadow: 0px 2px 4px rgba(24, 57, 96, 0.65);
+  text-shadow: none;
 }
 
 .nav-list {
@@ -101,7 +99,7 @@ $white-color: #ffffff;
     width: var(--nav-item-width);
     min-width: var(--nav-item-width);
     height: var(--nav-item-height);
-    color: #fff;
+    color: #f7fbff;
     font-size: clamp(15px, 1.05vw, 18px);
     font-weight: 600;
     display: flex;
@@ -113,16 +111,22 @@ $white-color: #ffffff;
     background-position: center;
     background-repeat: no-repeat;
     background-size: 100% 100%;
-    transition: all 0.3s ease;
-    text-shadow: 0 1px 2px rgba(11, 56, 116, 0.34);
+    transition:
+      color var(--app-motion-normal) var(--app-ease-out),
+      background-image var(--app-motion-normal) var(--app-ease-out),
+      transform var(--app-motion-fast) var(--app-ease-press);
 
     &:hover {
       background-image: url("@/assets/images/header/nav-bg-active.png");
-      color: #fff;
+      color: #f7fbff;
+      transform: translateY(-1px);
     }
     &.active {
-      color: #fff;
+      color: #f7fbff;
       background-image: url("@/assets/images/header/nav-bg-active.png");
+    }
+    &:active {
+      transform: translateY(0);
     }
   }
 }
@@ -137,28 +141,35 @@ $white-color: #ffffff;
   justify-self: end;
   width: clamp(28px, 1.9vw, 36px);
   height: clamp(28px, 1.9vw, 36px);
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(21, 105, 222, 0.25);
   border-radius: 50%;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  backdrop-filter: blur(4px);
-  color: #1569de;
+  cursor: default;
+  transition:
+    background-color var(--app-motion-normal) var(--app-ease-out),
+    border-color var(--app-motion-normal) var(--app-ease-out),
+    color var(--app-motion-normal) var(--app-ease-out);
+  color: var(--app-blue);
+  opacity: 0.74;
   
-  &:hover {
-    background: rgba(21, 105, 222, 0.18);
-    border-color: rgba(21, 105, 222, 0.45);
-    color: #1569de;
-    box-shadow: 0 0 10px rgba(21, 105, 222, 0.15);
-    transform: scale(1.05);
+  &:not(:disabled):hover {
+    background: rgba(11, 145, 183, 0.16);
+    border-color: rgba(11, 145, 183, 0.38);
+    color: var(--app-cyan-strong);
   }
   
   .user-icon {
     width: clamp(15px, 1vw, 18px);
     height: clamp(15px, 1vw, 18px);
+    transition: transform var(--app-motion-normal) var(--app-ease-out);
+  }
+
+  &:not(:disabled):hover .user-icon {
+    transform: translateY(-1px);
   }
 }
 

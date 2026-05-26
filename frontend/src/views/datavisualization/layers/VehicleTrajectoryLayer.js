@@ -11,7 +11,7 @@ export const VEHICLE_MODE_CONFIG = {
   },
   subway: {
     label: "地铁",
-    color: "#dc2626",
+    color: "#dc4c5d",
     rgba: [220, 38, 38, 235],
     size: 52,
   },

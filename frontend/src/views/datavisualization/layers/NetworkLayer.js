@@ -53,7 +53,7 @@ function networkLineMinPixels() {
 }
 
 function networkLineSoftEdgePixels() {
-  return Math.max(0, runtimeNumber("networkLineSoftEdgePixels", 0.75));
+  return Math.max(0, runtimeNumber("networkLineSoftEdgePixels", 0));
 }
 
 function webMercatorToTile(x, y, z = TILE_ZOOM) {
@@ -383,7 +383,7 @@ export class NetworkLayer extends Layer {
     this.flowMaxWidth = opt.flowMaxWidth || 40;
     this.flowWidthStep = opt.flowWidthStep || 20;
     this.color = colorToCss(opt.color ?? 0x1f78b4);
-    this.opacity = opt.opacity ?? 0.88;
+    this.opacity = opt.opacity ?? 1;
     this.layerId = `network-line-${this.id}`;
     this.tileMode = false;
     this.tileZoom = opt.tileZoom || TILE_ZOOM;
@@ -808,8 +808,9 @@ export class NetworkLayer extends Layer {
   }
 
   currentLineOpacity() {
+    const baseOpacity = Math.max(0, Math.min(1, Number(this.opacity) || 1));
+    if (!this.flowControl) return baseOpacity;
     const zoom = Number(this.map?.zoom);
-    const baseOpacity = Number(this.opacity) || 0.88;
     if (!Number.isFinite(zoom)) return baseOpacity;
     const zoomOpacity = interpolate(zoom, [
       [7, 0.3],

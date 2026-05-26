@@ -11,7 +11,7 @@
     cityBuildingsMaxFeatures: 20000,
     mapTileUrlTemplate: "",
     networkLineMinPixels: 0.8,
-    networkLineSoftEdgePixels: 0.75,
+    networkLineSoftEdgePixels: 0,
     mapPixelRatio: null,
   });
 })();

@@ -511,7 +511,7 @@ const passengerFlowChartOption = computed(() => {
         }
       },
       axisLabel: {
-        color: "#718096",
+        color: "#60758e",
         fontSize: 10,
         interval: 2
       },
@@ -535,7 +535,7 @@ const passengerFlowChartOption = computed(() => {
         }
       },
       axisLabel: {
-        color: "#718096",
+        color: "#60758e",
         fontSize: 10
       }
     },
@@ -948,8 +948,8 @@ const boardingAlightingChartOption = computed(() => {
             x2: 0,
             y2: 1,
             colorStops: [
-              { offset: 0, color: "#10b981" },
-              { offset: 1, color: "#059669" }
+              { offset: 0, color: "#0f9f6e" },
+              { offset: 1, color: "#087a55" }
             ]
           },
           borderRadius: [4, 4, 0, 0]
@@ -1085,8 +1085,8 @@ const odChartOption = computed(() => {
             x2: 1,
             y2: 0,
             colorStops: [
-              { offset: 0, color: "#3b82f6" },
-              { offset: 1, color: "#60a5fa" }
+              { offset: 0, color: "#2f75d6" },
+              { offset: 1, color: "#58b8d4" }
             ]
           },
           borderRadius: [0, 4, 4, 0]
@@ -1151,9 +1151,9 @@ const reachabilityChartOption = computed(() => {
           show: false
         },
         data: [
-          { value: data.direct, name: "直达站点", itemStyle: { color: "#10b981" } },
-          { value: data.transfer1, name: "一次换乘可达", itemStyle: { color: "#3b82f6" } },
-          { value: data.transfer2, name: "二次换乘可达", itemStyle: { color: "#f59e0b" } }
+          { value: data.direct, name: "直达站点", itemStyle: { color: "#0f9f6e" } },
+          { value: data.transfer1, name: "一次换乘可达", itemStyle: { color: "#2f75d6" } },
+          { value: data.transfer2, name: "二次换乘可达", itemStyle: { color: "#d97706" } }
         ]
       }
     ]
@@ -1196,9 +1196,9 @@ onUnmounted(() => {
 
 .search-card {
   border: 1px solid rgba(21, 105, 222, 0.15) !important;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04) !important;
+  box-shadow: none !important;
   border-radius: 8px !important;
-  background-color: #ffffff;
+  background-color: var(--app-card-bg);
   overflow: hidden;
 
   :deep(.MCard_title_box) {
@@ -1222,7 +1222,7 @@ onUnmounted(() => {
       }
       
       &.is-focus {
-        box-shadow: 0 0 0 1.5px rgba(21, 105, 222, 1) inset, 0 0 8px rgba(21, 105, 222, 0.15) !important;
+        box-shadow: 0 0 0 1.5px rgba(21, 105, 222, 1) inset !important;
       }
     }
   }
@@ -1280,12 +1280,12 @@ onUnmounted(() => {
       transition: all 0.2s ease;
       
       &.first {
-        border-color: #10b981;
-        .dot-inner { background: #10b981; }
+        border-color: #0f9f6e;
+        .dot-inner { background: #0f9f6e; }
       }
       &.last {
-        border-color: #ef4444;
-        .dot-inner { background: #ef4444; }
+        border-color: #dc4c5d;
+        .dot-inner { background: #dc4c5d; }
       }
       
       .dot-inner {
@@ -1319,7 +1319,7 @@ onUnmounted(() => {
 .matched-title {
   font-size: 13px;
   font-weight: bold;
-  color: #1a365d;
+  color: #12304f;
   margin-bottom: 10px;
   padding-bottom: 4px;
   border-bottom: 1px solid rgba(21, 105, 222, 0.08);
@@ -1363,7 +1363,6 @@ onUnmounted(() => {
     &.active {
       border-color: #1569de;
       background: rgba(21, 105, 222, 0.05);
-      box-shadow: 0 2px 6px rgba(21, 105, 222, 0.08);
       
       .item-header .line-badge {
         background: #1569de;
@@ -1389,7 +1388,7 @@ onUnmounted(() => {
       
       .item-stops {
         font-size: 11px;
-        color: #718096;
+        color: #60758e;
       }
     }
     
@@ -1397,7 +1396,7 @@ onUnmounted(() => {
       display: flex;
       justify-content: space-between;
       font-size: 11px;
-      color: #4a5568;
+      color: #60758e;
     }
   }
 }
@@ -1414,9 +1413,9 @@ onUnmounted(() => {
 .SJZL_right_card {
   --theme-color: #1569de;
   width: 535px;
-  background-color: #ffffff;
+  background-color: var(--app-card-bg);
   border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: none;
 }
 
 .route-detail-panel {
@@ -1432,7 +1431,7 @@ onUnmounted(() => {
   margin-bottom: 20px;
   
   .metric-card {
-    background: linear-gradient(135deg, #ffffff 0%, #fcfdfe 100%);
+    background: var(--app-card-bg);
     border: 1px solid rgba(21, 105, 222, 0.12);
     border-radius: 8px;
     padding: 12px;
@@ -1440,18 +1439,15 @@ onUnmounted(() => {
     flex-direction: column;
     gap: 4px;
     box-sizing: border-box;
-    box-shadow: 0 2px 8px rgba(21, 105, 222, 0.02);
-    transition: all 0.3s ease;
+    transition: border-color 0.2s ease;
     
     &:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 16px rgba(21, 105, 222, 0.08);
       border-color: rgba(21, 105, 222, 0.25);
     }
     
     .label {
       font-size: 12px;
-      color: #718096;
+      color: #60758e;
       font-weight: 600;
     }
     
@@ -1478,7 +1474,7 @@ onUnmounted(() => {
     .section-title {
       font-size: 14px;
       font-weight: bold;
-      color: #1a365d;
+      color: #12304f;
     }
   }
   
@@ -1536,7 +1532,7 @@ onUnmounted(() => {
   .section-title {
     font-size: 14px;
     font-weight: bold;
-    color: #1a365d;
+    color: #12304f;
     margin-bottom: 12px;
   }
   
@@ -1621,8 +1617,8 @@ onUnmounted(() => {
     transition: all 0.2s ease;
     
     &:hover, &:focus, &:active {
-      background: #2f80ed !important;
-      border-color: #2f80ed !important;
+      background: #0b91b7 !important;
+      border-color: #0b91b7 !important;
       color: #ffffff !important;
       box-shadow: 0 2px 6px rgba(21, 105, 222, 0.3);
     }
@@ -1637,14 +1633,13 @@ onUnmounted(() => {
 
 .ranking-header {
   display: flex;
-  background: linear-gradient(135deg, #1569de 0%, #2f80ed 100%);
+  background: #1569de;
   border-radius: 6px;
   padding: 10px 16px;
   color: #ffffff;
   font-size: 13px;
   font-weight: bold;
   margin-bottom: 8px;
-  box-shadow: 0 4px 10px rgba(21, 105, 222, 0.15);
 }
 
 .ranking-scroll-list {
@@ -1673,11 +1668,10 @@ onUnmounted(() => {
   padding: 12px 16px;
   background: #ffffff;
   border-bottom: 1px dashed rgba(21, 105, 222, 0.12);
-  transition: all 0.25s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 
   &:hover {
     background: rgba(21, 105, 222, 0.03);
-    transform: translateX(4px);
     border-bottom-color: rgba(21, 105, 222, 0.3);
   }
 
@@ -1721,27 +1715,24 @@ onUnmounted(() => {
   border-radius: 50%;
   font-size: 12px;
   font-weight: 800;
-  color: #718096;
+  color: #60758e;
   background: rgba(113, 128, 150, 0.08);
 
   &.gold {
-    background: linear-gradient(135deg, #ffe066 0%, #f59e0b 100%);
+    background: #d97706;
     color: #ffffff;
-    box-shadow: 0 2px 6px rgba(245, 158, 11, 0.3);
     font-size: 13px;
   }
 
   &.silver {
-    background: linear-gradient(135deg, #f1f5f9 0%, #94a3b8 100%);
+    background: #94a3b8;
     color: #ffffff;
-    box-shadow: 0 2px 6px rgba(148, 163, 184, 0.3);
     font-size: 13px;
   }
 
   &.bronze {
-    background: linear-gradient(135deg, #ffedd5 0%, #ea580c 100%);
+    background: #ea580c;
     color: #ffffff;
-    box-shadow: 0 2px 6px rgba(234, 88, 12, 0.3);
     font-size: 13px;
   }
 }
@@ -1766,17 +1757,17 @@ onUnmounted(() => {
 .flow-value {
   font-size: 16px;
   font-weight: bold;
-  color: #10b981;
+  color: #0f9f6e;
   font-family: "Outfit", "Inter", sans-serif;
   
   .ranking-row:nth-child(-n+3) & {
-    color: #f59e0b;
+    color: #d97706;
   }
 }
 
 .flow-unit {
   font-size: 11px;
-  color: #718096;
+  color: #60758e;
   font-weight: 600;
 }
 
@@ -1797,18 +1788,17 @@ onUnmounted(() => {
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
       
       &.subway {
-        background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(239, 68, 68, 0.05) 100%);
+        background: rgba(220, 76, 93, 0.08);
         border: 1px solid rgba(239, 68, 68, 0.2);
-        color: #ef4444;
+        color: #dc4c5d;
       }
       
       &.bus {
-        background: linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(16, 185, 129, 0.05) 100%);
+        background: rgba(15, 159, 110, 0.08);
         border: 1px solid rgba(16, 185, 129, 0.2);
-        color: #10b981;
+        color: #0f9f6e;
       }
 
       .station-icon {
@@ -1824,7 +1814,7 @@ onUnmounted(() => {
       .station-title-text {
         font-size: 16px;
         font-weight: bold;
-        color: #1a365d;
+        color: #12304f;
         letter-spacing: 0.3px;
       }
 
@@ -1840,7 +1830,7 @@ onUnmounted(() => {
 
         .route-count-badge {
           font-size: 11px;
-          color: #718096;
+          color: #60758e;
           font-weight: 600;
           background: rgba(240, 244, 248, 0.8);
           padding: 2px 6px;
@@ -1860,25 +1850,22 @@ onUnmounted(() => {
   
   &.subway-badge {
     background: rgba(239, 68, 68, 0.1);
-    color: #ef4444;
+    color: #dc4c5d;
   }
   
   &.bus-badge {
     background: rgba(16, 185, 129, 0.1);
-    color: #10b981;
+    color: #0f9f6e;
   }
 }
 
 .matched-item {
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: border-color 0.2s ease, background-color 0.2s ease;
   &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(21, 105, 222, 0.06);
     border-color: rgba(21, 105, 222, 0.3) !important;
   }
 }
 
-/* Tab header premium switcher */
 .ranking-title-container {
   display: flex;
   align-items: center;
@@ -1940,8 +1927,8 @@ onUnmounted(() => {
     transition: all 0.2s ease;
     
     &:hover, &:focus, &:active {
-      background: #2f80ed !important;
-      border-color: #2f80ed !important;
+      background: #0b91b7 !important;
+      border-color: #0b91b7 !important;
       color: #ffffff !important;
       box-shadow: 0 2px 6px rgba(21, 105, 222, 0.3);
     }
@@ -1976,7 +1963,7 @@ onUnmounted(() => {
       .range-text {
         font-size: 13px;
         font-weight: bold;
-        color: #1a365d;
+        color: #12304f;
         background: rgba(21, 105, 222, 0.08);
         padding: 2px 8px;
         border-radius: 4px;
@@ -2006,7 +1993,7 @@ onUnmounted(() => {
     .section-title {
       font-size: 14px;
       font-weight: bold;
-      color: #1a365d;
+      color: #12304f;
     }
   }
 
@@ -2055,7 +2042,7 @@ onUnmounted(() => {
       .range-text {
         font-size: 13px;
         font-weight: bold;
-        color: #1a365d;
+        color: #12304f;
         background: rgba(21, 105, 222, 0.08);
         padding: 2px 8px;
         border-radius: 4px;
@@ -2085,7 +2072,7 @@ onUnmounted(() => {
     .section-title {
       font-size: 14px;
       font-weight: bold;
-      color: #1a365d;
+      color: #12304f;
     }
 
     .chart-type-selector {
@@ -2166,7 +2153,7 @@ onUnmounted(() => {
     margin-bottom: 20px;
     
     .metric-card {
-      background: linear-gradient(135deg, #ffffff 0%, #fcfdfe 100%);
+      background: var(--app-card-bg);
       border: 1px solid rgba(21, 105, 222, 0.12);
       border-radius: 8px;
       padding: 10px 8px;
@@ -2174,30 +2161,24 @@ onUnmounted(() => {
       flex-direction: column;
       align-items: center;
       gap: 4px;
-      box-shadow: 0 2px 8px rgba(21, 105, 222, 0.02);
-      transition: all 0.3s ease;
-      
-      &:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(21, 105, 222, 0.08);
-      }
+      transition: border-color 0.2s ease;
       
       &.direct {
         border-color: rgba(16, 185, 129, 0.2);
-        .value { color: #10b981; }
+        .value { color: #0f9f6e; }
       }
       &.transfer1 {
         border-color: rgba(59, 130, 246, 0.2);
-        .value { color: #3b82f6; }
+        .value { color: #2f75d6; }
       }
       &.transfer2 {
         border-color: rgba(245, 158, 11, 0.2);
-        .value { color: #f59e0b; }
+        .value { color: #d97706; }
       }
       
       .label {
         font-size: 11px;
-        color: #718096;
+        color: #60758e;
         font-weight: 600;
         text-align: center;
       }
@@ -2210,7 +2191,7 @@ onUnmounted(() => {
         small {
           font-size: 10px;
           font-weight: normal;
-          color: #718096;
+          color: #60758e;
         }
       }
     }
@@ -2225,7 +2206,7 @@ onUnmounted(() => {
     .section-title {
       font-size: 14px;
       font-weight: bold;
-      color: #1a365d;
+      color: #12304f;
     }
   }
 
@@ -2326,7 +2307,7 @@ onUnmounted(() => {
         display: block;
         height: 100%;
         border-radius: 3px;
-        background: linear-gradient(90deg, #3b82f6, #60a5fa);
+        background: #2f75d6;
       }
       .ratio-text {
         font-size: 11px;
@@ -2339,7 +2320,7 @@ onUnmounted(() => {
     
     .col-od-stations {
       flex: 2.2;
-      color: #1a365d;
+      color: #12304f;
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
@@ -2357,7 +2338,7 @@ onUnmounted(() => {
       small {
         font-size: 10px;
         font-weight: normal;
-        color: #718096;
+        color: #60758e;
       }
     }
   }

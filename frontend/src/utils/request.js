@@ -12,18 +12,52 @@ axios.defaults.headers["Content-Type"] = "application/json;charset=utf-8";
 const configuredBaseApi = import.meta.env.VITE_APP_BASE_API;
 const runtimeConfig = typeof window !== "undefined" ? window.APP_CONFIG || {} : {};
 const runtimeBackendPort = runtimeConfig.backendPort || 8090;
+const defaultRequestTimeout = Number(import.meta.env.VITE_APP_REQUEST_TIMEOUT || runtimeConfig.requestTimeout || 60_000);
 const runtimeBaseApi =
   runtimeConfig.apiBaseUrl ||
   (typeof window !== "undefined" && window.location?.hostname
     ? `${window.location.protocol}//${window.location.hostname}:${runtimeBackendPort}`
     : "");
 
+function showErrorMessage(config, message) {
+  if (config?.silentError) return;
+  ElMessage.error(message);
+}
+
+function normalizeErrorMessage(error) {
+  if (axios.isCancel(error) || error?.message === "canceled") {
+    return "请求已取消";
+  }
+  if (error?.code === "ECONNABORTED" || String(error?.message || "").includes("timeout")) {
+    return "系统接口请求超时，请稍后重试";
+  }
+  if (error?.message === "Network Error") {
+    return "后端接口连接异常，请检查服务是否启动";
+  }
+
+  const status = error?.response?.status;
+  const statusMessages = {
+    400: "请求参数有误，请检查后重试",
+    401: "认证失败，请重新登录",
+    403: "当前操作没有权限",
+    404: "接口不存在或资源已删除",
+    408: "请求等待超时，请稍后重试",
+    429: "请求过于频繁，请稍后再试",
+    500: "服务器处理失败，请稍后重试",
+    502: "网关异常，请检查后端服务",
+    503: "服务暂不可用，请稍后重试",
+    504: "网关请求超时，请稍后重试",
+  };
+
+  return error?.response?.data?.msg || statusMessages[status] || error?.message || "系统未知错误，请反馈给管理员";
+}
+
 // 创建axios实例
 const service = axios.create({
   // axios中请求配置有baseURL选项，表示请求URL公共部分
   baseURL: configuredBaseApi || runtimeBaseApi,
   // 超时
-  timeout: 1000 * 60 * 60,
+  timeout: Number.isFinite(defaultRequestTimeout) && defaultRequestTimeout > 0 ? defaultRequestTimeout : 60_000,
 });
 
 // request拦截器
@@ -96,7 +130,7 @@ service.interceptors.request.use(
   },
   (error) => {
     console.log(error);
-    Promise.reject(error);
+    return Promise.reject(error);
   },
 );
 
@@ -106,8 +140,10 @@ service.interceptors.response.use(
     const codeList = {
       401: "认证失败，无法访问系统资源",
       403: "当前操作没有权限",
-      404: "系统未知错误，请反馈给管理员",
-      default: "系統未知錯誤，請迴響給管理員",
+      404: "接口不存在或资源已删除",
+      429: "请求过于频繁，请稍后再试",
+      500: "服务器处理失败，请稍后重试",
+      default: "系统未知错误，请反馈给管理员",
     };
     // 未设置状态码则默认成功状态
     const code = Number(res.data.code || 200);
@@ -130,30 +166,24 @@ service.interceptors.response.use(
       }
       return Promise.reject("无效的会话，或者会话已过期，请重新登录");
     } else if (code === 500) {
-      ElMessage.error(msg);
+      showErrorMessage(res.config, msg);
       return Promise.reject(new Error(msg));
     } else if (code !== 200) {
-      ElMessage.error(msg);
-      return Promise.reject("error");
+      showErrorMessage(res.config, msg);
+      return Promise.reject(new Error(msg));
     } else {
       return res.data;
     }
   },
   (error) => {
     console.log("err" + error);
-    let { message } = error;
-    if (message == "canceled") {
-      // 主动取消请求
-      return Promise.reject(error);
-    } else if (message == "Network Error") {
-      message = "后端接口连接异常";
-    } else if (message.includes("timeout")) {
-      message = "系统接口请求超时";
-    } else if (message.includes("Request failed with status code")) {
-      message = "请求失败，状态码" + message.substr(message.length - 3);
+    const message = normalizeErrorMessage(error);
+    if (!axios.isCancel(error) && error?.message !== "canceled") {
+      showErrorMessage(error?.config, message);
     }
-    ElMessage.error(message);
-    return Promise.reject(error);
+    const normalizedError = new Error(message);
+    normalizedError.cause = error;
+    return Promise.reject(normalizedError);
   },
 );
 

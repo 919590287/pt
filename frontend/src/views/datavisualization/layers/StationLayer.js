@@ -95,7 +95,7 @@ export class StationLayer extends Layer {
         "circle-color": [
           "case",
           ["==", ["get", "type"], "subway"],
-          "#dc2626",
+          "#dc4c5d",
           "#1569de",
         ],
         "circle-stroke-color": "rgba(255,255,255,0.9)",

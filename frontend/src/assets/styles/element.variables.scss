@@ -3,27 +3,25 @@
 /* 覆盖 Element Plus 的颜色变量 */
 @forward "element-plus/theme-chalk/src/common/var.scss" with (
   $colors: (
-    "white": #ffffff,
-    "black": #000000,
+    "white": #fbfdff,
+    "black": #10243f,
     "primary": (
-      // "base": #409eff,
-      // "base": #5d77f3,
       "base": #1569de,
     ),
     "success": (
-      "base": #67c23a,
+      "base": #0f9f6e,
     ),
     "warning": (
-      "base": #e6a23c,  
+      "base": #d97706,
     ),
     "danger": (
-      "base": #f56c6c,
+      "base": #dc4c5d,
     ),
     "error": (
-      "base": #f56c6c,
+      "base": #dc4c5d,
     ),
     "info": (
-      "base": #909399,
+      "base": #60758e,
     ),
   )
 );

@@ -1,13 +1,13 @@
 <!-- index -->
 <template>
-  <div class="datebase_box">
-    <div class="handle">选择方案</div>
-    <el-select v-model="datebase.scheme" clearable filterable @change="">
+  <div class="datebase_box" role="search" aria-label="方案与模型选择">
+    <label class="handle" for="scheme-selector">选择方案</label>
+    <el-select id="scheme-selector" v-model="datebase.scheme" clearable filterable :loading="isLoadingSchemes" aria-label="选择方案">
       <el-option v-for="item in schemeList" :key="item" :label="item" :value="item"> </el-option>
     </el-select>
-    <el-select v-model="datebase.model" :disabled="!datebase.scheme" clearable filterable @change="" style="width: 200px">
+    <el-select class="model-select" v-model="datebase.model" :disabled="!datebase.scheme || isLoadingModels" clearable filterable :loading="isLoadingModels" aria-label="选择模型">
       <el-option v-for="item in modelList" :key="item.name" :label="item.name" :value="item.name">
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px">
+        <div class="model-option">
           <span>{{ item.name }}</span>
 
           <el-tag type="success" v-if="item.loadStatus">已加载</el-tag>
@@ -15,22 +15,31 @@
         </div>
       </el-option>
     </el-select>
+    <span v-if="loadError" class="load-error" role="status">{{ loadError }}</span>
   </div>
 
   <template v-if="selectModel">
     <template v-if="selectModel.loadStatus">
-      <div ref="box1" :class="['model_box', 'box1', isLeftCollapsed ? 'collapsed' : '']" :style="box1Style" v-show="showSidebar">
+      <div id="left-analysis-panel" ref="box1" :class="['model_box', 'box1', isLeftCollapsed ? 'collapsed' : '']" :style="box1Style" v-show="showSidebar">
         <!-- Collapse Button -->
-        <div class="collapse-tab left-tab" @click="isLeftCollapsed = !isLeftCollapsed" :title="isLeftCollapsed ? '展开面板' : '折叠面板'">
+        <button
+          class="collapse-tab left-tab"
+          type="button"
+          @click="toggleLeftPanel"
+          :aria-label="isLeftCollapsed ? '展开左侧分析面板' : '折叠左侧分析面板'"
+          :aria-expanded="!isLeftCollapsed"
+          aria-controls="left-analysis-panel"
+          :title="isLeftCollapsed ? '展开面板' : '折叠面板'"
+        >
           <svg class="chevron-icon" :class="{ 'rotated': isLeftCollapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="15 18 9 12 15 6"></polyline>
           </svg>
-        </div>
+        </button>
         <div class="tab_list" ref="box1Handle">
           <el-button type="primary" :plain="activeTab != '数据总览'" @pointerdown.stop @click="handleSetActiveTab('数据总览')">数据总览</el-button>
           <el-button type="primary" :plain="activeTab != '公交分析'" @pointerdown.stop @click="handleSetActiveTab('公交分析')">公交分析</el-button>
           <el-button type="primary" :plain="activeTab != '轨迹演示'" @pointerdown.stop @click="handleSetActiveTab('轨迹演示')">轨迹演示</el-button>
-          <el-button type="primary" :plain="activeTab != '出行者分析'" @pointerdown.stop @click="handleSetActiveTab('出行者分析')">出行者分析</el-button>
+          <el-button type="primary" :plain="activeTab != '出行分析'" @pointerdown.stop @click="handleSetActiveTab('出行分析')">出行分析</el-button>
         </div>
         <Transition name="popover-fade">
           <div v-if="activeTab === '公交分析'" class="sub_tab_list_wrapper">
@@ -47,40 +56,51 @@
           <ZDZL v-else-if="isStationAnalysisActive" :key="`zdzl-${selectModel.name}`" :model="selectModel.name" />
           <TJFX v-else-if="isEvaluationAnalysisActive" :key="`tjfx-${selectModel.name}`" :model="selectModel.name" />
           <GJYS v-else-if="activeTab == '轨迹演示'" :key="`gjys-${selectModel.name}`" :model="selectModel.name" />
-          <CXZFX v-else-if="activeTab == '出行者分析'" :key="`cxzfx-${selectModel.name}`" :model="selectModel.name" />
+          <CXZFX v-else-if="activeTab == '出行分析'" :key="`cxzfx-${selectModel.name}`" :model="selectModel.name" />
         </el-scrollbar>
       </div>
-      <div :class="['box2', isRightCollapsed ? 'collapsed' : '']" v-show="isRightPanelVisible">
+      <div id="right-info-panel" :class="['box2', isRightCollapsed ? 'collapsed' : '']" v-show="isRightPanelVisible">
         <!-- Collapse Button -->
-        <div class="collapse-tab right-tab" @click="isRightCollapsed = !isRightCollapsed" :title="isRightCollapsed ? '展开面板' : '折叠面板'">
+        <button
+          class="collapse-tab right-tab"
+          type="button"
+          @click="toggleRightPanel"
+          :aria-label="isRightCollapsed ? '展开右侧信息面板' : '折叠右侧信息面板'"
+          :aria-expanded="!isRightCollapsed"
+          aria-controls="right-info-panel"
+          :title="isRightCollapsed ? '展开面板' : '折叠面板'"
+        >
           <svg class="chevron-icon" :class="{ 'rotated': isRightCollapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="9 18 15 12 9 6"></polyline>
           </svg>
-        </div>
+        </button>
         <el-scrollbar class="flex_column_scroll_box">
           <div id="datavisualization_index_box2"></div>
         </el-scrollbar>
       </div>
 
       <!-- Floating Map Controls Toolbar -->
-      <div :class="['map-controls-toolbar', (isRightPanelVisible && !isRightCollapsed) ? 'with-panel' : 'without-panel']">
+      <div 
+        :class="['map-controls-toolbar', (isRightPanelVisible && !isRightCollapsed) ? 'with-panel' : 'without-panel']"
+        :style="{ '--right-panel-width': `${rightPanelWidth}px` }"
+      >
         <!-- Block 1: Zoom & 3D & Compass -->
         <div class="control-block">
-          <button class="control-btn" @click="handleZoomIn" title="放大">
+          <button class="control-btn" type="button" @click="handleZoomIn" title="放大" aria-label="放大地图">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
           </button>
-          <button class="control-btn" @click="handleZoomOut" title="缩小">
+          <button class="control-btn" type="button" @click="handleZoomOut" title="缩小" aria-label="缩小地图">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
               <line x1="5" y1="12" x2="19" y2="12"></line>
             </svg>
           </button>
-          <button :class="['control-btn', 'td-btn', is3DActive ? 'active' : '']" @click="handleToggle3D" title="3D视图">
+          <button :class="['control-btn', 'td-btn', is3DActive ? 'active' : '']" type="button" @click="handleToggle3D" title="3D视图" aria-label="切换3D视图" :aria-pressed="is3DActive">
             3D
           </button>
-          <button class="control-btn compass-btn" @click="handleResetCompass" title="指北针">
+          <button class="control-btn compass-btn" type="button" @click="handleResetCompass" title="指北针" aria-label="重置地图朝北">
             <div class="pitch-arrows">
               <svg class="caret-up" viewBox="0 0 24 24" width="10" height="10" fill="currentColor">
                 <polygon points="12,4 2,18 22,18"></polygon>
@@ -96,8 +116,13 @@
         <div class="control-block settings-block">
           <button
             :class="['control-btn', showLineWidthPopover ? 'active' : '']"
+            type="button"
             @click="handleToggleLineWidthPopover"
-            :title="effectiveTab === '站点分析' ? '站点大小设置' : effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置'"
+            :title="effectiveTab === '站点客流监测' ? '站点大小设置' : effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置'"
+            :aria-label="effectiveTab === '站点客流监测' ? '打开站点大小设置' : effectiveTab === '轨迹演示' ? '打开车辆模型设置' : '打开线形设置'"
+            :aria-expanded="showLineWidthPopover"
+            aria-controls="line-width-popover"
+            aria-haspopup="dialog"
           >
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
               <line x1="4" y1="7" x2="20" y2="7"></line>
@@ -112,8 +137,8 @@
 
         <!-- Floating Popover for Line Width -->
         <Transition name="popover-fade">
-          <div v-if="showLineWidthPopover" class="line-width-popover" @click.stop>
-            <div class="popover-title">{{ effectiveTab === '站点分析' ? '站点大小设置' : effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置' }}</div>
+          <div v-if="showLineWidthPopover" id="line-width-popover" class="line-width-popover" role="dialog" aria-modal="false" @click.stop>
+            <div class="popover-title">{{ effectiveTab === '站点客流监测' ? '站点大小设置' : effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置' }}</div>
             <div class="popover-content">
               <div class="slider-row" v-if="effectiveTab === '站点客流监测'">
                 <span class="label">
@@ -159,7 +184,7 @@
 
         <!-- Block 3: Highlight state visual-only toggle -->
         <div :class="['control-block', 'info-block', !isSegmentQueryActive ? 'inactive-block' : '']">
-          <button :class="['control-btn', 'info-btn', isSegmentQueryActive ? 'active' : '']" @click="handleToggleSegmentQuery" title="路段信息查询">
+          <button :class="['control-btn', 'info-btn', isSegmentQueryActive ? 'active' : '']" type="button" @click="handleToggleSegmentQuery" title="路段信息查询" aria-label="切换路段信息查询" :aria-pressed="isSegmentQueryActive">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
               <circle cx="12" cy="7" r="1.5"></circle>
               <path d="M11 10h2v8h-2z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path>
@@ -182,7 +207,7 @@
         >
           <div class="popover-header">
             <span class="title">路段详细信息</span>
-            <button class="close-btn" @click.stop="selectedSegment = null">×</button>
+            <button class="close-btn" type="button" aria-label="关闭路段详细信息" @click.stop="selectedSegment = null">×</button>
           </div>
           <div class="popover-body">
             <div class="info-row">
@@ -231,11 +256,13 @@ import { HighlightSegmentLayer } from "./layers/HighlightSegmentLayer.js";
 
 
 const LEFT_PANEL_SCALE = 0.8;
+const LEFT_PANEL_EDGE_X = 0;
+const LEFT_PANEL_EXPANDED_X = 16;
 const LEFT_PANEL_MIN_TOP = 67;
 const box1Ref = useTemplateRef("box1");
 
-const { style: box1Style, y: box1Y } = useDraggable(box1Ref, {
-  initialValue: { x: 16, y: 120 },
+const { style: box1Style, x: box1X, y: box1Y } = useDraggable(box1Ref, {
+  initialValue: { x: LEFT_PANEL_EXPANDED_X, y: 120 },
   handle: useTemplateRef("box1Handle"),
 });
 
@@ -270,8 +297,14 @@ const datebase = ref({
   scheme: "",
   model: "",
 });
-const schemeList = ref(null);
-const modelList = ref(null);
+const schemeList = ref([]);
+const modelList = ref([]);
+const isLoadingSchemes = ref(false);
+const isLoadingModels = ref(false);
+const loadError = ref("");
+let schemeRequestSeq = 0;
+let modelRequestSeq = 0;
+let centerRequestSeq = 0;
 const selectModel = computed(() => {
   const item = modelList.value?.find((item) => item.name === datebase.value.model);
 
@@ -280,25 +313,60 @@ const selectModel = computed(() => {
 
 watch(
   () => datebase.value.scheme,
-  (scheme) => {
+  async (scheme) => {
     datebase.value.model = "";
-    handleGetModelList();
+    modelList.value = [];
+    if (!scheme) return;
+    const list = await handleGetModelList();
+    if (list.length && !datebase.value.model) {
+      datebase.value.model = list[0].name;
+    }
   },
 );
-function handleGetSchemeList() {
-  return getSchemeList().then((res) => {
-    schemeList.value = res.data;
-  });
+async function handleGetSchemeList(options = {}) {
+  const { silent = false, autoSelect = false } = options;
+  const seq = ++schemeRequestSeq;
+  if (!silent) {
+    isLoadingSchemes.value = true;
+    loadError.value = "";
+  }
+  try {
+    const res = await getSchemeList(undefined, { silentError: silent });
+    if (seq !== schemeRequestSeq) return schemeList.value;
+    const list = Array.isArray(res?.data) ? res.data : [];
+    schemeList.value = list;
+    if (autoSelect && !datebase.value.scheme && list.length) {
+      datebase.value.scheme = list[0];
+    } else if (datebase.value.scheme && !list.includes(datebase.value.scheme)) {
+      datebase.value.scheme = list[0] || "";
+    }
+    if (!silent && !list.length) {
+      loadError.value = "暂无可用方案";
+    }
+    return list;
+  } catch (error) {
+    if (seq === schemeRequestSeq && !silent) {
+      loadError.value = error?.message || "方案列表加载失败，请检查后端服务";
+    }
+    return [];
+  } finally {
+    if (seq === schemeRequestSeq && !silent) {
+      isLoadingSchemes.value = false;
+    }
+  }
 }
 
 watch(
   () => datebase.value.model,
   async () => {
+    if (!datebase.value.model) return;
     try {
       if (selectModel.value && !selectModel.value.loadStatus) {
         await loadModel({ name: datebase.value.model });
+        await handleGetModelList({ silent: true });
       }
     } catch (error) {
+      loadError.value = error?.message || "模型加载失败，请稍后重试";
     } finally {
       setMapCenter();
     }
@@ -306,19 +374,56 @@ watch(
 );
 const MapRef = inject("MapRef");
 watch(MapRef, setMapCenter);
-function setMapCenter() {
+async function setMapCenter() {
+  const seq = ++centerRequestSeq;
   if (selectModel.value && selectModel.value.name) {
-    dataCenter({ datasource: selectModel.value.name }).then((res) => {
-      MapRef.value?.setCenter([res.data.x, res.data.y]);
-    });
+    try {
+      const res = await dataCenter({ datasource: selectModel.value.name }, { silentError: true });
+      if (seq !== centerRequestSeq) return;
+      const x = Number(res?.data?.x);
+      const y = Number(res?.data?.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        MapRef.value?.setCenter([x, y]);
+      }
+    } catch (error) {
+      loadError.value = error?.message || "地图中心点加载失败";
+    }
   }
 }
 
-function handleGetModelList() {
-  if (!datebase.value.scheme) return;
-  return getModelList({ schemeName: datebase.value.scheme }).then((res) => {
-    modelList.value = res.data;
-  });
+async function handleGetModelList(options = {}) {
+  const { silent = false } = options;
+  if (!datebase.value.scheme) {
+    modelList.value = [];
+    return [];
+  }
+  const seq = ++modelRequestSeq;
+  if (!silent) {
+    isLoadingModels.value = true;
+    loadError.value = "";
+  }
+  try {
+    const res = await getModelList({ schemeName: datebase.value.scheme }, { silentError: silent });
+    if (seq !== modelRequestSeq) return modelList.value;
+    const list = Array.isArray(res?.data) ? res.data : [];
+    modelList.value = list;
+    if (datebase.value.model && !list.some((item) => item.name === datebase.value.model)) {
+      datebase.value.model = "";
+    }
+    if (!silent && !list.length) {
+      loadError.value = "当前方案暂无可用模型";
+    }
+    return list;
+  } catch (error) {
+    if (seq === modelRequestSeq && !silent) {
+      loadError.value = error?.message || "模型列表加载失败，请检查后端服务";
+    }
+    return [];
+  } finally {
+    if (seq === modelRequestSeq && !silent) {
+      isLoadingModels.value = false;
+    }
+  }
 }
 
 const activeTab = ref("数据总览");
@@ -329,6 +434,13 @@ const effectiveTab = computed(() => {
     return activeTransitSubTab.value;
   }
   return activeTab.value;
+});
+
+const rightPanelWidth = computed(() => {
+  if (effectiveTab.value === '线路客流监测' || effectiveTab.value === '站点客流监测') {
+    return 535;
+  }
+  return 470;
 });
 
 const isRouteAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "线路客流监测");
@@ -388,6 +500,21 @@ const popoverPosition = ref({ x: 0, y: 0 });
 
 let highlightLayer = null;
 let clickListenerId = null;
+
+function toggleLeftPanel() {
+  if (isLeftCollapsed.value) {
+    box1X.value = LEFT_PANEL_EXPANDED_X;
+    isLeftCollapsed.value = false;
+    centerLeftPanel();
+    return;
+  }
+  box1X.value = LEFT_PANEL_EDGE_X;
+  isLeftCollapsed.value = true;
+}
+
+function toggleRightPanel() {
+  isRightCollapsed.value = !isRightCollapsed.value;
+}
 
 function handleToggleSegmentQuery() {
   isSegmentQueryActive.value = !isSegmentQueryActive.value;
@@ -632,6 +759,30 @@ function stopPerfProbe() {
 let zoomListenerId = null;
 let centerListenerId = null;
 let rotateListenerId = null;
+let resizeTimerId = null;
+
+function scheduleMapResize(delay = 0) {
+  if (!MapRef.value?.map) return;
+  if (delay > 0) {
+    if (resizeTimerId) {
+      clearTimeout(resizeTimerId);
+    }
+    resizeTimerId = setTimeout(() => {
+      resizeTimerId = null;
+      MapRef.value?.map?.resize();
+    }, delay);
+    return;
+  }
+  nextTick(() => {
+    MapRef.value?.map?.resize();
+  });
+}
+
+function handleDocumentKeydown(event) {
+  if (event.key !== "Escape") return;
+  showLineWidthPopover.value = false;
+  selectedSegment.value = null;
+}
 
 function handleZoomIn() {
   if (MapRef.value) {
@@ -794,12 +945,8 @@ watch(MapRef, (mapInstance) => {
   setMapCenter();
   
   if (mapInstance) {
-    nextTick(() => {
-      mapInstance.map?.resize();
-    });
-    setTimeout(() => {
-      mapInstance.map?.resize();
-    }, 450);
+    scheduleMapResize();
+    scheduleMapResize(450);
 
     mapZoom.value = mapInstance.zoom;
     if (!isZoomCaptured) {
@@ -869,38 +1016,25 @@ watch(
   [effectiveTab, isLeftCollapsed, isRightCollapsed, showRightPanel, rightPanelHasContent],
   () => {
     if (MapRef.value && MapRef.value.map) {
-      // 1. 立即响应状态变化，重绘视口
-      nextTick(() => {
-        MapRef.value?.map?.resize();
-      });
-      // 2. 在 400ms 的 CSS 伸缩过渡动画结束后再次重绘，确保底图瓦片完全填满全屏
-      setTimeout(() => {
-        MapRef.value?.map?.resize();
-      }, 450);
+      scheduleMapResize();
+      scheduleMapResize(450);
     }
   }
 );
 
 const ins = setInterval(() => {
-  handleGetSchemeList();
-  handleGetModelList();
+  handleGetSchemeList({ silent: true });
+  handleGetModelList({ silent: true });
 }, 1000 * 20);
-
-handleGetSchemeList();
 
 onMounted(() => {
   startPerfProbe();
   observeLeftPanelSize();
   window.addEventListener("resize", centerLeftPanel);
-  handleGetSchemeList()
-    .then(() => {
-      datebase.value.scheme = schemeList.value[0];
-      return handleGetModelList();
-    })
-    .then(() => {
-      datebase.value.model = modelList.value[0].name;
-      observeLeftPanelSize();
-    });
+  document.addEventListener("keydown", handleDocumentKeydown);
+  handleGetSchemeList({ autoSelect: true }).then(() => {
+    observeLeftPanelSize();
+  });
 
   scheduleLayerSyncBurst(8);
 });
@@ -909,8 +1043,13 @@ onUnmounted(() => {
   leftPanelResizeObserver?.disconnect();
   leftPanelResizeObserver = null;
   window.removeEventListener("resize", centerLeftPanel);
+  document.removeEventListener("keydown", handleDocumentKeydown);
   sessionStorage.removeItem("request_params");
   clearInterval(ins);
+  if (resizeTimerId) {
+    clearTimeout(resizeTimerId);
+    resizeTimerId = null;
+  }
   if (syncLayersRetryTimer) {
     clearTimeout(syncLayersRetryTimer);
     syncLayersRetryTimer = null;
@@ -954,6 +1093,7 @@ onUnmounted(() => {
   transform-origin: right center;
   z-index: calc(var(--z-header) + 10);
   max-width: min(46vw, 520px);
+  min-width: 0;
   .handle {
     cursor: default;
     font-size: 16px;
@@ -962,38 +1102,61 @@ onUnmounted(() => {
     text-shadow: none;
     white-space: nowrap;
   }
+  .model-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    min-width: 0;
+
+    span:first-child {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .load-error {
+    max-width: 180px;
+    color: var(--app-coral);
+    font-size: 12px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .el-select {
     width: clamp(150px, 14vw, 210px);
     
     :deep(.el-input__wrapper) {
-      background-color: rgba(255, 255, 255, 0.8) !important;
-      box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.25) inset !important;
-      backdrop-filter: blur(4px);
+      background-color: rgba(251, 253, 255, 0.88) !important;
+      box-shadow: 0 0 0 1px var(--app-border-strong) inset !important;
       border-radius: var(--app-card-radius);
       padding: 6px 12px;
-      transition: all 0.3s ease;
+      transition: background-color 0.2s ease, box-shadow 0.2s ease;
       
       &:hover {
-        background-color: #ffffff !important;
-        box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.5) inset !important;
+        background-color: var(--app-card-bg) !important;
+        box-shadow: 0 0 0 1px rgba(11, 145, 183, 0.45) inset !important;
       }
       
       &.is-focus {
-        background-color: #ffffff !important;
-        box-shadow: 0 0 0 1.5px rgba(21, 105, 222, 1) inset, 0 0 8px rgba(21, 105, 222, 0.15) !important;
+        background-color: var(--app-card-bg) !important;
+        box-shadow: 0 0 0 1.5px var(--app-cyan) inset, var(--app-focus-ring) !important;
       }
       
       .el-input__inner {
-        color: #1a365d !important;
+        color: var(--app-ink) !important;
         font-weight: 500;
         font-size: 15px !important;
         &::placeholder {
-          color: rgba(26, 54, 93, 0.5);
+          color: rgba(18, 48, 79, 0.5);
         }
       }
       
       .el-select__caret {
-        color: #1569de !important;
+        color: var(--app-cyan) !important;
         font-size: 14px;
       }
     }
@@ -1007,15 +1170,20 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
-  width: 430px;
+  width: min(430px, calc((100vw - 48px) / var(--app-panel-scale)));
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
-  min-width: 430px;
+  min-width: min(430px, calc((100vw - 48px) / var(--app-panel-scale)));
   min-height: 0;
   transform-origin: top left;
-  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--app-motion-slow) var(--app-ease-out);
   
   &.collapsed {
-    transform: translateX(calc(-100% + 24px)) !important;
+    transform: translateX(-100%) !important;
+    pointer-events: none;
+
+    .collapse-tab {
+      pointer-events: auto;
+    }
   }
   
   .handle {
@@ -1034,8 +1202,10 @@ onUnmounted(() => {
     .el-button {
       flex: 1;
       margin: 0;
-      min-height: 32px;
+      min-height: 36px;
       border-radius: 4px;
+      min-width: 0;
+      white-space: normal;
     }
   }
 
@@ -1060,25 +1230,29 @@ onUnmounted(() => {
           width: 100%;
           border: none !important;
           background: transparent !important;
-          color: #7f8c8d;
+          color: var(--app-muted);
           font-weight: 500;
           font-size: 13px;
           border-radius: 4px !important;
           padding: 6px 0;
           box-shadow: none !important;
-          transition: all 0.25s ease;
+          transition:
+            background-color var(--app-motion-normal) var(--app-ease-out),
+            color var(--app-motion-normal) var(--app-ease-out),
+            transform var(--app-motion-fast) var(--app-ease-press);
           
           &:hover {
-            color: #1569de;
+            color: var(--app-blue);
+            transform: translateY(-1px);
           }
         }
         
         &.is-active {
           .el-radio-button__inner {
-            background-color: #ffffff !important;
-            color: #1569de !important;
+            background-color: var(--app-card-bg) !important;
+            color: var(--app-blue) !important;
             font-weight: bold;
-            box-shadow: 0 2px 6px rgba(21, 105, 222, 0.15) !important;
+            box-shadow: none !important;
           }
         }
       }
@@ -1101,10 +1275,15 @@ onUnmounted(() => {
   flex-direction: column;
   min-height: 0;
   transform-origin: top right;
-  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: transform var(--app-motion-slow) var(--app-ease-out);
   
   &.collapsed {
-    transform: translateX(calc(100% - 8px)) !important;
+    transform: translateX(calc(100% + var(--app-edge) + var(--space-xs))) !important;
+    pointer-events: none;
+
+    .collapse-tab {
+      pointer-events: auto;
+    }
   }
   
   #datavisualization_index_box2 {
@@ -1118,7 +1297,7 @@ onUnmounted(() => {
 .map-controls-toolbar {
   position: fixed;
   top: calc(var(--app-header-height) + var(--space-sm));
-  transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: right var(--app-motion-slow) var(--app-ease-out);
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
@@ -1126,7 +1305,7 @@ onUnmounted(() => {
   transform-origin: top right;
 
   &.with-panel {
-    right: 456px;
+    right: calc(var(--app-edge) + var(--right-panel-width) * var(--app-panel-scale) + 12px);
   }
 
   &.without-panel {
@@ -1136,50 +1315,66 @@ onUnmounted(() => {
   .control-block {
     display: flex;
     flex-direction: column;
-    background-color: #ffffff;
+    background-color: var(--app-card-bg);
     border-radius: var(--app-card-radius);
-    box-shadow: var(--app-shadow-sm);
     border: 1px solid rgba(21, 105, 222, 0.11);
     overflow: hidden;
-    width: 36px;
+    width: 44px;
 
     .control-btn {
-      width: 36px;
-      height: 36px;
+      width: 44px;
+      height: 44px;
       padding: 0;
       border: none;
       background: transparent;
-      color: #333333;
+      color: var(--app-ink);
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: background-color 0.2s ease, color 0.2s ease;
+      transition:
+        background-color var(--app-motion-normal) var(--app-ease-out),
+        color var(--app-motion-normal) var(--app-ease-out),
+        transform var(--app-motion-fast) var(--app-ease-press);
       outline: none;
 
       &:not(:last-child) {
-        border-bottom: 1px solid #f0f0f0;
+        border-bottom: 1px solid rgba(21, 105, 222, 0.08);
       }
 
       &:hover {
-        background-color: rgba(21, 105, 222, 0.06);
-        color: var(--app-blue);
+        background-color: var(--app-cyan-soft);
+        color: var(--app-cyan-strong);
+      }
+
+      &:active {
+        transform: translateY(1px);
+      }
+
+      svg,
+      .pitch-arrows {
+        transition: transform var(--app-motion-normal) var(--app-ease-out);
+      }
+
+      &:hover svg,
+      &:hover .pitch-arrows {
+        transform: translateY(-1px);
       }
 
       &.td-btn {
         font-size: 11px;
         font-weight: bold;
         font-family: "Outfit", "Inter", sans-serif;
-        color: #2c3e50;
+        color: var(--app-ink);
 
         &.active {
-          color: #409eff;
-          background-color: #ecf5ff;
+          color: var(--app-cyan-strong);
+          background-color: var(--app-cyan-soft);
         }
       }
 
       &.active {
-        color: #409eff;
+        color: var(--app-cyan-strong);
       }
 
       .pitch-arrows {
@@ -1187,28 +1382,28 @@ onUnmounted(() => {
         flex-direction: column;
         align-items: center;
         gap: 1px;
-        color: #333333;
+        color: var(--app-ink);
 
         .caret-up {
-          color: #333333;
+          color: var(--app-ink);
         }
         .caret-down {
-          color: #999999;
+          color: var(--app-muted-soft);
         }
       }
     }
 
     &.info-block {
-      background-color: #79a1eb;
-      border: 1px solid #6b93db;
+      background-color: var(--app-cyan);
+      border: 1px solid rgba(11, 145, 183, 0.72);
       transition: background-color 0.2s ease, border-color 0.2s ease;
 
       &.inactive-block {
-        background-color: #bdc3c7 !important;
-        border-color: #bdc3c7 !important;
+        background-color: color-mix(in oklch, var(--app-muted-soft) 70%, white) !important;
+        border-color: color-mix(in oklch, var(--app-muted-soft) 76%, white) !important;
         
         .info-btn {
-          color: rgba(255, 255, 255, 0.75) !important;
+          color: rgba(247, 251, 255, 0.78) !important;
           
           &:hover {
             background-color: rgba(0, 0, 0, 0.05) !important;
@@ -1217,10 +1412,10 @@ onUnmounted(() => {
       }
 
       .info-btn {
-        color: #ffffff;
+        color: #f7fbff;
 
         &:hover {
-          background-color: #6b93db;
+          background-color: var(--app-cyan-strong);
         }
 
         &.active {
@@ -1231,18 +1426,15 @@ onUnmounted(() => {
   }
 }
 
-/* Line Width Popover Premium Styling */
 .line-width-popover {
   position: absolute;
   right: 48px;
   top: 76px;
-  width: 240px;
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  width: min(240px, calc(100vw - 96px));
+  background: var(--app-panel-bg);
+  border: 1px solid var(--app-border);
   border-radius: var(--app-panel-radius);
-  box-shadow: var(--app-shadow-md);
+  box-shadow: var(--app-shadow-sm);
   padding: var(--space-sm) var(--space-md);
   z-index: calc(var(--z-popover) - 1);
   display: flex;
@@ -1253,8 +1445,8 @@ onUnmounted(() => {
   .popover-title {
     font-size: 13px;
     font-weight: 600;
-    color: #2c3e50;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    color: var(--app-ink);
+    border-bottom: 1px solid rgba(21, 105, 222, 0.09);
     padding-bottom: 6px;
     margin: 0;
   }
@@ -1267,21 +1459,21 @@ onUnmounted(() => {
 
       .label {
         font-size: 11px;
-        color: #7f8c8d;
+        color: var(--app-muted);
         display: flex;
         justify-content: space-between;
         
         .val-text {
           font-family: monospace;
-          color: #409eff;
+          color: var(--app-cyan);
           font-weight: bold;
         }
       }
       
       .el-slider {
         margin-top: 4px;
-        --el-slider-main-bg-color: #409eff;
-        --el-slider-runway-bg-color: #e4e7ed;
+        --el-slider-main-bg-color: var(--app-cyan);
+        --el-slider-runway-bg-color: color-mix(in oklch, var(--app-blue-soft) 70%, white);
       }
     }
 
@@ -1293,10 +1485,10 @@ onUnmounted(() => {
       gap: 12px;
       margin-top: 12px;
       padding-top: 10px;
-      border-top: 1px solid rgba(0, 0, 0, 0.05);
+      border-top: 1px solid rgba(21, 105, 222, 0.09);
       font-size: 11px;
       font-weight: 600;
-      color: #7f8c8d;
+      color: var(--app-muted);
 
       .el-select {
         width: 126px;
@@ -1308,7 +1500,7 @@ onUnmounted(() => {
 /* Slide/fade transition for popover */
 .popover-fade-enter-active,
 .popover-fade-leave-active {
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 .popover-fade-enter-from,
 .popover-fade-leave-to {
@@ -1316,28 +1508,31 @@ onUnmounted(() => {
   transform: translateX(10px);
 }
 
-/* Premium Collapsible Tabs & SVG styling */
 .collapse-tab {
+  --tab-shift-x: 0px;
   position: absolute;
   top: 50%;
-  transform: translateY(-50%);
-  width: 24px;
+  transform: translate(var(--tab-shift-x), -50%);
+  width: 44px;
+  min-width: 44px;
   height: 48px;
-  background: #ffffff;
+  border: 0;
+  background: var(--app-card-bg);
   border: 1px solid rgba(21, 105, 222, 0.15);
-  box-shadow: 0 4px 12px rgba(15, 66, 125, 0.12);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 10;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  color: #1569de;
+  transition:
+    background-color var(--app-motion-normal) var(--app-ease-out),
+    color var(--app-motion-normal) var(--app-ease-out),
+    transform var(--app-motion-normal) var(--app-ease-out);
+  color: var(--app-blue);
   
   &:hover {
-    background: #e8f2ff;
-    color: #1050a8;
-    box-shadow: 0 4px 16px rgba(15, 66, 125, 0.2);
+    background: var(--app-cyan-soft);
+    color: var(--app-cyan-strong);
   }
   
   .chevron-icon {
@@ -1352,26 +1547,33 @@ onUnmounted(() => {
 }
 
 .left-tab {
-  right: -24px;
+  right: -44px;
   border-radius: 0 8px 8px 0;
   border-left: none;
+
+  &:hover {
+    --tab-shift-x: 2px;
+  }
 }
 
 .right-tab {
-  left: -24px;
+  left: -44px;
   border-radius: 8px 0 0 8px;
   border-right: none;
+
+  &:hover {
+    --tab-shift-x: -2px;
+  }
 }
 
 .segment-info-popover {
   position: fixed;
   width: 240px;
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  max-width: calc(100vw - 32px);
+  background: var(--app-panel-bg);
   border: 1px solid rgba(21, 105, 222, 0.2);
   border-radius: var(--app-panel-radius);
-  box-shadow: 0 12px 30px rgba(15, 66, 125, 0.15), 0 4px 10px rgba(0, 0, 0, 0.05);
+  box-shadow: var(--app-shadow-sm);
   padding: 14px 16px;
   z-index: var(--z-popover);
   pointer-events: auto;
@@ -1390,7 +1592,7 @@ onUnmounted(() => {
     .title {
       font-size: 13px;
       font-weight: 700;
-      color: #1569de;
+      color: var(--app-blue);
       letter-spacing: 0.5px;
       font-family: "Outfit", "Inter", sans-serif;
     }
@@ -1398,7 +1600,7 @@ onUnmounted(() => {
     .close-btn {
       background: none;
       border: none;
-      color: #7f8c8d;
+      color: var(--app-muted);
       font-size: 18px;
       cursor: pointer;
       padding: 0 4px;
@@ -1406,7 +1608,7 @@ onUnmounted(() => {
       transition: color 0.2s ease;
 
       &:hover {
-        color: #e74c3c;
+        color: #dc4c5d;
       }
     }
   }
@@ -1423,12 +1625,16 @@ onUnmounted(() => {
       font-size: 12px;
 
       .label {
-        color: #7f8c8d;
+        color: var(--app-muted);
         font-weight: 500;
       }
 
       .val {
-        color: #1a365d;
+        min-width: 0;
+        max-width: 140px;
+        overflow-wrap: anywhere;
+        text-align: right;
+        color: var(--app-ink);
         font-weight: 700;
         font-family: "Outfit", "Inter", sans-serif;
       }
@@ -1443,12 +1649,12 @@ onUnmounted(() => {
   }
 
   .box1 {
-    width: 400px;
-    min-width: 400px;
+    width: min(400px, calc((100vw - 48px) / var(--app-panel-scale)));
+    min-width: min(400px, calc((100vw - 48px) / var(--app-panel-scale)));
   }
 
   .map-controls-toolbar.with-panel {
-    right: 400px;
+    right: calc(var(--app-edge) + var(--right-panel-width) * var(--app-panel-scale) + 12px);
   }
 }
 
@@ -1456,6 +1662,39 @@ onUnmounted(() => {
   .datebase_box {
     top: calc(var(--app-header-height) + var(--space-lg));
     right: var(--app-edge);
+    max-width: calc(100vw - (var(--app-edge) * 2));
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .map-controls-toolbar.with-panel {
+    right: var(--app-edge);
+  }
+}
+
+@media (max-width: 640px) {
+  .datebase_box {
+    left: var(--app-edge);
+    transform: none;
+
+    .handle,
+    .load-error {
+      width: 100%;
+      text-align: right;
+    }
+
+    .el-select {
+      width: min(100%, 190px);
+    }
+  }
+
+  .box1 {
+    width: calc((100vw - 32px) / var(--app-panel-scale));
+    min-width: calc((100vw - 32px) / var(--app-panel-scale));
+
+    .tab_list {
+      flex-wrap: wrap;
+    }
   }
 }
 </style>

@@ -2,13 +2,13 @@
 <template>
   <div class="MapLayout">
     <MHeader></MHeader>
-    <div id="mapRoot"></div>
+    <div id="mapRoot" role="region" aria-label="公交数字孪生地图"></div>
     <RouterView></RouterView>
   </div>
 </template>
 
 <script setup>
-import { inject, shallowRef } from "vue";
+import { onBeforeUnmount, onMounted, provide, shallowRef } from "vue";
 import MHeader from "./MHeader.vue";
 import { MyMap, MapLayer, DEFAULT_MAP_LAYER_STYLE, CityBuildingsLayer } from "@/mymap/index.js";
 
@@ -42,6 +42,11 @@ onMounted(() => {
     MapRef.value.addLayer(_CityBuildingsLayer);
   }
 });
+
+onBeforeUnmount(() => {
+  MapRef.value?.dispose?.();
+  MapRef.value = null;
+});
 </script>
 
 <style lang="scss" scoped>
@@ -53,7 +58,7 @@ onMounted(() => {
   height: 100vh;
   min-width: 0;
   color: var(--app-ink);
-  background: #e8f2ff;
+  background: var(--app-surface-soft);
   #mapRoot {
     width: 100%;
     height: 100%;

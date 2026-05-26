@@ -8,12 +8,12 @@ export class RouteLayer extends NetworkLayer {
   constructor(opt = {}) {
     super({
       color: opt.color ?? 0x1f78b4,
-      opacity: opt.opacity ?? 0.95,
+      opacity: opt.opacity ?? 1,
       fullRequest: opt.fullRequest || getRouteFullBinary,
       ...opt,
     });
     this.color = colorToCss(opt.color ?? 0x1f78b4);
-    this.opacity = opt.opacity ?? 0.95;
+    this.opacity = opt.opacity ?? 1;
   }
 
   currentTileDetail() {

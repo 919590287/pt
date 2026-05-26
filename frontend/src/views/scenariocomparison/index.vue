@@ -1,4 +1,3 @@
-<!-- Scenario Comparison (场景对比) View -->
 <template>
   <div ref="panelRef" :style="panelStyle" class="comparison-panel">
     <!-- Panel Header / Drag Handle (Unified MCard2 Style) -->
@@ -9,9 +8,8 @@
           <line x1="12" y1="20" x2="12" y2="4"></line>
           <line x1="6" y1="20" x2="6" y2="14"></line>
         </svg>
-        <span>场景绩效对比 (Scenario Comparison)</span>
+        <span>场景绩效对比</span>
       </div>
-      <div class="header-subtitle">多维指标看板</div>
     </div>
 
     <!-- Panel Scrollable Body -->
@@ -27,13 +25,13 @@
 
           <div class="selection-grid">
             <div class="sel-row">
-              <span class="sel-label base-glow">基准场景 (A)</span>
+              <span class="sel-label base-label">基准场景 (A)</span>
               <el-select v-model="selectedBase" class="block-select" size="small">
                 <el-option label="现状基准仿真场景 (福田核心区)" value="base" />
               </el-select>
             </div>
             <div class="sel-row">
-              <span class="sel-label opt-glow">对比场景 (B)</span>
+              <span class="sel-label opt-label">对比场景 (B)</span>
               <el-select v-model="selectedOpt" class="block-select" size="small" @change="handleOptChange">
                 <el-option label="高峰拥堵通勤保障场景 (发车+优先道)" value="peak" />
                 <el-option label="低碳绿色环保公交场景 (全电+换乘)" value="green" />
@@ -120,8 +118,8 @@
         <!-- STEP 3: Radar Chart Analysis -->
         <div class="section-card">
           <div class="card-title">
-            <span class="step-num">DIA</span>
-            <span>多维雷达图综合绩效评估</span>
+            <span class="step-num">03</span>
+            <span>综合绩效评估</span>
           </div>
           <div class="chart-container">
             <el-auto-resizer>
@@ -140,8 +138,8 @@
         <!-- STEP 4: Flow Line Curve Chart -->
         <div class="section-card">
           <div class="card-title">
-            <span class="step-num">FLO</span>
-            <span>客流小时运载效率对比</span>
+            <span class="step-num">04</span>
+            <span>小时运载效率对比</span>
           </div>
           <div class="chart-container line-chart-h">
             <el-auto-resizer>
@@ -303,21 +301,21 @@ const radarOption = computed(() => {
       trigger: "item",
       backgroundColor: "rgba(255, 255, 255, 0.95)",
       borderColor: "rgba(21, 105, 222, 0.2)",
-      textStyle: { color: "#2c3e50", fontSize: 11 }
+      textStyle: { color: "#12304f", fontSize: 11 }
     },
     legend: {
       bottom: 0,
       icon: "circle",
       itemWidth: 8,
       itemHeight: 8,
-      textStyle: { color: "#7f8c8d", fontSize: 11 },
+      textStyle: { color: "#60758e", fontSize: 11 },
       data: ["基准场景 (A)", "对比场景 (B)"]
     },
     radar: {
       center: ["50%", "45%"],
       radius: "60%",
       axisName: {
-        color: "#7f8c8d",
+        color: "#60758e",
         fontSize: 10,
         fontFamily: "sans-serif",
         fontWeight: 600
@@ -349,9 +347,9 @@ const radarOption = computed(() => {
           {
             value: [78, 65, 68, 50, 80, 60],
             name: "基准场景 (A)",
-            itemStyle: { color: "#a855f7" },
+            itemStyle: { color: "#5167d6" },
             lineStyle: { width: 1.5, type: "dashed" },
-            areaStyle: { color: "rgba(168, 85, 247, 0.04)" }
+            areaStyle: { color: "rgba(81, 103, 214, 0.055)" }
           },
           {
             value: optValues,
@@ -382,7 +380,7 @@ const lineOption = computed(() => {
       trigger: "axis",
       backgroundColor: "rgba(255, 255, 255, 0.95)",
       borderColor: "rgba(21, 105, 222, 0.2)",
-      textStyle: { color: "#2c3e50", fontSize: 11 }
+      textStyle: { color: "#12304f", fontSize: 11 }
     },
     legend: {
       top: 0,
@@ -390,7 +388,7 @@ const lineOption = computed(() => {
       icon: "circle",
       itemWidth: 8,
       itemHeight: 8,
-      textStyle: { color: "#7f8c8d", fontSize: 10 },
+      textStyle: { color: "#60758e", fontSize: 10 },
       data: ["基准场景", "对比场景"]
     },
     grid: {
@@ -404,15 +402,15 @@ const lineOption = computed(() => {
       type: "category",
       boundaryGap: false,
       data: ["07:00", "08:00", "09:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00", "22:00"],
-      axisLabel: { color: "#7f8c8d", fontSize: 9 },
+      axisLabel: { color: "#60758e", fontSize: 9 },
       axisLine: { lineStyle: { color: "rgba(0,0,0,0.06)" } }
     },
     yAxis: {
       type: "value",
       name: "人次/10min",
-      nameTextStyle: { color: "#7f8c8d", fontSize: 9 },
+      nameTextStyle: { color: "#60758e", fontSize: 9 },
       splitLine: { lineStyle: { color: "rgba(0,0,0,0.04)" } },
-      axisLabel: { color: "#7f8c8d", fontSize: 9 }
+      axisLabel: { color: "#60758e", fontSize: 9 }
     },
     series: [
       {
@@ -421,7 +419,7 @@ const lineOption = computed(() => {
         smooth: true,
         showSymbol: false,
         data: [30, 42, 85, 120, 88, 70, 85, 135, 95, 60],
-        itemStyle: { color: "#a855f7" },
+        itemStyle: { color: "#5167d6" },
         lineStyle: { width: 1.5, type: "dashed" }
       },
       {
@@ -472,13 +470,11 @@ onUnmounted(() => {
 .comparison-panel {
   position: fixed;
   z-index: var(--z-panel);
-  width: 460px;
+  width: min(460px, calc((100vw - 40px) / var(--app-panel-scale)));
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
   background: var(--app-panel-bg);
   border: 1px solid var(--app-border);
-  box-shadow: var(--app-shadow-md);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
+  box-shadow: var(--app-shadow-sm);
   border-radius: var(--app-panel-radius);
   display: flex;
   flex-direction: column;
@@ -487,24 +483,34 @@ onUnmounted(() => {
   overflow: hidden;
   scale: var(--app-panel-scale);
   transform-origin: top left;
-  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+  transition: border-color 0.2s ease;
   
   &:hover {
-    border-color: rgba(21, 105, 222, 0.35);
-    box-shadow: 0 12px 35px rgba(15, 66, 125, 0.18);
+    border-color: rgba(21, 105, 222, 0.28);
+  }
+}
+
+@media (max-width: 640px) {
+  .comparison-panel {
+    width: calc((100vw - 32px) / var(--app-panel-scale));
+    max-height: calc((100vh - 104px) / var(--app-panel-scale));
   }
 }
 
 .panel-header {
-  cursor: move;
+  cursor: grab;
   display: flex;
   padding: var(--space-xs) var(--space-md);
   gap: var(--space-sm);
   align-items: center;
   min-height: 42px;
-  background: linear-gradient(to bottom, rgba(21, 105, 222, 0.12) 0%, rgba(21, 105, 222, 0.04) 100%);
+  background: rgba(21, 105, 222, 0.055);
   color: var(--app-blue);
   border-bottom: 1px solid rgba(21, 105, 222, 0.15);
+
+  &:active {
+    cursor: grabbing;
+  }
 
   .header-title {
     display: flex;
@@ -527,20 +533,10 @@ onUnmounted(() => {
     .icon {
       width: 17px;
       height: 17px;
-      color: #1569de;
+      color: var(--app-blue);
     }
   }
 
-  .header-subtitle {
-    font-size: 10px;
-    color: var(--app-blue);
-    border: 1px solid rgba(21, 105, 222, 0.25);
-    padding: 1px 5px;
-    border-radius: 4px;
-    background: rgba(21, 105, 222, 0.08);
-    font-family: "Outfit", monospace;
-    font-weight: 600;
-  }
 }
 
 .panel-content {
@@ -557,8 +553,8 @@ onUnmounted(() => {
 
 /* Steps Cards styling */
 .section-card {
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(21, 105, 222, 0.11);
+  background: rgba(253, 254, 255, 0.72);
+  border: 1px solid rgba(21, 105, 222, 0.08);
   border-radius: var(--app-card-radius);
   padding: var(--space-sm);
   position: relative;
@@ -609,15 +605,15 @@ onUnmounted(() => {
   .sel-label {
     font-size: 10.5px;
     font-weight: bold;
-    color: #7f8c8d;
+    color: var(--app-muted);
   }
 
-  .base-glow {
-    color: #a855f7;
+  .base-label {
+    color: var(--app-indigo);
   }
 
-  .opt-glow {
-    color: #1569de;
+  .opt-label {
+    color: var(--app-blue);
   }
 
   .block-select {
@@ -642,11 +638,24 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: var(--space-xs);
   min-height: 72px;
+  transition:
+    background-color var(--app-motion-normal) var(--app-ease-out),
+    border-color var(--app-motion-normal) var(--app-ease-out);
+
+  &:hover {
+    background: rgba(21, 105, 222, 0.045);
+    border-color: rgba(21, 105, 222, 0.18);
+
+    .arrow {
+      transform: translateX(1px);
+      color: var(--app-blue);
+    }
+  }
 
   .kpi-label {
     font-size: 10px;
     font-weight: 600;
-    color: #7f8c8d;
+    color: var(--app-muted);
     line-height: 1.35;
   }
 
@@ -659,7 +668,10 @@ onUnmounted(() => {
     .arrow {
       width: 11px;
       height: 11px;
-      color: #7f8c8d;
+      color: var(--app-muted);
+      transition:
+        color var(--app-motion-normal) var(--app-ease-out),
+        transform var(--app-motion-normal) var(--app-ease-out);
     }
 
     .val-num {
@@ -675,11 +687,11 @@ onUnmounted(() => {
     }
 
     .base-color {
-      color: #9b59b6;
+      color: var(--app-indigo);
     }
 
     .opt-color {
-      color: #1569de;
+      color: var(--app-blue);
     }
   }
 
@@ -694,9 +706,9 @@ onUnmounted(() => {
   }
 
   .green-badge {
-    background: #e8f8f5;
-    border: 1px solid rgba(46, 204, 113, 0.35);
-    color: #27ae60;
+    background: var(--app-emerald-soft);
+    border: 1px solid rgba(15, 159, 110, 0.28);
+    color: var(--app-emerald-strong);
   }
 }
 
@@ -704,9 +716,9 @@ onUnmounted(() => {
 .chart-container {
   width: 100%;
   height: 188px;
-  background: #ffffff;
+  background: var(--app-card-bg);
   border-radius: var(--app-card-radius);
-  border: 1px solid rgba(0, 0, 0, 0.04);
+  border: 1px solid rgba(21, 105, 222, 0.08);
   padding: var(--space-xs);
   box-sizing: border-box;
 }

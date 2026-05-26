@@ -179,7 +179,7 @@ const healthScoreChartOption = computed(() => {
           width: 14,
           itemStyle: {
             color: new linearGradient(0, 0, 1, 0, [
-              { offset: 0, color: "#10b981" },
+              { offset: 0, color: "#0b91b7" },
               { offset: 1, color: "#1569de" }
             ])
           }
@@ -199,7 +199,7 @@ const healthScoreChartOption = computed(() => {
           show: true,
           offsetCenter: [0, "-22%"],
           fontSize: 13,
-          color: "#718096",
+          color: "#60758e",
           fontWeight: "bold"
         },
         detail: {
@@ -236,7 +236,7 @@ const dimensionChartOption = computed(() => {
         color: "#2d3748",
         fontSize: 12
       },
-      formatter: "{b}: <strong style='color:#1569de;'>{c}分</strong>"
+      formatter: "{b}: <strong style='color:#0b91b7;'>{c}分</strong>"
     },
     grid: {
       top: 15,
@@ -255,7 +255,7 @@ const dimensionChartOption = computed(() => {
         }
       },
       axisLabel: {
-        color: "#718096",
+        color: "#60758e",
         fontSize: 10
       }
     },
@@ -308,13 +308,13 @@ export default {
 
 .search-card {
   border: 1px solid rgba(21, 105, 222, 0.15) !important;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04) !important;
+  box-shadow: none !important;
   border-radius: var(--app-panel-radius) !important;
-  background-color: #ffffff;
+  background: var(--app-card-bg-tint);
   overflow: hidden;
 
   :deep(.MCard_title_box) {
-    background-color: rgba(21, 105, 222, 0.05) !important;
+    background: rgba(21, 105, 222, 0.045) !important;
     border-bottom: 1px solid rgba(21, 105, 222, 0.1) !important;
   }
 }
@@ -333,7 +333,7 @@ export default {
     .label {
       font-size: 13px;
       font-weight: 600;
-      color: #4a5568;
+      color: var(--app-muted);
     }
 
     .custom-select {
@@ -355,17 +355,15 @@ export default {
     
     .evaluate-btn {
       width: 100%;
-      background: linear-gradient(135deg, #1569de 0%, #1569de 100%);
+      background: var(--app-blue);
       border: none;
       padding: 12px;
       border-radius: var(--app-card-radius);
       font-weight: 600;
-      box-shadow: 0 4px 12px rgba(21, 105, 222, 0.2);
-      transition: all 0.3s ease;
+      transition: background-color 0.2s ease;
 
       &:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 16px rgba(21, 105, 222, 0.35);
+        background: var(--app-blue-strong);
       }
     }
   }
@@ -375,9 +373,9 @@ export default {
 .evaluation-report-card {
   --theme-color: #1569de;
   width: 470px;
-  background-color: #ffffff;
+  background: var(--app-card-bg-tint);
   border-radius: var(--app-panel-radius);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: none;
 }
 
 .report-panel {
@@ -415,7 +413,7 @@ export default {
   margin-bottom: var(--space-lg);
   
   .metric-card {
-    background: linear-gradient(135deg, #ffffff 0%, #fcfdfe 100%);
+    background: var(--app-card-bg-tint);
     border: 1px solid rgba(21, 105, 222, 0.12);
     border-radius: var(--app-card-radius);
     padding: var(--space-sm);
@@ -423,19 +421,18 @@ export default {
     flex-direction: column;
     gap: 4px;
     box-sizing: border-box;
-    box-shadow: 0 2px 8px rgba(21, 105, 222, 0.02);
     position: relative;
     
     .label {
       font-size: 11px;
-      color: #718096;
+      color: var(--app-muted);
       font-weight: 600;
     }
     
     .value {
       font-size: 20px;
       font-weight: bold;
-      color: #1569de;
+      color: var(--app-blue);
       font-family: "Outfit", "Inter", sans-serif;
       margin-top: 2px;
     }
@@ -451,12 +448,12 @@ export default {
 
       &.excel {
         background: rgba(16, 185, 129, 0.1);
-        color: #10b981;
+        color: var(--app-emerald-strong);
       }
 
       &.good {
         background: rgba(21, 105, 222, 0.1);
-        color: #1569de;
+        color: var(--app-blue);
       }
     }
   }
@@ -469,7 +466,7 @@ export default {
   .section-title {
     font-size: 14px;
     font-weight: bold;
-    color: #1a365d;
+    color: var(--app-ink);
     margin-bottom: 12px;
   }
 }

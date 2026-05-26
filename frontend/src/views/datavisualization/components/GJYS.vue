@@ -855,7 +855,7 @@ onUnmounted(() => {
     .title {
       flex: 1;
       font-weight: bold;
-      color: #1a365d;
+      color: var(--app-ink);
     }
 
     :deep(.body) {
@@ -875,7 +875,7 @@ onUnmounted(() => {
     padding: var(--space-xs) 2px 2px;
 
     .build-title {
-      color: #1a365d;
+      color: var(--app-ink);
       font-size: 13px;
       font-weight: 700;
     }
@@ -900,14 +900,14 @@ onUnmounted(() => {
 
     .label {
       font-size: 14px;
-      color: #4a5568;
+      color: var(--app-muted);
       font-weight: 500;
     }
 
     .time-text {
       font-family: "Courier New", Courier, monospace;
       font-weight: bold;
-      color: #3b82f6;
+      color: #2f75d6;
       font-size: 16px;
     }
 
@@ -939,7 +939,7 @@ onUnmounted(() => {
 
       .stat-label {
         font-size: 11px;
-        color: #718096;
+        color: var(--app-muted);
         margin-bottom: 4px;
       }
 
@@ -948,17 +948,17 @@ onUnmounted(() => {
         font-weight: bold;
         font-family: "Outfit", "Inter", sans-serif;
 
-        &.text-primary { color: #3b82f6; }
-        &.text-success { color: #10b981; }
-        &.text-warning { color: #f59e0b; }
+        &.text-primary { color: var(--app-blue); }
+        &.text-success { color: var(--app-emerald-strong); }
+        &.text-warning { color: var(--app-amber); }
         &.mode-bus { color: #16a34a; }
-        &.mode-subway { color: #dc2626; }
+        &.mode-subway { color: #dc4c5d; }
         &.mode-car { color: #2563eb; }
 
         .unit {
           font-size: 11px;
           font-weight: normal;
-          color: #718096;
+          color: var(--app-muted);
           margin-left: 2px;
         }
       }
@@ -985,7 +985,7 @@ onUnmounted(() => {
     border-bottom: 1px solid rgba(21, 105, 222, 0.12);
 
     .vehicle-id {
-      color: #1a365d;
+      color: var(--app-ink);
       font-size: 15px;
       font-weight: 800;
       word-break: break-all;
@@ -1020,13 +1020,13 @@ onUnmounted(() => {
     }
 
     .label {
-      color: #718096;
+      color: var(--app-muted);
       font-size: 11px;
       font-weight: 600;
     }
 
     .value {
-      color: #1a365d;
+      color: var(--app-ink);
       font-size: 13px;
       font-weight: 700;
       line-height: 1.35;
@@ -1040,7 +1040,7 @@ onUnmounted(() => {
   }
 
   .section-title {
-    color: #1a365d;
+    color: var(--app-ink);
     font-size: 13px;
     font-weight: 800;
     margin-bottom: var(--space-xs);
@@ -1063,7 +1063,7 @@ onUnmounted(() => {
     padding: var(--space-xs);
     border-radius: var(--app-card-radius);
     color: #40506a;
-    background: #ffffff;
+    background: var(--app-card-bg);
     border: 1px solid rgba(226, 232, 240, 0.9);
 
     &.previous {
@@ -1077,7 +1077,7 @@ onUnmounted(() => {
     }
 
     .station-index {
-      color: #1569de;
+      color: var(--app-blue);
       font-size: 12px;
       font-weight: 800;
       text-align: right;
@@ -1085,7 +1085,7 @@ onUnmounted(() => {
 
     .station-name {
       min-width: 0;
-      color: #1a365d;
+      color: var(--app-ink);
       font-size: 12px;
       font-weight: 650;
       white-space: nowrap;

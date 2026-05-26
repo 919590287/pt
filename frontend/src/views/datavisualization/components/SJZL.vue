@@ -358,7 +358,7 @@ const ztsp_fgl_options = computed(() => {
       },
       subtextStyle: {
         fontSize: 12,
-        color: "#7f8c8d",
+        color: "#60758e",
       },
     },
     series: [
@@ -383,7 +383,7 @@ const ztsp_fgl_options = computed(() => {
             itemStyle: {
               color: new proxy.$echarts.graphic.LinearGradient(0, 0, 0, 1, [
                 { offset: 0, color: "#34d399" },
-                { offset: 1, color: "#10b981" }
+                { offset: 1, color: "#0f9f6e" }
               ]),
             },
           },
@@ -522,7 +522,7 @@ const ztsp_fdl_options = computed(() => {
       },
       subtextStyle: {
         fontSize: 11,
-        color: "#7f8c8d",
+        color: "#60758e",
       },
     },
     series: [
@@ -546,8 +546,8 @@ const ztsp_fdl_options = computed(() => {
             name: "公交",
             itemStyle: {
               color: new proxy.$echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: "#60a5fa" },
-                { offset: 1, color: "#3b82f6" }
+                { offset: 0, color: "#58b8d4" },
+                { offset: 1, color: "#2f75d6" }
               ]),
             },
           },
@@ -557,7 +557,7 @@ const ztsp_fdl_options = computed(() => {
             itemStyle: {
               color: new proxy.$echarts.graphic.LinearGradient(0, 0, 0, 1, [
                 { offset: 0, color: "#f87171" },
-                { offset: 1, color: "#ef4444" }
+                { offset: 1, color: "#dc4c5d" }
               ]),
             },
           },
@@ -566,8 +566,8 @@ const ztsp_fdl_options = computed(() => {
             name: "地铁",
             itemStyle: {
               color: new proxy.$echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: "#60a5fa" },
-                { offset: 1, color: "#4b9cff" }
+                { offset: 0, color: "#58b8d4" },
+                { offset: 1, color: "#3aaed0" }
               ]),
             },
           },
@@ -577,7 +577,7 @@ const ztsp_fdl_options = computed(() => {
             itemStyle: {
               color: new proxy.$echarts.graphic.LinearGradient(0, 0, 0, 1, [
                 { offset: 0, color: "#fbbf24" },
-                { offset: 1, color: "#f59e0b" }
+                { offset: 1, color: "#d97706" }
               ]),
             },
           },
@@ -910,10 +910,10 @@ onUnmounted(() => {
   --theme-color: var(--el-color-primary);
   width: 470px;
   &.theme_ec7602 {
-    --theme-color: #ec7602;
+    --theme-color: #d97706;
   }
   &.theme_9acd32 {
-    --theme-color: #9acd32;
+    --theme-color: #0f9f6e;
   }
   &.theme_primary_blue {
     --theme-color: #1569de;
@@ -980,12 +980,11 @@ onUnmounted(() => {
 }
 
 .row1, .row2 {
-  background: linear-gradient(135deg, #ffffff 0%, #fcfdfe 100%);
+  background: var(--app-card-bg-tint);
   border: 1px solid rgba(from var(--theme-color) r g b / 0.12);
   border-radius: var(--app-card-radius);
-  box-shadow: 0 4px 12px rgba(from var(--theme-color) r g b / 0.03);
   padding: 12px 14px;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: border-color 0.2s ease, background-color 0.2s ease;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -993,12 +992,9 @@ onUnmounted(() => {
   box-sizing: border-box;
 
   &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(from var(--theme-color) r g b / 0.08);
     border-color: rgba(from var(--theme-color) r g b / 0.25);
     
     .icon-badge {
-      transform: scale(1.05);
       background: rgba(from var(--theme-color) r g b / 0.1);
     }
   }
@@ -1007,7 +1003,7 @@ onUnmounted(() => {
 .item1 {
   .title {
     font-size: 13px;
-    color: #4a5568;
+    color: var(--app-muted);
     font-weight: 600;
     line-height: 18px;
   }
@@ -1021,7 +1017,7 @@ onUnmounted(() => {
   }
   .unit {
     font-size: 11px;
-    color: #7f8c8d;
+    color: var(--app-muted);
     text-align: left;
     margin-top: 2px;
     font-weight: 500;
@@ -1039,7 +1035,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color 0.2s ease;
   
   .icon {
     width: 18px;
@@ -1057,7 +1053,7 @@ onUnmounted(() => {
   
   .indicator-label {
     font-size: 9px;
-    color: #94a3b8;
+    color: var(--app-muted-soft);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -1074,7 +1070,7 @@ onUnmounted(() => {
   .indicator-fill {
     height: 100%;
     border-radius: 2px;
-    background: linear-gradient(90deg, rgba(from var(--theme-color) r g b / 0.5) 0%, var(--theme-color) 100%);
+    background: var(--theme-color);
   }
 }
 
@@ -1085,7 +1081,7 @@ onUnmounted(() => {
   
   .title {
     font-size: 13px;
-    color: #4a5568;
+    color: var(--app-muted);
     font-weight: 600;
     line-height: 18px;
     margin-bottom: 4px;
@@ -1100,7 +1096,7 @@ onUnmounted(() => {
   
   .unit {
     font-size: 11px;
-    color: #7f8c8d;
+    color: var(--app-muted);
     margin-left: 4px;
     font-weight: 500;
   }
@@ -1120,7 +1116,7 @@ onUnmounted(() => {
   
   .title {
     font-size: 13px;
-    color: #4a5568;
+    color: var(--app-muted);
     font-weight: 600;
     line-height: 18px;
     margin-bottom: 2px;
