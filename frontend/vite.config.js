@@ -10,7 +10,6 @@ import svgLoader from "vite-svg-loader";
 // https://vite.dev/config/
 export default defineConfig(({ mode, command }) => {
   const { VITE_APP_ENV, VITE_APP_BASE_API } = loadEnv(mode, process.cwd());
-  console.log(VITE_APP_BASE_API);
   return {
     plugins: [
       autoImport({

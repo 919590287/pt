@@ -156,8 +156,6 @@ function stopFlightSimulation(onEnd = () => {}) {
 
 // 初始化图层
 function initLayer(_routeData) {
-  console.log('initLayer', _routeData)
-
   if (dataId == _routeData?.id) return
   clearFlightGraphics()
   if ((_routeData?.points?.length || 0) < 2) return

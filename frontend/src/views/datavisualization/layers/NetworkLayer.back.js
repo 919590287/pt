@@ -375,7 +375,6 @@ export class NetworkTile {
       this.pickColorNum = pickColorNum;
       this._loadStatus = 2;
     } catch (error) {
-      console.log(error);
       this._loadStatus = 3;
     }
     return this;

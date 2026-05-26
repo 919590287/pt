@@ -70,10 +70,10 @@ const headerMenus = [
   text-overflow: ellipsis;
   white-space: nowrap;
   padding-right: var(--space-md);
-  font-family: "PangMenZhengDaoBiaoTiTi";
-  font-size: clamp(20px, 1.45vw, 25px);
-  color: #f7fbff;
-  font-weight: 400;
+  font-family: var(--app-font-display);
+  font-size: 1.42rem;
+  color: var(--app-surface);
+  font-weight: 800;
   letter-spacing: 0;
   text-shadow: none;
 }
@@ -99,8 +99,8 @@ const headerMenus = [
     width: var(--nav-item-width);
     min-width: var(--nav-item-width);
     height: var(--nav-item-height);
-    color: #f7fbff;
-    font-size: clamp(15px, 1.05vw, 18px);
+    color: var(--app-surface);
+    font-size: 1rem;
     font-weight: 600;
     display: flex;
     align-items: center;
@@ -118,11 +118,11 @@ const headerMenus = [
 
     &:hover {
       background-image: url("@/assets/images/header/nav-bg-active.png");
-      color: #f7fbff;
+      color: var(--app-surface);
       transform: translateY(-1px);
     }
     &.active {
-      color: #f7fbff;
+      color: var(--app-surface);
       background-image: url("@/assets/images/header/nav-bg-active.png");
     }
     &:active {
@@ -182,11 +182,11 @@ const headerMenus = [
   }
 
   .title-box {
-    font-size: 21px;
+    font-size: 1.3rem;
   }
 
   .nav-list .item {
-    font-size: 16px;
+    font-size: 0.98rem;
   }
 
   .header-container.has-model-selector {
@@ -205,7 +205,7 @@ const headerMenus = [
   }
 
   .title-box {
-    font-size: 18px;
+    font-size: 1.12rem;
   }
 
   .nav-list {
@@ -213,7 +213,7 @@ const headerMenus = [
   }
 
   .nav-list .item {
-    font-size: 14px;
+    font-size: 0.9rem;
   }
 }
 </style>

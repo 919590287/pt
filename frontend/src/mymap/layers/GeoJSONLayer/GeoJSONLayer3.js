@@ -28,7 +28,7 @@ export function parserGeoJSON(text, options = {}) {
     const blob = new Blob([workerCode], { type: "application/javascript" });
     const workerUrl = URL.createObjectURL(blob);
     worker.postMessage({ key: "func", time: new Date().getTime(), data: workerUrl });
-  }).catch(console.log);
+  }).catch(() => {});
 }
 
 export class ColorBar2D {
@@ -85,8 +85,7 @@ export class ColorBar2D {
     // 先清空画布
     context2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
     const MIN = this.min;
-    const MAX = this.max;
-    // console.log(this.list);
+    const MAX = this.max;;
     if (MIN < MAX) {
       for (const { min, max, color, use } of this.list) {
         if (use) {
@@ -107,8 +106,7 @@ export class ColorBar2D {
           break;
         }
       }
-    }
-    // console.log(this.canvas.toDataURL("image/png"));
+    };
     this.texture.needsUpdate = true;
   }
 
@@ -118,8 +116,7 @@ export class ColorBar2D {
     // 先清空画布
     context2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
     const MIN = this.min;
-    const MAX = this.max;
-    // console.log(this.list);
+    const MAX = this.max;;
     if (MIN < MAX) {
       const gradient = context2D.createLinearGradient(0, 0, canvas2D.width, 0);
       let gradientLastP = 0;
@@ -344,12 +341,10 @@ export class GeoJSONLayer extends Layer {
     this.pointIcon = pointIcon;
     this.pointTexture = textureLoader.load(
       pointIcon,
-      (data) => {
-        // console.log("setPointIcon success", data, pointIcon);
+      (data) => {;
       },
       null,
-      (error) => {
-        // console.log("setPointIcon error", error, pointIcon);
+      (error) => {;
       },
     );
     this.pointMaterial.defines.USE_MAP = !!this.pointIcon;
@@ -591,8 +586,7 @@ export class GeoJSONLayer extends Layer {
       this.polygonPickItemMaterial.uniforms.min3DValue.value = properties.min;
       this.polygonPickItemMaterial.uniforms.max3DValue.value = properties.max;
       this.polygonBorderMaterial.uniforms.min3DValue.value = properties.min;
-      this.polygonBorderMaterial.uniforms.max3DValue.value = properties.max;
-      // console.log(properties);
+      this.polygonBorderMaterial.uniforms.max3DValue.value = properties.max;;
     }
 
     this.polygonMaterial.defines.USE_3D = !!this.polygonValue3D;
@@ -1135,7 +1129,6 @@ export class GeoJSONPointListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      console.log(error);
       this.valueMap = {};
       this.setValueKey(this._valuekey);
     }
@@ -1153,7 +1146,6 @@ export class GeoJSONPointListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
-      console.log(error);
     }
   }
 }
@@ -1441,7 +1433,6 @@ export class GeoJSONLineListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      console.log(error);
       this.valueMap = {};
       this.setValueKey(this._valuekey);
     }
@@ -1459,7 +1450,6 @@ export class GeoJSONLineListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
-      console.log(error);
     }
   }
 }
@@ -1921,7 +1911,6 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
       this.setValueKey(this._valuekey);
       this.setValue3DKey(this._value3Dkey);
     } catch (error) {
-      console.log(error);
       this.valueMap = {};
       this.setValueKey(this._valuekey);
       this.setValue3DKey(this._value3Dkey);
@@ -1940,7 +1929,6 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
-      console.log(error);
     }
   }
 
@@ -1956,7 +1944,6 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value3D", this.noValueAttribute);
       }
     } catch (error) {
-      console.log(error);
     }
   }
 }
@@ -2246,7 +2233,6 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
       this.setValueKey(this._valuekey);
       this.setValue3DKey(this._value3Dkey);
     } catch (error) {
-      console.log(error);
       this.valueMap = {};
       this.setValueKey(this._valuekey);
       this.setValue3DKey(this._value3Dkey);
@@ -2265,7 +2251,6 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
-      console.log(error);
     }
   }
 
@@ -2281,7 +2266,6 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value3D", this.noValueAttribute);
       }
     } catch (error) {
-      console.log(error);
     }
   }
 }

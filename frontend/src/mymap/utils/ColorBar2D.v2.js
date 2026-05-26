@@ -73,8 +73,7 @@ export class ColorBar2D {
       // 清空画布
       context2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
       const MIN = this.min;
-      const MAX = this.max;
-      // console.log(this.list);
+      const MAX = this.max;;
       for (const { min, max, color, use } of this.list) {
         if (use) {
           const x = ((min - MIN) / (MAX - MIN)) * canvas2D.width;
@@ -89,7 +88,6 @@ export class ColorBar2D {
       const url = canvas2D.toDataURL("image/png");
       // 再次清空画布
       // context2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
-      console.log("ColorBarUrl:", url);
       return url;
     } catch (error) {
       console.error(error);

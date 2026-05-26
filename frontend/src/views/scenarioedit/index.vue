@@ -1696,7 +1696,7 @@ onUnmounted(() => {
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
   background: var(--app-panel-bg);
   border: 1px solid var(--app-border);
-  box-shadow: var(--app-shadow-sm);
+  box-shadow: var(--app-shadow-panel);
   border-radius: var(--app-panel-radius);
   display: flex;
   flex-direction: column;
@@ -1726,7 +1726,7 @@ onUnmounted(() => {
   gap: var(--space-sm);
   align-items: center;
   min-height: 42px;
-  background: rgba(21, 105, 222, 0.055);
+  background: rgba(21, 105, 222, 0.07);
   color: var(--app-blue);
   border-bottom: 1px solid rgba(21, 105, 222, 0.15);
 
@@ -1739,7 +1739,7 @@ onUnmounted(() => {
     align-items: center;
     gap: var(--space-xs);
     font-size: 15px;
-    font-weight: 700;
+    font-weight: 750;
     letter-spacing: 0;
     width: 0;
     flex: 1;
@@ -1766,7 +1766,7 @@ onUnmounted(() => {
     padding: 1px 5px;
     border-radius: 4px;
     background: rgba(21, 105, 222, 0.08);
-    font-family: "Outfit", monospace;
+    font-family: var(--app-font-number);
     font-weight: 600;
   }
 }
@@ -1807,7 +1807,7 @@ onUnmounted(() => {
     margin-bottom: var(--space-sm);
 
     .step-num {
-      font-family: "Outfit", "Impact", monospace;
+      font-family: var(--app-font-number);
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -2070,7 +2070,7 @@ onUnmounted(() => {
       font-size: 12px;
       font-weight: 700;
       color: var(--app-ink);
-      font-family: "Outfit", monospace;
+      font-family: var(--app-font-number);
 
       .unit {
         font-size: 9px;
@@ -2365,7 +2365,7 @@ onUnmounted(() => {
 
     .slider-val {
       color: #1569de;
-      font-family: "Outfit", monospace;
+      font-family: var(--app-font-number);
       font-weight: bold;
     }
   }
@@ -2539,7 +2539,7 @@ onUnmounted(() => {
 }
 
 .progress-num {
-  font-family: "Outfit", monospace;
+  font-family: var(--app-font-number);
   font-size: 11px;
   font-weight: bold;
   color: var(--app-muted);

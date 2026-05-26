@@ -878,7 +878,6 @@ watch(() => props.model, (model) => {
 import { dataInfo } from "@/api/data.js";
 const detail = ref(null);
 dataInfo({ datasource: props.model }).then((res) => {
-  console.log(res);
   detail.value = res.data;
 });
 
@@ -1013,7 +1012,7 @@ onUnmounted(() => {
     font-weight: bold;
     color: var(--theme-color);
     text-align: left;
-    font-family: "Outfit", "Inter", sans-serif;
+    font-family: var(--app-font-number);
   }
   .unit {
     font-size: 11px;
@@ -1091,7 +1090,7 @@ onUnmounted(() => {
     font-size: 24px;
     font-weight: bold;
     color: var(--theme-color);
-    font-family: "Outfit", "Inter", sans-serif;
+    font-family: var(--app-font-number);
   }
   
   .unit {

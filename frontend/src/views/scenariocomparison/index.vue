@@ -207,6 +207,23 @@ const currentKPI = computed(() => mockKPIData[selectedOpt.value]);
 const SOURCE_ID = "study-area-source";
 const FILL_LAYER_ID = "study-area-fill";
 const STROKE_LAYER_ID = "study-area-stroke";
+let pendingDrawHandler = null;
+
+function queueDrawPresetStudyArea() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  const styleReady = typeof map.isStyleLoaded === "function" ? map.isStyleLoaded() : map.loaded?.();
+  if (styleReady) {
+    drawPresetStudyArea();
+    return;
+  }
+  if (pendingDrawHandler) return;
+  pendingDrawHandler = () => {
+    pendingDrawHandler = null;
+    drawPresetStudyArea();
+  };
+  map.once("load", pendingDrawHandler);
+}
 
 function drawPresetStudyArea() {
   if (!MapRef.value || !MapRef.value.map) return;
@@ -449,18 +466,22 @@ function handleOptChange() {
 
 onMounted(() => {
   if (MapRef.value && MapRef.value.map) {
-    drawPresetStudyArea();
+    queueDrawPresetStudyArea();
   }
 });
 
 // Track MapRef loading dynamically
 watch(MapRef, (newMap) => {
   if (newMap && newMap.map) {
-    drawPresetStudyArea();
+    queueDrawPresetStudyArea();
   }
 });
 
 onUnmounted(() => {
+  if (pendingDrawHandler && MapRef.value?.map) {
+    MapRef.value.map.off("load", pendingDrawHandler);
+    pendingDrawHandler = null;
+  }
   cleanUpMapLayers();
 });
 </script>
@@ -474,7 +495,7 @@ onUnmounted(() => {
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
   background: var(--app-panel-bg);
   border: 1px solid var(--app-border);
-  box-shadow: var(--app-shadow-sm);
+  box-shadow: var(--app-shadow-panel);
   border-radius: var(--app-panel-radius);
   display: flex;
   flex-direction: column;
@@ -504,7 +525,7 @@ onUnmounted(() => {
   gap: var(--space-sm);
   align-items: center;
   min-height: 42px;
-  background: rgba(21, 105, 222, 0.055);
+  background: rgba(21, 105, 222, 0.07);
   color: var(--app-blue);
   border-bottom: 1px solid rgba(21, 105, 222, 0.15);
 
@@ -517,7 +538,7 @@ onUnmounted(() => {
     align-items: center;
     gap: var(--space-xs);
     font-size: 15px;
-    font-weight: 700;
+    font-weight: 750;
     letter-spacing: 0;
     width: 0;
     flex: 1;
@@ -570,7 +591,7 @@ onUnmounted(() => {
     margin-bottom: var(--space-sm);
 
     .step-num {
-      font-family: "Outfit", "Impact", monospace;
+      font-family: var(--app-font-number);
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -677,7 +698,7 @@ onUnmounted(() => {
     .val-num {
       font-size: 13.5px;
       font-weight: 700;
-      font-family: "Outfit", monospace, sans-serif;
+      font-family: var(--app-font-number);
 
       .unit {
         font-size: 9px;

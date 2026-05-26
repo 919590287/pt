@@ -240,22 +240,22 @@
 </template>
 
 <script setup>
+import { defineAsyncComponent } from "vue";
 import { getSchemeList, getModelList, loadModel } from "@/api/scheme.js";
 import { dataCenter } from "@/api/data.js";
 
 import SJZL from "./components/SJZL.vue";
-import XLZL from "./components/XLZL.vue";
-import ZDZL from "./components/ZDZL.vue";
-import TJFX from "./components/TJFX.vue";
-import GJYS from "./components/GJYS.vue";
-import CXZFX from "./components/CXZFX.vue";
 
 import { useDraggable } from "@vueuse/core";
 import { HighlightSegmentLayer } from "./layers/HighlightSegmentLayer.js";
 
+const XLZL = defineAsyncComponent(() => import("./components/XLZL.vue"));
+const ZDZL = defineAsyncComponent(() => import("./components/ZDZL.vue"));
+const TJFX = defineAsyncComponent(() => import("./components/TJFX.vue"));
+const GJYS = defineAsyncComponent(() => import("./components/GJYS.vue"));
+const CXZFX = defineAsyncComponent(() => import("./components/CXZFX.vue"));
 
-
-const LEFT_PANEL_SCALE = 0.8;
+const LEFT_PANEL_SCALE = 0.86;
 const LEFT_PANEL_EDGE_X = 0;
 const LEFT_PANEL_EXPANDED_X = 16;
 const LEFT_PANEL_MIN_TOP = 67;
@@ -583,8 +583,8 @@ function handleMapClick(e) {
     let popX = e.data.event.clientX;
     let popY = e.data.event.clientY;
     
-    const popoverWidth = 240 * 0.8;
-    const popoverHeight = 160 * 0.8;
+    const popoverWidth = 240 * LEFT_PANEL_SCALE;
+    const popoverHeight = 160 * LEFT_PANEL_SCALE;
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     
@@ -706,8 +706,11 @@ let fpsWindowStart = 0;
 let fpsFrames = 0;
 let lastMapMotionAt = 0;
 const perfSamples = [];
+const isPerfProbeEnabled =
+  import.meta.env.DEV || (typeof window !== "undefined" && window.__GJ_ENABLE_PERF_PROBE__ === true);
 
 function publishPerfProbe(fps = 0, now = performance.now()) {
+  if (!isPerfProbeEnabled) return;
   const moving = now - lastMapMotionAt < 220;
   const sample = {
     fps: Math.round(fps * 10) / 10,
@@ -725,6 +728,7 @@ function publishPerfProbe(fps = 0, now = performance.now()) {
 }
 
 function startPerfProbe() {
+  if (!isPerfProbeEnabled) return;
   if (fpsFrameId || typeof requestAnimationFrame !== "function") return;
   fpsLastAt = performance.now();
   fpsWindowStart = fpsLastAt;
@@ -1028,7 +1032,9 @@ const ins = setInterval(() => {
 }, 1000 * 20);
 
 onMounted(() => {
-  startPerfProbe();
+  if (isPerfProbeEnabled) {
+    startPerfProbe();
+  }
   observeLeftPanelSize();
   window.addEventListener("resize", centerLeftPanel);
   document.addEventListener("keydown", handleDocumentKeydown);
@@ -1096,8 +1102,8 @@ onUnmounted(() => {
   min-width: 0;
   .handle {
     cursor: default;
-    font-size: 16px;
-    font-weight: 600;
+    font-size: 1rem;
+    font-weight: 700;
     color: var(--app-blue);
     text-shadow: none;
     white-space: nowrap;
@@ -1149,7 +1155,7 @@ onUnmounted(() => {
       .el-input__inner {
         color: var(--app-ink) !important;
         font-weight: 500;
-        font-size: 15px !important;
+        font-size: 0.94rem !important;
         &::placeholder {
           color: rgba(18, 48, 79, 0.5);
         }
@@ -1193,8 +1199,8 @@ onUnmounted(() => {
   .tab_list {
     display: flex;
     align-items: center;
-    background-color: rgba(21, 105, 222, 0.045);
-    border: 1px solid rgba(21, 105, 222, 0.09);
+    background-color: rgba(21, 105, 222, 0.06);
+    border: 1px solid rgba(21, 105, 222, 0.14);
     border-radius: var(--app-card-radius);
     width: 100%;
     gap: var(--space-xs);
@@ -1205,6 +1211,7 @@ onUnmounted(() => {
       min-height: 36px;
       border-radius: 4px;
       min-width: 0;
+      font-weight: 700;
       white-space: normal;
     }
   }
@@ -1318,6 +1325,7 @@ onUnmounted(() => {
     background-color: var(--app-card-bg);
     border-radius: var(--app-card-radius);
     border: 1px solid rgba(21, 105, 222, 0.11);
+    box-shadow: var(--app-shadow-sm);
     overflow: hidden;
     width: 44px;
 
@@ -1364,7 +1372,7 @@ onUnmounted(() => {
       &.td-btn {
         font-size: 11px;
         font-weight: bold;
-        font-family: "Outfit", "Inter", sans-serif;
+        font-family: var(--app-font-number);
         color: var(--app-ink);
 
         &.active {
@@ -1444,7 +1452,7 @@ onUnmounted(() => {
 
   .popover-title {
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--app-ink);
     border-bottom: 1px solid rgba(21, 105, 222, 0.09);
     padding-bottom: 6px;
@@ -1464,7 +1472,7 @@ onUnmounted(() => {
         justify-content: space-between;
         
         .val-text {
-          font-family: monospace;
+          font-family: var(--app-font-number);
           color: var(--app-cyan);
           font-weight: bold;
         }
@@ -1579,7 +1587,7 @@ onUnmounted(() => {
   pointer-events: auto;
   transform-origin: top left;
   transition: opacity 0.2s ease, transform 0.2s ease;
-  scale: 0.8;
+  scale: var(--app-panel-scale);
 
   .popover-header {
     display: flex;
@@ -1594,7 +1602,7 @@ onUnmounted(() => {
       font-weight: 700;
       color: var(--app-blue);
       letter-spacing: 0.5px;
-      font-family: "Outfit", "Inter", sans-serif;
+      font-family: var(--app-font-number);
     }
 
     .close-btn {
@@ -1636,7 +1644,7 @@ onUnmounted(() => {
         text-align: right;
         color: var(--app-ink);
         font-weight: 700;
-        font-family: "Outfit", "Inter", sans-serif;
+        font-family: var(--app-font-number);
       }
     }
   }

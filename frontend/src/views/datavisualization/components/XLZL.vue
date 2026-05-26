@@ -2140,7 +2140,7 @@ onUnmounted(() => {
       font-size: 16px;
       font-weight: bold;
       color: #1569de;
-      font-family: "Outfit", "Inter", sans-serif;
+      font-family: var(--app-font-number);
     }
   }
 }
@@ -2723,7 +2723,7 @@ onUnmounted(() => {
       .col-flow { 
         flex: 1.1; 
         text-align: right; 
-        font-family: "Outfit", "Inter", sans-serif;
+        font-family: var(--app-font-number);
         font-weight: 700;
         color: #1569de;
         margin-right: 20px;
@@ -2805,7 +2805,7 @@ onUnmounted(() => {
         font-size: 13px;
         font-weight: bold;
         color: #1569de;
-        font-family: "Outfit", "Inter", sans-serif;
+        font-family: var(--app-font-number);
       }
     }
     
@@ -2905,7 +2905,7 @@ onUnmounted(() => {
       width: 95px;
       flex-shrink: 0;
       text-align: right;
-      font-family: "Outfit", "Inter", sans-serif;
+      font-family: var(--app-font-number);
       font-weight: 600;
       color: #60758e;
       padding-right: 12px;
@@ -2917,7 +2917,7 @@ onUnmounted(() => {
       text-align: right;
       
       .load-indicator {
-        font-family: "Outfit", "Inter", sans-serif;
+        font-family: var(--app-font-number);
         font-weight: bold;
         padding: 2px 6px;
         border-radius: 4px;
@@ -3091,7 +3091,7 @@ onUnmounted(() => {
   font-size: 16px;
   font-weight: bold;
   color: #0f9f6e;
-  font-family: "Outfit", "Inter", sans-serif;
+  font-family: var(--app-font-number);
   
   .ranking-row:nth-child(-n+3) & {
     color: #d97706;

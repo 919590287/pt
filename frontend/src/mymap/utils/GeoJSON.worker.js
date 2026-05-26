@@ -245,7 +245,6 @@ onmessage = function (e) {
   const decode = new TextDecoder();
   const str = decode.decode(e.data);
   const parser = new GeoJSONParser(JSON.parse(str));
-  console.log(parser);
   this.postMessage(
     {
       center: parser.center,

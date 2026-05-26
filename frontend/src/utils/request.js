@@ -129,7 +129,6 @@ service.interceptors.request.use(
     return config;
   },
   (error) => {
-    console.log(error);
     return Promise.reject(error);
   },
 );
@@ -176,7 +175,6 @@ service.interceptors.response.use(
     }
   },
   (error) => {
-    console.log("err" + error);
     const message = normalizeErrorMessage(error);
     if (!axios.isCancel(error) && error?.message !== "canceled") {
       showErrorMessage(error?.config, message);

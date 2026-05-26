@@ -946,7 +946,7 @@ onUnmounted(() => {
       .stat-value {
         font-size: 18px;
         font-weight: bold;
-        font-family: "Outfit", "Inter", sans-serif;
+        font-family: var(--app-font-number);
 
         &.text-primary { color: var(--app-blue); }
         &.text-success { color: var(--app-emerald-strong); }

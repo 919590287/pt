@@ -111,7 +111,6 @@ export class GeoJSONLineListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      console.log(error);
       this.valueMap = {};
       this.setValueKey(this._valuekey);
     }
@@ -129,7 +128,6 @@ export class GeoJSONLineListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
-      console.log(error);
     }
   }
 }

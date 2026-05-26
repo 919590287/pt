@@ -6,8 +6,7 @@ export const EARTH_RADIUS = 20037508.3427892;
 // const row = 1;
 // const col = 1;
 // const x = (row * (EARTH_RADIUS * 2)) / Math.pow(2, zoom) - EARTH_RADIUS;
-// const y = EARTH_RADIUS - ((col * (EARTH_RADIUS * 2)) / Math.pow(2, zoom));
-// console.log(x, y);
+// const y = EARTH_RADIUS - ((col * (EARTH_RADIUS * 2)) / Math.pow(2, zoom));;
 
 /**
  * EPSG:4526转Web墨卡托

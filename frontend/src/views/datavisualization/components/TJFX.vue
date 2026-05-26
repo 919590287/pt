@@ -212,7 +212,7 @@ const healthScoreChartOption = computed(() => {
           color: "#1569de",
           fontSize: 34,
           fontWeight: "bold",
-          fontFamily: "Outfit, Inter, sans-serif"
+          fontFamily: "DIN Alternate, Avenir Next Condensed, PingFang SC, Microsoft YaHei, sans-serif"
         },
         data: [{ value: 86, name: "网络健康度综合评分" }]
       }
@@ -433,7 +433,7 @@ export default {
       font-size: 20px;
       font-weight: bold;
       color: var(--app-blue);
-      font-family: "Outfit", "Inter", sans-serif;
+      font-family: var(--app-font-number);
       margin-top: 2px;
     }
 

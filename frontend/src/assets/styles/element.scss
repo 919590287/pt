@@ -1,4 +1,31 @@
 
 @use "./element.variables.scss" as *;
-/* 引入 Element Plus 的所有样式 */
-@use "element-plus/theme-chalk/src/index.scss" as *;
+
+/* Element Plus 按需样式：只引入平台实际使用的控件，避免整套组件 CSS 进入首屏包。 */
+@use "element-plus/theme-chalk/src/base.scss" as *;
+@use "element-plus/theme-chalk/src/button.scss" as *;
+@use "element-plus/theme-chalk/src/button-group.scss" as *;
+@use "element-plus/theme-chalk/src/checkbox.scss" as *;
+@use "element-plus/theme-chalk/src/empty.scss" as *;
+@use "element-plus/theme-chalk/src/input.scss" as *;
+@use "element-plus/theme-chalk/src/input-number.scss" as *;
+@use "element-plus/theme-chalk/src/message.scss" as *;
+@use "element-plus/theme-chalk/src/message-box.scss" as *;
+@use "element-plus/theme-chalk/src/notification.scss" as *;
+@use "element-plus/theme-chalk/src/overlay.scss" as *;
+@use "element-plus/theme-chalk/src/popover.scss" as *;
+@use "element-plus/theme-chalk/src/popper.scss" as *;
+@use "element-plus/theme-chalk/src/progress.scss" as *;
+@use "element-plus/theme-chalk/src/radio.scss" as *;
+@use "element-plus/theme-chalk/src/radio-button.scss" as *;
+@use "element-plus/theme-chalk/src/radio-group.scss" as *;
+@use "element-plus/theme-chalk/src/scrollbar.scss" as *;
+@use "element-plus/theme-chalk/src/select.scss" as *;
+@use "element-plus/theme-chalk/src/select-v2.scss" as *;
+@use "element-plus/theme-chalk/src/skeleton.scss" as *;
+@use "element-plus/theme-chalk/src/skeleton-item.scss" as *;
+@use "element-plus/theme-chalk/src/slider.scss" as *;
+@use "element-plus/theme-chalk/src/switch.scss" as *;
+@use "element-plus/theme-chalk/src/tag.scss" as *;
+@use "element-plus/theme-chalk/src/tooltip.scss" as *;
+@use "element-plus/theme-chalk/src/virtual-list.scss" as *;

@@ -51,6 +51,7 @@ function handleSetOpen(open) {
   border: 1px solid var(--border-color);
   border-radius: var(--app-card-radius);
   background: var(--app-card-bg-tint);
+  box-shadow: 0 1px 0 rgba(21, 105, 222, 0.04);
 
   .MCard_title_box {
     width: 100%;
@@ -62,7 +63,7 @@ function handleSetOpen(open) {
     align-items: center;
     text-align: left;
     min-height: 36px;
-    background: rgba(21, 105, 222, 0.055);
+    background: rgba(21, 105, 222, 0.07);
     color: var(--app-blue);
     transition: background-color var(--app-motion-normal) var(--app-ease-out);
 
@@ -77,7 +78,7 @@ function handleSetOpen(open) {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-weight: 700;
+      font-weight: 750;
       letter-spacing: 0;
     }
     .MCard_open_btn {

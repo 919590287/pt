@@ -10,16 +10,15 @@ import router from "./router";
 // echarts
 import VChart from "vue-echarts";
 import { graphic, use } from "echarts/core";
-import { BarChart, GaugeChart, PieChart, LineChart } from "echarts/charts";
+import { BarChart, GaugeChart, LineChart, PieChart, RadarChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from "echarts/components";
 import { LabelLayout } from "echarts/features";
 import { CanvasRenderer } from "echarts/renderers";
 
-import ElementPlus, { ElMessage, ElMessageBox } from "element-plus";
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
 // import "element-plus/dist/index.css";
 // ✅ 引入自定义的 SCSS 主题文件
 import '@/assets/styles/element.scss'
+import { ElMessage, ElMessageBox, installElementPlus } from "@/plugins/element-plus";
 // import moment from 'moment'
 
 const app = createApp(App);
@@ -27,8 +26,9 @@ const app = createApp(App);
 use([
   BarChart,
   GaugeChart,
-  PieChart,
   LineChart,
+  PieChart,
+  RadarChart,
   GridComponent,
   LegendComponent,
   TitleComponent,
@@ -49,5 +49,5 @@ app.component("VChart", VChart);
 
 app.use(createPinia());
 app.use(router);
-app.use(ElementPlus, { locale: zhCn })
+installElementPlus(app);
 app.mount("#app");
