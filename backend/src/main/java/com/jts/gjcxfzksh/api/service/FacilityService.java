@@ -4,9 +4,12 @@ import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.model.vo.FacilityVO;
 
 import java.util.List;
+import java.util.Map;
 
 public interface FacilityService {
 
     List<FacilityVO> facilityAll(DatasourceParam param);
+
+    Map<String, Object> stationPanel(DatasourceParam param);
 
 }

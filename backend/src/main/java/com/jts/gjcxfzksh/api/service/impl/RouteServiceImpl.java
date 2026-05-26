@@ -15,6 +15,7 @@ import com.jts.gjcxfzksh.api.model.vo.RouteVO;
 import com.jts.gjcxfzksh.api.service.RouteService;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
+import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.*;
 import com.jts.gjcxfzksh.exception.BusinessException;
@@ -159,6 +160,11 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
             lineList.add(vo);
         }
         return lineList;
+    }
+
+    @Override
+    public Map<String, Object> routePanel(DatasourceParam param) {
+        return MatsimRoutePanelCache.readRoutePanel(matsim_data(param));
     }
 
     @Override

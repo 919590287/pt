@@ -25,4 +25,10 @@ public class FacilityController {
         return AjaxResult.ok(facilityService.facilityAll(param));
     }
 
+    @Operation(summary = "站点客流监测右侧面板缓存")
+    @PostMapping("/stationPanel")
+    public AjaxResult stationPanel(@RequestBody DatasourceParam param) {
+        return AjaxResult.ok(facilityService.stationPanel(param));
+    }
+
 }

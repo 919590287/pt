@@ -29,6 +29,8 @@ public interface RouteService {
 
     List<LineVO> lineAll(DatasourceParam param);
 
+    Map<String, Object> routePanel(DatasourceParam param);
+
     List<PTLink> routeTile(TileNetworkParam param);
 
     List<PTLink> routeFull(TileNetworkParam param);

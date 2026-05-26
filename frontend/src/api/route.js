@@ -47,6 +47,14 @@ export function getLineAll(data) {
   })
 }
 
+export function getRoutePanel(data) {
+  return request({
+    url: `/pt/route/routePanel`,
+    method: 'POST',
+    data: data
+  })
+}
+
 // 线路瓦片
 // POST /pt/route/tile
 export function getRouteTile(data) {

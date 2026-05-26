@@ -193,7 +193,7 @@
       </template>
     </MCard2>
 
-    <MCard2 class="SJZL_right_card theme_4f3db4" title="运营服务" v-if="list[3]?.switch" :open="true">
+    <MCard2 class="SJZL_right_card theme_primary_blue" title="运营服务" v-if="list[3]?.switch" :open="true">
       <template #body>
         <div class="SJZL_grid">
           <!-- 公共汽电车与小汽车运行速度比 -->
@@ -215,7 +215,7 @@
       </template>
     </MCard2>
 
-    <MCard2 class="SJZL_right_card theme_4f3db4" title="场站设施" v-if="list[4]?.switch" :open="true">
+    <MCard2 class="SJZL_right_card theme_primary_blue" title="场站设施" v-if="list[4]?.switch" :open="true">
       <template #body>
         <div class="SJZL_grid">
           <!-- 车均场站面积(m²/标台) -->
@@ -566,8 +566,8 @@ const ztsp_fdl_options = computed(() => {
             name: "地铁",
             itemStyle: {
               color: new proxy.$echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                { offset: 0, color: "#c084fc" },
-                { offset: 1, color: "#a855f7" }
+                { offset: 0, color: "#60a5fa" },
+                { offset: 1, color: "#4b9cff" }
               ]),
             },
           },
@@ -830,11 +830,11 @@ const yyfw_sdb_options = computed(() => {
         color: new proxy.$echarts.graphic.LinearGradient(1, 0, 0, 0, [
           {
             offset: 0,
-            color: "rgba(79, 61, 180, 0.5)",
+            color: "rgba(21, 105, 222, 0.5)",
           },
           {
             offset: 1,
-            color: "#4f3db4",
+            color: "#1569de",
           },
         ]),
       },
@@ -915,8 +915,8 @@ onUnmounted(() => {
   &.theme_9acd32 {
     --theme-color: #9acd32;
   }
-  &.theme_4f3db4 {
-    --theme-color: #4f3db4;
+  &.theme_primary_blue {
+    --theme-color: #1569de;
   }
   
   &.ztsp_card {

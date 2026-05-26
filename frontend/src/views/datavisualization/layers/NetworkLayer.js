@@ -35,6 +35,13 @@ const FLOW_STYLE_STOPS = [
   { limit: 0.512, color: [253, 174, 97], widthStep: 2 },
   { limit: Infinity, color: [215, 25, 28], widthStep: 3 },
 ];
+const DETAIL_ZOOM_STOPS = [
+  { minZoom: 13.0, level: "full", z: TILE_ZOOM },
+  { minZoom: 11.7, level: "corridor", z: TILE_ZOOM },
+  { minZoom: 10.2, level: "district", z: 11 },
+  { minZoom: 8.8, level: "city", z: 10 },
+  { minZoom: -Infinity, level: "overview", z: MIN_TILE_ZOOM },
+];
 
 function runtimeNumber(name, fallback) {
   const value = Number(typeof window !== "undefined" ? window.APP_CONFIG?.[name] : undefined);
@@ -349,6 +356,17 @@ function interpolate(value, stops) {
   return stops[stops.length - 1][1];
 }
 
+function dataDensityOpacity(count) {
+  const total = Number(count) || 0;
+  if (total <= 25000) return 1;
+  if (total >= 180000) return 0.58;
+  return interpolate(total, [
+    [25000, 1],
+    [80000, 0.78],
+    [180000, 0.58],
+  ]);
+}
+
 function createNetworkDataWorker() {
   if (typeof Worker === "undefined") return null;
   return new Worker(new URL("./networkData.worker.js", import.meta.url), { type: "module" });
@@ -601,14 +619,9 @@ export class NetworkLayer extends Layer {
   currentTileDetail() {
     const mapZoom = Number(this.map?.zoom);
     if (!Number.isFinite(mapZoom)) {
-      return { level: "all", z: 0, full: true };
+      return { level: "overview", z: MIN_TILE_ZOOM };
     }
-    if (mapZoom < this.fullModeMaxZoom) return { level: "all", z: 0, full: true };
-    if (mapZoom >= 13.0) return { level: "full", z: TILE_ZOOM };
-    if (mapZoom >= 11.7) return { level: "corridor", z: TILE_ZOOM };
-    if (mapZoom >= 10.2) return { level: "district", z: 11 };
-    if (mapZoom >= 8.8) return { level: "city", z: 10 };
-    return { level: "overview", z: MIN_TILE_ZOOM };
+    return DETAIL_ZOOM_STOPS.find((stop) => mapZoom >= stop.minZoom) || DETAIL_ZOOM_STOPS[DETAIL_ZOOM_STOPS.length - 1];
   }
 
   async loadVisibleTiles() {
@@ -783,20 +796,37 @@ export class NetworkLayer extends Layer {
   currentLineWidthPixels() {
     const baseWidth = lineWidthToPixels(this.lineWidth);
     const zoom = Number(this.map?.zoom);
-    const minPixels = networkLineMinPixels();
+    const minPixels = this.flowControl ? Math.min(networkLineMinPixels(), 0.55) : networkLineMinPixels();
     if (!Number.isFinite(zoom)) return Math.max(minPixels, baseWidth);
     return Math.max(minPixels, interpolate(zoom, [
-      [7, Math.max(0.35, baseWidth * 0.22)],
-      [9, Math.max(0.45, baseWidth * 0.32)],
-      [11, Math.max(0.7, baseWidth * 0.55)],
-      [13, baseWidth],
+      [7, Math.max(0.28, baseWidth * 0.16)],
+      [9, Math.max(0.36, baseWidth * 0.24)],
+      [11, Math.max(0.58, baseWidth * 0.42)],
+      [13, Math.min(baseWidth, 6.5)],
+      [16, baseWidth],
     ]));
   }
 
-  flowStyleAttributes(data) {
+  currentLineOpacity() {
+    const zoom = Number(this.map?.zoom);
+    const baseOpacity = Number(this.opacity) || 0.88;
+    if (!Number.isFinite(zoom)) return baseOpacity;
+    const zoomOpacity = interpolate(zoom, [
+      [7, 0.3],
+      [9, 0.42],
+      [11, 0.62],
+      [13, 0.82],
+      [15, 1],
+    ]);
+    const densityOpacity = dataDensityOpacity(this.deckData?.count || 0);
+    const flowFactor = this.flowControl ? 0.82 : 1;
+    return Math.max(0.18, Math.min(baseOpacity, baseOpacity * zoomOpacity * densityOpacity * flowFactor));
+  }
+
+  flowStyleAttributes(data, opacity = this.opacity) {
     const baseWidth = Math.max(3, lineWidthToPixels(this.lineWidth));
     const stepWidth = Math.max(1, lineWidthToPixels(this.flowWidthStep || this.flowMaxWidth));
-    const alpha = Math.max(0, Math.min(255, Math.round((Number(this.opacity) || 0) * 255)));
+    const alpha = Math.max(0, Math.min(255, Math.round((Number(opacity) || 0) * 255)));
     const cacheKey = [
       data.version,
       data.minFlow,
@@ -898,19 +928,21 @@ export class NetworkLayer extends Layer {
     };
     const baseWidth = lineWidthToPixels(this.lineWidth);
     const zoomWidth = this.currentLineWidthPixels();
+    const visualOpacity = this.currentLineOpacity();
     let getWidth = zoomWidth;
     let widthScale = 1;
 
     if (this.flowControl) {
-      const flowStyle = this.flowStyleAttributes(data);
+      const flowStyle = this.flowStyleAttributes(data, visualOpacity);
       attributes.getWidth = { value: flowStyle.widths, size: 1 };
       attributes.getColor = { value: flowStyle.colors, size: 4 };
       getWidth = 1;
       widthScale = baseWidth > 0 ? zoomWidth / baseWidth : 1;
     }
 
-    const lineColor = colorToRgba(this.color, this.opacity);
-    const softEdgePixels = networkLineSoftEdgePixels();
+    const lineColor = colorToRgba(this.color, visualOpacity);
+    const softEdgePixels = this.flowControl || Number(this.map?.zoom) < 11.5 ? 0 : networkLineSoftEdgePixels();
+    const widthMaxPixels = this.flowControl ? 18 : 22;
     const commonProps = {
       coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
       beforeId: this.map?.buildingLayerId,
@@ -943,7 +975,7 @@ export class NetworkLayer extends Layer {
         getColor: lineColor,
         getWidth: this.flowControl ? getWidth : getWidth + softEdgePixels,
         widthMinPixels: networkLineMinPixels() + softEdgePixels,
-        widthMaxPixels: 54,
+        widthMaxPixels: widthMaxPixels + softEdgePixels,
       }));
     }
     const layer = new LineLayer({
@@ -955,8 +987,8 @@ export class NetworkLayer extends Layer {
       },
       getColor: lineColor,
       getWidth,
-      widthMinPixels: networkLineMinPixels(),
-      widthMaxPixels: 50,
+      widthMinPixels: this.flowControl ? Math.min(networkLineMinPixels(), 0.55) : networkLineMinPixels(),
+      widthMaxPixels,
     });
     layers.push(layer);
     setSharedDeckLayer(this.map, this.layerId, layers);

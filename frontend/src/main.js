@@ -10,7 +10,7 @@ import router from "./router";
 // echarts
 import VChart from "vue-echarts";
 import { graphic, use } from "echarts/core";
-import { BarChart, GaugeChart, PieChart } from "echarts/charts";
+import { BarChart, GaugeChart, PieChart, LineChart } from "echarts/charts";
 import { GridComponent, LegendComponent, TitleComponent, TooltipComponent } from "echarts/components";
 import { LabelLayout } from "echarts/features";
 import { CanvasRenderer } from "echarts/renderers";
@@ -28,6 +28,7 @@ use([
   BarChart,
   GaugeChart,
   PieChart,
+  LineChart,
   GridComponent,
   LegendComponent,
   TitleComponent,

@@ -37,6 +37,12 @@ public class RouteController {
         return AjaxResult.ok(routeService.lineAll(param));
     }
 
+    @Operation(summary = "线路客流监测右侧面板缓存")
+    @PostMapping("/routePanel")
+    public AjaxResult routePanel(@RequestBody DatasourceParam param) {
+        return AjaxResult.ok(routeService.routePanel(param));
+    }
+
     @Operation(summary = "线路瓦片, zoom level12")
     @PostMapping("/tile")
     public AjaxResult routeTile(@RequestBody TileNetworkParam param) {

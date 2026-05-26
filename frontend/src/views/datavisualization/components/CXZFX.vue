@@ -124,7 +124,7 @@ onUnmounted(() => {
 
   .placeholder-icon {
     font-size: 64px;
-    color: rgba(79, 61, 180, 0.6);
+    color: rgba(21, 105, 222, 0.6);
     margin-bottom: 20px;
   }
 

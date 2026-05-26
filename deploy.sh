@@ -21,6 +21,7 @@ VITE_MODE="${VITE_MODE:-production}"
 JAVA_CMD="${JAVA_CMD:-java}"
 MVN_CMD="${MVN_CMD:-mvn}"
 NPM_CMD="${NPM_CMD:-npm}"
+SCREEN_CMD="${SCREEN_CMD:-screen}"
 
 API_BASE_URL="${API_BASE_URL:-}"
 MODEL_FILES_PATH="${MODEL_FILES_PATH:-}"
@@ -43,6 +44,8 @@ RUN_DIR="${RUN_DIR:-$ROOT_DIR/.deploy}"
 LOG_DIR="${LOG_DIR:-$RUN_DIR/logs}"
 BACKEND_PID="$RUN_DIR/backend.pid"
 FRONTEND_PID="$RUN_DIR/frontend.pid"
+BACKEND_SCREEN="${BACKEND_SCREEN:-${APP_NAME}-backend}"
+FRONTEND_SCREEN="${FRONTEND_SCREEN:-${APP_NAME}-frontend}"
 
 say() {
   printf '%s\n' "$*"
@@ -94,6 +97,10 @@ xml_escape() {
   printf '%s' "$value"
 }
 
+sh_escape() {
+  printf '%q' "$1"
+}
+
 pid_value() {
   local pid_file="$1"
   [ -f "$pid_file" ] || return 1
@@ -117,6 +124,79 @@ find_backend_jar() {
   find "$BACKEND_DIR/target" -maxdepth 1 -type f -name '*.jar' \
     ! -name '*-sources.jar' ! -name '*-javadoc.jar' 2>/dev/null \
     | sort | tail -n 1 || true
+}
+
+wait_for_pid() {
+  local pid_file="$1"
+  local attempts="${2:-50}"
+
+  while [ "$attempts" -gt 0 ]; do
+    if is_running "$pid_file"; then
+      return 0
+    fi
+    sleep 0.2
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+stop_screen() {
+  local screen_name="$1"
+
+  [ -n "$screen_name" ] || return 0
+  command -v "$SCREEN_CMD" >/dev/null 2>&1 || return 0
+  "$SCREEN_CMD" -S "$screen_name" -X quit >/dev/null 2>&1 || true
+}
+
+start_detached() {
+  local service_name="$1"
+  local script_file="$2"
+  local pid_file="$3"
+  local screen_name="$4"
+
+  rm -f "$pid_file"
+  if command -v "$SCREEN_CMD" >/dev/null 2>&1; then
+    stop_screen "$screen_name"
+    "$SCREEN_CMD" -dmS "$screen_name" "$script_file"
+  else
+    nohup "$script_file" >/dev/null 2>&1 &
+  fi
+
+  wait_for_pid "$pid_file" 50 || die "$service_name failed to start. Check logs in $LOG_DIR"
+}
+
+write_backend_launcher() {
+  local script_file="$1"
+  local jar_file="$2"
+
+  cat > "$script_file" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd $(sh_escape "$BACKEND_DIR")
+echo \$\$ > $(sh_escape "$BACKEND_PID")
+exec $(sh_escape "$JAVA_CMD") $JAVA_OPTS -jar $(sh_escape "$jar_file") \\
+  --server.port=$(sh_escape "$BACKEND_PORT") \\
+  --matsim.data=$(sh_escape "$MATSIM_DATA") \\
+  > $(sh_escape "$LOG_DIR/backend-console.log") 2>&1
+EOF
+  chmod +x "$script_file"
+}
+
+write_frontend_launcher() {
+  local script_file="$1"
+
+  cat > "$script_file" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+echo \$\$ > $(sh_escape "$FRONTEND_PID")
+exec $(sh_escape "$JAVA_CMD") -m jdk.httpserver \\
+  -b $(sh_escape "$HOST") \\
+  -p $(sh_escape "$FRONTEND_PORT") \\
+  -d $(sh_escape "$DIST_DIR") \\
+  > $(sh_escape "$LOG_DIR/frontend-console.log") 2>&1
+EOF
+  chmod +x "$script_file"
 }
 
 build_backend() {
@@ -222,14 +302,9 @@ start_backend() {
     mkdir -p "$MATSIM_DATA"
   fi
 
-  (
-    cd "$BACKEND_DIR"
-    nohup "$JAVA_CMD" $JAVA_OPTS -jar "$jar_file" \
-      --server.port="$BACKEND_PORT" \
-      --matsim.data="$MATSIM_DATA" \
-      > "$LOG_DIR/backend-console.log" 2>&1 &
-    echo $! > "$BACKEND_PID"
-  )
+  local launcher="$RUN_DIR/start-backend.sh"
+  write_backend_launcher "$launcher" "$jar_file"
+  start_detached backend "$launcher" "$BACKEND_PID" "$BACKEND_SCREEN"
   say "Backend started on port $BACKEND_PORT, pid=$(pid_value "$BACKEND_PID")"
 }
 
@@ -243,20 +318,22 @@ start_frontend() {
     return
   fi
 
-  nohup "$JAVA_CMD" -m jdk.httpserver -b "$HOST" -p "$FRONTEND_PORT" -d "$DIST_DIR" \
-    > "$LOG_DIR/frontend-console.log" 2>&1 &
-  echo $! > "$FRONTEND_PID"
+  local launcher="$RUN_DIR/start-frontend.sh"
+  write_frontend_launcher "$launcher"
+  start_detached frontend "$launcher" "$FRONTEND_PID" "$FRONTEND_SCREEN"
   say "Frontend started on port $FRONTEND_PORT, pid=$(pid_value "$FRONTEND_PID")"
 }
 
 stop_one() {
   local name="$1"
   local pid_file="$2"
+  local screen_name="${3:-}"
   local pid
 
   pid="$(pid_value "$pid_file" 2>/dev/null || true)"
   if [ -z "$pid" ]; then
     say "$name is not running: no pid file"
+    stop_screen "$screen_name"
     return
   fi
 
@@ -266,16 +343,17 @@ stop_one() {
   else
     say "$name pid file exists, but process is not running: pid=$pid"
   fi
+  stop_screen "$screen_name"
   rm -f "$pid_file"
 }
 
 stop_all() {
-  stop_one frontend "$FRONTEND_PID"
-  stop_one backend "$BACKEND_PID"
+  stop_one frontend "$FRONTEND_PID" "$FRONTEND_SCREEN"
+  stop_one backend "$BACKEND_PID" "$BACKEND_SCREEN"
 }
 
 stop_frontend() {
-  stop_one frontend "$FRONTEND_PID"
+  stop_one frontend "$FRONTEND_PID" "$FRONTEND_SCREEN"
 }
 
 start_all() {

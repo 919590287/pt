@@ -6,6 +6,7 @@ import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.api.model.vo.FacilityVO;
 import com.jts.gjcxfzksh.api.service.FacilityService;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
+import com.jts.gjcxfzksh.data.cache.MatsimStationPanelCache;
 import org.matsim.api.core.v01.Id;
 import org.matsim.pt.transitSchedule.api.TransitStopFacility;
 import org.springframework.stereotype.Service;
@@ -35,5 +36,10 @@ public class FacilityServiceImpl extends DatasourceService implements FacilitySe
             facilityVoList.add(vo);
         }
         return facilityVoList;
+    }
+
+    @Override
+    public Map<String, Object> stationPanel(DatasourceParam param) {
+        return MatsimStationPanelCache.readStationPanel(matsim_data(param));
     }
 }

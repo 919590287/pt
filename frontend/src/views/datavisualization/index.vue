@@ -35,8 +35,9 @@
         <Transition name="popover-fade">
           <div v-if="activeTab === '公交分析'" class="sub_tab_list_wrapper">
             <el-radio-group v-model="activeTransitSubTab" size="default" class="custom-sub-tabs">
-              <el-radio-button label="线路分析">线路分析</el-radio-button>
-              <el-radio-button label="站点分析">站点分析</el-radio-button>
+              <el-radio-button label="线路客流监测">线路客流监测</el-radio-button>
+              <el-radio-button label="站点客流监测">站点客流监测</el-radio-button>
+              <el-radio-button label="体检评估分析">体检评估分析</el-radio-button>
             </el-radio-group>
           </div>
         </Transition>
@@ -44,6 +45,7 @@
           <SJZL v-if="activeTab == '数据总览'" :key="`sjzl-${selectModel.name}`" :model="selectModel.name" />
           <XLZL v-else-if="isRouteAnalysisActive" :key="`xlzl-${selectModel.name}`" :model="selectModel.name" />
           <ZDZL v-else-if="isStationAnalysisActive" :key="`zdzl-${selectModel.name}`" :model="selectModel.name" />
+          <TJFX v-else-if="isEvaluationAnalysisActive" :key="`tjfx-${selectModel.name}`" :model="selectModel.name" />
           <GJYS v-else-if="activeTab == '轨迹演示'" :key="`gjys-${selectModel.name}`" :model="selectModel.name" />
           <CXZFX v-else-if="activeTab == '出行者分析'" :key="`cxzfx-${selectModel.name}`" :model="selectModel.name" />
         </el-scrollbar>
@@ -113,7 +115,7 @@
           <div v-if="showLineWidthPopover" class="line-width-popover" @click.stop>
             <div class="popover-title">{{ effectiveTab === '站点分析' ? '站点大小设置' : effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置' }}</div>
             <div class="popover-content">
-              <div class="slider-row" v-if="effectiveTab === '站点分析'">
+              <div class="slider-row" v-if="effectiveTab === '站点客流监测'">
                 <span class="label">
                   <span>站点大小</span>
                   <span class="val-text">{{ `${stationSize}px` }}</span>
@@ -147,7 +149,7 @@
                   />
                 </el-select>
               </div>
-              <div class="flow-control-row" v-else-if="effectiveTab !== '线路分析' && effectiveTab !== '站点分析'">
+              <div class="flow-control-row" v-else-if="effectiveTab !== '线路客流监测' && effectiveTab !== '站点客流监测' && effectiveTab !== '体检评估分析'">
                 <span>按流量控制</span>
                 <el-switch v-model="flowControl" @change="handleFlowControlChange" />
               </div>
@@ -203,11 +205,11 @@
         </div>
       </Transition>
     </template>
-    <div v-else class="model_box box1" :style="box1Style">
+    <div v-else ref="box1" class="model_box box1" :style="box1Style">
       <el-empty description="模型加载中，请稍等...." />
     </div>
   </template>
-  <div v-else class="model_box box1" :style="box1Style">
+  <div v-else ref="box1" class="model_box box1" :style="box1Style">
     <el-empty description="请选择模型" />
   </div>
 </template>
@@ -219,6 +221,7 @@ import { dataCenter } from "@/api/data.js";
 import SJZL from "./components/SJZL.vue";
 import XLZL from "./components/XLZL.vue";
 import ZDZL from "./components/ZDZL.vue";
+import TJFX from "./components/TJFX.vue";
 import GJYS from "./components/GJYS.vue";
 import CXZFX from "./components/CXZFX.vue";
 
@@ -227,10 +230,41 @@ import { HighlightSegmentLayer } from "./layers/HighlightSegmentLayer.js";
 
 
 
-const { style: box1Style } = useDraggable(useTemplateRef("box1"), {
+const LEFT_PANEL_SCALE = 0.8;
+const LEFT_PANEL_MIN_TOP = 67;
+const box1Ref = useTemplateRef("box1");
+
+const { style: box1Style, y: box1Y } = useDraggable(box1Ref, {
   initialValue: { x: 16, y: 120 },
   handle: useTemplateRef("box1Handle"),
 });
+
+let leftPanelResizeObserver = null;
+
+function centerLeftPanel() {
+  if (typeof window === "undefined") return;
+  nextTick(() => {
+    const box = box1Ref.value;
+    if (!box) return;
+
+    const maxLayoutHeight = (window.innerHeight - 150) / LEFT_PANEL_SCALE;
+    const visualHeight = Math.min(box.offsetHeight, maxLayoutHeight) * LEFT_PANEL_SCALE;
+    box1Y.value = Math.max(LEFT_PANEL_MIN_TOP, (window.innerHeight - visualHeight) / 2);
+  });
+}
+
+function observeLeftPanelSize() {
+  if (typeof window === "undefined" || typeof ResizeObserver === "undefined") return;
+  nextTick(() => {
+    const box = box1Ref.value;
+    if (!box) return;
+
+    leftPanelResizeObserver?.disconnect();
+    leftPanelResizeObserver = new ResizeObserver(() => centerLeftPanel());
+    leftPanelResizeObserver.observe(box);
+    centerLeftPanel();
+  });
+}
 
 const datebase = ref({
   scheme: "",
@@ -288,7 +322,7 @@ function handleGetModelList() {
 }
 
 const activeTab = ref("数据总览");
-const activeTransitSubTab = ref("线路分析");
+const activeTransitSubTab = ref("线路客流监测");
 
 const effectiveTab = computed(() => {
   if (activeTab.value === "公交分析") {
@@ -297,8 +331,9 @@ const effectiveTab = computed(() => {
   return activeTab.value;
 });
 
-const isRouteAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "线路分析");
-const isStationAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "站点分析");
+const isRouteAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "线路客流监测");
+const isStationAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "站点客流监测");
+const isEvaluationAnalysisActive = computed(() => activeTab.value === "公交分析" && activeTransitSubTab.value === "体检评估分析");
 
 function handleSetActiveTab(tabName) {
   activeTab.value = tabName;
@@ -310,7 +345,7 @@ provide("rightPanelHasContent", rightPanelHasContent);
 
 watch(effectiveTab, (tab) => {
   rightPanelHasContent.value = false;
-  if (tab === "线路分析") {
+  if (tab === "线路客流监测") {
     lineWidth.value = 42;
   } else if (tab === "数据总览") {
     rightPanelHasContent.value = true;
@@ -323,6 +358,7 @@ watch(effectiveTab, (tab) => {
   applyLineWidth();
   applyStationSize();
   scheduleLayerSyncBurst(4);
+  observeLeftPanelSize();
 });
 
 // Map Controls State & Logic
@@ -490,22 +526,26 @@ const referenceZoom = ref(10.74);
 let isZoomCaptured = false;
 
 const minLineWidth = computed(() => {
-  return effectiveTab.value === '线路分析' ? 18 : 3;
+  return effectiveTab.value === '线路客流监测' ? 18 : 3;
 });
 
 const maxLineWidth = computed(() => {
-  return effectiveTab.value === '线路分析' ? 120 : 40;
+  return effectiveTab.value === '线路客流监测' ? 120 : 40;
 });
 const minStationSize = computed(() => 10);
 const maxStationSize = computed(() => 36);
 const minVehicleSize = computed(() => 20);
 const maxVehicleSize = computed(() => 72);
 
-const lineWidthZoomScale = computed(() => Math.pow(2, 0.5 * (referenceZoom.value - mapZoom.value)));
+const lineWidthZoomScale = computed(() => {
+  const delta = mapZoom.value - referenceZoom.value;
+  const scale = Math.pow(2, 0.18 * delta);
+  return Math.max(0.45, Math.min(1.55, scale));
+});
 const computedLineWidth = computed(() => {
   return Math.max(3, lineWidth.value * lineWidthZoomScale.value);
 });
-const computedFlowWidthStep = computed(() => 20 * lineWidthZoomScale.value);
+const computedFlowWidthStep = computed(() => Math.max(6, Math.min(18, 14 * lineWidthZoomScale.value)));
 
 provide("LineWidthRef", computedLineWidth);
 provide("FlowWidthStepRef", computedFlowWidthStep);
@@ -850,6 +890,8 @@ handleGetSchemeList();
 
 onMounted(() => {
   startPerfProbe();
+  observeLeftPanelSize();
+  window.addEventListener("resize", centerLeftPanel);
   handleGetSchemeList()
     .then(() => {
       datebase.value.scheme = schemeList.value[0];
@@ -857,12 +899,16 @@ onMounted(() => {
     })
     .then(() => {
       datebase.value.model = modelList.value[0].name;
+      observeLeftPanelSize();
     });
 
   scheduleLayerSyncBurst(8);
 });
 onUnmounted(() => {
   stopPerfProbe();
+  leftPanelResizeObserver?.disconnect();
+  leftPanelResizeObserver = null;
+  window.removeEventListener("resize", centerLeftPanel);
   sessionStorage.removeItem("request_params");
   clearInterval(ins);
   if (syncLayersRetryTimer) {
@@ -1043,15 +1089,16 @@ onUnmounted(() => {
   position: fixed;
   z-index: 1300;
   right: 16px;
-  top: 67px;
+  top: 50%;
   max-height: calc((100vh - 85px) / 0.8);
   display: flex;
   flex-direction: column;
-  transform-origin: top right;
+  transform: translateY(-50%);
+  transform-origin: center right;
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   
   &.collapsed {
-    transform: translateX(calc(100% - 8px)) !important;
+    transform: translateX(calc(100% - 8px)) translateY(-50%) !important;
   }
   
   #datavisualization_index_box2 {
@@ -1073,7 +1120,7 @@ onUnmounted(() => {
   transform-origin: top right;
 
   &.with-panel {
-    right: 404px; /* (20px right + 470px panel width + 15px gap) * 0.8 */
+    right: 456px; /* (20px right + 535px panel width + 15px gap) * 0.8 */
   }
 
   &.without-panel {

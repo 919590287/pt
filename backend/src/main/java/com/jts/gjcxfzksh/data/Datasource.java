@@ -3,6 +3,8 @@ package com.jts.gjcxfzksh.data;
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
+import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
+import com.jts.gjcxfzksh.data.cache.MatsimStationPanelCache;
 import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.MatsimOutFile;
 import com.jts.gjcxfzksh.data.entry.Scheme;
@@ -107,6 +109,8 @@ public class Datasource {
     private static void loadEvent(MatsimData data) {
         try {
             MatsimAnalysisCache.prepareOnModelLoad(data);
+            MatsimRoutePanelCache.prepareOnModelLoad(data);
+            MatsimStationPanelCache.prepareOnModelLoad(data);
             MatsimPrecomputedCache.prepareOnModelLoad(data);
         } catch (Exception e) {
             log.error("event加载失败: {}", e.getMessage());
