@@ -10,9 +10,19 @@ const router = createRouter({
       component: () => import("@/components/Layout/MapLayout.vue"),
       children: [
         {
+          path: "/datamanagement",
+          name: "datamanagement",
+          component: () => import("@/views/datamanagement/index.vue"),
+        },
+        {
           path: "/datavisualization",
           name: "datavisualization",
           component: () => import("@/views/datavisualization/index.vue"),
+        },
+        {
+          path: "/passengerflowanalysis",
+          name: "passengerflowanalysis",
+          component: () => import("@/views/passengerflowanalysis/index.vue"),
         },
         {
           path: "/scenariocomparison",
@@ -23,6 +33,11 @@ const router = createRouter({
           path: "/scenarioedit",
           name: "scenarioedit",
           component: () => import("@/views/scenarioedit/index.vue"),
+        },
+        {
+          path: "/vehiclecalculation",
+          name: "vehiclecalculation",
+          component: () => import("@/views/vehiclecalculation/index.vue"),
         },
       ],
     },
