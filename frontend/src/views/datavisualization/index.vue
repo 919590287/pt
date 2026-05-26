@@ -940,36 +940,36 @@ onUnmounted(() => {
 .box1,
 .box2,
 .map-controls-toolbar {
-  scale: 0.8;
+  scale: var(--app-panel-scale);
 }
 
 .datebase_box {
   position: fixed;
-  top: 25.6px;
-  right: 56px;
+  top: calc(var(--app-header-height) / 2);
+  right: calc(var(--app-edge) + 64px);
   display: flex;
   align-items: center;
+  gap: var(--space-xs);
   transform: translateY(-50%);
   transform-origin: right center;
-  z-index: 1000;
+  z-index: calc(var(--z-header) + 10);
+  max-width: min(46vw, 520px);
   .handle {
     cursor: default;
-    margin-right: 10px;
     font-size: 16px;
     font-weight: 600;
-    color: #1569de;
+    color: var(--app-blue);
     text-shadow: none;
     white-space: nowrap;
   }
   .el-select {
-    width: 155px;
-    margin-right: 8px;
+    width: clamp(150px, 14vw, 210px);
     
     :deep(.el-input__wrapper) {
       background-color: rgba(255, 255, 255, 0.8) !important;
       box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.25) inset !important;
       backdrop-filter: blur(4px);
-      border-radius: 6px;
+      border-radius: var(--app-card-radius);
       padding: 6px 12px;
       transition: all 0.3s ease;
       
@@ -1001,14 +1001,16 @@ onUnmounted(() => {
 }
 .box1 {
   box-sizing: border-box;
-  padding: 10px;
+  padding: var(--space-sm);
   position: fixed;
-  z-index: 1300;
+  z-index: var(--z-panel);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: calc((100vh - 150px) / 0.8);
-  min-width: 400px;
+  gap: var(--space-sm);
+  width: 430px;
+  max-height: calc((100vh - 132px) / var(--app-panel-scale));
+  min-width: 430px;
+  min-height: 0;
   transform-origin: top left;
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   
@@ -1022,12 +1024,18 @@ onUnmounted(() => {
 
   .tab_list {
     display: flex;
-    background-color: #ffffff00;
+    align-items: center;
+    background-color: rgba(21, 105, 222, 0.045);
+    border: 1px solid rgba(21, 105, 222, 0.09);
+    border-radius: var(--app-card-radius);
     width: 100%;
-    gap: 10px;
+    gap: var(--space-xs);
+    padding: var(--space-2xs);
     .el-button {
       flex: 1;
       margin: 0;
+      min-height: 32px;
+      border-radius: 4px;
     }
   }
 
@@ -1035,15 +1043,13 @@ onUnmounted(() => {
     display: flex;
     justify-content: center;
     width: 100%;
-    margin-top: 2px;
-    margin-bottom: 2px;
     
     .custom-sub-tabs {
       width: 100%;
       display: flex;
       background-color: rgba(21, 105, 222, 0.05);
-      border-radius: 6px;
-      padding: 3px;
+      border-radius: var(--app-card-radius);
+      padding: var(--space-2xs);
       border: 1px solid rgba(21, 105, 222, 0.1);
       
       :deep(.el-radio-button) {
@@ -1087,53 +1093,53 @@ onUnmounted(() => {
 
 .box2 {
   position: fixed;
-  z-index: 1300;
-  right: 16px;
-  top: 50%;
-  max-height: calc((100vh - 85px) / 0.8);
+  z-index: var(--z-panel);
+  right: var(--app-edge);
+  top: calc(var(--app-header-height) + var(--space-md));
+  max-height: calc((100vh - var(--app-header-height) - 40px) / var(--app-panel-scale));
   display: flex;
   flex-direction: column;
-  transform: translateY(-50%);
-  transform-origin: center right;
+  min-height: 0;
+  transform-origin: top right;
   transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   
   &.collapsed {
-    transform: translateX(calc(100% - 8px)) translateY(-50%) !important;
+    transform: translateX(calc(100% - 8px)) !important;
   }
   
   #datavisualization_index_box2 {
     display: flex;
     flex-direction: column;
     align-items: flex-end;
-    gap: 10px;
+    gap: var(--space-sm);
   }
 }
 
 .map-controls-toolbar {
   position: fixed;
-  top: 67px;
+  top: calc(var(--app-header-height) + var(--space-sm));
   transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  z-index: 1000;
+  gap: var(--space-sm);
+  z-index: calc(var(--z-header) + 5);
   transform-origin: top right;
 
   &.with-panel {
-    right: 456px; /* (20px right + 535px panel width + 15px gap) * 0.8 */
+    right: 456px;
   }
 
   &.without-panel {
-    right: 16px;
+    right: var(--app-edge);
   }
 
   .control-block {
     display: flex;
     flex-direction: column;
     background-color: #ffffff;
-    border-radius: 8px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
-    border: 1px solid rgba(0, 0, 0, 0.06);
+    border-radius: var(--app-card-radius);
+    box-shadow: var(--app-shadow-sm);
+    border: 1px solid rgba(21, 105, 222, 0.11);
     overflow: hidden;
     width: 36px;
 
@@ -1156,7 +1162,8 @@ onUnmounted(() => {
       }
 
       &:hover {
-        background-color: #f5f7fa;
+        background-color: rgba(21, 105, 222, 0.06);
+        color: var(--app-blue);
       }
 
       &.td-btn {
@@ -1227,17 +1234,17 @@ onUnmounted(() => {
 /* Line Width Popover Premium Styling */
 .line-width-popover {
   position: absolute;
-  right: 48px; /* 36px button + 12px gap */
-  top: 76px; /* Align perfectly with Block 2 (sliders block) */
+  right: 48px;
+  top: 76px;
   width: 240px;
   background: rgba(255, 255, 255, 0.95);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(0, 0, 0, 0.08);
-  border-radius: 12px;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08), 0 4px 12px rgba(0, 0, 0, 0.04);
-  padding: 12px 16px;
-  z-index: 1001;
+  border-radius: var(--app-panel-radius);
+  box-shadow: var(--app-shadow-md);
+  padding: var(--space-sm) var(--space-md);
+  z-index: calc(var(--z-popover) - 1);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1363,10 +1370,10 @@ onUnmounted(() => {
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
   border: 1px solid rgba(21, 105, 222, 0.2);
-  border-radius: 12px;
+  border-radius: var(--app-panel-radius);
   box-shadow: 0 12px 30px rgba(15, 66, 125, 0.15), 0 4px 10px rgba(0, 0, 0, 0.05);
   padding: 14px 16px;
-  z-index: 2000;
+  z-index: var(--z-popover);
   pointer-events: auto;
   transform-origin: top left;
   transition: opacity 0.2s ease, transform 0.2s ease;
@@ -1426,6 +1433,29 @@ onUnmounted(() => {
         font-family: "Outfit", "Inter", sans-serif;
       }
     }
+  }
+}
+
+@media (max-width: 1024px) {
+  .datebase_box {
+    right: calc(var(--app-edge) + 36px);
+    max-width: 52vw;
+  }
+
+  .box1 {
+    width: 400px;
+    min-width: 400px;
+  }
+
+  .map-controls-toolbar.with-panel {
+    right: 400px;
+  }
+}
+
+@media (max-width: 960px) {
+  .datebase_box {
+    top: calc(var(--app-header-height) + var(--space-lg));
+    right: var(--app-edge);
   }
 }
 </style>

@@ -47,12 +47,17 @@ onMounted(() => {
 <style lang="scss" scoped>
 .MapLayout {
   position: relative;
+  isolation: isolate;
   overflow: hidden;
   width: 100vw;
   height: 100vh;
+  min-width: 0;
+  color: var(--app-ink);
+  background: #e8f2ff;
   #mapRoot {
     width: 100%;
     height: 100%;
+    min-height: 100%;
   }
 }
 </style>

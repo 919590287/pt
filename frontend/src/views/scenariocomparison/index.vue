@@ -471,22 +471,21 @@ onUnmounted(() => {
 /* LIGHT THEME UNIFICATION (Matching Data Visualization Panel Styles) */
 .comparison-panel {
   position: fixed;
-  z-index: 1300;
-  width: 400px;
-  max-height: calc((100vh - 150px) / 0.8);
-  background: rgba(255, 255, 255, 0.88);
-  border: 1px solid rgba(21, 105, 222, 0.18);
-  box-shadow: 0 10px 30px rgba(15, 66, 125, 0.12);
+  z-index: var(--z-panel);
+  width: 460px;
+  max-height: calc((100vh - 132px) / var(--app-panel-scale));
+  background: var(--app-panel-bg);
+  border: 1px solid var(--app-border);
+  box-shadow: var(--app-shadow-md);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
-  border-radius: 8px;
+  border-radius: var(--app-panel-radius);
   display: flex;
   flex-direction: column;
-  color: #2c3e50;
-  font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--app-ink);
   user-select: none;
   overflow: hidden;
-  scale: 0.8;
+  scale: var(--app-panel-scale);
   transform-origin: top left;
   transition: box-shadow 0.3s ease, border-color 0.3s ease;
   
@@ -499,32 +498,31 @@ onUnmounted(() => {
 .panel-header {
   cursor: move;
   display: flex;
-  padding: 5px 12px;
-  gap: 10px;
+  padding: var(--space-xs) var(--space-md);
+  gap: var(--space-sm);
   align-items: center;
-  line-height: 32px;
+  min-height: 42px;
   background: linear-gradient(to bottom, rgba(21, 105, 222, 0.12) 0%, rgba(21, 105, 222, 0.04) 100%);
-  color: #1569de;
+  color: var(--app-blue);
   border-bottom: 1px solid rgba(21, 105, 222, 0.15);
-
-  &::before {
-    content: "";
-    display: block;
-    width: 3px;
-    height: 16px;
-    border-radius: 2px;
-    background-color: #1569de;
-  }
 
   .header-title {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-xs);
     font-size: 15px;
     font-weight: 700;
-    letter-spacing: 0.5px;
+    letter-spacing: 0;
     width: 0;
     flex: 1;
+    min-width: 0;
+
+    span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
 
     .icon {
       width: 17px;
@@ -535,7 +533,7 @@ onUnmounted(() => {
 
   .header-subtitle {
     font-size: 10px;
-    color: #1569de;
+    color: var(--app-blue);
     border: 1px solid rgba(21, 105, 222, 0.25);
     padding: 1px 5px;
     border-radius: 4px;
@@ -551,34 +549,42 @@ onUnmounted(() => {
 }
 
 .inner-container {
-  padding: 12px;
+  padding: var(--space-md);
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-md);
 }
 
 /* Steps Cards styling */
 .section-card {
-  background: #ffffff;
-  border: 1px solid #d9d9d9;
-  border-radius: 6px;
-  padding: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(21, 105, 222, 0.11);
+  border-radius: var(--app-card-radius);
+  padding: var(--space-sm);
   position: relative;
   overflow: hidden;
 
   .card-title {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-xs);
     font-size: 13px;
-    font-weight: bold;
-    color: #1a365d;
-    margin-bottom: 10px;
+    font-weight: 700;
+    color: var(--app-ink);
+    margin-bottom: var(--space-sm);
 
     .step-num {
       font-family: "Outfit", "Impact", monospace;
-      font-size: 14px;
-      color: #1569de;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 34px;
+      height: 22px;
+      padding: 0 var(--space-2xs);
+      border-radius: 4px;
+      background: rgba(21, 105, 222, 0.08);
+      font-size: 12px;
+      color: var(--app-blue);
       letter-spacing: 0.5px;
     }
   }
@@ -588,17 +594,17 @@ onUnmounted(() => {
 .selection-grid {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-sm);
   background: rgba(21, 105, 222, 0.02);
-  padding: 8px;
-  border-radius: 6px;
+  padding: var(--space-sm);
+  border-radius: var(--app-card-radius);
   border: 1px solid rgba(21, 105, 222, 0.08);
 }
 
 .sel-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2xs);
 
   .sel-label {
     font-size: 10.5px;
@@ -623,18 +629,19 @@ onUnmounted(() => {
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
+  gap: var(--space-xs);
 }
 
 .kpi-card {
   background: rgba(21, 105, 222, 0.03);
   border: 1px solid rgba(21, 105, 222, 0.08);
-  border-radius: 6px;
-  padding: 8px;
+  border-radius: var(--app-card-radius);
+  padding: var(--space-xs);
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 4px;
+  gap: var(--space-xs);
+  min-height: 72px;
 
   .kpi-label {
     font-size: 10px;
@@ -646,8 +653,8 @@ onUnmounted(() => {
   .kpi-comparison {
     display: flex;
     align-items: center;
-    gap: 4px;
-    margin: 1px 0;
+    gap: var(--space-2xs);
+    margin: 0;
 
     .arrow {
       width: 11px;
@@ -696,16 +703,16 @@ onUnmounted(() => {
 /* ECharts Container wrapper */
 .chart-container {
   width: 100%;
-  height: 180px;
+  height: 188px;
   background: #ffffff;
-  border-radius: 6px;
+  border-radius: var(--app-card-radius);
   border: 1px solid rgba(0, 0, 0, 0.04);
-  padding: 4px;
+  padding: var(--space-xs);
   box-sizing: border-box;
 }
 
 .line-chart-h {
-  height: 160px;
+  height: 168px;
 }
 
 .radar-chart, .line-chart {

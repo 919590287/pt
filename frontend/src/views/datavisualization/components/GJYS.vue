@@ -849,7 +849,7 @@ onUnmounted(() => {
 .GJYS {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-sm);
 
   .card {
     .title {
@@ -871,8 +871,8 @@ onUnmounted(() => {
   .build-state {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 6px 2px 2px;
+    gap: var(--space-xs);
+    padding: var(--space-xs) 2px 2px;
 
     .build-title {
       color: #1a365d;
@@ -926,14 +926,14 @@ onUnmounted(() => {
   .stat-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-    margin-top: 8px;
+    gap: var(--space-sm);
+    margin-top: var(--space-xs);
 
     .stat-item {
       background: rgba(248, 250, 252, 0.8);
       border: 1px solid rgba(226, 232, 240, 0.8);
-      padding: 10px;
-      border-radius: 8px;
+      padding: var(--space-xs);
+      border-radius: var(--app-card-radius);
       display: flex;
       flex-direction: column;
 
@@ -972,16 +972,16 @@ onUnmounted(() => {
   .vehicle-panel {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 6px 2px 4px;
+    gap: var(--space-sm);
+    padding: var(--space-xs) 2px var(--space-2xs);
   }
 
   .vehicle-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 8px 2px 10px;
+    gap: var(--space-sm);
+    padding: var(--space-xs) 2px var(--space-sm);
     border-bottom: 1px solid rgba(21, 105, 222, 0.12);
 
     .vehicle-id {
@@ -1002,15 +1002,15 @@ onUnmounted(() => {
   .info-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: var(--space-xs);
   }
 
   .info-item {
     min-width: 0;
     border: 1px solid rgba(21, 105, 222, 0.12);
-    border-radius: 8px;
+    border-radius: var(--app-card-radius);
     background: #f8fbff;
-    padding: 8px 10px;
+    padding: var(--space-xs) var(--space-sm);
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -1036,14 +1036,14 @@ onUnmounted(() => {
 
   .stations-section {
     border-top: 1px solid rgba(21, 105, 222, 0.12);
-    padding-top: 10px;
+    padding-top: var(--space-sm);
   }
 
   .section-title {
     color: #1a365d;
     font-size: 13px;
     font-weight: 800;
-    margin-bottom: 8px;
+    margin-bottom: var(--space-xs);
   }
 
   .station-list {
@@ -1051,7 +1051,7 @@ onUnmounted(() => {
     overflow: auto;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: var(--space-xs);
     padding-right: 4px;
   }
 
@@ -1059,9 +1059,9 @@ onUnmounted(() => {
     display: grid;
     grid-template-columns: 34px minmax(0, 1fr);
     align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 7px;
+    gap: var(--space-xs);
+    padding: var(--space-xs);
+    border-radius: var(--app-card-radius);
     color: #40506a;
     background: #ffffff;
     border: 1px solid rgba(226, 232, 240, 0.9);

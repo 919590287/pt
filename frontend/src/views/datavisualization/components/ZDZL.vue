@@ -1190,7 +1190,7 @@ onUnmounted(() => {
 .ZDZL {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-sm);
   width: 100%;
 }
 
@@ -1208,13 +1208,13 @@ onUnmounted(() => {
 }
 
 .search-input-wrapper {
-  margin-bottom: 14px;
+  margin-bottom: var(--space-sm);
   
   .custom-select {
     width: 100%;
     :deep(.el-input__wrapper) {
       box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.15) inset !important;
-      border-radius: 6px;
+      border-radius: var(--app-card-radius);
       padding: 6px 12px;
       
       &:hover {
@@ -1793,7 +1793,7 @@ onUnmounted(() => {
     .station-icon-wrapper {
       width: 44px;
       height: 44px;
-      border-radius: 10px;
+      border-radius: var(--app-card-radius);
       display: flex;
       align-items: center;
       justify-content: center;

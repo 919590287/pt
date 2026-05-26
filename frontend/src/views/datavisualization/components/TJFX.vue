@@ -302,14 +302,14 @@ export default {
 .TJFX {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-sm);
   width: 100%;
 }
 
 .search-card {
   border: 1px solid rgba(21, 105, 222, 0.15) !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04) !important;
-  border-radius: 8px !important;
+  border-radius: var(--app-panel-radius) !important;
   background-color: #ffffff;
   overflow: hidden;
 
@@ -322,13 +322,13 @@ export default {
 .evaluation-form {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 4px 2px;
+  gap: var(--space-sm);
+  padding: var(--space-2xs) 2px;
 
   .form-row {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--space-xs);
 
     .label {
       font-size: 13px;
@@ -340,7 +340,7 @@ export default {
       width: 100%;
       :deep(.el-input__wrapper) {
         box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.15) inset !important;
-        border-radius: 6px;
+        border-radius: var(--app-card-radius);
         padding: 6px 12px;
         
         &:hover {
@@ -351,14 +351,14 @@ export default {
   }
 
   .button-wrapper {
-    margin-top: 10px;
+    margin-top: var(--space-xs);
     
     .evaluate-btn {
       width: 100%;
       background: linear-gradient(135deg, #1569de 0%, #1569de 100%);
       border: none;
       padding: 12px;
-      border-radius: 6px;
+      border-radius: var(--app-card-radius);
       font-weight: 600;
       box-shadow: 0 4px 12px rgba(21, 105, 222, 0.2);
       transition: all 0.3s ease;
@@ -376,14 +376,14 @@ export default {
   --theme-color: #1569de;
   width: 470px;
   background-color: #ffffff;
-  border-radius: 8px;
+  border-radius: var(--app-panel-radius);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 
 .report-panel {
   display: flex;
   flex-direction: column;
-  padding: 8px 4px;
+  padding: var(--space-xs) var(--space-2xs);
 }
 
 .score-section {
@@ -411,14 +411,14 @@ export default {
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-lg);
   
   .metric-card {
     background: linear-gradient(135deg, #ffffff 0%, #fcfdfe 100%);
     border: 1px solid rgba(21, 105, 222, 0.12);
-    border-radius: 8px;
-    padding: 12px;
+    border-radius: var(--app-card-radius);
+    padding: var(--space-sm);
     display: flex;
     flex-direction: column;
     gap: 4px;

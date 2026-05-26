@@ -39,35 +39,32 @@ function handleSetOpen(open) {
 
 <style lang="scss">
 .MCard2 {
-  --border-color: #d9d9d9;
+  --border-color: rgba(21, 105, 222, 0.12);
 
   overflow: hidden;
-  border-radius: var(--el-border-radius-base);
-  background-color: var(--el-color-white);
+  border: 1px solid var(--border-color);
+  border-radius: var(--app-card-radius);
+  background-color: rgba(255, 255, 255, 0.94);
+  box-shadow: var(--app-shadow-sm);
 
   .MCard2_title_box {
     cursor: pointer;
     display: flex;
-    padding: 5px 10px;
-    gap: 10px;
+    padding: var(--space-xs) var(--space-sm);
+    gap: var(--space-xs);
     align-items: center;
-    line-height: 30px;
-    background: linear-gradient(to bottom, rgb(from var(--el-color-primary-light-7) r g b / 0.5) 0, rgb(from var(--el-color-primary-light-7) r g b / 0.2) 100%);
-    color: var(--el-color-primary);
-
-    &::before {
-      content: "";
-      display: block;
-      width: 3px;
-      height: 16px;
-      border-radius: 2px;
-      background-color: var(--el-color-primary);
-    }
+    min-height: 36px;
+    background: linear-gradient(180deg, rgba(21, 105, 222, 0.09) 0%, rgba(21, 105, 222, 0.035) 100%);
+    color: var(--app-blue);
 
     .MCard2_title {
       white-space: nowrap;
       margin-right: auto;
-      font-weight: bold;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 700;
+      letter-spacing: 0;
     }
     .MCard2_open_btn {
       cursor: pointer;
@@ -78,7 +75,7 @@ function handleSetOpen(open) {
     }
   }
   .MCard2_body_box {
-    padding: 5px 10px;
+    padding: var(--space-sm);
     border-top: 1px solid var(--border-color);
   }
 }

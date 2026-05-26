@@ -1777,14 +1777,14 @@ onUnmounted(() => {
 .XLZL {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-sm);
   width: 100%;
 }
 
 .search-card {
   border: 1px solid rgba(21, 105, 222, 0.15) !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04) !important;
-  border-radius: 8px !important;
+  border-radius: var(--app-panel-radius) !important;
   background-color: #ffffff;
   overflow: hidden;
 
@@ -1797,7 +1797,7 @@ onUnmounted(() => {
 .search-mode-container {
   display: flex;
   justify-content: center;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-sm);
   
   .search-mode-group {
     width: 100%;
@@ -1806,7 +1806,7 @@ onUnmounted(() => {
       flex: 1;
       .el-radio-button__inner {
         width: 100%;
-        border-radius: 6px;
+        border-radius: var(--app-card-radius);
         font-weight: 600;
         transition: all 0.3s ease;
       }
@@ -1815,13 +1815,13 @@ onUnmounted(() => {
 }
 
 .search-input-wrapper {
-  margin-bottom: 14px;
+  margin-bottom: var(--space-sm);
   
   .custom-select {
     width: 100%;
     :deep(.el-input__wrapper) {
       box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.15) inset !important;
-      border-radius: 6px;
+      border-radius: var(--app-card-radius);
       padding: 6px 12px;
       
       &:hover {
@@ -1842,11 +1842,11 @@ onUnmounted(() => {
 
 .route-directions {
   display: flex;
-  gap: 8px;
-  margin-bottom: 14px;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-sm);
   background: rgba(240, 244, 248, 0.7);
-  padding: 4px;
-  border-radius: 6px;
+  padding: var(--space-2xs);
+  border-radius: var(--app-card-radius);
   
   .direction-pill {
     flex: 1;
@@ -2314,7 +2314,8 @@ onUnmounted(() => {
 
     /* Card Themes */
     &.commuter {
-      border-left: 3px solid #1569de;
+      border-color: rgba(21, 105, 222, 0.28);
+      background: rgba(21, 105, 222, 0.035);
       .demo-icon {
         background: rgba(21, 105, 222, 0.08);
         color: #1569de;
@@ -2322,7 +2323,8 @@ onUnmounted(() => {
     }
 
     &.student {
-      border-left: 3px solid #3b82f6;
+      border-color: rgba(59, 130, 246, 0.28);
+      background: rgba(59, 130, 246, 0.035);
       .demo-icon {
         background: rgba(59, 130, 246, 0.08);
         color: #3b82f6;
@@ -2330,7 +2332,8 @@ onUnmounted(() => {
     }
 
     &.elderly {
-      border-left: 3px solid #f59e0b;
+      border-color: rgba(245, 158, 11, 0.3);
+      background: rgba(245, 158, 11, 0.04);
       .demo-icon {
         background: rgba(245, 158, 11, 0.08);
         color: #f59e0b;

@@ -57,14 +57,14 @@ onUnmounted(() => {
 .CXZFX {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-sm);
   width: 100%;
 }
 
 .placeholder-card {
   border: 1px solid rgba(21, 105, 222, 0.15) !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04) !important;
-  border-radius: 8px !important;
+  border-radius: var(--app-panel-radius) !important;
   background-color: #ffffff;
   overflow: hidden;
 
@@ -79,7 +79,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 30px 20px;
+  padding: var(--space-xl) var(--space-lg);
   text-align: center;
   min-height: 200px;
   box-sizing: border-box;
@@ -87,14 +87,14 @@ onUnmounted(() => {
   .placeholder-icon {
     font-size: 48px;
     color: rgba(21, 105, 222, 0.6);
-    margin-bottom: 16px;
+    margin-bottom: var(--space-md);
   }
 
   .placeholder-title {
     font-size: 16px;
     font-weight: 600;
     color: #1a365d;
-    margin-bottom: 10px;
+    margin-bottom: var(--space-xs);
   }
 
   .placeholder-desc {
@@ -108,7 +108,7 @@ onUnmounted(() => {
 .placeholder-right-card {
   width: 470px;
   background-color: #ffffff;
-  border-radius: 8px;
+  border-radius: var(--app-panel-radius);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
 }
 
@@ -117,7 +117,7 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px 40px;
+  padding: var(--space-3xl) var(--space-xl);
   text-align: center;
   min-height: 350px;
   box-sizing: border-box;
@@ -125,14 +125,14 @@ onUnmounted(() => {
   .placeholder-icon {
     font-size: 64px;
     color: rgba(21, 105, 222, 0.6);
-    margin-bottom: 20px;
+    margin-bottom: var(--space-lg);
   }
 
   .placeholder-title {
     font-size: 18px;
     font-weight: 700;
     color: #1a365d;
-    margin-bottom: 12px;
+    margin-bottom: var(--space-sm);
   }
 
   .placeholder-desc {

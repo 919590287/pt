@@ -893,7 +893,7 @@ onUnmounted(() => {
 .SJZL {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-sm);
   .card {
     :deep(.MCard_body_box) {
       display: flex;
@@ -965,8 +965,8 @@ onUnmounted(() => {
   grid-template-columns: repeat(2, 1fr);
   grid-auto-flow: row dense;
   grid-auto-rows: minmax(155px, auto);
-  gap: 12px;
-  padding: 8px 4px;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-2xs);
   box-sizing: border-box;
 
   .row1 {
@@ -982,7 +982,7 @@ onUnmounted(() => {
 .row1, .row2 {
   background: linear-gradient(135deg, #ffffff 0%, #fcfdfe 100%);
   border: 1px solid rgba(from var(--theme-color) r g b / 0.12);
-  border-radius: 12px;
+  border-radius: var(--app-card-radius);
   box-shadow: 0 4px 12px rgba(from var(--theme-color) r g b / 0.03);
   padding: 12px 14px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
