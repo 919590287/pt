@@ -37,6 +37,14 @@ public class AjaxResult {
         return result;
     }
 
+    public static AjaxResult unauthorized(String msg) {
+        AjaxResult result = new AjaxResult();
+        result.data = null;
+        result.msg = msg;
+        result.code = 401;
+        return result;
+    }
+
     public static AjaxResult error() {
         AjaxResult result = new AjaxResult();
         result.data = null;

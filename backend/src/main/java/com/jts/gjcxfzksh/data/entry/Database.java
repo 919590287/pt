@@ -5,12 +5,10 @@ import com.jts.gjcxfzksh.data.MatsimData;
 public class Database {
 
     private final MatsimData matsimData;
-    private final TileNetwork tileNetwork;
+    private volatile TileNetwork tileNetwork;
 
     public Database(MatsimData matsimData) {
         this.matsimData = matsimData;
-        // 瓦片路网
-        this.tileNetwork = new TileNetwork(matsim_data().getNetwork());
     }
 
     public MatsimData matsim_data() {
@@ -18,6 +16,13 @@ public class Database {
     }
 
     public TileNetwork tile_network() {
+        if (tileNetwork == null) {
+            synchronized (this) {
+                if (tileNetwork == null) {
+                    tileNetwork = new TileNetwork(matsim_data().getNetwork());
+                }
+            }
+        }
         return tileNetwork;
     }
 

@@ -50,7 +50,13 @@ public final class MatsimStationPanelCache {
     }
 
     public static Map<String, Object> readStationPanel(MatsimData data) {
-        ensureStationPanelCache(data);
+        if (!isReady(data)) {
+            return Map.of(
+                    "status", "generating",
+                    "cacheVersion", STATION_PANEL_CACHE_VERSION,
+                    "message", "站点客流缓存正在后台生成"
+            );
+        }
         try {
             return readGzipJson(panelPath(data));
         } catch (Exception e) {
@@ -80,7 +86,7 @@ public final class MatsimStationPanelCache {
         }
     }
 
-    private static boolean isReady(MatsimData data) {
+    public static boolean isReady(MatsimData data) {
         if (!Files.exists(manifestPath(data)) || !Files.exists(panelPath(data))) {
             return false;
         }
@@ -367,7 +373,7 @@ public final class MatsimStationPanelCache {
     }
 
     private static Path cacheDir(MatsimData data) {
-        return Path.of(data.getFolder(), ".gjcxfzksh-cache", STATION_PANEL_CACHE_VERSION);
+        return MatsimCachePaths.versionDir(data, STATION_PANEL_CACHE_VERSION);
     }
 
     private static Path manifestPath(MatsimData data) {

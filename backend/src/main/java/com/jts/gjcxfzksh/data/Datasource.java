@@ -31,7 +31,10 @@ import org.matsim.vehicles.Vehicles;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Slf4j
 public class Datasource {
@@ -41,6 +44,14 @@ public class Datasource {
     private static final Map<String, Boolean> loadStatusMap = new ConcurrentHashMap<>();
     // 是否加载中
     private static final Map<String, Boolean> loadingStatusMap = new ConcurrentHashMap<>();
+    private static final Map<String, ModelLoadStatus> statusMap = new ConcurrentHashMap<>();
+    private static final Set<String> retainLoadedRequests = ConcurrentHashMap.newKeySet();
+    private static final Map<String, Long> loadVersionMap = new ConcurrentHashMap<>();
+    private static final ExecutorService LOAD_EXECUTOR = Executors.newFixedThreadPool(1, r -> {
+        Thread thread = new Thread(r, "matsim-model-loader");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     public static Database data(String name) {
         Database data = dataMap.get(name);
@@ -48,6 +59,7 @@ public class Datasource {
             log.error("数据[{}]未加载", name);
             throw new RuntimeException("数据[" + name + "]未加载");
         }
+        data.matsim_data().setLastRequestTime(System.currentTimeMillis());
         return dataMap.get(name);
     }
 
@@ -79,39 +91,150 @@ public class Datasource {
         return b;
     }
 
+    public static ModelLoadStatus loadStatusDetail(String name) {
+        ModelLoadStatus status = statusMap.get(name);
+        if (status == null) {
+            ModelLoadStatus unloaded = ModelLoadStatus.unloaded();
+            unloaded.setLoaded(loadStatus(name));
+            unloaded.setLoading(loadingStatus(name));
+            if (unloaded.isLoaded()) {
+                unloaded.setStage("ready");
+                unloaded.setMessage("模型已加载");
+            }
+            return unloaded;
+        }
+        return status.copy();
+    }
+
     public static void remove(String name) {
         dataMap.remove(name);
         loadStatusMap.remove(name);
+        statusMap.remove(name);
+        retainLoadedRequests.remove(name);
+    }
+
+    public static void unload(String name) {
+        retainLoadedRequests.remove(name);
+        loadVersionMap.merge(name, 1L, Long::sum);
+        dataMap.remove(name);
+        loadStatusMap.remove(name);
+        loadingStatusMap.remove(name);
+        setStatus(name, "unloaded", "模型已卸载", false, false);
+    }
+
+    public static void loadAsync(Scheme scheme) {
+        String name = scheme.getName();
+        retainLoadedRequests.add(name);
+        if (loadStatus(name)) {
+            setStatus(name, "ready", "模型已加载", true, false);
+            return;
+        }
+        Boolean previous = loadingStatusMap.putIfAbsent(name, true);
+        if (Boolean.TRUE.equals(previous)) {
+            return;
+        }
+        long loadVersion = currentLoadVersion(name);
+        setStatus(name, "queued", "模型加载已进入后台队列", false, true);
+        LOAD_EXECUTOR.submit(() -> {
+            try {
+                load(scheme, loadVersion, true);
+            } catch (Throwable e) {
+                log.error("后台加载模型失败: model={}, error={}", name, e.getMessage(), e);
+            }
+        });
+    }
+
+    public static boolean retainLoadedRequested(String name) {
+        return retainLoadedRequests.contains(name);
     }
 
     public static void load(Scheme scheme) {
+        load(scheme, currentLoadVersion(scheme.getName()), true);
+    }
+
+    public static void loadForCache(Scheme scheme) {
+        load(scheme, currentLoadVersion(scheme.getName()), false);
+    }
+
+    private static long currentLoadVersion(String name) {
+        return loadVersionMap.getOrDefault(name, 0L);
+    }
+
+    private static boolean isStaleLoad(String name, long expectedVersion) {
+        return currentLoadVersion(name) != expectedVersion;
+    }
+
+    private static void load(Scheme scheme, long expectedVersion, boolean cancelable) {
+        String name = scheme.getName();
+        if (cancelable && isStaleLoad(name, expectedVersion)) {
+            log.info("跳过已取消的模型加载: model={}", name);
+            return;
+        }
         loadingStatusMap.put(scheme.getName(), true);
         long startTime = System.currentTimeMillis();
+        ModelLoadStatus status = setStatus(scheme.getName(), "loading_config", "正在加载基础路网和公交模型", false, true);
+        status.setStartedAt(startTime);
         try {
-            MatsimData data = new MatsimData(scheme.getName(), scheme.getOutput());
+            MatsimData data = new MatsimData(scheme.getName(), scheme.getOutput(), scheme.getCache(), scheme.isLargeModel());
             data.setArea(scheme.getDesc().getArea());
             // 加载
             loadConfig(data);
-            // event
-            loadEvent(data);
+            if (cancelable && isStaleLoad(name, expectedVersion)) {
+                log.info("模型加载完成但请求已取消，不写入内存: model={}", name);
+                return;
+            }
             long endTime = System.currentTimeMillis();
             log.info("加载[{}]耗时: {}ms", scheme.getName(), endTime - startTime);
             dataMap.put(scheme.getName(), new Database(data));
             loadStatusMap.put(scheme.getName(), true);
+            status = setStatus(scheme.getName(), "ready", "模型基础数据已加载，缓存将在后台生成", true, false);
+            status.setStartedAt(startTime);
+            status.setFinishedAt(endTime);
         } catch (RuntimeException e) {
-            loadStatusMap.put(scheme.getName(), false);
+            if (!cancelable || !isStaleLoad(name, expectedVersion)) {
+                loadStatusMap.put(scheme.getName(), false);
+                status = setStatus(scheme.getName(), "failed", e.getMessage() == null ? "模型加载失败" : e.getMessage(), false, false);
+                status.setStartedAt(startTime);
+                status.setFinishedAt(System.currentTimeMillis());
+            }
             throw e;
         } finally {
             loadingStatusMap.remove(scheme.getName());
         }
     }
 
+    public static void buildCaches(String name) {
+        buildCaches(name, null);
+    }
+
+    public static void buildCaches(String name, MatsimAnalysisCache.BuildProgress progress) {
+        Database database = dataMap.get(name);
+        if (database == null) {
+            throw new RuntimeException("数据[" + name + "]未加载");
+        }
+        loadEvent(database.matsim_data(), progress);
+    }
+
+    private static ModelLoadStatus setStatus(String name, String stage, String message, boolean loaded, boolean loading) {
+        ModelLoadStatus status = statusMap.computeIfAbsent(name, ignored -> new ModelLoadStatus());
+        status.setStage(stage);
+        status.setMessage(message);
+        status.setLoaded(loaded);
+        status.setLoading(loading);
+        return status;
+    }
+
     private static void loadEvent(MatsimData data) {
+        loadEvent(data, null);
+    }
+
+    private static void loadEvent(MatsimData data, MatsimAnalysisCache.BuildProgress progress) {
         try {
             MatsimAnalysisCache.prepareOnModelLoad(data);
             MatsimRoutePanelCache.prepareOnModelLoad(data);
             MatsimStationPanelCache.prepareOnModelLoad(data);
             MatsimPrecomputedCache.prepareOnModelLoad(data);
+            MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
         } catch (Exception e) {
             log.error("event加载失败: {}", e.getMessage());
             throw new RuntimeException(e);
@@ -122,16 +245,33 @@ public class Datasource {
         MatsimOutFile outfile = data.getOutfile();
         Config cfg = ConfigUtils.createConfig();
         new ConfigReader(cfg).readFile(outfile.getConfig());
-        cfg.getModules().get("network").addParam("inputNetworkFile", outfile.getNetwork() == null ? "null" : outfile.getNetwork());
-        cfg.getModules().get("plans").addParam("inputPlansFile", outfile.getPlans() == null ? "null" : outfile.getPlans());
+        cfg.network().setInputFile(outfile.getNetwork());
+        if (data.isLargeModel()) {
+            cfg.plans().setInputFile(null);
+            cfg.facilities().setInputFile(null);
+            cfg.vehicles().setVehiclesFile(null);
+            log.info("模型[{}]进入大模型轻量加载模式，跳过 plans/facilities/vehicles eager 读取", data.getName());
+        } else {
+            cfg.plans().setInputFile(outfile.getPlans());
+        }
         if (outfile.getTransitSchedule() == null) { // 如果没有TRANSIT_SCHEDULE创建一个空的
-            String fileName = outfile.getDir() + "/" + MatsimOutFile.OutFile.TRANSIT_SCHEDULE + ".xml.gz";
+            String fileName = data.getCacheFolder() + "/generated-inputs/" + MatsimOutFile.OutFile.TRANSIT_SCHEDULE + ".xml.gz";
+            try {
+                java.nio.file.Files.createDirectories(java.nio.file.Path.of(fileName).getParent());
+            } catch (Exception e) {
+                throw new RuntimeException("创建缓存输入目录失败", e);
+            }
             TransitScheduleWriter tsw = new TransitScheduleWriter(new TransitScheduleFactoryImpl().createTransitSchedule());
             tsw.writeFile(fileName);
             outfile.setTransitSchedule(fileName);
         }
         if (outfile.getTransitVehicles() == null) { // 如果没有TRANSIT_VEHICLES创建一个空的
-            String fileName = outfile.getDir() + "/" + MatsimOutFile.OutFile.TRANSIT_VEHICLES + ".xml.gz";
+            String fileName = data.getCacheFolder() + "/generated-inputs/" + MatsimOutFile.OutFile.TRANSIT_VEHICLES + ".xml.gz";
+            try {
+                java.nio.file.Files.createDirectories(java.nio.file.Path.of(fileName).getParent());
+            } catch (Exception e) {
+                throw new RuntimeException("创建缓存输入目录失败", e);
+            }
             Vehicles vehicles = VehicleUtils.createVehiclesContainer();
             VehicleType bus = VehicleUtils.createVehicleType(Id.create("car", VehicleType.class));
             bus.getCapacity().setSeats(70);
@@ -142,10 +282,10 @@ public class Datasource {
         }
         cfg.getModules().get("transit").addParam("transitScheduleFile", outfile.getTransitSchedule());
         cfg.getModules().get("transit").addParam("vehiclesFile", outfile.getTransitVehicles());
-        if (outfile.getFacilities() != null) {
+        if (!data.isLargeModel() && outfile.getFacilities() != null) {
             cfg.getModules().get("facilities").addParam("inputFacilitiesFile", outfile.getFacilities());
         }
-        if (outfile.getVehicles() != null) {
+        if (!data.isLargeModel() && outfile.getVehicles() != null) {
             cfg.getModules().get("vehicles").addParam("vehiclesFile", outfile.getVehicles());
         }
         // 如果typicalDuration == 0 设置为1小时
@@ -219,35 +359,36 @@ public class Datasource {
             });
         }
 
-        // plans
-        removeNoSelectPlan(scenario.getPopulation(), outfile.getPlans());
-        inputCRS = cfg.plans().getInputCRS();
-        String planCRS = (String) data.getPopulation().getAttributes().getAttribute("coordinateReferenceSystem");
-        ctf = ctf(globalCRS, inputCRS, planCRS);
-        if (ctf != null) {
-            CoordinateTransformation finalCtf = ctf;
-            data.getPopulation().getPersons().values().parallelStream().forEach(person -> {
-                person.getSelectedPlan().getPlanElements().forEach(element -> {
-                    if (element instanceof Activity act) {
-                        if (act.getCoord() != null) {
-                            Coord coord = act.getCoord();
-                            try {
-                                var transformedCoord = finalCtf.transform(coord);
-                                act.setCoord(transformedCoord);
-                            } catch (Exception e) {
+        // plans。原始 output 必须保持只读，加载阶段不再回写 plans 文件。
+        if (!data.isLargeModel() && data.getPopulation() != null) {
+            inputCRS = cfg.plans().getInputCRS();
+            String planCRS = (String) data.getPopulation().getAttributes().getAttribute("coordinateReferenceSystem");
+            ctf = ctf(globalCRS, inputCRS, planCRS);
+            if (ctf != null) {
+                CoordinateTransformation finalCtf = ctf;
+                data.getPopulation().getPersons().values().parallelStream().forEach(person -> {
+                    person.getSelectedPlan().getPlanElements().forEach(element -> {
+                        if (element instanceof Activity act) {
+                            if (act.getCoord() != null) {
+                                Coord coord = act.getCoord();
+                                try {
+                                    var transformedCoord = finalCtf.transform(coord);
+                                    act.setCoord(transformedCoord);
+                                } catch (Exception e) {
 //                                log.warn("plan.activity 坐标系转换失败, {}", e.getMessage());
+                                }
                             }
                         }
-                    }
+                    });
                 });
-            });
+            }
         }
 
         // facilities
         inputCRS = cfg.facilities().getInputCRS();
-        String fasCRS = (String) data.getAfs().getAttributes().getAttribute("coordinateReferenceSystem");
+        String fasCRS = data.getAfs() == null ? null : (String) data.getAfs().getAttributes().getAttribute("coordinateReferenceSystem");
         ctf = ctf(globalCRS, inputCRS, fasCRS);
-        if (ctf != null) {
+        if (ctf != null && data.getAfs() != null) {
             CoordinateTransformation finalCtf = ctf;
             data.getAfs().getFacilities().values().parallelStream().forEach(af -> {
                 try {

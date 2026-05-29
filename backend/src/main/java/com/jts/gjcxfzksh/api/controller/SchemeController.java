@@ -1,6 +1,7 @@
 package com.jts.gjcxfzksh.api.controller;
 
 import com.jts.gjcxfzksh.api.common.AjaxResult;
+import com.jts.gjcxfzksh.api.common.CurrentUser;
 import com.jts.gjcxfzksh.api.model.params.LoadModelParam;
 import com.jts.gjcxfzksh.api.model.params.ModelListParam;
 import com.jts.gjcxfzksh.api.service.SchemeService;
@@ -25,19 +26,37 @@ public class SchemeController {
     @Operation(summary = "方案列表")
     @PostMapping("/schemeList")
     public AjaxResult schemeList() {
-        return AjaxResult.ok(service.schemeList());
+        return AjaxResult.ok(service.schemeList(CurrentUser.getUsername()));
     }
 
     @PostMapping("/modelList")
     @Operation(summary = "模型列表")
     public AjaxResult modelList(@RequestBody ModelListParam param) {
-        return AjaxResult.ok(service.modelList(param.getSchemeName()));
+        return AjaxResult.ok(service.modelList(CurrentUser.getUsername(), param.getSchemeName()));
     }
 
     @PostMapping("/loadModel")
     @Operation(summary = "加载模型")
     public AjaxResult loadModel(@RequestBody LoadModelParam param) {
-        return AjaxResult.okError(service.loadModel(param.getName()));
+        return AjaxResult.okError(service.loadModel(CurrentUser.getUsername(), param.getName()));
+    }
+
+    @PostMapping("/unloadModel")
+    @Operation(summary = "卸载模型")
+    public AjaxResult unloadModel(@RequestBody LoadModelParam param) {
+        return AjaxResult.okError(service.unloadModel(CurrentUser.getUsername(), param.getName()));
+    }
+
+    @PostMapping("/cacheStatus")
+    @Operation(summary = "模型缓存状态")
+    public AjaxResult cacheStatus(@RequestBody LoadModelParam param) {
+        return AjaxResult.ok(service.cacheStatus(CurrentUser.getUsername(), param.getName()));
+    }
+
+    @PostMapping("/rebuildCache")
+    @Operation(summary = "重建模型缓存")
+    public AjaxResult rebuildCache(@RequestBody LoadModelParam param) {
+        return AjaxResult.okError(service.rebuildCache(CurrentUser.getUsername(), param.getName()));
     }
 
 

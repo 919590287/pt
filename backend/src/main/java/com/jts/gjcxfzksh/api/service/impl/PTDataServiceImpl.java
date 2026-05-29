@@ -64,15 +64,23 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         if (cached != null) {
             return cached;
         }
+        if (matsim_data.isLargeModel()) {
+            return Map.of(
+                    "status", "generating",
+                    "message", "大模型总览缓存正在后台生成，暂不在请求线程中扫描 plans/events",
+                    "largeModel", true
+            );
+        }
         Map<String, Object> result = new HashMap<>();
         // 总体水平
         // 常驻人口密度   人*km2
+        int area = Math.max(1, (int) matsim_data.getArea());
         int personCount = matsim_data.getPersonTracks().stream().collect(Collectors.groupingBy(PTPersonTrack::getPersonId)).size();
-        int czrkmd = personCount / (int) matsim_data.getArea();
+        int czrkmd = personCount / area;
         result.put("czrkmd", czrkmd);
         // 公交线网密度 km/km2
         double length = ptNetworkLength(matsim_data.getSchedule(), matsim_data.getNetwork());
-        double gjxwmd = (length / 1000) / matsim_data.getArea();
+        double gjxwmd = (length / 1000) / area;
         result.put("gjxwmd", NumberUtil.round(gjxwmd, 2).doubleValue());
         // 车站300m覆盖率    %
         Set<Coord> coords = schedule(param).getFacilities().values().stream().map(Facility::getCoord).collect(Collectors.toSet());
@@ -85,7 +93,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         result.put("fxfdl", fxfdl);
         // 车均日载客量   人/次
         int vehNum = matsim_data.getPersonTracks().stream().collect(Collectors.groupingBy(PTPersonTrack::getVehicleId)).size();
-        int cjrzkl = matsim_data.getPersonTracks().size() / vehNum;
+        int cjrzkl = vehNum == 0 ? 0 : matsim_data.getPersonTracks().size() / vehNum;
         result.put("cjrzkl", cjrzkl);
         // 单班次载客量   人次*班
         int dbczkl = cjrzkl;
@@ -145,6 +153,22 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         Map<String, Object> manifest = MatsimAnalysisCache.readReadyTrajectoryManifest(data);
         if (manifest != null) {
             return manifest;
+        }
+        if (data.isLargeModel()) {
+            return Map.of(
+                    "status", "generating",
+                    "cacheVersion", TRAJECTORY_CACHE_VERSION,
+                    "message", "大模型轨迹缓存正在后台流式生成",
+                    "summary", Map.of(
+                            "totalVehicles", 0,
+                            "vehicleCountByMode", emptyLongModeMap(),
+                            "pointCount", 0,
+                            "chunks", List.of()
+                    ),
+                    "timeRange", Map.of("min", 0, "max", 86400),
+                    "vehicles", List.of(),
+                    "passengerSeries", List.of()
+            );
         }
 
         String cacheKey = MatsimAnalysisCache.trajectoryCacheKey(data);
@@ -388,10 +412,12 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         Map<Id<Link>, ? extends Link> linkMap = matsim_data.getNetwork().getLinks();
         for (Id<Link> linkId : links) {
             Link link = linkMap.get(linkId);
-            rc += NetworkUtils.getEuclideanDistance(link.getFromNode().getCoord(), link.getToNode().getCoord());
+            if (link != null) {
+                rc += NetworkUtils.getEuclideanDistance(link.getFromNode().getCoord(), link.getToNode().getCoord());
+            }
         }
 
-        return NumberUtil.round(length / rc, 2).doubleValue();
+        return rc == 0 ? 0.0 : NumberUtil.round(length / rc, 2).doubleValue();
     }
 
     // 线路非直线系数
@@ -406,6 +432,9 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                 NetworkRoute networkRoute = route.getValue().getRoute();
                 // 距离
                 double distance = DistanceUtil.distance(networkRoute, matsim_data.getNetwork());
+                if (route.getValue().getStops().isEmpty()) {
+                    continue;
+                }
                 TransitRouteStop first = route.getValue().getStops().getFirst();
                 TransitRouteStop last = route.getValue().getStops().getLast();
                 // 直线距离
@@ -416,7 +445,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                 }
             }
         }
-        return NumberUtil.round(lc / routeCount, 2).doubleValue(); // 平均值
+        return routeCount == 0 ? 0.0 : NumberUtil.round(lc / routeCount, 2).doubleValue(); // 平均值
     }
 
     // 线路客流强度
@@ -438,7 +467,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                 double distance = DistanceUtil.distance(networkRoute, matsim_data.getNetwork());
                 List<PTPersonTrack> tracks = routeIdListMap.get(RouteId.create(route.getKey()));
                 double p = (tracks == null) ? 0.0 : tracks.size();
-                result.put(route.getKey().toString(), p / (distance / 1000));
+                result.put(route.getKey().toString(), distance == 0 ? 0.0 : p / (distance / 1000));
             }
         }
 //        personCount = matsim_data.getPersonTracks().stream().filter(PTPersonTrack::getEnter).count();
@@ -464,11 +493,14 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             Id<Vehicle> vehicleId = entry.getKey();
             List<PTPersonTrack> ptPersonTracks = entry.getValue();
             Vehicle vehicle = vehicleMap.get(vehicleId);
+            if (vehicle == null || vehicle.getType() == null || vehicle.getType().getCapacity() == null) {
+                continue;
+            }
             vehCount += vehicle.getType().getCapacity().getSeats(); // 座位
             vehCount += vehicle.getType().getCapacity().getStandingRoom(); // 站位
             personCount += ptPersonTracks.stream().filter(PTPersonTrack::getEnter).count();
         }
-        return NumberUtil.round(personCount / vehCount, 2).multiply(_100).doubleValue();
+        return vehCount == 0 ? 0.0 : NumberUtil.round(personCount / vehCount, 2).multiply(_100).doubleValue();
     }
 
     private double[] avgAwaitTime(Population population) {
@@ -531,6 +563,9 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             count += entry.getValue();
         }
         Map<String, Double> typesRant = new HashMap<>();
+        if (count == 0) {
+            return typesRant;
+        }
         BigDecimal c = BigDecimal.valueOf(count);
         for (Map.Entry<String, Integer> entry : types.entrySet()) {
             BigDecimal b = new BigDecimal(entry.getValue());
@@ -593,7 +628,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         coverage.put("notcover", 50.);
 
         if (coords == null || coords.isEmpty()) return coverage;
-        if (population == null) return coverage;
+        if (population == null || population.getPersons().isEmpty()) return coverage;
 
         // 1. 构建空间索引
         STRtree spatialIndex = new STRtree();

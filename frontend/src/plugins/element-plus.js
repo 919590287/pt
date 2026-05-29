@@ -3,7 +3,13 @@ import {
   ElButton,
   ElButtonGroup,
   ElCheckbox,
+  ElDialog,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
   ElEmpty,
+  ElForm,
+  ElFormItem,
   ElIcon,
   ElInput,
   ElInputNumber,
@@ -24,6 +30,8 @@ import {
   ElSlider,
   ElSwitch,
   ElTag,
+  ElTable,
+  ElTableColumn,
   provideGlobalConfig,
 } from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
@@ -33,7 +41,13 @@ const components = [
   ElButton,
   ElButtonGroup,
   ElCheckbox,
+  ElDialog,
+  ElDropdown,
+  ElDropdownItem,
+  ElDropdownMenu,
   ElEmpty,
+  ElForm,
+  ElFormItem,
   ElIcon,
   ElInput,
   ElInputNumber,
@@ -51,6 +65,8 @@ const components = [
   ElSlider,
   ElSwitch,
   ElTag,
+  ElTable,
+  ElTableColumn,
 ];
 
 export function installElementPlus(app) {

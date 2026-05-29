@@ -180,6 +180,10 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public List<PTLink> routeFull(TileNetworkParam param) {
         MatsimData matsimData = matsim_data(param);
+        if (matsimData.isLargeModel()) {
+            log.warn("大模型禁止请求全量线路，请使用瓦片接口: datasource={}", param.getDatasource());
+            return List.of();
+        }
         Network network = matsimData.getNetwork();
         Set<Id<Link>> routeLinkIds = new LinkedHashSet<>();
         for (TransitLine line : matsimData.getSchedule().getTransitLines().values()) {

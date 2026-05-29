@@ -18,6 +18,7 @@ import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
 import org.matsim.vehicles.Vehicles;
 
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 
@@ -29,15 +30,36 @@ import java.util.Set;
 public class MatsimData {
 
     public MatsimData(String name, String folder) {
+        this(name, folder, defaultCacheFolder(name), false);
+    }
+
+    public MatsimData(String name, String folder, String cacheFolder, boolean largeModel) {
         this.name = name;
         this.folder = folder;
-        this.outfile = MatsimOutFile.reload(folder);
+        this.cacheFolder = cacheFolder;
+        this.largeModel = largeModel;
+        this.outfile = MatsimOutFile.reload(folder, cacheFolder);
+    }
+
+    private static String defaultCacheFolder(String name) {
+        String safeName = name == null ? "default" : Integer.toHexString(name.hashCode());
+        return Path.of(System.getProperty("java.io.tmpdir"), "gjcxfzksh-cache", safeName).toString();
     }
 
     /**
      * 方案output目录
      */
     protected final String folder;
+
+    /**
+     * 平台生成缓存目录。必须独立于原始 output 目录。
+     */
+    protected final String cacheFolder;
+
+    /**
+     * 大模型模式：避免 eager 读取超大 plans/events 到 JVM heap。
+     */
+    protected final boolean largeModel;
 
     /**
      * 基准/方案名

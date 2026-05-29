@@ -1,5 +1,6 @@
 import axios from "axios";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { clearAuth, getToken } from "@/utils/auth";
 import { tansParams } from "./index";
 
 // 是否显示重新登录
@@ -22,6 +23,15 @@ const runtimeBaseApi =
 function showErrorMessage(config, message) {
   if (config?.silentError) return;
   ElMessage.error(message);
+}
+
+function redirectToLogin() {
+  clearAuth(false);
+  if (typeof window === "undefined") return;
+  const hash = window.location.hash || "";
+  if (!hash.includes("/login") && !hash.includes("/register") && !hash.includes("/reset-password")) {
+    window.location.hash = "#/login";
+  }
 }
 
 function normalizeErrorMessage(error) {
@@ -71,11 +81,12 @@ service.interceptors.request.use(
 
     // 是否需要设置 token
     const isToken = headers.isToken === false;
-    if (localStorage.getItem("token") && !isToken) {
-      headers["token"] = localStorage.getItem("token"); // 让每个请求携带自定义token 请根据实际情况自行修改
+    const token = getToken();
+    if (token && !isToken) {
+      headers["token"] = token; // 让每个请求携带自定义token
     }
-    if (localStorage.getItem("Authorization") && !isToken) {
-      headers["Authorization"] = "Bearer " + localStorage.getItem("Authorization"); // 让每个请求携带自定义token 请根据实际情况自行修改
+    if (token && !isToken) {
+      headers["Authorization"] = "Bearer " + token;
     }
 
     // 设置国际化
@@ -159,11 +170,15 @@ service.interceptors.response.use(
           confirmButtonText: "确定",
           callback: (action) => {
             isRelogin.show = false;
-            window.location.href = `${configuredBaseApi || runtimeBaseApi}/h5/auth/index`;
+            redirectToLogin();
           },
         });
       }
       return Promise.reject("无效的会话，或者会话已过期，请重新登录");
+    } else if (code === 401) {
+      redirectToLogin();
+      showErrorMessage(res.config, msg);
+      return Promise.reject(new Error(msg));
     } else if (code === 500) {
       showErrorMessage(res.config, msg);
       return Promise.reject(new Error(msg));
@@ -176,6 +191,9 @@ service.interceptors.response.use(
   },
   (error) => {
     const message = normalizeErrorMessage(error);
+    if (error?.response?.status === 401) {
+      redirectToLogin();
+    }
     if (!axios.isCancel(error) && error?.message !== "canceled") {
       showErrorMessage(error?.config, message);
     }

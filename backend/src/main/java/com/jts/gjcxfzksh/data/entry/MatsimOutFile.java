@@ -21,6 +21,7 @@ public class MatsimOutFile {
      * matsim output目录
      */
     private String dir;
+    private String cacheDir;
 
     /**
      * 坐标系
@@ -150,7 +151,7 @@ public class MatsimOutFile {
                     this.config = file.getAbsolutePath();
                 } catch (Exception e) {
                     log.warn("config.xml版本不兼容，尝试转换");
-                    String newConfig = config15to2024(file.getAbsolutePath());
+                    String newConfig = config15to2024(file.getAbsolutePath(), cacheDir);
                     config = ConfigUtils.loadConfig(newConfig);
                     this.config = newConfig;
                 }
@@ -169,7 +170,7 @@ public class MatsimOutFile {
                     this.config = file.getAbsolutePath();
                 } catch (Exception e) {
                     log.warn("config.xml版本不兼容，尝试转换");
-                    String newConfig = config15to2024(file.getAbsolutePath());
+                    String newConfig = config15to2024(file.getAbsolutePath(), cacheDir);
                     config = ConfigUtils.loadConfig(newConfig);
                     this.config = newConfig;
                 }
@@ -251,8 +252,13 @@ public class MatsimOutFile {
      * @param dir matsim output目录
      */
     public static MatsimOutFile reload(String dir) {
+        return reload(dir, new File(System.getProperty("java.io.tmpdir"), "gjcxfzksh-cache").getAbsolutePath());
+    }
+
+    public static MatsimOutFile reload(String dir, String cacheDir) {
         MatsimOutFile out = new MatsimOutFile();
         out.dir = dir;
+        out.cacheDir = cacheDir;
         out.init();
         return out;
     }
@@ -313,20 +319,32 @@ public class MatsimOutFile {
     }
 
     public static String config15to2024(String filename) {
+        return config15to2024(filename, null);
+    }
+
+    public static String config15to2024(String filename, String cacheDir) {
         try {
-//            String newVersion = filename.replace(".xml", ".2025.xml");
-            String newVersion = filename;
-//            if (!filename.endsWith(".v2025.xml")) {
-//                newVersion = filename.replace(".xml", ".v2025.xml");
-//            }
-            File versionFile = new File(filename + ".2025.version");
-            if (versionFile.exists()) {
-                return filename;
+            File source = new File(filename);
+            String newVersion;
+            File versionFile;
+            if (cacheDir == null || cacheDir.isBlank()) {
+                newVersion = filename;
+                versionFile = new File(filename + ".2025.version");
+                if (versionFile.exists()) {
+                    return filename;
+                }
+            } else {
+                File generatedDir = new File(cacheDir, "generated-inputs");
+                if (!generatedDir.exists() && !generatedDir.mkdirs()) {
+                    throw new RuntimeException("创建缓存输入目录失败: " + generatedDir.getAbsolutePath());
+                }
+                newVersion = new File(generatedDir, source.getName().replace(".xml", "") + ".v2025.xml").getAbsolutePath();
+                versionFile = new File(newVersion + ".version");
+                if (versionFile.exists() && new File(newVersion).exists()) {
+                    return newVersion;
+                }
             }
             File v2024config = new File(newVersion);
-//            if (v2024config.exists()) {
-//                return newVersion;
-//            }
             BufferedReader raf = new BufferedReader(new FileReader(filename));
             StringBuilder xmlval = new StringBuilder(10000);
             raf.lines().forEach(line -> {

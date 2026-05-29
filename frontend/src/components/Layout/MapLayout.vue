@@ -11,6 +11,7 @@
 import { onBeforeUnmount, onMounted, provide, shallowRef } from "vue";
 import MHeader from "./MHeader.vue";
 import { MyMap, MapLayer, DEFAULT_MAP_LAYER_STYLE, CityBuildingsLayer } from "@/mymap/index.js";
+import { warmRealData } from "@/utils/realDataCache.js";
 
 defineOptions({
   name: "MapLayout",
@@ -41,6 +42,8 @@ onMounted(() => {
     });
     MapRef.value.addLayer(_CityBuildingsLayer);
   }
+
+  warmRealData("广州市");
 });
 
 onBeforeUnmount(() => {

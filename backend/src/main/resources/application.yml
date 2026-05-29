@@ -17,6 +17,10 @@ server:
       io: 32
 
 spring:
+  servlet:
+    multipart:
+      max-file-size: 200MB
+      max-request-size: 300MB
   undertow:
     websocket:
       buffer-pool-size: 512
@@ -28,3 +32,7 @@ logging:
 matsim:
   # 可视化数据目录和拖拽式上传目录合并
   data: "/Volumes/USB DISK/pt_data/"
+  # 平台派生缓存目录。不要放进真实 output，避免污染原始 MATSim 文件。
+  cache: "/Volumes/USB DISK/pt_cache/"
+  # output 顶层关键文件估算超过该值时，自动使用大模型轻量加载模式。
+  large-model-threshold-bytes: 21474836480

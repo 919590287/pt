@@ -9,6 +9,9 @@ frontend/tsconfig.tsbuildinfo
 backend/target/
 backend/logs/
 logs/
+.gjcxfzksh-cache/
+pt_cache/
+*.hprof
 offline-deploy-gjcxfzksh/
 offline-deploy-gjcxfzksh.tar.gz
 gjcxfzksh-code-for-gpt-pro-*.zip

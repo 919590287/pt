@@ -39,3 +39,30 @@ export function loadModel(data, config = {}) {
     ...config,
   });
 }
+
+export function unloadModel(data, config = {}) {
+  return request({
+    url: `/pt/scheme/unloadModel`,
+    method: "POST",
+    data: data,
+    ...config,
+  });
+}
+
+export function cacheStatus(data, config = {}) {
+  return request({
+    url: `/pt/scheme/cacheStatus`,
+    method: "POST",
+    data: data,
+    ...config,
+  });
+}
+
+export function rebuildCache(data, config = {}) {
+  return request({
+    url: `/pt/scheme/rebuildCache`,
+    method: "POST",
+    data: data,
+    ...config,
+  });
+}

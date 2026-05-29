@@ -1,25 +1,62 @@
 <!-- Passenger Flow Analysis (客流分析) -->
 <template>
+  <Transition name="model-loading-fade">
+    <div v-if="modelLoadingDialogVisible" class="model-loading-gate" role="status" aria-live="polite" aria-busy="true">
+      <div class="model-loading-card" role="dialog" aria-modal="false" aria-label="模型后台加载提示">
+        <button class="model-loading-close" type="button" title="关闭提示" aria-label="关闭模型加载提示" @click="dismissModelLoadingDialog">
+          <el-icon><Close /></el-icon>
+        </button>
+        <div class="model-loading-title">模型后台加载</div>
+        <div class="model-loading-message">{{ modelLoadingNotice }}</div>
+      </div>
+    </div>
+  </Transition>
+
   <div class="datebase_box" role="search" aria-label="方案与模型选择">
     <label class="handle" for="scheme-selector">当前方案</label>
     <el-select id="scheme-selector" v-model="datebase.scheme" clearable filterable :loading="isLoadingSchemes" aria-label="当前方案">
       <el-option v-for="item in schemeList" :key="item" :label="item" :value="item"> </el-option>
     </el-select>
-    <el-select class="model-select" v-model="datebase.model" :disabled="!datebase.scheme || isLoadingModels" clearable filterable :loading="isLoadingModels" aria-label="选择模型">
-      <el-option v-for="item in modelList" :key="item.name" :label="item.name" :value="item.name">
+    <el-select class="model-select" v-model="modelPickerValue" :disabled="!datebase.scheme || isLoadingModels" clearable filterable :loading="isLoadingModels" aria-label="选择模型" @change="handleModelPick">
+      <el-option v-for="item in modelList" :key="item.name" :label="getModelLabel(item)" :value="item.name">
         <div class="model-option">
-          <span>{{ item.name }}</span>
-
-          <el-tag type="success" v-if="item.loadStatus">已加载</el-tag>
-          <el-tag type="warning" v-else>未加载</el-tag>
+          <div class="model-option-main">
+            <span>{{ getModelLabel(item) }}</span>
+            <el-tag v-if="item.scopeLabel" type="info">{{ item.scopeLabel }}</el-tag>
+            <el-tag :type="modelLoadTagType(item)">{{ modelLoadLabel(item) }}</el-tag>
+            <el-tag v-if="item.cacheStatus" :type="modelCacheTagType(item)">{{ modelCacheLabel(item) }}</el-tag>
+          </div>
+          <div class="model-option-actions">
+            <el-button v-if="canStartModel(item)" link size="small" type="primary" :disabled="isModelOperationBusy" @mousedown.stop.prevent @click.stop.prevent="handleBackgroundLoad(item)">
+              <el-icon><VideoPlay /></el-icon>
+              <span>后台加载</span>
+            </el-button>
+            <el-button v-if="item.loadStatus || item.loadStage === 'loading_config' || item.loadStage === 'queued'" link size="small" type="danger" :disabled="isModelOperationBusy" @mousedown.stop.prevent @click.stop.prevent="handleUnloadModel(item)">
+              <el-icon><Remove /></el-icon>
+              <span>卸载</span>
+            </el-button>
+          </div>
         </div>
       </el-option>
     </el-select>
     <span v-if="loadError" class="load-error" role="status">{{ loadError }}</span>
   </div>
 
+  <div v-if="backgroundTaskVisible" class="model-background-status" role="status" aria-live="polite">
+    <div class="model-background-main">
+      <span class="model-background-dot"></span>
+      <span class="model-background-title">{{ backgroundTaskTitle }}</span>
+      <span class="model-background-message">{{ backgroundTaskMessage }}</span>
+    </div>
+    <el-progress class="model-background-progress" :percentage="modelProgressPercent(backgroundTaskModel)" :show-text="false" :stroke-width="6" />
+    <el-button v-if="backgroundSwitchOnReady" link size="small" @click="cancelPendingAutoSwitch">
+      <el-icon><SwitchButton /></el-icon>
+      <span>取消切换</span>
+    </el-button>
+  </div>
+
   <template v-if="selectModel">
-    <template v-if="selectModel.loadStatus">
+    <template v-if="isModelReady">
       <div id="left-analysis-panel" ref="box1" :class="['model_box', 'box1', isLeftCollapsed ? 'collapsed' : '']" :style="box1Style" v-show="showSidebar">
         <!-- Collapse Button -->
         <button
@@ -207,8 +244,19 @@
         </div>
       </Transition>
     </template>
-    <div v-else ref="box1" class="model_box box1" :style="box1Style">
-      <el-empty description="模型加载中，请稍等...." />
+    <div v-else ref="box1" class="model_box box1 cache-loading-panel" :style="box1Style">
+      <div class="cache-loading-title">{{ cacheLoadingTitle }}</div>
+      <div class="cache-loading-message">{{ cacheLoadingMessage }}</div>
+      <el-progress
+        class="cache-loading-progress"
+        :percentage="cacheProgressPercent"
+        :status="selectModel.cacheStatus === 'failed' || selectModel.loadStage === 'failed' ? 'exception' : undefined"
+        :stroke-width="12"
+      />
+      <div class="cache-loading-meta">
+        <span>已用 {{ formatDuration(cacheElapsedSeconds) }}</span>
+        <span>预计剩余 {{ formatDuration(cacheEtaSeconds) }}</span>
+      </div>
     </div>
   </template>
   <div v-else ref="box1" class="model_box box1" :style="box1Style">
@@ -218,7 +266,9 @@
 
 <script setup>
 import { ref, computed, watch, inject, provide, onMounted, onUnmounted, nextTick, defineAsyncComponent, useTemplateRef } from "vue";
-import { getSchemeList, getModelList, loadModel } from "@/api/scheme.js";
+import { Close, Remove, SwitchButton, VideoPlay } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "@/plugins/element-plus";
+import { getSchemeList, getModelList, loadModel, unloadModel } from "@/api/scheme.js";
 import { dataCenter } from "@/api/data.js";
 import { useDraggable } from "@vueuse/core";
 import { HighlightSegmentLayer } from "@/views/datavisualization/layers/HighlightSegmentLayer.js";
@@ -269,28 +319,270 @@ const datebase = ref({
   scheme: "",
   model: "",
 });
+const modelPickerValue = ref("");
 const schemeList = ref([]);
 const modelList = ref([]);
 const isLoadingSchemes = ref(false);
 const isLoadingModels = ref(false);
+const isModelOperationBusy = ref(false);
 const loadError = ref("");
+const initialModelBootstrap = ref(true);
+const backgroundModelName = ref("");
+const backgroundSwitchOnReady = ref(false);
+const modelLoadingDismissed = ref(false);
 let schemeRequestSeq = 0;
 let modelRequestSeq = 0;
 let centerRequestSeq = 0;
+let modelLoadSeq = 0;
+let backgroundTaskSeq = 0;
 const selectModel = computed(() => {
   const item = modelList.value?.find((item) => item.name === datebase.value.model);
   return item;
 });
+const backgroundTaskModel = computed(() => modelList.value?.find((item) => item.name === backgroundModelName.value));
+const isModelReadyForView = (item) => Boolean(item?.loadStatus && item?.cacheStatus === "ready");
+const isModelReady = computed(() => isModelReadyForView(selectModel.value));
+const backgroundTaskVisible = computed(() => Boolean(
+  backgroundTaskModel.value
+  && backgroundTaskModel.value.name !== datebase.value.model
+  && !isModelReadyForView(backgroundTaskModel.value),
+));
+const fullScreenLoadingVisible = computed(() => (
+  !isModelReady.value
+  && (initialModelBootstrap.value || isLoadingSchemes.value || isLoadingModels.value || Boolean(selectModel.value))
+));
+const modelLoadingDialogVisible = computed(() => fullScreenLoadingVisible.value && !modelLoadingDismissed.value);
+const modelLoadingNotice = computed(() => {
+  if (!selectModel.value) return "模型状态正在检查，请稍后。";
+  return `“${getModelLabel(selectModel.value)}”开始后台加载，请稍后。`;
+});
+const modelLoadingKey = computed(() => `${datebase.value.scheme || ""}:${selectModel.value?.name || ""}:${selectModel.value?.loadStage || ""}:${selectModel.value?.cacheStatus || ""}`);
+const cacheProgressPercent = computed(() => modelProgressPercent(selectModel.value));
+const backgroundTaskTitle = computed(() => {
+  const item = backgroundTaskModel.value;
+  if (!item) return "";
+  const prefix = backgroundSwitchOnReady.value ? "加载完成后切换" : "后台加载";
+  return `${prefix}：${getModelLabel(item)}`;
+});
+const backgroundTaskMessage = computed(() => modelProgressMessage(backgroundTaskModel.value));
+
+function modelProgressPercent(item) {
+  if (isModelReadyForView(item)) return 100;
+  if (item?.loadStage === "loading_config") return item?.cacheStatus === "ready" ? 35 : 12;
+  if (item?.loadStage === "queued") return 8;
+  const value = Number(item?.cacheProgressPercent);
+  if (Number.isFinite(value)) return Math.max(0, Math.min(100, Math.round(value)));
+  if (item?.cacheStatus === "ready") return 85;
+  if (item?.loadStatus) return 20;
+  return 5;
+}
+
+function modelProgressMessage(item) {
+  return item?.cacheProgressMessage
+    || item?.cacheMessage
+    || item?.loadMessage
+    || "模型准备中";
+}
+const cacheElapsedSeconds = computed(() => Math.max(0, Number(selectModel.value?.cacheElapsedSeconds) || 0));
+const cacheEtaSeconds = computed(() => Number(selectModel.value?.cacheEtaSeconds ?? -1));
+const cacheLoadingTitle = computed(() => {
+  if (!selectModel.value) return "正在检查模型缓存";
+  if (selectModel.value?.loadStage === "failed" || selectModel.value?.cacheStatus === "failed") return "加载失败";
+  if (!selectModel.value?.loadStatus) return "正在加载模型基础数据";
+  return "正在生成模型缓存";
+});
+const cacheLoadingMessage = computed(() => (
+  (!selectModel.value && isLoadingSchemes.value ? "正在读取可用方案" : "")
+  || (!selectModel.value && isLoadingModels.value ? "正在读取模型列表" : "")
+  || selectModel.value?.cacheProgressMessage
+  || selectModel.value?.cacheMessage
+  || selectModel.value?.loadMessage
+  || "模型准备中，请稍等"
+));
+
+function formatDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return "计算中";
+  const total = Math.round(value);
+  if (total < 60) return `${total} 秒`;
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  if (minutes < 60) return rest > 0 ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
+  const hours = Math.floor(minutes / 60);
+  const minuteRest = minutes % 60;
+  return minuteRest > 0 ? `${hours} 小时 ${minuteRest} 分` : `${hours} 小时`;
+}
+
+function getModelLabel(item) {
+  return item?.displayName || item?.name || "";
+}
+
+function modelLoadLabel(item) {
+  if (item?.loadStatus) return "已加载";
+  if (item?.loadStage === "queued") return "排队中";
+  if (item?.loadStage === "loading_config") return "加载中";
+  if (item?.loadStage === "failed") return "加载失败";
+  return "未加载";
+}
+
+function modelLoadTagType(item) {
+  if (item?.loadStatus) return "success";
+  if (item?.loadStage === "failed") return "danger";
+  if (item?.loadStage === "queued" || item?.loadStage === "loading_config") return "info";
+  return "warning";
+}
+
+function modelCacheLabel(item) {
+  if (item?.cacheStatus === "ready") return "缓存就绪";
+  if (item?.cacheStatus === "queued") return "缓存排队";
+  if (item?.cacheStatus === "building") return "缓存生成";
+  if (item?.cacheStatus === "failed") return "缓存失败";
+  return "缓存待生成";
+}
+
+function modelCacheTagType(item) {
+  if (item?.cacheStatus === "ready") return "success";
+  if (item?.cacheStatus === "failed") return "danger";
+  if (item?.cacheStatus === "queued" || item?.cacheStatus === "building") return "info";
+  return "warning";
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setActiveModel(name = "") {
+  datebase.value.model = name;
+  modelPickerValue.value = name;
+}
+
+function dismissModelLoadingDialog() {
+  modelLoadingDismissed.value = true;
+}
+
+function canStartModel(item) {
+  if (!item || isModelReadyForView(item)) return false;
+  return item.loadStage !== "queued" && item.loadStage !== "loading_config" && item.cacheStatus !== "queued" && item.cacheStatus !== "building";
+}
+
+function pickReadyModel(list, excludedName = "") {
+  return (Array.isArray(list) ? list : []).find((item) => item.name !== excludedName && isModelReadyForView(item)) || null;
+}
+
+function clearBackgroundTask(name = "") {
+  if (!name || backgroundModelName.value === name) {
+    backgroundModelName.value = "";
+    backgroundSwitchOnReady.value = false;
+  }
+}
+
+async function handleModelPick(name) {
+  if (!name) {
+    setActiveModel("");
+    return;
+  }
+  const item = modelList.value.find((model) => model.name === name);
+  if (!item) return;
+  if (isModelReadyForView(item)) {
+    setActiveModel(name);
+    clearBackgroundTask(name);
+    return;
+  }
+  modelPickerValue.value = datebase.value.model;
+  await startBackgroundModelLoad(item, true);
+}
+
+async function handleBackgroundLoad(item) {
+  modelPickerValue.value = datebase.value.model;
+  await startBackgroundModelLoad(item, false);
+}
+
+async function startBackgroundModelLoad(item, switchOnReady) {
+  if (!item?.name) return;
+  if (isModelReadyForView(item)) {
+    if (switchOnReady) setActiveModel(item.name);
+    return;
+  }
+  const seq = ++backgroundTaskSeq;
+  backgroundModelName.value = item.name;
+  backgroundSwitchOnReady.value = switchOnReady;
+  isModelOperationBusy.value = true;
+  loadError.value = "";
+  try {
+    await loadModel({ name: item.name }, { silentError: true });
+  } catch (error) {
+    if (seq === backgroundTaskSeq) {
+      clearBackgroundTask(item.name);
+      loadError.value = error?.message || "模型后台加载失败";
+    }
+    return;
+  } finally {
+    if (seq === backgroundTaskSeq) {
+      isModelOperationBusy.value = false;
+    }
+  }
+
+  try {
+    const readyItem = await waitForModelReady(item.name, () => seq === backgroundTaskSeq && backgroundModelName.value === item.name, { publishProgress: false });
+    if (!readyItem || seq !== backgroundTaskSeq) return;
+    if (backgroundSwitchOnReady.value) {
+      setActiveModel(item.name);
+      ElMessage.success("模型已加载完成，已切换");
+    } else {
+      ElMessage.success("模型已在后台加载完成");
+    }
+    clearBackgroundTask(item.name);
+  } catch (error) {
+    if (seq === backgroundTaskSeq) {
+      loadError.value = error?.message || "模型后台加载失败";
+    }
+  }
+}
+
+function cancelPendingAutoSwitch() {
+  backgroundSwitchOnReady.value = false;
+}
+
+async function handleUnloadModel(item) {
+  if (!item?.name) return;
+  const isActive = item.name === datebase.value.model;
+  try {
+    await ElMessageBox.confirm(
+      isActive ? "卸载当前模型后，将自动切换到其他已就绪模型；如果没有可用模型，当前页面会进入待选择状态。" : `确定卸载“${getModelLabel(item)}”吗？`,
+      "卸载模型",
+      { confirmButtonText: "卸载", cancelButtonText: "取消", type: "warning" },
+    );
+  } catch {
+    return;
+  }
+  isModelOperationBusy.value = true;
+  try {
+    await unloadModel({ name: item.name }, { silentError: true });
+    const list = await handleGetModelList({ silent: true });
+    if (isActive) {
+      const fallback = pickReadyModel(list, item.name);
+      setActiveModel(fallback?.name || "");
+    }
+    clearBackgroundTask(item.name);
+    ElMessage.success("模型已卸载");
+  } catch (error) {
+    loadError.value = error?.message || "模型卸载失败";
+  } finally {
+    isModelOperationBusy.value = false;
+  }
+}
 
 watch(
   () => datebase.value.scheme,
   async (scheme) => {
-    datebase.value.model = "";
+    setActiveModel("");
+    clearBackgroundTask();
     modelList.value = [];
     if (!scheme) return;
     const list = await handleGetModelList();
     if (list.length && !datebase.value.model) {
-      datebase.value.model = list[0].name;
+      const preferred = pickReadyModel(list) || list[0];
+      setActiveModel(preferred.name);
     }
   },
 );
@@ -331,26 +623,33 @@ async function handleGetSchemeList(options = {}) {
 watch(
   () => datebase.value.model,
   async () => {
+    modelPickerValue.value = datebase.value.model || "";
     if (!datebase.value.model) return;
+    const seq = ++modelLoadSeq;
     try {
-      if (selectModel.value && !selectModel.value.loadStatus) {
+      if (selectModel.value && !isModelReady.value) {
         await loadModel({ name: datebase.value.model });
-        await handleGetModelList({ silent: true });
+        await waitForModelReady(datebase.value.model, () => seq === modelLoadSeq && datebase.value.model === selectModel.value?.name);
       }
     } catch (error) {
       loadError.value = error?.message || "模型加载失败，请稍后重试";
     } finally {
-      setMapCenter();
+      if (seq === modelLoadSeq && isModelReady.value) {
+        setMapCenter();
+      }
     }
   },
 );
+watch(modelLoadingKey, () => {
+  modelLoadingDismissed.value = false;
+});
 
 const MapRef = inject("MapRef");
 watch(MapRef, setMapCenter);
 
 async function setMapCenter() {
   const seq = ++centerRequestSeq;
-  if (selectModel.value && selectModel.value.name) {
+  if (selectModel.value && selectModel.value.name && isModelReady.value) {
     try {
       const res = await dataCenter({ datasource: selectModel.value.name }, { silentError: true });
       if (seq !== centerRequestSeq) return;
@@ -363,6 +662,31 @@ async function setMapCenter() {
       loadError.value = error?.message || "地图中心点加载失败";
     }
   }
+}
+
+async function waitForModelReady(modelName, shouldContinue, options = {}) {
+  const { publishProgress = true } = options;
+  for (let i = 0; i < 21600; i++) {
+    if (!shouldContinue()) return null;
+    const list = await handleGetModelList({ silent: true });
+    const item = list.find((model) => model.name === modelName);
+    if (!item) return null;
+    if (item.loadStatus && item.cacheStatus === "ready") {
+      loadError.value = "";
+      return item;
+    }
+    if (item.loadStage === "failed") {
+      throw new Error(item.loadMessage || "模型加载失败");
+    }
+    if (item.cacheStatus === "failed") {
+      throw new Error(item.cacheMessage || "缓存生成失败");
+    }
+    if (publishProgress) {
+      loadError.value = item.cacheProgressMessage || item.cacheMessage || item.loadMessage || "模型正在后台准备";
+    }
+    await sleep(1000);
+  }
+  throw new Error("模型缓存仍在后台生成，请稍后查看");
 }
 
 async function handleGetModelList(options = {}) {
@@ -382,7 +706,11 @@ async function handleGetModelList(options = {}) {
     const list = Array.isArray(res?.data) ? res.data : [];
     modelList.value = list;
     if (datebase.value.model && !list.some((item) => item.name === datebase.value.model)) {
-      datebase.value.model = "";
+      const fallback = pickReadyModel(list);
+      setActiveModel(fallback?.name || "");
+    }
+    if (backgroundModelName.value && !list.some((item) => item.name === backgroundModelName.value)) {
+      clearBackgroundTask(backgroundModelName.value);
     }
     if (!silent && !list.length) {
       loadError.value = "当前方案暂无可用模型";
@@ -416,8 +744,20 @@ provide("activeDatavisualizationTab", effectiveTab);
 const rightPanelHasContent = ref(true);
 provide("rightPanelHasContent", rightPanelHasContent);
 
+function tabHasPersistentRightPanel(tab = effectiveTab.value) {
+  return tab === "线路客流监测" || tab === "站点客流监测" || tab === "体检评估分析";
+}
+
+function syncPersistentRightPanel(tab = effectiveTab.value) {
+  if (!tabHasPersistentRightPanel(tab)) return;
+  rightPanelHasContent.value = true;
+  showRightPanel.value = true;
+  isRightCollapsed.value = false;
+}
+
 watch(effectiveTab, (tab) => {
-  rightPanelHasContent.value = false;
+  rightPanelHasContent.value = tabHasPersistentRightPanel(tab);
+  syncPersistentRightPanel(tab);
   if (tab === "线路客流监测") {
     lineWidth.value = 42;
   } else {
@@ -428,6 +768,16 @@ watch(effectiveTab, (tab) => {
   scheduleLayerSyncBurst(4);
   observeLeftPanelSize();
 });
+
+watch(
+  [() => selectModel.value?.name, isModelReady],
+  () => {
+    if (isModelReady.value) {
+      nextTick(() => syncPersistentRightPanel());
+    }
+  },
+  { flush: "post" },
+);
 
 // Map Controls State & Logic
 const mapZoom = ref(10.74);
@@ -871,13 +1221,16 @@ onMounted(() => {
   observeLeftPanelSize();
   window.addEventListener("resize", centerLeftPanel);
   document.addEventListener("keydown", handleDocumentKeydown);
-  handleGetSchemeList({ autoSelect: true }).then(() => {
+  handleGetSchemeList({ autoSelect: true }).finally(() => {
+    initialModelBootstrap.value = false;
     observeLeftPanelSize();
   });
   scheduleLayerSyncBurst(8);
 });
 
 onUnmounted(() => {
+  modelLoadSeq++;
+  backgroundTaskSeq++;
   leftPanelResizeObserver?.disconnect();
   leftPanelResizeObserver = null;
   window.removeEventListener("resize", centerLeftPanel);
@@ -945,12 +1298,28 @@ onUnmounted(() => {
     justify-content: space-between;
     gap: var(--space-sm);
     min-width: 0;
+    width: 100%;
 
-    span:first-child {
+    .model-option-main {
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
       min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      flex: 1;
+
+      span:first-child {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+    }
+
+    .model-option-actions {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+      gap: 2px;
     }
   }
 
@@ -999,6 +1368,64 @@ onUnmounted(() => {
     }
   }
 }
+
+.model-background-status {
+  position: fixed;
+  top: calc(var(--app-header-height) + 8px);
+  right: calc(var(--app-edge) + 64px);
+  z-index: calc(var(--z-header) + 9);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 110px auto;
+  align-items: center;
+  gap: var(--space-sm);
+  width: min(46vw, 520px);
+  min-width: 360px;
+  padding: 8px 10px;
+  scale: var(--app-panel-scale);
+  transform-origin: right top;
+  border: 1px solid rgba(21, 105, 222, 0.16);
+  border-radius: var(--app-panel-radius);
+  background: rgba(251, 253, 255, 0.94);
+  box-shadow: 0 10px 30px rgba(31, 45, 61, 0.12);
+  color: var(--app-ink);
+
+  .model-background-main {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    min-width: 0;
+  }
+
+  .model-background-dot {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--app-blue);
+    box-shadow: 0 0 0 4px rgba(21, 105, 222, 0.12);
+  }
+
+  .model-background-title,
+  .model-background-message {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .model-background-title {
+    font-size: 12px;
+    font-weight: 760;
+  }
+
+  .model-background-message {
+    color: var(--app-muted);
+    font-size: 12px;
+  }
+
+  .model-background-progress {
+    width: 110px;
+  }
+}
 .box1 {
   box-sizing: border-box;
   padding: var(--space-sm);
@@ -1025,6 +1452,41 @@ onUnmounted(() => {
   
   .handle {
     cursor: move;
+  }
+
+  &.cache-loading-panel {
+    justify-content: center;
+    gap: var(--space-md);
+    padding: var(--space-lg);
+    background: rgba(251, 253, 255, 0.94);
+    border: 1px solid var(--app-border-strong);
+    border-radius: var(--app-panel-radius);
+    box-shadow: var(--app-shadow-panel);
+  }
+
+  .cache-loading-title {
+    color: var(--app-ink);
+    font-size: 18px;
+    font-weight: 760;
+  }
+
+  .cache-loading-message {
+    color: var(--app-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    word-break: break-word;
+  }
+
+  .cache-loading-progress {
+    width: 100%;
+  }
+
+  .cache-loading-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-md);
+    color: var(--app-muted);
+    font-size: 12px;
   }
 
   .sub_tab_list_wrapper {
@@ -1461,6 +1923,12 @@ onUnmounted(() => {
     max-width: 52vw;
   }
 
+  .model-background-status {
+    right: calc(var(--app-edge) + 36px);
+    width: 52vw;
+    min-width: 320px;
+  }
+
   .box1 {
     width: min(400px, calc((100vw - 48px) / var(--app-panel-scale)));
     min-width: min(400px, calc((100vw - 48px) / var(--app-panel-scale)));
@@ -1478,6 +1946,14 @@ onUnmounted(() => {
     max-width: calc(100vw - (var(--app-edge) * 2));
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+
+  .model-background-status {
+    top: calc(var(--app-header-height) + 76px);
+    right: var(--app-edge);
+    grid-template-columns: minmax(0, 1fr);
+    width: calc(100vw - (var(--app-edge) * 2));
+    min-width: 0;
   }
 
   .map-controls-toolbar.with-panel {
@@ -1499,6 +1975,12 @@ onUnmounted(() => {
     .el-select {
       width: min(100%, 190px);
     }
+  }
+
+  .model-background-status {
+    left: var(--app-edge);
+    right: var(--app-edge);
+    width: auto;
   }
 
   .box1 {

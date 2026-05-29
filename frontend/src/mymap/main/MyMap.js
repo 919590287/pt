@@ -292,7 +292,7 @@ export class MyMap extends EventListener {
       mousemove: (event) => this.handleCustomMouseMove(event),
       mouseup: (event) => this.handleCustomMouseUp(event),
       contextmenu: (event) => {
-        if (this._enableRotate) {
+        if (this._enablePan || this._enableRotate) {
           event.preventDefault();
         }
       },
@@ -326,12 +326,13 @@ export class MyMap extends EventListener {
 
   handleCustomMouseDown(event) {
     this.rootDoc?.focus?.({ preventScroll: true });
-    if (!this._enableRotate) return;
-    if (event.button !== 1 && event.button !== 2) return;
+    const isMiddleRotate = event.button === 1 && this._enableRotate;
+    const isRightPan = event.button === 2 && this._enablePan;
+    if (!isMiddleRotate && !isRightPan) return;
     event.preventDefault();
     event.stopPropagation();
     this.customDrag = {
-      mode: event.button === 1 ? "rotate" : "pan",
+      mode: isMiddleRotate ? "rotate" : "pan",
       lastX: event.clientX,
       lastY: event.clientY,
       moved: false,
@@ -339,7 +340,7 @@ export class MyMap extends EventListener {
   }
 
   handleCustomMouseMove(event) {
-    if (!this.customDrag || !this._enableRotate) return;
+    if (!this.customDrag) return;
     const dx = event.clientX - this.customDrag.lastX;
     const dy = event.clientY - this.customDrag.lastY;
     if (Math.abs(dx) + Math.abs(dy) > 0) {
@@ -354,6 +355,11 @@ export class MyMap extends EventListener {
       if (this._enablePan) {
         this.map.panBy([-dx, -dy], { duration: 0 });
       }
+      return;
+    }
+
+    if (!this._enableRotate) {
+      this.customDrag = null;
       return;
     }
 
@@ -439,7 +445,7 @@ export class MyMap extends EventListener {
     if (this.map.touchZoomRotate) {
       this._enableRotate ? this.map.touchZoomRotate.enableRotation() : this.map.touchZoomRotate.disableRotation();
     }
-    this._enablePan ? this.map.dragPan.enable() : this.map.dragPan.disable();
+    this.map.dragPan.disable();
     if (this._enableZoom) {
       this.map.scrollZoom.enable();
       this.map.doubleClickZoom.enable();

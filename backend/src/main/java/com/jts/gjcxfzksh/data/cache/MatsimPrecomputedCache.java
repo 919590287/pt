@@ -88,7 +88,6 @@ public final class MatsimPrecomputedCache {
     public static void prepareOnModelLoad(MatsimData data) {
         try {
             ensureVisualCache(data);
-            MatsimAnalysisCache.ensureTrajectoryCache(data);
         } catch (Exception e) {
             log.error("模型预计算缓存生成失败: model={}, error={}", data.getName(), e.getMessage(), e);
             throw new RuntimeException(e);
@@ -96,7 +95,9 @@ public final class MatsimPrecomputedCache {
     }
 
     public static Map<String, Object> readInfo(MatsimData data) {
-        ensureVisualCache(data);
+        if (!isVisualCacheReady(data)) {
+            return null;
+        }
         try {
             return JSON.readValue(infoPath(data).toFile(), MAP_TYPE);
         } catch (Exception e) {
@@ -106,7 +107,9 @@ public final class MatsimPrecomputedCache {
     }
 
     public static List<Object> readLines(MatsimData data) {
-        ensureVisualCache(data);
+        if (!isVisualCacheReady(data)) {
+            return null;
+        }
         try {
             return readGzipJson(linesPath(data), LIST_TYPE);
         } catch (Exception e) {
@@ -116,7 +119,9 @@ public final class MatsimPrecomputedCache {
     }
 
     public static List<Object> readStations(MatsimData data) {
-        ensureVisualCache(data);
+        if (!isVisualCacheReady(data)) {
+            return null;
+        }
         try {
             return readGzipJson(stationsPath(data), LIST_TYPE);
         } catch (Exception e) {
@@ -126,17 +131,23 @@ public final class MatsimPrecomputedCache {
     }
 
     public static List<Object> readNetworkTile(MatsimData data, int z, int tileX, int tileY) {
-        ensureVisualCache(data);
+        if (!isVisualCacheReady(data)) {
+            return null;
+        }
         return readTile(data, NETWORK_TILES_DIR, z, tileX, tileY);
     }
 
     public static List<Object> readRouteTile(MatsimData data, int z, int tileX, int tileY) {
-        ensureVisualCache(data);
+        if (!isVisualCacheReady(data)) {
+            return null;
+        }
         return readTile(data, ROUTE_TILES_DIR, z, tileX, tileY);
     }
 
     public static RouteDetailVO readRouteDetail(MatsimData data, String routeId) {
-        ensureVisualCache(data);
+        if (!isVisualCacheReady(data)) {
+            return null;
+        }
         if (routeId == null || routeId.isBlank()) {
             return null;
         }
@@ -187,7 +198,7 @@ public final class MatsimPrecomputedCache {
         }
     }
 
-    private static boolean isVisualCacheReady(MatsimData data) {
+    public static boolean isVisualCacheReady(MatsimData data) {
         Path manifestPath = manifestPath(data);
         if (!Files.exists(manifestPath)
                 || !Files.exists(infoPath(data))
@@ -927,7 +938,7 @@ public final class MatsimPrecomputedCache {
     }
 
     private static Path cacheDir(MatsimData data) {
-        return Path.of(data.getFolder(), ".gjcxfzksh-cache", VISUAL_CACHE_VERSION);
+        return MatsimCachePaths.versionDir(data, VISUAL_CACHE_VERSION);
     }
 
     private static Path manifestPath(MatsimData data) {

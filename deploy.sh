@@ -15,6 +15,8 @@ BACKEND_PORT="${BACKEND_PORT:-8090}"
 FRONTEND_PORT="${FRONTEND_PORT:-8088}"
 HOST="${HOST:-0.0.0.0}"
 MATSIM_DATA="${MATSIM_DATA:-${MATSIM_DATA_PATH:-/Volumes/USB DISK/pt_data/}}"
+MATSIM_CACHE="${MATSIM_CACHE:-${MATSIM_CACHE_PATH:-/Volumes/USB DISK/pt_cache/}}"
+MATSIM_LARGE_MODEL_THRESHOLD_BYTES="${MATSIM_LARGE_MODEL_THRESHOLD_BYTES:-21474836480}"
 JAVA_OPTS="${JAVA_OPTS:--Xms2g -Xmx8g}"
 FRONTEND_INSTALL="${FRONTEND_INSTALL:-auto}"
 VITE_MODE="${VITE_MODE:-production}"
@@ -22,6 +24,12 @@ JAVA_CMD="${JAVA_CMD:-java}"
 MVN_CMD="${MVN_CMD:-mvn}"
 NPM_CMD="${NPM_CMD:-npm}"
 SCREEN_CMD="${SCREEN_CMD:-screen}"
+
+if [ -n "${JAVA_HOME:-}" ]; then
+  export JAVA_HOME
+  PATH="$JAVA_HOME/bin:$PATH"
+  export PATH
+fi
 
 API_BASE_URL="${API_BASE_URL:-}"
 MODEL_FILES_PATH="${MODEL_FILES_PATH:-}"
@@ -98,7 +106,9 @@ xml_escape() {
 }
 
 sh_escape() {
-  printf '%q' "$1"
+  local value="${1:-}"
+  value="${value//\'/\'\\\'\'}"
+  printf "'%s'" "$value"
 }
 
 pid_value() {
@@ -132,6 +142,21 @@ wait_for_pid() {
 
   while [ "$attempts" -gt 0 ]; do
     if is_running "$pid_file"; then
+      return 0
+    fi
+    sleep 0.2
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+wait_for_exit() {
+  local pid="$1"
+  local attempts="${2:-75}"
+
+  while [ "$attempts" -gt 0 ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then
       return 0
     fi
     sleep 0.2
@@ -178,6 +203,8 @@ echo \$\$ > $(sh_escape "$BACKEND_PID")
 exec $(sh_escape "$JAVA_CMD") $JAVA_OPTS -jar $(sh_escape "$jar_file") \\
   --server.port=$(sh_escape "$BACKEND_PORT") \\
   --matsim.data=$(sh_escape "$MATSIM_DATA") \\
+  --matsim.cache=$(sh_escape "$MATSIM_CACHE") \\
+  --matsim.large-model-threshold-bytes=$(sh_escape "$MATSIM_LARGE_MODEL_THRESHOLD_BYTES") \\
   > $(sh_escape "$LOG_DIR/backend-console.log") 2>&1
 EOF
   chmod +x "$script_file"
@@ -301,6 +328,10 @@ start_backend() {
     say "MATSIM_DATA does not exist, creating: $MATSIM_DATA"
     mkdir -p "$MATSIM_DATA"
   fi
+  if [ ! -d "$MATSIM_CACHE" ]; then
+    say "MATSIM_CACHE does not exist, creating: $MATSIM_CACHE"
+    mkdir -p "$MATSIM_CACHE"
+  fi
 
   local launcher="$RUN_DIR/start-backend.sh"
   write_backend_launcher "$launcher" "$jar_file"
@@ -340,6 +371,11 @@ stop_one() {
   if kill -0 "$pid" 2>/dev/null; then
     kill "$pid"
     say "Stopped $name, pid=$pid"
+    if ! wait_for_exit "$pid" 75; then
+      kill -9 "$pid" 2>/dev/null || true
+      wait_for_exit "$pid" 25 || true
+      say "Force stopped $name, pid=$pid"
+    fi
   else
     say "$name pid file exists, but process is not running: pid=$pid"
   fi
@@ -408,6 +444,8 @@ status_all() {
   say "Frontend URL: http://localhost:$FRONTEND_PORT"
   say "Backend API:   http://localhost:$BACKEND_PORT"
   say "MATSIM_DATA:   $MATSIM_DATA"
+  say "MATSIM_CACHE:  $MATSIM_CACHE"
+  say "Large model threshold bytes: $MATSIM_LARGE_MODEL_THRESHOLD_BYTES"
   say "Logs:          $LOG_DIR"
 }
 
@@ -448,6 +486,8 @@ BACKEND_PORT=8090
 FRONTEND_PORT=8088
 HOST=0.0.0.0
 MATSIM_DATA="/Volumes/USB DISK/pt_data/"
+MATSIM_CACHE="/Volumes/USB DISK/pt_cache/"
+MATSIM_LARGE_MODEL_THRESHOLD_BYTES=21474836480
 JAVA_OPTS="-Xms2g -Xmx8g"
 JAVA_CMD=java
 MVN_CMD=mvn

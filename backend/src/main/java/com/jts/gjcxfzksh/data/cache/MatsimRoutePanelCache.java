@@ -61,7 +61,13 @@ public final class MatsimRoutePanelCache {
     }
 
     public static Map<String, Object> readRoutePanel(MatsimData data) {
-        ensureRoutePanelCache(data);
+        if (!isReady(data)) {
+            return Map.of(
+                    "status", "generating",
+                    "cacheVersion", ROUTE_PANEL_CACHE_VERSION,
+                    "message", "线路客流缓存正在后台生成"
+            );
+        }
         try {
             return readGzipJson(panelPath(data));
         } catch (Exception e) {
@@ -91,7 +97,7 @@ public final class MatsimRoutePanelCache {
         }
     }
 
-    private static boolean isReady(MatsimData data) {
+    public static boolean isReady(MatsimData data) {
         if (!Files.exists(manifestPath(data)) || !Files.exists(panelPath(data))) {
             return false;
         }
@@ -316,7 +322,7 @@ public final class MatsimRoutePanelCache {
     }
 
     private static Path cacheDir(MatsimData data) {
-        return Path.of(data.getFolder(), ".gjcxfzksh-cache", ROUTE_PANEL_CACHE_VERSION);
+        return MatsimCachePaths.versionDir(data, ROUTE_PANEL_CACHE_VERSION);
     }
 
     private static Path manifestPath(MatsimData data) {
