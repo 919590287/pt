@@ -36,3 +36,5 @@ matsim:
   cache: "/Volumes/USB DISK/pt_cache/"
   # output 顶层关键文件估算超过该值时，自动使用大模型轻量加载模式。
   large-model-threshold-bytes: 21474836480
+  # 后台缓存生成并发数；0表示按CPU自动选择，服务器可按磁盘/内存能力调大。
+  cache-build-threads: 0

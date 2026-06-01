@@ -920,6 +920,7 @@ const lineRoutePicker = reactive({
   mode: "view",
   lngLat: null,
   point: null,
+  station: null,
 });
 const editActionMenu = reactive({
   visible: false,
@@ -1083,10 +1084,12 @@ const hiddenActiveEditOperationCount = computed(() => Math.max(0, activeEditOper
 const hasAnyUnsavedEdits = computed(() => editOperations.station.length + editOperations.line.length + editOperations.depot.length > 0);
 const attributeTableChangedCount = computed(() => collectAttributeTableChangedRows().length);
 const lineRoutePickerTitle = computed(() => {
+  if (lineRoutePicker.mode === "station_edit") return "选择该站点所属线路";
   if (lineRoutePicker.mode === "edit") return "选择经过该路段的线路";
   return "选择线路";
 });
 const lineRoutePickerHint = computed(() => {
+  if (lineRoutePicker.mode === "station_edit") return "选中线路后打开该线路的本站属性表。";
   if (lineRoutePicker.mode === "edit") return "选中线路后打开筛选后的属性表。";
   return "";
 });
@@ -2129,7 +2132,7 @@ function handleStationUpdateClick(event) {
   const feature = firstRenderedFeature(point, [LAYER_STATION_SELECTED, LAYER_STATIONS]);
   if (feature) {
     selectStation(feature);
-    openAttributeTable("station", selectedStation.value);
+    showStationRoutePicker(event, selectedStation.value);
     return;
   }
   clearSelection();
@@ -2848,6 +2851,7 @@ function closeLineRoutePicker() {
   lineRoutePicker.mode = "view";
   lineRoutePicker.lngLat = null;
   lineRoutePicker.point = null;
+  lineRoutePicker.station = null;
 }
 
 function closeStylePopover() {
@@ -3185,7 +3189,7 @@ function selectSearchResult(result) {
     selectStation(result.feature);
     focusFeature(result.feature, { pointZoom: 15 });
     if (activeKey.value === "update_station") {
-      openAttributeTable("station", selectedStation.value);
+      showStationRoutePickerForSelectedStation();
     }
     return;
   }
@@ -3271,6 +3275,8 @@ function selectStation(feature) {
 }
 
 function stationRouteOptions(station = selectedStation.value) {
+  const directRouteOptions = stationRouteOptionsFromRouteStops(station);
+  if (directRouteOptions.length) return directRouteOptions;
   const routes = Array.isArray(station?.routes) ? station.routes : [];
   return routes
     .map((route) => {
@@ -3281,6 +3287,67 @@ function stationRouteOptions(station = selectedStation.value) {
       return matched ? routeOptionFromProperties(matched.feature.properties || {}, matched.feature) : null;
     })
     .filter(Boolean);
+}
+
+function stationRouteOptionsFromRouteStops(station = selectedStation.value) {
+  if (!station) return [];
+  const stationFeature = station.feature || station;
+  const stationProperties = stationFeature?.properties || {};
+  const stationId = valueOrEmpty(station.id || stationProperties.stop_id || stationProperties._stationKey);
+  const stationLabel = station.name || stationName(stationProperties);
+  const routeStops = Array.isArray(realDataCollections.routeStops?.features) ? realDataCollections.routeStops.features : [];
+  const options = [];
+  const seen = new Set();
+  for (const feature of routeStops) {
+    const properties = feature?.properties || {};
+    const stopId = valueOrEmpty(properties.stop_id || properties._stationKey);
+    const matchesStation = (stationId && stopId && stationId === stopId) || Boolean(stationLabel && stationName(properties) === stationLabel);
+    if (!matchesStation) continue;
+    const routeId = routeDataId(properties);
+    const routeLabel = routeName(properties);
+    const key = routeId || routeLabel;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const matchedLine = lineSearchIndex.find((item) => isSameLogicalRoute(properties, item.feature?.properties || {}));
+    options.push(routeOptionFromProperties(matchedLine?.feature?.properties || properties, matchedLine?.feature || null));
+  }
+  return options;
+}
+
+function showStationRoutePickerForSelectedStation() {
+  const anchor = document.querySelector(".map-search")?.getBoundingClientRect();
+  const event = {
+    data: {
+      point: anchor ? [anchor.left, anchor.bottom] : [280, 120],
+      event: {
+        clientX: anchor ? anchor.left : 280,
+        clientY: anchor ? anchor.bottom : 120,
+      },
+    },
+  };
+  showStationRoutePicker(event, selectedStation.value);
+}
+
+function showStationRoutePicker(event, station) {
+  if (!station) return;
+  const routes = dedupeRouteOptions(stationRouteOptions(station));
+  if (!routes.length) {
+    ElMessage.warning("该站点未匹配到途经线路");
+    return;
+  }
+  const point = event?.data?.point || [280, 120];
+  closeSearchResults();
+  closeStylePopover();
+  closeEditActionMenu();
+  clearSelectedLineLayer();
+  lineRoutePicker.x = clampPickerPosition(event?.data?.event?.clientX ?? point[0], 240, window.innerWidth);
+  lineRoutePicker.y = clampPickerPosition(event?.data?.event?.clientY ?? point[1], 300, window.innerHeight);
+  lineRoutePicker.routes = routes;
+  lineRoutePicker.mode = "station_edit";
+  lineRoutePicker.lngLat = null;
+  lineRoutePicker.point = point;
+  lineRoutePicker.station = station;
+  lineRoutePicker.visible = true;
 }
 
 function selectRouteFeature(feature) {
@@ -3412,15 +3479,6 @@ function selectLineNetwork(event, options = {}) {
   closeSearchResults();
   closeStylePopover();
   closeEditActionMenu();
-  if (options.mode === "edit" && routes.length === 1) {
-    const route = routes[0];
-    selectedRoute.value = route;
-    updateStationSelectionLayers();
-    updateSelectedLineLayer(route.feature || nearest.feature);
-    closeLineRoutePicker();
-    openAttributeTable("line", route);
-    return route.feature || nearest.feature;
-  }
   lineRoutePicker.x = clampPickerPosition(event.data.event?.clientX ?? point[0], 220, window.innerWidth);
   lineRoutePicker.y = clampPickerPosition(event.data.event?.clientY ?? point[1], 280, window.innerHeight);
   lineRoutePicker.routes = routes;
@@ -3437,8 +3495,11 @@ function selectLineNetwork(event, options = {}) {
 
 function selectRouteFromPicker(route) {
   const pickerMode = lineRoutePicker.mode;
+  const stationContext = lineRoutePicker.station;
   selectedRoute.value = route;
-  selectedStation.value = null;
+  if (pickerMode !== "station_edit") {
+    selectedStation.value = null;
+  }
   updateStationSelectionLayers();
   if (route?.feature) {
     updateSelectedLineLayer(route.feature);
@@ -3448,7 +3509,9 @@ function selectRouteFromPicker(route) {
   }
   const shouldOpenEditMenu = pickerMode === "edit" && route?.feature;
   closeLineRoutePicker();
-  if (shouldOpenEditMenu) {
+  if (pickerMode === "station_edit" && route) {
+    openAttributeTable("station", { station: stationContext, route });
+  } else if (shouldOpenEditMenu) {
     openAttributeTable("line", route);
   }
 }

@@ -9,6 +9,7 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -35,22 +36,30 @@ public class ModelCacheManager {
     @Resource
     private MatsimConfig matsimConfig;
 
-    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
-        Thread thread = new Thread(r, "matsim-cache-builder");
-        thread.setDaemon(true);
-        return thread;
-    });
+    @Value("${matsim.cache-build-threads:0}")
+    private int cacheBuildThreads;
+
+    private ExecutorService executor;
     private final Set<String> queued = ConcurrentHashMap.newKeySet();
     private final Map<String, ModelCacheStatus> statuses = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void init() {
+        int threads = resolveCacheBuildThreads();
+        executor = Executors.newFixedThreadPool(threads, r -> {
+            Thread thread = new Thread(r, "matsim-cache-builder");
+            thread.setDaemon(true);
+            return thread;
+        });
+        log.info("模型缓存后台线程数: {}", threads);
         enqueueAllMissing();
     }
 
     @PreDestroy
     public void destroy() {
-        executor.shutdownNow();
+        if (executor != null) {
+            executor.shutdownNow();
+        }
     }
 
     @Scheduled(initialDelay = 120_000, fixedDelay = 300_000)
@@ -85,6 +94,9 @@ public class ModelCacheManager {
     }
 
     public void enqueue(Scheme scheme) {
+        if (executor == null) {
+            return;
+        }
         String name = scheme.getName();
         if (!queued.add(name)) {
             return;
@@ -101,6 +113,14 @@ public class ModelCacheManager {
         status.setEtaSeconds(-1);
         status.setQueuedAt(System.currentTimeMillis());
         executor.submit(() -> build(scheme));
+    }
+
+    private int resolveCacheBuildThreads() {
+        if (cacheBuildThreads > 0) {
+            return cacheBuildThreads;
+        }
+        int cpus = Math.max(1, Runtime.getRuntime().availableProcessors());
+        return Math.max(1, Math.min(4, cpus / 16));
     }
 
     private void build(Scheme scheme) {

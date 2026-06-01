@@ -12,6 +12,7 @@ import com.jts.gjcxfzksh.data.id.RouteId;
 import com.jts.gjcxfzksh.data.id.StopFacilityId;
 import com.jts.gjcxfzksh.data.id.VehicleId;
 import com.jts.gjcxfzksh.data.read.EventReader;
+import com.jts.gjcxfzksh.data.read.FastEventReader;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
@@ -48,8 +49,11 @@ import org.matsim.vehicles.Vehicle;
 import org.matsim.vehicles.VehicleType;
 
 import java.io.BufferedReader;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -70,9 +74,16 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
@@ -91,6 +102,8 @@ public final class MatsimAnalysisCache {
     private static final int TRAJECTORY_BINARY_VERSION = 1;
     private static final int TRAJECTORY_BINARY_HEADER_BYTES = 64;
     private static final int TRAJECTORY_BINARY_STRIDE = 8;
+    private static final int TRAJECTORY_IO_BUFFER_BYTES = 4 * 1024 * 1024;
+    private static final int TRAJECTORY_QUEUE_DEFAULT_SIZE = 65_536;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final ConcurrentMap<String, Object> BUILD_LOCKS = new ConcurrentHashMap<>();
@@ -193,9 +206,9 @@ public final class MatsimAnalysisCache {
                 Files.createDirectories(trajectoryCacheDir(data));
                 clearTrajectoryChunks(data);
                 TrajectoryMeta trajectoryMeta = buildTrajectoryMeta(data);
-                LargeTrajectoryStreamHandler handler = new LargeTrajectoryStreamHandler(data, trajectoryMeta, progress);
+                ParallelLargeTrajectoryStreamHandler handler = new ParallelLargeTrajectoryStreamHandler(data, trajectoryMeta, progress);
                 try {
-                    new EventReader(handler).read(data.getOutfile().getEvents());
+                    FastEventReader.read(data.getOutfile().getEvents(), handler);
                     return handler.finish();
                 } catch (Throwable e) {
                     handler.abort();
@@ -629,7 +642,8 @@ public final class MatsimAnalysisCache {
                     && (path.getFileName().toString().endsWith(".json.gz")
                     || path.getFileName().toString().endsWith(".json.gz.tmp")
                     || path.getFileName().toString().endsWith(".bin")
-                    || path.getFileName().toString().endsWith(".bin.tmp"))).toList()) {
+                    || path.getFileName().toString().endsWith(".bin.tmp")
+                    || path.getFileName().toString().endsWith(".raw.tmp"))).toList()) {
                 Files.deleteIfExists(path);
             }
         }
@@ -955,30 +969,62 @@ public final class MatsimAnalysisCache {
             double originY,
             Path rawPath
     ) throws Exception {
+        writeTrajectoryBinaryChunkStreaming(
+                path,
+                chunkStart,
+                chunkEnd,
+                segmentCount,
+                vehicleCount,
+                pointCount,
+                originX,
+                originY,
+                List.of(rawPath)
+        );
+    }
+
+    private static void writeTrajectoryBinaryChunkStreaming(
+            Path path,
+            int chunkStart,
+            int chunkEnd,
+            int segmentCount,
+            int vehicleCount,
+            int pointCount,
+            double originX,
+            double originY,
+            List<Path> rawPaths
+    ) throws Exception {
         Path tmpPath = path.resolveSibling(path.getFileName() + ".tmp");
-        try (OutputStream out = Files.newOutputStream(tmpPath);
-             InputStream in = Files.newInputStream(rawPath)) {
+        try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(tmpPath), TRAJECTORY_IO_BUFFER_BYTES)) {
             writeTrajectoryBinaryHeader(out, chunkStart, chunkEnd, segmentCount, vehicleCount, pointCount, originX, originY);
             byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
-            while (readFully(in, row)) {
-                ByteBuffer input = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
-                float startTime = input.getFloat();
-                float endTime = input.getFloat();
-                float startX = input.getFloat();
-                float startY = input.getFloat();
-                float endX = input.getFloat();
-                float endY = input.getFloat();
-                float modeCode = input.getFloat();
-                float vehicleIndex = input.getFloat();
+            ByteBuffer input = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
+            byte[] outputRow = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
+            ByteBuffer output = ByteBuffer.wrap(outputRow).order(ByteOrder.LITTLE_ENDIAN);
+            for (Path rawPath : rawPaths) {
+                try (InputStream in = new BufferedInputStream(Files.newInputStream(rawPath), TRAJECTORY_IO_BUFFER_BYTES)) {
+                    while (readFully(in, row)) {
+                        input.clear();
+                        float startTime = input.getFloat();
+                        float endTime = input.getFloat();
+                        float startX = input.getFloat();
+                        float startY = input.getFloat();
+                        float endX = input.getFloat();
+                        float endY = input.getFloat();
+                        float modeCode = input.getFloat();
+                        float vehicleIndex = input.getFloat();
 
-                writeFloatLE(out, startTime);
-                writeFloatLE(out, endTime);
-                writeFloatLE(out, (float) (startX - originX));
-                writeFloatLE(out, (float) (startY - originY));
-                writeFloatLE(out, (float) (endX - originX));
-                writeFloatLE(out, (float) (endY - originY));
-                writeFloatLE(out, modeCode);
-                writeFloatLE(out, vehicleIndex);
+                        output.clear();
+                        output.putFloat(startTime);
+                        output.putFloat(endTime);
+                        output.putFloat((float) (startX - originX));
+                        output.putFloat((float) (startY - originY));
+                        output.putFloat((float) (endX - originX));
+                        output.putFloat((float) (endY - originY));
+                        output.putFloat(modeCode);
+                        output.putFloat(vehicleIndex);
+                        out.write(outputRow);
+                    }
+                }
             }
         }
         try {
@@ -1018,7 +1064,10 @@ public final class MatsimAnalysisCache {
         while (offset < bytes.length) {
             int read = in.read(bytes, offset, bytes.length - offset);
             if (read < 0) {
-                return offset == 0 ? false : offset == bytes.length;
+                if (offset == 0) {
+                    return false;
+                }
+                throw new EOFException("轨迹二进制原始分块记录不完整");
             }
             offset += read;
         }
@@ -1291,6 +1340,35 @@ public final class MatsimAnalysisCache {
         };
     }
 
+    private static int largeTrajectoryParallelism() {
+        int cpus = Math.max(1, Runtime.getRuntime().availableProcessors());
+        int fallback = Math.max(1, Math.min(16, cpus - 1));
+        return positiveIntSetting("gjcxfzksh.events.workers", "GJCXFZKSH_EVENTS_WORKERS", fallback);
+    }
+
+    private static int trajectoryQueueSize() {
+        return positiveIntSetting(
+                "gjcxfzksh.events.worker.queue-size",
+                "GJCXFZKSH_EVENTS_WORKER_QUEUE_SIZE",
+                TRAJECTORY_QUEUE_DEFAULT_SIZE
+        );
+    }
+
+    private static int positiveIntSetting(String property, String env, int fallback) {
+        String value = System.getProperty(property);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(env);
+        }
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            return Math.max(1, Integer.parseInt(value.trim()));
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
     private static class BinaryTrajectorySegment {
         private final float startTime;
         private final float endTime;
@@ -1403,6 +1481,690 @@ public final class MatsimAnalysisCache {
             this.origin = origin;
             this.destination = destination;
             this.purpose = purpose;
+        }
+    }
+
+    private enum RawEventKind {
+        LINK_ENTER,
+        LINK_LEAVE,
+        VEHICLE_ENTERS_TRAFFIC,
+        VEHICLE_LEAVES_TRAFFIC,
+        VEHICLE_ARRIVES_AT_FACILITY,
+        VEHICLE_DEPARTS_AT_FACILITY,
+        PERSON_ENTERS_VEHICLE,
+        PERSON_LEAVES_VEHICLE,
+        STOP
+    }
+
+    private static class RawEventTask {
+        private static final RawEventTask STOP = new RawEventTask(RawEventKind.STOP, 0.0, null, null, null, null, null);
+
+        private final RawEventKind kind;
+        private final double time;
+        private final String vehicleId;
+        private final String linkId;
+        private final String networkMode;
+        private final String personId;
+        private final String facilityId;
+
+        private RawEventTask(
+                RawEventKind kind,
+                double time,
+                String vehicleId,
+                String linkId,
+                String networkMode,
+                String personId,
+                String facilityId
+        ) {
+            this.kind = kind;
+            this.time = time;
+            this.vehicleId = vehicleId;
+            this.linkId = linkId;
+            this.networkMode = networkMode;
+            this.personId = personId;
+            this.facilityId = facilityId;
+        }
+    }
+
+    private static class ParallelLargeTrajectoryStreamHandler implements FastEventReader.Handler {
+        private final MatsimData data;
+        private final TrajectoryMeta trajectoryMeta;
+        private final ProgressThrottle progress;
+        private final List<LargeTrajectoryWorker> workers = new ArrayList<>();
+        private final List<BlockingQueue<RawEventTask>> queues = new ArrayList<>();
+        private final List<Thread> threads = new ArrayList<>();
+        private final AtomicReference<Throwable> workerFailure = new AtomicReference<>();
+        private final AtomicBoolean stopped = new AtomicBoolean(false);
+
+        private ParallelLargeTrajectoryStreamHandler(MatsimData data, TrajectoryMeta trajectoryMeta, BuildProgress progress) throws Exception {
+            this.data = data;
+            this.trajectoryMeta = trajectoryMeta;
+            this.progress = new ProgressThrottle(progress);
+
+            Map<String, Link> linksById = new HashMap<>(Math.max(16, data.getNetwork().getLinks().size() * 2));
+            data.getNetwork().getLinks().forEach((id, link) -> linksById.put(id.toString(), link));
+            Map<String, String> departureByVehicle = departureByVehicle(data.getSchedule());
+
+            int workerCount = largeTrajectoryParallelism();
+            int queueSize = trajectoryQueueSize();
+            log.info("大模型events并行解析: model={}, workers={}, queueSize={}", data.getName(), workerCount, queueSize);
+            for (int i = 0; i < workerCount; i++) {
+                BlockingQueue<RawEventTask> queue = new ArrayBlockingQueue<>(queueSize);
+                LargeTrajectoryWorker worker = new LargeTrajectoryWorker(
+                        i,
+                        data,
+                        trajectoryMeta,
+                        linksById,
+                        departureByVehicle,
+                        this.progress,
+                        queue,
+                        workerFailure
+                );
+                Thread thread = new Thread(worker, "events-trajectory-worker-" + i);
+                thread.setDaemon(true);
+                queues.add(queue);
+                workers.add(worker);
+                threads.add(thread);
+                thread.start();
+            }
+        }
+
+        @Override
+        public void handle(String eventType, double time, FastEventReader.Attributes attributes) throws Exception {
+            throwIfWorkerFailed();
+            RawEventTask task = task(eventType, time, attributes);
+            if (task == null) {
+                return;
+            }
+            BlockingQueue<RawEventTask> queue = queues.get(partition(task.vehicleId));
+            while (!queue.offer(task, 100, TimeUnit.MILLISECONDS)) {
+                throwIfWorkerFailed();
+            }
+        }
+
+        private RawEventTask task(String eventType, double time, FastEventReader.Attributes attributes) {
+            return switch (eventType) {
+                case LinkEnterEvent.EVENT_TYPE -> {
+                    String vehicleId = attributes.value(LinkEnterEvent.ATTRIBUTE_VEHICLE);
+                    String linkId = attributes.value(LinkEnterEvent.ATTRIBUTE_LINK);
+                    yield vehicleId == null || linkId == null
+                            ? null
+                            : new RawEventTask(RawEventKind.LINK_ENTER, time, vehicleId, linkId, null, null, null);
+                }
+                case LinkLeaveEvent.EVENT_TYPE -> {
+                    String vehicleId = attributes.value(LinkLeaveEvent.ATTRIBUTE_VEHICLE);
+                    String linkId = attributes.value(LinkLeaveEvent.ATTRIBUTE_LINK);
+                    yield vehicleId == null || linkId == null
+                            ? null
+                            : new RawEventTask(RawEventKind.LINK_LEAVE, time, vehicleId, linkId, null, null, null);
+                }
+                case VehicleEntersTrafficEvent.EVENT_TYPE -> {
+                    String vehicleId = attributes.value(VehicleEntersTrafficEvent.ATTRIBUTE_VEHICLE);
+                    String linkId = attributes.value(VehicleEntersTrafficEvent.ATTRIBUTE_LINK);
+                    yield vehicleId == null || linkId == null
+                            ? null
+                            : new RawEventTask(
+                            RawEventKind.VEHICLE_ENTERS_TRAFFIC,
+                            time,
+                            vehicleId,
+                            linkId,
+                            attributes.value(VehicleEntersTrafficEvent.ATTRIBUTE_NETWORKMODE),
+                            null,
+                            null
+                    );
+                }
+                case VehicleLeavesTrafficEvent.EVENT_TYPE -> {
+                    String vehicleId = attributes.value(VehicleLeavesTrafficEvent.ATTRIBUTE_VEHICLE);
+                    String linkId = attributes.value(VehicleLeavesTrafficEvent.ATTRIBUTE_LINK);
+                    yield vehicleId == null || linkId == null
+                            ? null
+                            : new RawEventTask(
+                            RawEventKind.VEHICLE_LEAVES_TRAFFIC,
+                            time,
+                            vehicleId,
+                            linkId,
+                            attributes.value(VehicleLeavesTrafficEvent.ATTRIBUTE_NETWORKMODE),
+                            null,
+                            null
+                    );
+                }
+                case VehicleArrivesAtFacilityEvent.EVENT_TYPE -> {
+                    String vehicleId = attributes.value(VehicleArrivesAtFacilityEvent.ATTRIBUTE_VEHICLE);
+                    String facilityId = attributes.value(VehicleArrivesAtFacilityEvent.ATTRIBUTE_FACILITY);
+                    yield vehicleId == null || facilityId == null
+                            ? null
+                            : new RawEventTask(RawEventKind.VEHICLE_ARRIVES_AT_FACILITY, time, vehicleId, null, null, null, facilityId);
+                }
+                case VehicleDepartsAtFacilityEvent.EVENT_TYPE -> {
+                    String vehicleId = attributes.value(VehicleDepartsAtFacilityEvent.ATTRIBUTE_VEHICLE);
+                    String facilityId = attributes.value(VehicleDepartsAtFacilityEvent.ATTRIBUTE_FACILITY);
+                    yield vehicleId == null
+                            ? null
+                            : new RawEventTask(RawEventKind.VEHICLE_DEPARTS_AT_FACILITY, time, vehicleId, null, null, null, facilityId);
+                }
+                case PersonEntersVehicleEvent.EVENT_TYPE -> {
+                    String personId = attributes.value(PersonEntersVehicleEvent.ATTRIBUTE_PERSON);
+                    String vehicleId = attributes.value(PersonEntersVehicleEvent.ATTRIBUTE_VEHICLE);
+                    yield vehicleId == null || personId == null
+                            ? null
+                            : new RawEventTask(RawEventKind.PERSON_ENTERS_VEHICLE, time, vehicleId, null, null, personId, null);
+                }
+                case PersonLeavesVehicleEvent.EVENT_TYPE -> {
+                    String personId = attributes.value(PersonLeavesVehicleEvent.ATTRIBUTE_PERSON);
+                    String vehicleId = attributes.value(PersonLeavesVehicleEvent.ATTRIBUTE_VEHICLE);
+                    yield vehicleId == null || personId == null
+                            ? null
+                            : new RawEventTask(RawEventKind.PERSON_LEAVES_VEHICLE, time, vehicleId, null, null, personId, null);
+                }
+                default -> null;
+            };
+        }
+
+        private int partition(String vehicleId) {
+            return Math.floorMod(vehicleId.hashCode(), queues.size());
+        }
+
+        private Map<String, Object> finish() throws Exception {
+            stopWorkers(false);
+            writeMergedPersonTracks();
+
+            IntOpenHashSet globalVehicles = new IntOpenHashSet();
+            IntOpenHashSet globalTransitVehicleMeta = new IntOpenHashSet();
+            Map<Integer, CombinedChunkAccumulator> combinedChunks = new TreeMap<>();
+            Map<String, Long> vehicleCountByMode = emptyLongModeMap();
+            Map<String, Double> distanceByMode = emptyDoubleModeMap();
+            Map<Integer, long[]> passengerBins = new TreeMap<>();
+            Map<String, Integer> routeBoardings = new HashMap<>();
+            List<Map<String, Object>> vehicleMetaPayloads = new ArrayList<>();
+            long passengerBoardings = 0;
+            long pointCount = 0;
+            int minTime = Integer.MAX_VALUE;
+            int maxTime = Integer.MIN_VALUE;
+
+            for (LargeTrajectoryWorker worker : workers) {
+                worker.seenVehicleModes.forEach((vehicleIndex, mode) -> {
+                    if (globalVehicles.add(vehicleIndex)) {
+                        vehicleCountByMode.merge(mode, 1L, Long::sum);
+                    }
+                });
+                worker.distanceByMode.forEach((mode, distance) -> distanceByMode.merge(mode, distance, Double::sum));
+                worker.passengerBins.forEach((time, counts) -> {
+                    long[] target = passengerBins.computeIfAbsent(time, ignored -> new long[4]);
+                    target[0] += counts[0];
+                    target[1] += counts[1];
+                    target[2] += counts[2];
+                    target[3] += counts[3];
+                });
+                worker.routeBoardings.forEach((routeId, count) -> routeBoardings.merge(routeId, count, Integer::sum));
+                for (Map<String, Object> item : worker.vehicleMetaPayloads) {
+                    Object index = item.get("index");
+                    if (index instanceof Number number && globalTransitVehicleMeta.add(number.intValue())) {
+                        vehicleMetaPayloads.add(item);
+                    }
+                }
+                for (ChunkAccumulator chunk : worker.chunks.values()) {
+                    combinedChunks.computeIfAbsent(chunk.start, CombinedChunkAccumulator::new).add(chunk);
+                }
+                passengerBoardings += worker.passengerBoardings;
+                pointCount += worker.pointCount;
+                minTime = Math.min(minTime, worker.minTime);
+                maxTime = Math.max(maxTime, worker.maxTime);
+            }
+
+            List<Map<String, Object>> chunkPayloads = new ArrayList<>();
+            for (CombinedChunkAccumulator chunk : combinedChunks.values()) {
+                chunkPayloads.add(chunk.finish(data));
+            }
+
+            if (minTime == Integer.MAX_VALUE || maxTime == Integer.MIN_VALUE) {
+                minTime = 0;
+                maxTime = 86400;
+            }
+            distanceByMode.replaceAll((mode, distance) -> round2(distance / 1000.0));
+            progress.finish(maxTime, globalVehicles.size());
+
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("totalVehicles", globalVehicles.size());
+            summary.put("vehicleCountByMode", vehicleCountByMode);
+            summary.put("totalPassengerBoardings", passengerBoardings);
+            summary.put("distanceKmByMode", distanceByMode);
+            summary.put("pointCount", pointCount);
+            summary.put("routeBoardings", topRouteBoardings(routeBoardings));
+            summary.put("chunks", chunkPayloads);
+
+            Map<String, Object> timeRange = new LinkedHashMap<>();
+            timeRange.put("min", minTime);
+            timeRange.put("max", maxTime);
+
+            Map<String, Object> metaPayload = new LinkedHashMap<>();
+            Map<String, Object> routes = new LinkedHashMap<>();
+            trajectoryMeta.routes.forEach((routeId, route) -> routes.put(routeId, route.toPayload()));
+            metaPayload.put("routes", routes);
+            metaPayload.put("vehicles", vehicleMetaPayloads);
+
+            Map<String, Object> manifest = new LinkedHashMap<>();
+            manifest.put("status", "ready");
+            manifest.put("cacheVersion", TRAJECTORY_CACHE_VERSION);
+            manifest.put("chunkSeconds", TRAJECTORY_CHUNK_SECONDS);
+            manifest.put("generatedAt", System.currentTimeMillis());
+            manifest.put("eventsFile", data.getOutfile().getEvents());
+            manifest.put("eventsModified", lastModified(data.getOutfile().getEvents()));
+            manifest.put("eventsSize", fileSize(data.getOutfile().getEvents()));
+            manifest.put("timeRange", timeRange);
+            manifest.put("summary", summary);
+            manifest.put("passengerSeries", passengerSeriesPayload(passengerBins));
+            manifest.put("meta", metaPayload);
+            manifest.put("vehicles", List.of());
+            writeJsonAtomic(trajectoryManifestPath(data), manifest);
+            return manifest;
+        }
+
+        private void abort() {
+            try {
+                stopWorkers(true);
+            } catch (Exception ignored) {
+            }
+            for (LargeTrajectoryWorker worker : workers) {
+                worker.cleanupTempFiles();
+            }
+            try {
+                Files.deleteIfExists(personTracksPath(data).resolveSibling(PERSON_TRACK_FILE + ".tmp"));
+            } catch (Exception ignored) {
+            }
+        }
+
+        private void stopWorkers(boolean abort) throws Exception {
+            boolean forceAbort = abort || workerFailure.get() != null;
+            if (stopped.compareAndSet(false, true)) {
+                for (BlockingQueue<RawEventTask> queue : queues) {
+                    if (forceAbort) {
+                        queue.clear();
+                    }
+                    while (!queue.offer(RawEventTask.STOP, 100, TimeUnit.MILLISECONDS)) {
+                        if (forceAbort || workerFailure.get() != null) {
+                            queue.clear();
+                            forceAbort = true;
+                        }
+                    }
+                }
+            }
+            for (Thread thread : threads) {
+                thread.join();
+            }
+            throwIfWorkerFailed();
+        }
+
+        private void throwIfWorkerFailed() {
+            Throwable failure = workerFailure.get();
+            if (failure != null) {
+                throw new RuntimeException("并行解析events失败", failure);
+            }
+        }
+
+        private void writeMergedPersonTracks() throws Exception {
+            Files.createDirectories(personTrackCacheDir(data));
+            Path tracksPath = personTracksPath(data);
+            Path tmpPath = tracksPath.resolveSibling(PERSON_TRACK_FILE + ".tmp");
+            long trackCount = 0;
+            try (OutputStream out = new GZIPOutputStream(new BufferedOutputStream(Files.newOutputStream(tmpPath), TRAJECTORY_IO_BUFFER_BYTES))) {
+                out.write("time\tenter\tpersonId\tlineId\trouteId\tvehicleId\tdepartureId\tfacilityId\n".getBytes(StandardCharsets.UTF_8));
+                for (LargeTrajectoryWorker worker : workers) {
+                    trackCount += worker.trackCount;
+                    if (Files.exists(worker.personTrackPartPath)) {
+                        Files.copy(worker.personTrackPartPath, out);
+                    }
+                }
+            }
+            try {
+                Files.move(tmpPath, tracksPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (Exception e) {
+                Files.move(tmpPath, tracksPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+            for (LargeTrajectoryWorker worker : workers) {
+                Files.deleteIfExists(worker.personTrackPartPath);
+            }
+
+            Map<String, Object> manifest = new LinkedHashMap<>();
+            manifest.put("status", "ready");
+            manifest.put("cacheVersion", PERSON_TRACK_CACHE_VERSION);
+            manifest.put("generatedAt", System.currentTimeMillis());
+            manifest.put("eventsFile", data.getOutfile().getEvents());
+            manifest.put("eventsModified", lastModified(data.getOutfile().getEvents()));
+            manifest.put("eventsSize", fileSize(data.getOutfile().getEvents()));
+            manifest.put("trackCount", trackCount);
+            manifest.put("streamed", true);
+            manifest.put("parallelism", workers.size());
+            writeJsonAtomic(personTrackManifestPath(data), manifest);
+        }
+
+        private static Map<String, String> departureByVehicle(TransitSchedule schedule) {
+            Map<String, String> result = new HashMap<>();
+            schedule.getTransitLines().forEach((lineId, line) -> line.getRoutes().forEach((routeId, route) -> {
+                route.getDepartures().forEach((departureId, departure) -> {
+                    if (departure.getVehicleId() != null) {
+                        result.put(departure.getVehicleId().toString(), departureId.toString());
+                    }
+                });
+            }));
+            return result;
+        }
+
+        private static Map<String, Integer> topRouteBoardings(Map<String, Integer> routeBoardings) {
+            return routeBoardings.entrySet().stream()
+                    .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
+                    .limit(8)
+                    .collect(Collectors.toMap(
+                            Map.Entry::getKey,
+                            Map.Entry::getValue,
+                            (oldValue, newValue) -> oldValue,
+                            LinkedHashMap::new
+                    ));
+        }
+
+        private static List<List<Object>> passengerSeriesPayload(Map<Integer, long[]> passengerBins) {
+            List<List<Object>> result = new ArrayList<>(passengerBins.size());
+            passengerBins.forEach((time, counts) -> result.add(List.of(time, counts[0], counts[1], counts[2], counts[3])));
+            return result;
+        }
+    }
+
+    private static class ProgressThrottle {
+        private final BuildProgress progress;
+        private final AtomicInteger maxTime = new AtomicInteger(0);
+        private final AtomicInteger vehicleCount = new AtomicInteger(0);
+        private final AtomicLong lastUpdate = new AtomicLong(0L);
+
+        private ProgressThrottle(BuildProgress progress) {
+            this.progress = progress;
+        }
+
+        private void markPoint(int time, int count) {
+            if (progress == null) {
+                return;
+            }
+            maxTime.accumulateAndGet(time, Math::max);
+            vehicleCount.accumulateAndGet(count, Math::max);
+            long now = System.currentTimeMillis();
+            long previous = lastUpdate.get();
+            if (now - previous >= 1000 && lastUpdate.compareAndSet(previous, now)) {
+                progress.markPoint(maxTime.get(), vehicleCount.get());
+            }
+        }
+
+        private void finish(int time, int count) {
+            if (progress != null) {
+                progress.markPoint(time, count);
+            }
+        }
+    }
+
+    private static class LargeTrajectoryWorker implements Runnable {
+        private static final int FLOAT_SAFE_HASH_MOD = 16_000_000;
+
+        private final int partition;
+        private final MatsimData data;
+        private final TrajectoryMeta trajectoryMeta;
+        private final Map<String, Link> linksById;
+        private final Map<String, String> departureByVehicle;
+        private final ProgressThrottle progress;
+        private final BlockingQueue<RawEventTask> queue;
+        private final AtomicReference<Throwable> failure;
+        private final Map<String, ActiveLink> activeLinks = new HashMap<>();
+        private final Map<String, String> currentFacilityByVehicle = new HashMap<>();
+        private final Map<Integer, ChunkAccumulator> chunks = new LinkedHashMap<>();
+        private final Map<Integer, long[]> passengerBins = new TreeMap<>();
+        private final Map<String, Integer> routeBoardings = new HashMap<>();
+        private final Map<String, Double> distanceByMode = emptyDoubleModeMap();
+        private final Map<Integer, String> seenVehicleModes = new HashMap<>();
+        private final IntOpenHashSet seenTransitVehicleMeta = new IntOpenHashSet();
+        private final List<Map<String, Object>> vehicleMetaPayloads = new ArrayList<>();
+        private final Path personTrackPartPath;
+        private final BufferedWriter personTrackWriter;
+        private long passengerBoardings = 0;
+        private long trackCount = 0;
+        private long pointCount = 0;
+        private int minTime = Integer.MAX_VALUE;
+        private int maxTime = Integer.MIN_VALUE;
+
+        private LargeTrajectoryWorker(
+                int partition,
+                MatsimData data,
+                TrajectoryMeta trajectoryMeta,
+                Map<String, Link> linksById,
+                Map<String, String> departureByVehicle,
+                ProgressThrottle progress,
+                BlockingQueue<RawEventTask> queue,
+                AtomicReference<Throwable> failure
+        ) throws Exception {
+            this.partition = partition;
+            this.data = data;
+            this.trajectoryMeta = trajectoryMeta;
+            this.linksById = linksById;
+            this.departureByVehicle = departureByVehicle;
+            this.progress = progress;
+            this.queue = queue;
+            this.failure = failure;
+            Files.createDirectories(personTrackCacheDir(data));
+            this.personTrackPartPath = personTracksPath(data).resolveSibling(PERSON_TRACK_FILE + ".part-" + partition + ".tmp");
+            this.personTrackWriter = new BufferedWriter(new OutputStreamWriter(
+                    new BufferedOutputStream(Files.newOutputStream(personTrackPartPath), TRAJECTORY_IO_BUFFER_BYTES),
+                    StandardCharsets.UTF_8
+            ), TRAJECTORY_IO_BUFFER_BYTES);
+        }
+
+        @Override
+        public void run() {
+            try {
+                while (true) {
+                    RawEventTask task = queue.take();
+                    if (task.kind == RawEventKind.STOP) {
+                        break;
+                    }
+                    process(task);
+                }
+            } catch (Throwable e) {
+                failure.compareAndSet(null, e);
+            } finally {
+                closeQuietly();
+            }
+        }
+
+        private void process(RawEventTask task) {
+            switch (task.kind) {
+                case LINK_ENTER, VEHICLE_ENTERS_TRAFFIC ->
+                        startLink(task.vehicleId, task.linkId, task.time, task.networkMode);
+                case LINK_LEAVE, VEHICLE_LEAVES_TRAFFIC ->
+                        finishLink(task.vehicleId, task.linkId, task.time, task.networkMode);
+                case VEHICLE_ARRIVES_AT_FACILITY ->
+                        currentFacilityByVehicle.put(task.vehicleId, task.facilityId);
+                case VEHICLE_DEPARTS_AT_FACILITY ->
+                        currentFacilityByVehicle.remove(task.vehicleId);
+                case PERSON_ENTERS_VEHICLE ->
+                        writePassengerTrack(task.time, true, task.personId, task.vehicleId);
+                case PERSON_LEAVES_VEHICLE ->
+                        writePassengerTrack(task.time, false, task.personId, task.vehicleId);
+                case STOP -> {
+                }
+            }
+        }
+
+        private void startLink(String vehicleId, String linkId, double rawTime, String networkMode) {
+            Link link = linksById.get(linkId);
+            if (link == null) {
+                return;
+            }
+            ActiveLink active = activeLinks.get(vehicleId);
+            int time = Math.max(0, (int) Math.round(rawTime));
+            if (active != null && !active.linkId.equals(linkId)) {
+                writeSegment(vehicleId, active, time, networkMode, active.link);
+            }
+            activeLinks.put(vehicleId, new ActiveLink(linkId, time, link));
+        }
+
+        private void finishLink(String vehicleId, String linkId, double rawTime, String networkMode) {
+            Link link = linksById.get(linkId);
+            if (link == null) {
+                return;
+            }
+            int time = Math.max(0, (int) Math.round(rawTime));
+            ActiveLink active = activeLinks.get(vehicleId);
+            if (active == null || !active.linkId.equals(linkId)) {
+                active = new ActiveLink(linkId, time, link);
+            }
+            writeSegment(vehicleId, active, time, networkMode, link);
+            activeLinks.remove(vehicleId);
+        }
+
+        private void writeSegment(String vehicleId, ActiveLink active, int endTime, String networkMode, Link fallbackLink) {
+            if (active == null || endTime <= active.startTime) {
+                return;
+            }
+            Link link = active.link == null ? fallbackLink : active.link;
+            if (link == null) {
+                return;
+            }
+            Coord from = link.getFromNode().getCoord();
+            Coord to = link.getToNode().getCoord();
+            VehicleSegment segment = new VehicleSegment(
+                    active.startTime,
+                    endTime,
+                    roundCoord(from.getX()),
+                    roundCoord(from.getY()),
+                    roundCoord(to.getX()),
+                    roundCoord(to.getY())
+            );
+            if (segment.distance < 0.01) {
+                return;
+            }
+
+            String mode = vehicleMode(vehicleId, networkMode);
+            int vehicleIndex = vehicleIndex(vehicleId);
+            if (!seenVehicleModes.containsKey(vehicleIndex)) {
+                seenVehicleModes.put(vehicleIndex, mode);
+                addTransitVehicleMeta(vehicleId, vehicleIndex);
+            }
+            distanceByMode.merge(mode, segment.distance, Double::sum);
+            minTime = Math.min(minTime, segment.startTime);
+            maxTime = Math.max(maxTime, segment.endTime);
+            pointCount += 2;
+
+            int firstChunk = normalizeChunkStart(segment.startTime);
+            int lastChunk = normalizeChunkStart(segment.endTime);
+            for (int chunkStart = firstChunk; chunkStart <= lastChunk; chunkStart += TRAJECTORY_CHUNK_SECONDS) {
+                chunk(chunkStart).add(segment, modeCode(mode), vehicleIndex);
+            }
+            progress.markPoint(segment.endTime, seenVehicleModes.size());
+        }
+
+        private void writePassengerTrack(double rawTime, boolean enter, String personId, String vehicleId) {
+            TransitVehicleMeta meta = trajectoryMeta.transitVehicles.get(vehicleId);
+            String facilityId = currentFacilityByVehicle.get(vehicleId);
+            if (meta == null || facilityId == null) {
+                return;
+            }
+            int time = roundTime(rawTime);
+            try {
+                personTrackWriter.write(String.valueOf(rawTime));
+                personTrackWriter.write('\t');
+                personTrackWriter.write(String.valueOf(enter));
+                personTrackWriter.write('\t');
+                personTrackWriter.write(tsv(personId));
+                personTrackWriter.write('\t');
+                personTrackWriter.write(tsv(meta.lineId));
+                personTrackWriter.write('\t');
+                personTrackWriter.write(tsv(meta.routeId));
+                personTrackWriter.write('\t');
+                personTrackWriter.write(tsv(vehicleId));
+                personTrackWriter.write('\t');
+                personTrackWriter.write(tsv(departureByVehicle.get(vehicleId)));
+                personTrackWriter.write('\t');
+                personTrackWriter.write(tsv(facilityId));
+                personTrackWriter.newLine();
+                trackCount++;
+            } catch (IOException e) {
+                throw new RuntimeException("写入乘客上下车缓存失败", e);
+            }
+
+            minTime = Math.min(minTime, time);
+            maxTime = Math.max(maxTime, time);
+            if (enter) {
+                passengerBoardings++;
+                routeBoardings.merge(meta.routeId, 1, Integer::sum);
+                long[] counts = passengerBins.computeIfAbsent(time, ignored -> new long[4]);
+                switch (normalizeVehicleMode(meta.mode, false)) {
+                    case "bus" -> counts[0]++;
+                    case "subway" -> counts[1]++;
+                    default -> counts[2]++;
+                }
+                counts[3]++;
+            }
+        }
+
+        private ChunkAccumulator chunk(int chunkStart) {
+            return chunks.computeIfAbsent(chunkStart, start -> {
+                try {
+                    return new ChunkAccumulator(trajectoryCacheDir(data), start, ".part-" + partition);
+                } catch (Exception e) {
+                    throw new RuntimeException("创建轨迹分块缓存失败", e);
+                }
+            });
+        }
+
+        private String vehicleMode(String vehicleId, String networkMode) {
+            TransitVehicleMeta meta = trajectoryMeta.transitVehicles.get(vehicleId);
+            return meta == null ? normalizeVehicleMode(networkMode, false) : meta.mode;
+        }
+
+        private int vehicleIndex(String vehicleId) {
+            return Math.floorMod(vehicleId == null ? 0 : vehicleId.hashCode(), FLOAT_SAFE_HASH_MOD);
+        }
+
+        private void addTransitVehicleMeta(String vehicleId, int vehicleIndex) {
+            TransitVehicleMeta meta = trajectoryMeta.transitVehicles.get(vehicleId);
+            if (meta == null || !seenTransitVehicleMeta.add(vehicleIndex)) {
+                return;
+            }
+            RouteMeta route = trajectoryMeta.routes.get(meta.routeId);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("index", vehicleIndex);
+            item.put("id", vehicleId);
+            item.put("mode", meta.mode);
+            item.put("lineId", meta.lineId);
+            item.put("routeId", meta.routeId);
+            item.put("lineName", route == null ? meta.lineId : route.lineName);
+            item.put("routeName", route == null ? meta.routeId : route.routeName);
+            item.put("capacity", vehicleCapacity(data, vehicleId));
+            if (route != null) {
+                item.put("firstTime", route.firstTime);
+                item.put("lastTime", route.lastTime);
+            }
+            vehicleMetaPayloads.add(item);
+        }
+
+        private void closeQuietly() {
+            try {
+                personTrackWriter.close();
+            } catch (Exception ignored) {
+            }
+            for (ChunkAccumulator chunk : chunks.values()) {
+                try {
+                    chunk.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        private void cleanupTempFiles() {
+            try {
+                Files.deleteIfExists(personTrackPartPath);
+            } catch (Exception ignored) {
+            }
+            for (ChunkAccumulator chunk : chunks.values()) {
+                try {
+                    Files.deleteIfExists(chunk.rawPath);
+                } catch (Exception ignored) {
+                }
+            }
         }
     }
 
@@ -1785,6 +2547,8 @@ public final class MatsimAnalysisCache {
         private final int end;
         private final Path rawPath;
         private final OutputStream rawOut;
+        private final byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
+        private final ByteBuffer rowBuffer = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
         private final IntOpenHashSet vehicles = new IntOpenHashSet();
         private int segmentCount = 0;
         private int pointCount = 0;
@@ -1794,23 +2558,29 @@ public final class MatsimAnalysisCache {
         private double maxY = Double.NEGATIVE_INFINITY;
 
         private ChunkAccumulator(Path dir, int start) throws Exception {
+            this(dir, start, "");
+        }
+
+        private ChunkAccumulator(Path dir, int start, String suffix) throws Exception {
             this.start = normalizeChunkStart(start);
             this.end = this.start + TRAJECTORY_CHUNK_SECONDS - 1;
             Files.createDirectories(dir);
-            this.rawPath = dir.resolve(String.format(Locale.ROOT, "chunk-%06d.raw.tmp", this.start));
-            this.rawOut = Files.newOutputStream(rawPath);
+            this.rawPath = dir.resolve(String.format(Locale.ROOT, "chunk-%06d%s.raw.tmp", this.start, suffix));
+            this.rawOut = new BufferedOutputStream(Files.newOutputStream(rawPath), TRAJECTORY_IO_BUFFER_BYTES);
         }
 
         private void add(VehicleSegment segment, int modeCode, int vehicleIndex) {
             try {
-                writeFloatLE(rawOut, (float) segment.startTime);
-                writeFloatLE(rawOut, (float) segment.endTime);
-                writeFloatLE(rawOut, (float) segment.fromX);
-                writeFloatLE(rawOut, (float) segment.fromY);
-                writeFloatLE(rawOut, (float) segment.toX);
-                writeFloatLE(rawOut, (float) segment.toY);
-                writeFloatLE(rawOut, (float) modeCode);
-                writeFloatLE(rawOut, (float) vehicleIndex);
+                rowBuffer.clear();
+                rowBuffer.putFloat((float) segment.startTime);
+                rowBuffer.putFloat((float) segment.endTime);
+                rowBuffer.putFloat((float) segment.fromX);
+                rowBuffer.putFloat((float) segment.fromY);
+                rowBuffer.putFloat((float) segment.toX);
+                rowBuffer.putFloat((float) segment.toY);
+                rowBuffer.putFloat((float) modeCode);
+                rowBuffer.putFloat((float) vehicleIndex);
+                rawOut.write(row);
             } catch (IOException e) {
                 throw new RuntimeException("写入轨迹原始分块失败", e);
             }
@@ -1850,6 +2620,63 @@ public final class MatsimAnalysisCache {
                     rawPath
             );
             Files.deleteIfExists(rawPath);
+            return chunk;
+        }
+    }
+
+    private static class CombinedChunkAccumulator {
+        private final int start;
+        private final int end;
+        private final List<Path> rawPaths = new ArrayList<>();
+        private final IntOpenHashSet vehicles = new IntOpenHashSet();
+        private int segmentCount = 0;
+        private int pointCount = 0;
+        private double minX = Double.POSITIVE_INFINITY;
+        private double minY = Double.POSITIVE_INFINITY;
+        private double maxX = Double.NEGATIVE_INFINITY;
+        private double maxY = Double.NEGATIVE_INFINITY;
+
+        private CombinedChunkAccumulator(int start) {
+            this.start = normalizeChunkStart(start);
+            this.end = this.start + TRAJECTORY_CHUNK_SECONDS - 1;
+        }
+
+        private void add(ChunkAccumulator chunk) {
+            rawPaths.add(chunk.rawPath);
+            vehicles.addAll(chunk.vehicles);
+            segmentCount += chunk.segmentCount;
+            pointCount += chunk.pointCount;
+            minX = Math.min(minX, chunk.minX);
+            minY = Math.min(minY, chunk.minY);
+            maxX = Math.max(maxX, chunk.maxX);
+            maxY = Math.max(maxY, chunk.maxY);
+        }
+
+        private Map<String, Object> finish(MatsimData data) throws Exception {
+            Map<String, Object> chunk = chunkInfo(start, vehicles.size(), pointCount);
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("status", "ready");
+            payload.put("cacheVersion", TRAJECTORY_CACHE_VERSION);
+            payload.put("chunk", chunk);
+            payload.put("vehicles", List.of());
+            writeGzipJson(trajectoryCacheDir(data).resolve(chunkFileName(start)), payload);
+
+            double originX = segmentCount == 0 ? 0.0 : (minX + maxX) / 2.0;
+            double originY = segmentCount == 0 ? 0.0 : (minY + maxY) / 2.0;
+            writeTrajectoryBinaryChunkStreaming(
+                    trajectoryCacheDir(data).resolve(chunkBinaryFileName(start)),
+                    start,
+                    end,
+                    segmentCount,
+                    vehicles.size(),
+                    pointCount,
+                    originX,
+                    originY,
+                    rawPaths
+            );
+            for (Path rawPath : rawPaths) {
+                Files.deleteIfExists(rawPath);
+            }
             return chunk;
         }
     }

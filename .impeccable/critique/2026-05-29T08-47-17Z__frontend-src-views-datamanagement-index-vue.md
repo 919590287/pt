@@ -1,3 +1,11 @@
+---
+target: 数据管理页面的全部类型面板和页面
+total_score: 22.5
+p0_count: 0
+p1_count: 3
+timestamp: 2026-05-29T08-47-17Z
+slug: frontend-src-views-datamanagement-index-vue
+---
 # 数据管理页面全类型面板评审
 
 ## Design Health Score

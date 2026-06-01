@@ -17,6 +17,10 @@ HOST="${HOST:-0.0.0.0}"
 MATSIM_DATA="${MATSIM_DATA:-${MATSIM_DATA_PATH:-/Volumes/USB DISK/pt_data/}}"
 MATSIM_CACHE="${MATSIM_CACHE:-${MATSIM_CACHE_PATH:-/Volumes/USB DISK/pt_cache/}}"
 MATSIM_LARGE_MODEL_THRESHOLD_BYTES="${MATSIM_LARGE_MODEL_THRESHOLD_BYTES:-21474836480}"
+MATSIM_CACHE_BUILD_THREADS="${MATSIM_CACHE_BUILD_THREADS:-0}"
+GJCXFZKSH_EVENTS_WORKERS="${GJCXFZKSH_EVENTS_WORKERS:-}"
+GJCXFZKSH_EVENTS_PIGZ_THREADS="${GJCXFZKSH_EVENTS_PIGZ_THREADS:-}"
+GJCXFZKSH_EVENTS_PIGZ_ENABLED="${GJCXFZKSH_EVENTS_PIGZ_ENABLED:-}"
 JAVA_OPTS="${JAVA_OPTS:--Xms2g -Xmx8g}"
 FRONTEND_INSTALL="${FRONTEND_INSTALL:-auto}"
 VITE_MODE="${VITE_MODE:-production}"
@@ -200,11 +204,15 @@ write_backend_launcher() {
 set -Eeuo pipefail
 cd $(sh_escape "$BACKEND_DIR")
 echo \$\$ > $(sh_escape "$BACKEND_PID")
+export GJCXFZKSH_EVENTS_WORKERS=$(sh_escape "$GJCXFZKSH_EVENTS_WORKERS")
+export GJCXFZKSH_EVENTS_PIGZ_THREADS=$(sh_escape "$GJCXFZKSH_EVENTS_PIGZ_THREADS")
+export GJCXFZKSH_EVENTS_PIGZ_ENABLED=$(sh_escape "$GJCXFZKSH_EVENTS_PIGZ_ENABLED")
 exec $(sh_escape "$JAVA_CMD") $JAVA_OPTS -jar $(sh_escape "$jar_file") \\
   --server.port=$(sh_escape "$BACKEND_PORT") \\
   --matsim.data=$(sh_escape "$MATSIM_DATA") \\
   --matsim.cache=$(sh_escape "$MATSIM_CACHE") \\
   --matsim.large-model-threshold-bytes=$(sh_escape "$MATSIM_LARGE_MODEL_THRESHOLD_BYTES") \\
+  --matsim.cache-build-threads=$(sh_escape "$MATSIM_CACHE_BUILD_THREADS") \\
   > $(sh_escape "$LOG_DIR/backend-console.log") 2>&1
 EOF
   chmod +x "$script_file"
