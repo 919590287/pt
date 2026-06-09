@@ -1,0 +1,73 @@
+/* ──────────────────────────────────────────────────────────────
+   数据管理模块 · 设计令牌（单一来源）
+   目标：收敛此前三套互相 !important 打架的主题（蓝 --app-* / 青 --dm-* /
+   米色 lock 层）为一套「冷静专业」令牌。新代码与被整洁化的区块统一引用这里。
+   命名用 --dm2-* 前缀，避免与历史 --dm-* / --app-* 冲突，便于逐步迁移。
+   ────────────────────────────────────────────────────────────── */
+:root {
+  /* 文字 */
+  --dm2-ink: #1d1d1f; /* 主文字 */
+  --dm2-ink-soft: #444448; /* 次文字 */
+  --dm2-muted: #86868b; /* 弱化/标签 */
+  --dm2-muted-soft: #a1a1a6; /* 更弱 */
+
+  /* 表面 */
+  --dm2-surface: #ffffff; /* 卡片/面板 */
+  --dm2-surface-sunken: #f6f8fa; /* 浅底/填充/hero */
+  --dm2-surface-page: #f7f9fb; /* 页面底 */
+  --dm2-field: #f5f5f7; /* 输入框填充 */
+
+  /* 线条 */
+  --dm2-line: rgba(15, 23, 42, 0.08); /* 常规细线/边框 */
+  --dm2-line-strong: rgba(15, 23, 42, 0.16); /* hover/强调边框 */
+  --dm2-line-faint: rgba(15, 23, 42, 0.06); /* 分隔细线 */
+
+  /* 强调色（克制，仅用于主操作/焦点/链接） */
+  --dm2-accent: #0071e3; /* 主蓝（苹果蓝） */
+  --dm2-accent-weak: rgba(0, 113, 227, 0.1);
+  --dm2-accent-ring: rgba(0, 113, 227, 0.15); /* 焦点光环 */
+
+  /* 语义色（增/改/删，低饱和文字用） */
+  --dm2-add: #1a8a3f;
+  --dm2-add-weak: rgba(52, 199, 89, 0.04);
+  --dm2-add-line: rgba(52, 199, 89, 0.22);
+  --dm2-modify: #b06a00;
+  --dm2-modify-weak: rgba(255, 159, 10, 0.05);
+  --dm2-modify-line: rgba(255, 159, 10, 0.24);
+  --dm2-delete: #c4291c;
+  --dm2-delete-weak: rgba(255, 59, 48, 0.04);
+  --dm2-delete-line: rgba(255, 59, 48, 0.22);
+
+  /* 圆角 */
+  --dm2-radius-sm: 8px;
+  --dm2-radius: 12px;
+  --dm2-radius-lg: 16px;
+  --dm2-radius-xl: 18px;
+
+  /* 阴影（单层、克制） */
+  --dm2-shadow-panel: 0 14px 36px rgba(15, 23, 42, 0.1), 0 2px 8px rgba(15, 23, 42, 0.05);
+  --dm2-shadow-dialog: 0 32px 80px rgba(15, 23, 42, 0.18), 0 4px 14px rgba(15, 23, 42, 0.06);
+
+  /* 字号尺度 */
+  --dm2-text-xs: 11px;
+  --dm2-text-sm: 12px;
+  --dm2-text-base: 13px;
+  --dm2-text-md: 14px;
+  --dm2-text-lg: 15px;
+  --dm2-text-xl: 19px;
+  --dm2-text-title: 24px;
+
+  /* 字重（收敛为四档，取代此前 850/780/680/620 等碎值） */
+  --dm2-fw-normal: 400;
+  --dm2-fw-medium: 500;
+  --dm2-fw-semibold: 600;
+  --dm2-fw-bold: 700;
+
+  /* 间距尺度 */
+  --dm2-space-1: 4px;
+  --dm2-space-2: 8px;
+  --dm2-space-3: 12px;
+  --dm2-space-4: 16px;
+  --dm2-space-5: 20px;
+  --dm2-space-6: 24px;
+}

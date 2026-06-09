@@ -27,6 +27,7 @@ VITE_MODE="${VITE_MODE:-production}"
 JAVA_CMD="${JAVA_CMD:-java}"
 MVN_CMD="${MVN_CMD:-mvn}"
 NPM_CMD="${NPM_CMD:-npm}"
+NODE_CMD="${NODE_CMD:-node}"
 SCREEN_CMD="${SCREEN_CMD:-screen}"
 
 if [ -n "${JAVA_HOME:-}" ]; then
@@ -52,6 +53,7 @@ MAP_PIXEL_RATIO="${MAP_PIXEL_RATIO:-}"
 BACKEND_DIR="$ROOT_DIR/backend"
 FRONTEND_DIR="$ROOT_DIR/frontend"
 DIST_DIR="${FRONTEND_DIST_DIR:-$FRONTEND_DIR/gjcxfzksh_web_dist}"
+FRONTEND_SERVER_SCRIPT="$ROOT_DIR/scripts/serve-frontend.mjs"
 RUN_DIR="${RUN_DIR:-$ROOT_DIR/.deploy}"
 LOG_DIR="${LOG_DIR:-$RUN_DIR/logs}"
 BACKEND_PID="$RUN_DIR/backend.pid"
@@ -225,10 +227,10 @@ write_frontend_launcher() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 echo \$\$ > $(sh_escape "$FRONTEND_PID")
-exec $(sh_escape "$JAVA_CMD") -m jdk.httpserver \\
-  -b $(sh_escape "$HOST") \\
-  -p $(sh_escape "$FRONTEND_PORT") \\
-  -d $(sh_escape "$DIST_DIR") \\
+export FRONTEND_DIST_DIR=$(sh_escape "$DIST_DIR")
+export FRONTEND_HOST=$(sh_escape "$HOST")
+export FRONTEND_PORT=$(sh_escape "$FRONTEND_PORT")
+exec $(sh_escape "$NODE_CMD") $(sh_escape "$FRONTEND_SERVER_SCRIPT") \\
   > $(sh_escape "$LOG_DIR/frontend-console.log") 2>&1
 EOF
   chmod +x "$script_file"
@@ -349,8 +351,9 @@ start_backend() {
 
 start_frontend() {
   ensure_dirs
-  require_cmd "$JAVA_CMD"
+  require_cmd "$NODE_CMD"
   [ -d "$DIST_DIR" ] || die "frontend dist not found: $DIST_DIR. Run ./deploy.sh build or ./deploy.sh deploy first."
+  [ -f "$FRONTEND_SERVER_SCRIPT" ] || die "frontend server script not found: $FRONTEND_SERVER_SCRIPT"
 
   if is_running "$FRONTEND_PID"; then
     say "Frontend already running, pid=$(pid_value "$FRONTEND_PID")"
@@ -500,6 +503,7 @@ JAVA_OPTS="-Xms2g -Xmx8g"
 JAVA_CMD=java
 MVN_CMD=mvn
 NPM_CMD=npm
+NODE_CMD=node
 VEHICLE_MODELS_PATH=""
 VEHICLE_MODELS_BASE_URL="/models/vehicles"
 CITY_BUILDINGS_SHP_PATH=""

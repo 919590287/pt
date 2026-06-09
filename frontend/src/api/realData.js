@@ -8,6 +8,16 @@ export function getRealDataAreaList(config = {}) {
   });
 }
 
+export function getAdminDistricts(data, config = {}) {
+  return request({
+    url: "/pt/real-data/adminDistricts",
+    method: "POST",
+    data,
+    timeout: 1000 * 60 * 2,
+    ...config,
+  });
+}
+
 export function getBusLineStation(data, config = {}) {
   return request({
     url: "/pt/real-data/busLineStation",
@@ -29,15 +39,13 @@ export function commitRealDataEdits(data, config = {}) {
 }
 
 export function compareRealDataShp(data, config = {}) {
+  // 不要手动指定 Content-Type：data 为 FormData 时必须由浏览器自动生成带 boundary 的
+  // multipart/form-data 请求头，手动写死会缺少 boundary，导致后端解析 multipart 失败而报错。
   return request({
     url: "/pt/real-data/compareUpload",
     method: "POST",
     data,
     timeout: 1000 * 60 * 5,
-    headers: {
-      "Content-Type": "multipart/form-data",
-      ...(config.headers || {}),
-    },
     ...config,
   });
 }

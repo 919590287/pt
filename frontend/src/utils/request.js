@@ -92,6 +92,17 @@ service.interceptors.request.use(
     // 设置国际化
     headers["Content-Language"] = "zh_CN";
 
+    // FormData（如 SHP 文件上传）必须移除手动 Content-Type，
+    // 交由浏览器自动生成带 boundary 的 multipart/form-data 头，否则后端无法解析。
+    if (typeof FormData !== "undefined" && config.data instanceof FormData) {
+      if (headers && typeof headers.delete === "function") {
+        headers.delete("Content-Type");
+      } else {
+        delete headers["Content-Type"];
+        delete headers["content-type"];
+      }
+    }
+
     config.headers = headers;
     // get请求映射params参数
     if (config.method === "get" && config.params) {

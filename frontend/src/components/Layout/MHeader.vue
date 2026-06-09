@@ -205,7 +205,8 @@ const headerMenus = [
 
 <style scoped lang="scss">
 .header-container {
-  --header-height: var(--app-header-height);
+  --header-height: var(--app-base-header-height);
+  --header-scale: var(--app-layout-scale);
   --header-padding-x: clamp(12px, 1.25vw, 24px);
   --title-width: clamp(260px, 20vw, 350px);
   position: absolute;
@@ -216,16 +217,19 @@ const headerMenus = [
   grid-template-columns: minmax(240px, var(--title-width)) minmax(360px, 1fr) auto;
   align-items: center;
   column-gap: var(--space-lg);
-  width: 100%;
+  width: var(--app-unscaled-viewport-width);
   height: var(--header-height);
   min-width: 0;
   padding: 0 var(--header-padding-x);
   box-sizing: border-box;
+  /* 与数据管理侧栏/面板同色：统一纯白 */
   background-color: #ffffff;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   z-index: var(--z-header);
+  transform-origin: top left;
+  scale: var(--header-scale);
   user-select: none;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  box-shadow: none;
 }
 
 .title-box {
@@ -237,7 +241,7 @@ const headerMenus = [
   font-family: var(--app-font-display);
   font-size: 1.25rem;
   color: #1f2937;
-  font-weight: 750;
+  font-weight: 700;
   letter-spacing: -0.01em;
   text-shadow: none;
   cursor: pointer;
@@ -428,11 +432,13 @@ const headerMenus = [
 
     &.active {
       color: var(--app-blue);
-      background-color: rgba(21, 105, 222, 0.08);
+      background-color: transparent;
       font-weight: 700;
+      box-shadow: inset 0 -2px 0 var(--app-blue);
+      border-radius: 0;
 
       &:hover {
-        background-color: rgba(21, 105, 222, 0.12);
+        background-color: rgba(0, 0, 0, 0.03);
       }
     }
 
@@ -573,8 +579,11 @@ const headerMenus = [
   --platform-surface: rgba(249, 252, 253, 0.96);
   --platform-border: rgba(35, 50, 55, 0.1);
   --platform-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --title-width: 286px;
+  grid-template-columns: minmax(240px, var(--title-width)) minmax(360px, 1fr) auto;
+  column-gap: 24px;
   height: var(--header-height);
-  padding: 0 clamp(14px, 1.45vw, 26px);
+  padding: 0 21px;
   background:
     linear-gradient(180deg, rgba(252, 254, 255, 0.98), rgba(244, 249, 250, 0.96)),
     repeating-linear-gradient(135deg, rgba(35, 50, 55, 0.018) 0 1px, transparent 1px 8px);
@@ -616,16 +625,17 @@ const headerMenus = [
 }
 
 .nav-list {
-  gap: clamp(6px, 0.7vw, 12px);
+  gap: 10px;
+  margin-left: 20px;
 }
 
 .nav-list .item {
   height: 36px;
-  padding: 0 clamp(10px, 0.95vw, 16px);
+  padding: 0 14px;
   border-radius: 11px;
   color: var(--platform-muted);
   font-size: 0.93rem;
-  font-weight: 680;
+  font-weight: 600;
   transition:
     color 360ms var(--platform-ease),
     background-color 360ms var(--platform-ease),
@@ -671,11 +681,11 @@ const headerMenus = [
 
 .user-profile-btn .user-initial {
   color: var(--platform-accent-strong);
-  font-weight: 780;
+  font-weight: 700;
 }
 
 .header-container.has-model-selector .nav-list {
-  margin-right: clamp(500px, 28vw, 580px);
+  margin-right: 500px;
 }
 
 @media (max-width: 960px) {
@@ -762,7 +772,7 @@ const headerMenus = [
 
       .user-initial-inner {
         color: #ffffff;
-        font-weight: 800;
+        font-weight: 700;
         font-size: 1.05rem;
       }
     }
@@ -788,7 +798,7 @@ const headerMenus = [
         text-overflow: ellipsis;
         white-space: nowrap;
         font-size: 15px;
-        font-weight: 750;
+        font-weight: 700;
         color: #111827;
       }
     }

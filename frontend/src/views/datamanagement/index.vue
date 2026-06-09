@@ -124,7 +124,7 @@
   </div>
 
   <div v-if="activeKey === 'overview' || historyPreview.visible" class="dm-overview-panel">
-    <div class="overview-title-row" :class="{ 'is-station-detail': selectedStation || selectedRoute }">
+    <div class="overview-title-row" :class="{ 'is-station-detail': selectedStation || selectedRoute || selectedDepot }">
       <div v-if="selectedStation" class="detail-title-block station">
         <p class="panel-kicker">站点详情</p>
         <h2 class="overview-station-title">{{ selectedStation.name }}</h2>
@@ -134,6 +134,11 @@
         <p class="panel-kicker">线路详情</p>
         <h2 class="overview-station-title">{{ parsePickerRoute(selectedRoute.name).mainName }}</h2>
         <span>{{ routeEndpoints(selectedRoute.properties) }}</span>
+      </div>
+      <div v-else-if="selectedDepot" class="detail-title-block depot">
+        <p class="panel-kicker">场站详情</p>
+        <h2 class="overview-station-title">{{ selectedDepot.name }}</h2>
+        <span>{{ selectedDepotInfo.rows.length }} 项登记属性</span>
       </div>
       <div v-else>
         <p v-if="panelKicker !== '真实数据'" class="panel-kicker">{{ panelKicker }}</p>
@@ -145,7 +150,7 @@
           <line x1="18" y1="6" x2="6" y2="18"></line>
         </svg>
       </button>
-      <template v-else-if="!selectedStation && !selectedRoute">
+      <template v-else-if="!selectedStation && !selectedRoute && !selectedDepot">
         <el-tag type="warning" v-if="loadError">加载失败</el-tag>
         <el-tag v-else-if="!overviewStats.lineCount && !overviewStats.stationCount">等待数据</el-tag>
       </template>
@@ -230,6 +235,14 @@
           <span class="label">发车间隔</span>
           <span class="value">{{ routeHeadway(selectedRoute.properties) }}</span>
         </div>
+        <div class="metric-card">
+          <span class="label">票价</span>
+          <span class="value">{{ routeFare(selectedRoute.properties) }}</span>
+        </div>
+        <div class="metric-card">
+          <span class="label">所属公司</span>
+          <span class="value">{{ routeCompany(selectedRoute.properties) }}</span>
+        </div>
       </div>
 
       <div class="stations-section">
@@ -255,103 +268,42 @@
       </div>
     </div>
 
-    <div v-else class="overview-metric-list">
-      <!-- 1. Hero Card: 线网总规模 -->
-      <div class="metric-card hero-card">
-        <div class="card-content">
-          <div class="label-row">
-            <span class="label-text">线网总规模</span>
-          </div>
-          <div class="value-row">
-            <span class="hero-num">{{ formatUnit(overviewStats.networkScaleKm, "") }}</span>
-            <span class="hero-unit">km</span>
-          </div>
+    <div v-else-if="selectedDepot" class="depot-detail-panel">
+      <div v-if="selectedDepotInfo.location" class="depot-locate">
+        <span class="depot-locate-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+            <circle cx="12" cy="10" r="3"></circle>
+          </svg>
+        </span>
+        <div class="depot-locate-text">
+          <span class="depot-locate-label">坐标定位</span>
+          <span class="depot-locate-value">{{ selectedDepotInfo.location }}</span>
         </div>
       </div>
-
-      <!-- 2. Grid Cards: 线路总数 & 站点数量 -->
-      <div class="metric-grid">
-        <!-- 线路总数 Card -->
-        <div class="metric-card grid-card routes-card">
-          <div class="card-header">
-            <div class="card-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                <polyline points="22 4 12 14.01 9 11.01"/>
-              </svg>
-            </div>
-            <span class="label-text">线路总数</span>
-          </div>
-          <strong class="grid-num">{{ formatInteger(overviewStats.lineCount) }}</strong>
-          <span class="grid-unit">条</span>
-        </div>
-
-        <!-- 站点数量 Card -->
-        <div class="metric-card grid-card stations-card">
-          <div class="card-header">
-            <div class="card-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
-                <circle cx="12" cy="10" r="3"/>
-              </svg>
-            </div>
-            <span class="label-text">站点数量</span>
-          </div>
-          <strong class="grid-num">{{ formatInteger(overviewStats.stationCount) }}</strong>
-          <span class="grid-unit">个</span>
+      <div v-if="selectedDepotInfo.rows.length" class="depot-fact-grid">
+        <div
+          v-for="item in selectedDepotInfo.rows"
+          :key="item.key"
+          class="depot-fact"
+          :class="{ 'is-wide': item.wide }"
+        >
+          <span class="depot-fact-label">{{ item.label }}</span>
+          <span class="depot-fact-value">{{ item.value }}</span>
         </div>
       </div>
-
-      <!-- 3. Density Card: 线网密度 -->
-      <div class="metric-card density-card">
-        <div class="card-left">
-          <div class="card-icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-              <line x1="9" y1="3" x2="9" y2="21"/>
-              <line x1="15" y1="3" x2="15" y2="21"/>
-              <line x1="3" y1="9" x2="21" y2="9"/>
-              <line x1="3" y1="15" x2="21" y2="15"/>
-            </svg>
-          </div>
-          <span class="label-text">线网密度</span>
-        </div>
-        <div class="card-right">
-          <strong class="num-val">{{ formatUnit(overviewStats.networkDensityKmPerKm2, "", 4) }}</strong>
-          <span class="unit-val">km/km²</span>
-        </div>
-      </div>
-
-      <!-- 4. Ratio Card: 站点300/500米覆盖率 (Visual Progress Bars) -->
-      <div class="metric-card coverage-card">
-        <div class="card-title-row">
-          <span class="label-text">站点覆盖率分析</span>
-        </div>
-        <div class="coverage-bar-group">
-          <!-- 300m Progress bar -->
-          <div class="coverage-bar-item">
-            <div class="bar-label-row">
-              <span>公交站点300米覆盖率</span>
-              <strong>{{ formatPercent(overviewStats.stationCoverage300Rate) }}</strong>
-            </div>
-            <div class="progress-track">
-              <div class="progress-fill fill-300" :style="{ width: formatPercent(overviewStats.stationCoverage300Rate) }"></div>
-            </div>
-          </div>
-
-          <!-- 500m Progress bar -->
-          <div class="coverage-bar-item">
-            <div class="bar-label-row">
-              <span>公交站点500米覆盖率</span>
-              <strong>{{ formatPercent(overviewStats.stationCoverage500Rate) }}</strong>
-            </div>
-            <div class="progress-track">
-              <div class="progress-fill fill-500" :style="{ width: formatPercent(overviewStats.stationCoverage500Rate) }"></div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <p v-else class="station-route-empty">暂无场站属性明细</p>
     </div>
+
+    <OverviewMetrics
+      v-else
+      :stats="overviewStats"
+      :dial="coverageDial"
+      :operator-rows="operatorLineRows"
+      :fmt-int="formatInteger"
+      :fmt-unit="formatUnit"
+      :fmt-pct="formatPercent"
+    />
     <p v-if="loadError && !hasActiveDetail" class="load-error">{{ loadError }}</p>
   </div>
 
@@ -361,13 +313,13 @@
         <p class="panel-kicker">{{ editDatasetKicker }}</p>
         <h2>{{ editDatasetTitle }}</h2>
       </div>
-      <el-tag :type="activeEditOperations.length ? 'warning' : 'info'">{{ activeEditOperations.length }} 条修改</el-tag>
+      <span class="edit-pending-count" :class="{ 'has-pending': activeEditOperations.length }">{{ activeEditOperations.length }} 条修改</span>
     </div>
     <div v-if="activeEditOperations.length" class="edit-operation-list">
       <div v-if="hiddenActiveEditOperationCount" class="edit-operation-summary">
         已显示前 {{ visibleActiveEditOperations.length }} 条，另有 {{ hiddenActiveEditOperationCount }} 条会一并提交
       </div>
-      <div v-for="operation in visibleActiveEditOperations" :key="operation.operationId" class="edit-operation-item">
+      <div v-for="operation in visibleActiveEditOperations" :key="operation.operationId" class="edit-operation-item" :class="operationKind(operation.type)">
         <span class="operation-type">{{ operationLabel(operation.type) }}</span>
         <strong>{{ operation.title }}</strong>
         <p>{{ operation.detail }}</p>
@@ -400,132 +352,23 @@
   </div>
 
   <div v-if="activeKey === 'history' && !historyPreview.visible" class="dm-history-page">
-    <section class="history-header">
-      <div>
-        <p class="panel-kicker">版本管理</p>
-        <h1>{{ selectedArea }} 历史数据版本</h1>
-      </div>
-      <div class="history-header-actions">
-        <el-button :loading="isLoadingHistory" @click="loadHistoryList">刷新</el-button>
-      </div>
-    </section>
-
-    <section class="history-current-version" aria-label="当前版本">
-      <span>当前版本</span>
-      <strong>{{ activeHistoryVersionLabel }}</strong>
-    </section>
-
-    <section class="history-content">
-      <div class="history-list-panel history-timeline-panel">
-        <div class="history-list-title">
-          <div>
-            <h2>版本时间轴</h2>
-            <p>只展示可查看的数据版本；查看不会影响最新工作版本。</p>
-          </div>
-          <el-tag :type="historySummary.activeVersionId === '__base__' ? 'info' : 'success'">当前版本</el-tag>
-        </div>
-
-        <div v-if="historyError" class="history-error">{{ historyError }}</div>
-        <div v-else-if="isLoadingHistory" class="history-loading">正在加载历史数据...</div>
-        <div v-else-if="!historyVersions.length" class="history-empty">暂无历史版本</div>
-        <div v-else class="history-timeline">
-          <article
-            v-for="record in historyVersions"
-            :key="record.versionId"
-            :class="['history-version-node', record.isActiveDataVersion ? 'active-data' : '']"
-          >
-            <div class="history-timeline-rail">
-              <span class="history-timeline-dot"></span>
-            </div>
-            <div class="history-version-main">
-              <div class="history-version-title-row">
-                <div>
-                  <strong>{{ historyRecordTitle(record) }}</strong>
-                </div>
-                <span v-if="record.isActiveDataVersion" class="history-current-tag">当前版本</span>
-              </div>
-              <div class="history-meta">
-                <span>修改人：{{ record.username || '未知用户' }}</span>
-                <span>修改时间：{{ formatHistoryTime(record.committedAt) }}</span>
-              </div>
-            </div>
-            <div class="history-version-side">
-              <el-button
-                size="small"
-                @click.stop="showHistoryDetails(record)"
-              >
-                修改明细
-              </el-button>
-              <el-button
-                size="small"
-                type="primary"
-                plain
-                :loading="historyPreview.loading && historyPreview.version?.versionId === record.versionId"
-                @click.stop="viewHistoryVersion(record)"
-              >
-                预览此版本
-              </el-button>
-            </div>
-          </article>
-        </div>
-      </div>
-
-      <aside class="history-risk-panel">
-        <h2>版本规则</h2>
-        <p>提交修改会产生一个新版本；历史查询只做只读查看，不会改变数据总览和数据更新的最新工作版本。</p>
-        <p>提交前会校验当前工作版本。如果其他电脑已先保存，系统会保留你的修改并提示刷新，避免覆盖他人的结果。</p>
-      </aside>
-    </section>
-
-    <aside v-if="historyDetails.visible" class="history-detail-panel" aria-label="历史修改明细">
-      <div class="history-detail-head">
-        <div>
-          <p class="panel-kicker">修改明细</p>
-          <h2>{{ historyRecordTitle(historyDetails.record) }}</h2>
-          <span>修改人：{{ historyDetails.record?.username || "未知用户" }} · 修改时间：{{ formatHistoryTime(historyDetails.record?.committedAt) }}</span>
-        </div>
-        <button class="detail-close-btn" type="button" title="关闭明细" aria-label="关闭明细" @click="closeHistoryDetails">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-          </svg>
-        </button>
-      </div>
-      <div class="history-detail-groups">
-        <section v-for="group in historyDetailGroups" :key="group.key" class="history-detail-group">
-          <div class="history-detail-group-title">
-            <h3>{{ group.label }}</h3>
-            <span>{{ group.rows.length }} 条</span>
-          </div>
-          <div v-if="group.rows.length" class="history-detail-list">
-            <article v-for="row in group.rows" :key="row.key" class="history-detail-row">
-              <div class="history-detail-row-main">
-                <span class="history-detail-action">{{ row.action }}</span>
-                <strong>{{ row.target }}</strong>
-                <p>{{ row.detail }}</p>
-                <div v-if="row.evidenceImages.length" class="history-evidence-strip" aria-label="修改证据">
-                  <button
-                    v-for="image in row.evidenceImages"
-                    :key="image.id || image.name || image.dataUrl"
-                    class="history-evidence-thumb"
-                    type="button"
-                    :title="image.name || '证据图片'"
-                    @click="previewEvidenceImage(image)"
-                  >
-                    <img :src="image.dataUrl" :alt="image.name || '证据图片'" />
-                  </button>
-                </div>
-              </div>
-              <div class="history-detail-row-meta">
-                <span>{{ row.username }}</span>
-                <time>{{ formatHistoryTime(row.committedAt) }}</time>
-              </div>
-            </article>
-          </div>
-          <p v-else class="history-preview-empty">未修改{{ group.label }}</p>
-        </section>
-      </div>
-    </aside>
+    <HistoryPanel
+      :area="selectedArea"
+      :loading="isLoadingHistory"
+      :error="historyError"
+      :versions="historyVersions"
+      :active-label="activeHistoryVersionLabel"
+      :preview-loading-id="historyPreview.loading ? (historyPreview.version?.versionId || '') : ''"
+      :details="historyDetails"
+      :detail-groups="historyDetailGroups"
+      :record-title="historyRecordTitle"
+      :format-time="formatHistoryTime"
+      @refresh="loadHistoryList"
+      @show-details="showHistoryDetails"
+      @preview="viewHistoryVersion"
+      @close-details="closeHistoryDetails"
+      @preview-evidence="previewEvidenceImage"
+    />
   </div>
 
   <div v-if="historyPreview.visible" class="history-preview-exit">
@@ -563,6 +406,21 @@
 
     <div class="control-block settings-block">
       <button
+        :class="['control-btn', selectedDisplayRange !== DISPLAY_RANGE_ALL || showRangePopover ? 'active' : '']"
+        type="button"
+        @click="toggleRangePopover"
+        :title="`显示范围：${selectedDisplayRangeLabel}`"
+        aria-label="选择显示范围"
+        :aria-expanded="showRangePopover"
+        aria-controls="dm-range-popover"
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 6.5 8 4l8 2.5 5-2.5v13.5L16 20l-8-2.5-5 2.5V6.5Z"></path>
+          <path d="M8 4v13.5"></path>
+          <path d="M16 6.5V20"></path>
+        </svg>
+      </button>
+      <button
         :class="['control-btn', showStylePopover ? 'active' : '']"
         type="button"
         @click="toggleStylePopover"
@@ -581,6 +439,23 @@
         </svg>
       </button>
     </div>
+
+    <Transition name="popover-fade">
+      <div v-if="showRangePopover" id="dm-range-popover" class="range-popover" role="dialog" aria-modal="false" @click.stop @keydown.esc.stop.prevent="closeRangePopover">
+        <div class="popover-title">显示范围</div>
+        <el-select
+          v-model="selectedDisplayRange"
+          class="range-select"
+          filterable
+          :loading="isLoadingDisplayRanges"
+          aria-label="显示范围"
+          @change="handleDisplayRangeSelect"
+        >
+          <el-option v-for="item in displayRangeOptions" :key="item" :label="item" :value="item"></el-option>
+        </el-select>
+        <p v-if="displayRangeError" class="range-error">{{ displayRangeError }}</p>
+      </div>
+    </Transition>
 
     <Transition name="popover-fade">
       <div v-if="showStylePopover" id="dm-style-popover" class="style-popover" role="dialog" aria-modal="false" @click.stop @keydown.esc.stop.prevent="closeStylePopover">
@@ -696,6 +571,10 @@
     :close-on-click-modal="false"
     @closed="handleCommitDialogClosed"
   >
+    <div class="commit-dialog-summary">
+      <span>{{ editDatasetTitle }}</span>
+      <strong>{{ activeEditOperations.length }} 条修改待提交</strong>
+    </div>
     <el-form class="dm-edit-form commit-form" @submit.prevent>
       <el-form-item label="修改说明">
         <el-input
@@ -721,14 +600,16 @@
           @dragleave.prevent="commitDialog.dragging = false"
           @drop.prevent="handleEvidenceDrop"
         >
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="3" y="3" width="18" height="18" rx="2"></rect>
-            <circle cx="8.5" cy="8.5" r="1.5"></circle>
-            <path d="m21 15-5-5L5 21"></path>
-          </svg>
+          <span class="evidence-dropzone-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+              <circle cx="8.5" cy="8.5" r="1.5"></circle>
+              <path d="m21 15-5-5L5 21"></path>
+            </svg>
+          </span>
           <div>
-            <strong>点击上传或拖入图片</strong>
-            <span>最多 6 张，会随本次提交进入历史明细</span>
+            <strong>{{ commitDialog.evidenceImages.length ? "继续添加证据图片" : "上传证据图片" }}</strong>
+            <span>可选，最多 6 张，随本次修改进入历史明细</span>
           </div>
         </div>
         <div v-if="commitDialog.evidenceImages.length" class="evidence-preview-grid">
@@ -746,93 +627,34 @@
       </el-form-item>
     </el-form>
     <template #footer>
-      <div class="dm-edit-dialog-footer">
+      <div class="dm-edit-dialog-footer commit-dialog-footer">
         <el-button @click="cancelCommitDialog">取消</el-button>
         <el-button type="primary" :disabled="!commitDialog.message.trim() || commitDialog.processing" :loading="commitDialog.processing" @click="confirmCommitDialog">提交</el-button>
       </div>
     </template>
   </el-dialog>
 
-  <el-dialog
-    v-model="attributeTable.visible"
-    :title="attributeTable.title"
-    width="min(1180px, calc(100vw - 48px))"
-    append-to-body
-    align-center
-    class="dm-attribute-dialog"
-    :close-on-click-modal="false"
-    destroy-on-close
-  >
-    <div class="attribute-dialog-head">
-      <div>
-        <p>{{ attributeTable.subtitle }}</p>
-        <span>筛选 {{ attributeTable.rows.length }} 行，{{ attributeTableChangedCount }} 行已修改</span>
-      </div>
-      <div class="attribute-dialog-tools">
-        <el-button v-if="attributeTable.datasetType === 'station' && attributeTable.route" size="small" @click="toggleAttributeRouteStations">
-          {{ attributeTable.showRouteStations ? "仅编辑本站" : "编辑全线站点" }}
-        </el-button>
-        <el-button size="small" @click="addAttributeTableRow">新增一行</el-button>
-        <el-button size="small" :disabled="!attributeTableChangedCount" @click="resetAttributeTableDraft">重置</el-button>
-      </div>
-    </div>
-    <el-table
-      class="attribute-grid"
-      :data="attributeTable.rows"
-      :row-key="(row) => row.rowId"
-      :row-class-name="attributeTableRowClassName"
-      height="clamp(360px, calc(100vh - 290px), 620px)"
-      size="small"
-      border
-      scrollbar-always-on
-    >
-      <el-table-column type="index" label="#" width="52" fixed />
-      <el-table-column label="状态" width="82" fixed>
-        <template #default="{ row }">
-          <el-tag size="small" :type="attributeRowTagType(row)">{{ attributeRowStatusLabel(row) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column
-        v-for="column in attributeTable.columns"
-        :key="column.key"
-        :prop="column.key"
-        :label="column.label"
-        :min-width="attributeColumnWidth(column.key)"
-        show-overflow-tooltip
-      >
-        <template #default="{ row }">
-          <el-input
-            v-model="row.properties[column.key]"
-            size="small"
-            clearable
-            :disabled="row.status === 'deleted'"
-            @input="markAttributeRowTouched(row)"
-          />
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="96" fixed="right">
-        <template #default="{ row }">
-          <el-button v-if="row.status === 'deleted'" link size="small" type="primary" @click="restoreAttributeTableRow(row)">撤销</el-button>
-          <el-button v-else link size="small" type="danger" @click="removeAttributeTableRow(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-    <template #footer>
-      <div class="dm-edit-dialog-footer attribute-footer">
-        <span>{{ attributeTableChangedCount ? "修改会先进入右侧待提交列表" : "编辑单元格或新增、删除行后再生成修改项" }}</span>
-        <div>
-          <el-button @click="attributeTable.visible = false">关闭</el-button>
-          <el-button type="primary" :disabled="!attributeTableChangedCount" @click="applyAttributeTableChanges">生成修改项</el-button>
-        </div>
-      </div>
-    </template>
-  </el-dialog>
+  <AttributeTableDialog
+    :model="attributeTable"
+    :changed-count="attributeTableChangedCount"
+    :state-key="attributeRowStateKey"
+    :status-label="attributeRowStatusLabel"
+    :record-title="attributeRecordTitle"
+    @update:visible="attributeTable.visible = $event"
+    @toggle-route="toggleAttributeRouteStations"
+    @reset="resetAttributeTableDraft"
+    @remove-row="removeAttributeTableRow"
+    @restore-row="restoreAttributeTableRow"
+    @touch-row="markAttributeRowTouched"
+    @apply="applyAttributeTableChanges"
+  />
 </template>
 
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
 import { commitRealDataEdits, compareRealDataShp } from "@/api/realData.js";
 import {
+  getCachedAdminDistricts,
   getCachedAreaList,
   getCachedRealData,
   getCachedRealDataHistory,
@@ -841,8 +663,13 @@ import {
   readCachedHistory,
   readCachedRealData,
 } from "@/utils/realDataCache.js";
+import "./tokens.css";
+import AttributeTableDialog from "./components/AttributeTableDialog.vue";
+import OverviewMetrics from "./components/OverviewMetrics.vue";
+import HistoryPanel from "./components/HistoryPanel.vue";
 import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
 import busStationHighlightIconUrl from "@/assets/images/datamanagement/bus-station_highlight.svg?url";
+import busDepotIconUrl from "@/assets/images/datamanagement/bus-depot.svg?url";
 import { lngLatToWebMercator } from "@/mymap/index.js";
 
 defineOptions({
@@ -854,12 +681,19 @@ const activeKey = ref("overview");
 const expandedKeys = ref(["update"]);
 const areaList = ref(["广州市"]);
 const selectedArea = ref("广州市");
+const DISPLAY_RANGE_ALL = "全市";
+const selectedDisplayRange = ref(DISPLAY_RANGE_ALL);
+const displayRangeList = ref([DISPLAY_RANGE_ALL]);
+const isLoadingDisplayRanges = ref(false);
+const displayRangeError = ref("");
+const showRangePopover = ref(false);
 const isLoadingAreas = ref(false);
 const isLoadingLayer = ref(false);
 const isLoadingHistory = ref(false);
 const loadError = ref("");
 const historyError = ref("");
 const realDataRevision = ref(0);
+const realDataCollectionsRevision = ref(0);
 const realDataVersionId = ref("__base__");
 const historyVersions = ref([]);
 const historyPreview = reactive({
@@ -898,6 +732,7 @@ const showStylePopover = ref(false);
 const is3DActive = ref(false);
 const selectedStation = ref(null);
 const selectedRoute = ref(null);
+const selectedDepot = ref(null);
 const shpUploadInput = ref(null);
 const evidenceImageInput = ref(null);
 const searchKeyword = ref("");
@@ -968,6 +803,7 @@ const editOperations = reactive({
   depot: [],
 });
 let areaRequestSeq = 0;
+let displayRangeRequestSeq = 0;
 let layerRequestSeq = 0;
 let historyRequestSeq = 0;
 let restoringAreaSelection = false;
@@ -975,7 +811,6 @@ let confirmedAreaSelection = false;
 let zoomListenerId = null;
 let rotateListenerId = null;
 let stationClickListenerId = null;
-let routeSpatialIndex = [];
 let stationSearchIndex = [];
 let lineSearchIndex = [];
 let depotSearchIndex = [];
@@ -985,6 +820,13 @@ let realDataCollections = {
   routeStops: emptyFeatureCollection(),
   depots: emptyFeatureCollection(),
 };
+let realDataAllCollections = {
+  lines: emptyFeatureCollection(),
+  stations: emptyFeatureCollection(),
+  routeStops: emptyFeatureCollection(),
+  depots: emptyFeatureCollection(),
+};
+let adminDistrictCollection = emptyFeatureCollection();
 const SOURCE_LINES = "dm-real-bus-lines-source";
 const SOURCE_STATIONS = "dm-real-bus-stations-source";
 const SOURCE_DEPOTS = "dm-real-bus-depots-source";
@@ -1005,59 +847,72 @@ const SELECTED_LINE_COLOR = "#f97316";
 const SELECTED_LINE_GLOW_COLOR = "#facc15";
 const STATION_ICON_ID = "dm-real-bus-station-icon";
 const STATION_HIGHLIGHT_ICON_ID = "dm-real-bus-station-highlight-icon";
+const DEPOT_ICON_ID = "dm-real-bus-depot-icon";
 const STATION_ICON_BASE_SIZE = 96;
-const STATION_ROUTE_MATCH_METERS = 80;
-const STATION_ROUTE_FALLBACK_MATCH_METERS = 140;
+const DEPOT_ICON_BASE_SIZE = 128;
 const MAX_RENDERED_EDIT_OPERATIONS = 200;
 const LINE_ATTRIBUTE_FIELD_ORDER = [
-  "route_cn",
-  "route_en",
+  "line_id",
+  "dir",
   "route_id",
-  "city_code",
-  "route_type",
-  "company_cn",
-  "company_en",
-  "s_stop_cn",
-  "s_stop_en",
-  "e_stop_cn",
-  "e_stop_en",
-  "distance",
-  "total_stop",
-  "start_time",
-  "end_time",
-  "loop",
-  "status",
-  "basic_prc",
-  "total_prc",
-  "city_cn",
-  "city_en",
-  "type_en",
-  "length",
+  "first",
+  "last",
   "interval",
+  "price",
+  "company",
+  "mode",
+  "name",
 ];
 const STATION_ATTRIBUTE_FIELD_ORDER = [
-  "name_cn",
-  "name_en",
+  "line_id",
+  "dir",
   "stop_id",
-  "route_cn",
-  "route_en",
-  "route_id",
-  "city_code",
-  "city_cn",
-  "city_en",
-  "sequence",
+  "stop_name",
+  "seq",
+  "lon",
+  "lat",
 ];
 
 const isExpanded = (key) => expandedKeys.value.includes(key);
 const showMapSearch = computed(() => isMapDataPage(activeKey.value) || historyPreview.visible);
 const activeEditDataset = computed(() => editDatasetFromKey(activeKey.value));
+const displayRangeOptions = computed(() => {
+  const names = displayRangeList.value.filter(Boolean);
+  return names.includes(DISPLAY_RANGE_ALL) ? names : [DISPLAY_RANGE_ALL, ...names];
+});
+const selectedDisplayRangeLabel = computed(() => selectedDisplayRange.value || DISPLAY_RANGE_ALL);
 const searchPlaceholder = computed(() => {
   if (activeKey.value === "update_station") return "搜索站点";
   if (activeKey.value === "update_line") return "搜索线路";
   if (activeKey.value === "update_depot") return "搜索场站";
   return "搜索站点/线路";
 });
-const hasActiveDetail = computed(() => Boolean(selectedStation.value || selectedRoute.value));
+const hasActiveDetail = computed(() => Boolean(selectedStation.value || selectedRoute.value || selectedDepot.value));
+const DEPOT_NAME_KEYS = ["depot_name", "name", "场站名称", "station_name", "名称", "F002"];
+const DEPOT_COORD_KEYS = ["F026", "coordinates", "lonlat", "经纬度", "坐标"];
+const DEPOT_PANEL_HIDDEN_KEYS = ["F009", "F001"];
+const selectedDepotInfo = computed(() => {
+  const properties = selectedDepot.value?.properties || {};
+  let location = "";
+  let locationKey = "";
+  for (const key of DEPOT_COORD_KEYS) {
+    const value = properties[key];
+    if (value && /-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?/.test(String(value))) {
+      location = String(value).trim();
+      locationKey = key;
+      break;
+    }
+  }
+  const rows = [];
+  for (const [key, value] of Object.entries(properties)) {
+    if (String(key).startsWith("_")) continue;
+    if (DEPOT_NAME_KEYS.includes(key) || key === locationKey || DEPOT_PANEL_HIDDEN_KEYS.includes(key)) continue;
+    const text = value == null ? "" : String(value).trim();
+    if (!text || text === "/" || /^\*+$/.test(text)) continue;
+    rows.push({ key, label: attributeColumnLabel(key), value: text, wide: text.length > 13 });
+  }
+  return { location, rows };
+});
 const selectedRouteStations = computed(() => {
   if (!selectedRoute.value) return [];
   return getRouteStations(selectedRoute.value.properties, selectedRoute.value);
@@ -1072,7 +927,7 @@ const searchResults = computed(() => {
   const isOverviewSearch = activeKey.value === "overview" || historyPreview.visible;
   const stationItems = isOverviewSearch || activeKey.value === "update_station" ? rankSearchItems(stationSearchIndex, query) : [];
   const lineItems = isOverviewSearch || activeKey.value === "update_line" ? rankSearchItems(lineSearchIndex, query) : [];
-  const depotItems = activeKey.value === "update_depot" ? rankSearchItems(depotSearchIndex, query) : [];
+  const depotItems = isOverviewSearch || activeKey.value === "update_depot" ? rankSearchItems(depotSearchIndex, query) : [];
   return [...stationItems, ...lineItems, ...depotItems]
     .sort((left, right) => left.score - right.score || left.name.localeCompare(right.name, "zh-Hans-CN"))
     .slice(0, 8);
@@ -1083,6 +938,36 @@ const visibleActiveEditOperations = computed(() => activeEditOperations.value.sl
 const hiddenActiveEditOperationCount = computed(() => Math.max(0, activeEditOperations.value.length - visibleActiveEditOperations.value.length));
 const hasAnyUnsavedEdits = computed(() => editOperations.station.length + editOperations.line.length + editOperations.depot.length > 0);
 const attributeTableChangedCount = computed(() => collectAttributeTableChangedRows().length);
+const operatorLineRows = computed(() => {
+  const collectionsRevision = realDataCollectionsRevision.value;
+  const counts = new Map();
+  const features = collectionsRevision >= 0 && Array.isArray(realDataCollections.lines?.features) ? realDataCollections.lines.features : [];
+  features.forEach((feature) => {
+    splitOperatorCompanies(feature?.properties?.company).forEach((company) => {
+      counts.set(company, (counts.get(company) || 0) + 1);
+    });
+  });
+  const rows = [...counts.entries()]
+    .map(([company, lineCount]) => ({ company, lineCount }))
+    .sort((left, right) => right.lineCount - left.lineCount || left.company.localeCompare(right.company, "zh-Hans-CN"));
+  return rows.length ? rows : [{ company: "-", lineCount: "-" }];
+});
+const coverageDial = computed(() => {
+  const size = 128;
+  const ring = (rate, radius, stroke) => {
+    const circumference = 2 * Math.PI * radius;
+    const value = Number(rate);
+    const hasValue = Number.isFinite(value);
+    const fraction = hasValue ? Math.min(Math.max(value / 100, 0), 1) : 0;
+    return { radius, stroke, circumference, dash: fraction * circumference, hasValue };
+  };
+  return {
+    size,
+    center: size / 2,
+    outer: ring(overviewStats.stationCoverage500Rate, 52, 11),
+    inner: ring(overviewStats.stationCoverage300Rate, 37, 11),
+  };
+});
 const lineRoutePickerTitle = computed(() => {
   if (lineRoutePicker.mode === "station_edit") return "选择该站点所属线路";
   if (lineRoutePicker.mode === "edit") return "选择经过该路段的线路";
@@ -1122,9 +1007,9 @@ const editModeGuide = computed(() => {
       canStartAdd: false,
     },
     depot: {
-      title: pendingAddDataset.value === "depot" ? "在地图上选择新场站位置" : "选择场站后再编辑",
+      title: pendingAddDataset.value === "depot" ? "在地图上选择新场站位置" : selectedDepot.value ? "已打开当前场站属性" : "选择场站后自动打开属性表",
       description: pendingAddDataset.value === "depot" ? "下一次点击地图空白处会打开新增场站表单。" : "可搜索场站，也可直接点击地图上的场站。",
-      steps: ["点击已有场站可改名或删除", "点击地图空白处可新增场站", "所有修改会先进入待提交列表"],
+      steps: ["属性表只显示选中场站记录", "可编辑单元格，也可新增或删除行", "点击地图空白处可新增场站", "生成的修改会在此逐条核对后提交"],
       actionLabel: "新增场站",
       canStartAdd: true,
     },
@@ -1140,17 +1025,21 @@ const editModeGuide = computed(() => {
 const panelKicker = computed(() => {
   if (historyPreview.visible && selectedStation.value) return "历史站点详情";
   if (historyPreview.visible && selectedRoute.value) return "历史线路详情";
+  if (historyPreview.visible && selectedDepot.value) return "历史场站详情";
   if (historyPreview.visible) return "历史数据预览";
   if (selectedStation.value) return "站点详情";
   if (selectedRoute.value) return "线路详情";
+  if (selectedDepot.value) return "场站详情";
   return "真实数据";
 });
 const panelTitle = computed(() => {
   if (historyPreview.visible && selectedStation.value) return "选中站点";
   if (historyPreview.visible && selectedRoute.value) return "选中线路";
+  if (historyPreview.visible && selectedDepot.value) return "选中场站";
   if (historyPreview.visible) return "数据总览";
   if (selectedStation.value) return "选中站点";
   if (selectedRoute.value) return "选中线路";
+  if (selectedDepot.value) return "选中场站";
   return "数据总览";
 });
 const activeHistoryVersionLabel = computed(() => {
@@ -1234,6 +1123,38 @@ async function handleGetAreaList() {
   } finally {
     if (seq === areaRequestSeq) {
       isLoadingAreas.value = false;
+    }
+  }
+}
+
+async function loadDisplayRanges(options = {}) {
+  const { force = false } = options;
+  const areaName = selectedArea.value;
+  if (!areaName) return;
+  const seq = ++displayRangeRequestSeq;
+  isLoadingDisplayRanges.value = true;
+  displayRangeError.value = "";
+  try {
+    const data = await getCachedAdminDistricts(areaName, { force });
+    if (seq !== displayRangeRequestSeq || selectedArea.value !== areaName) return;
+    adminDistrictCollection = normalizeAdminDistrictCollection(data?.collection);
+    const names = Array.isArray(data?.districts)
+      ? data.districts.map((item) => String(item || "").trim()).filter(Boolean)
+      : districtNamesFromCollection(adminDistrictCollection);
+    displayRangeList.value = [DISPLAY_RANGE_ALL, ...names.filter((name, index, list) => name !== DISPLAY_RANGE_ALL && list.indexOf(name) === index)];
+    if (!displayRangeList.value.includes(selectedDisplayRange.value)) {
+      selectedDisplayRange.value = DISPLAY_RANGE_ALL;
+    }
+    applyDisplayRangeFilter({ updateSources: true });
+  } catch (error) {
+    if (seq !== displayRangeRequestSeq) return;
+    adminDistrictCollection = emptyFeatureCollection();
+    displayRangeList.value = [DISPLAY_RANGE_ALL];
+    selectedDisplayRange.value = DISPLAY_RANGE_ALL;
+    displayRangeError.value = error?.message || "行政区范围加载失败";
+  } finally {
+    if (seq === displayRangeRequestSeq) {
+      isLoadingDisplayRanges.value = false;
     }
   }
 }
@@ -1393,26 +1314,22 @@ function renderRealDataLayers(data, mode = "overview") {
     const isStationUpdate = mode === "station_update";
     const isLineUpdate = mode === "line_update";
     const isDepotUpdate = mode === "depot_update";
-    const lineCollection = normalizeLineFeatureCollection(data.lines);
-    const stationCollection = normalizeStationFeatureCollection(data.stations);
-    const routeStopCollection = normalizeRouteStopFeatureCollection(data.routeStops);
-    const depotCollection = normalizeDepotFeatureCollection(data.depots);
-    realDataCollections = {
-      lines: lineCollection,
-      stations: stationCollection,
-      routeStops: routeStopCollection,
-      depots: depotCollection,
+    realDataAllCollections = {
+      lines: normalizeLineFeatureCollection(data.lines),
+      stations: normalizeStationFeatureCollection(data.stations),
+      routeStops: normalizeRouteStopFeatureCollection(data.routeStops),
+      depots: normalizeDepotFeatureCollection(data.depots),
     };
-    routeSpatialIndex = buildRouteSpatialIndex(lineCollection);
-    lineSearchIndex = buildLineSearchIndex(lineCollection);
-    stationSearchIndex = buildStationSearchIndex(stationCollection);
-    depotSearchIndex = buildDepotSearchIndex(depotCollection);
-    ensureSourceData(map, SOURCE_LINES, lineCollection);
+    applyDisplayRangeFilter({ updateSources: false, clearSelection: false });
+    lineSearchIndex = buildLineSearchIndex(realDataCollections.lines);
+    stationSearchIndex = buildStationSearchIndex(realDataCollections.stations);
+    depotSearchIndex = buildDepotSearchIndex(realDataCollections.depots);
+    ensureSourceData(map, SOURCE_LINES, realDataCollections.lines);
     ensureSourceData(map, SOURCE_SELECTED_LINE, emptyFeatureCollection());
-    ensureSourceData(map, SOURCE_STATIONS, stationCollection);
+    ensureSourceData(map, SOURCE_STATIONS, realDataCollections.stations);
     ensureSourceData(map, SOURCE_SELECTED_STATION, emptyFeatureCollection());
     ensureSourceData(map, SOURCE_SELECTED_ROUTE_STATIONS, emptyFeatureCollection());
-    ensureSourceData(map, SOURCE_DEPOTS, depotCollection);
+    ensureSourceData(map, SOURCE_DEPOTS, realDataCollections.depots);
     ensureSourceData(map, SOURCE_SELECTED_DEPOT, emptyFeatureCollection());
     await ensureStationIcon(map);
     ensureRealDataLayerSet(map);
@@ -1420,7 +1337,8 @@ function renderRealDataLayers(data, mode = "overview") {
       lines: isOverview || isLineUpdate,
       stations: isOverview || isStationUpdate,
       stationLabels: isStationUpdate,
-      depots: isDepotUpdate,
+      depots: isOverview || isDepotUpdate,
+      depotLabels: isDepotUpdate,
     });
     applyLayerPaint();
     bindStationClickListener();
@@ -1527,9 +1445,12 @@ function ensureRealDataLayerSet(map) {
   if (!map.getLayer(LAYER_DEPOTS)) {
     map.addLayer({
       id: LAYER_DEPOTS,
-      type: "circle",
+      type: "symbol",
       source: SOURCE_DEPOTS,
-      paint: depotCirclePaint(),
+      layout: depotIconLayout(DEPOT_ICON_ID, depotIconScale()),
+      paint: {
+        "icon-opacity": 0.96,
+      },
     });
   }
   if (!map.getLayer(LAYER_DEPOT_LABELS)) {
@@ -1537,6 +1458,7 @@ function ensureRealDataLayerSet(map) {
       id: LAYER_DEPOT_LABELS,
       type: "symbol",
       source: SOURCE_DEPOTS,
+      minzoom: 14,
       layout: depotLabelLayout(),
       paint: stationLabelPaint(),
     });
@@ -1544,9 +1466,12 @@ function ensureRealDataLayerSet(map) {
   if (!map.getLayer(LAYER_DEPOT_SELECTED)) {
     map.addLayer({
       id: LAYER_DEPOT_SELECTED,
-      type: "circle",
+      type: "symbol",
       source: SOURCE_SELECTED_DEPOT,
-      paint: selectedDepotCirclePaint(),
+      layout: depotIconLayout(DEPOT_ICON_ID, selectedDepotIconScale()),
+      paint: {
+        "icon-opacity": 1,
+      },
     });
   }
 }
@@ -1562,7 +1487,7 @@ function setRealDataLayerVisibility(map, visibility) {
   setLayerVisibility(map, LAYER_STATION_SELECTED, visibility.stations ? visible : hidden);
   setLayerVisibility(map, LAYER_ROUTE_STATION_SELECTED, visibility.stations ? visible : hidden);
   setLayerVisibility(map, LAYER_DEPOTS, visibility.depots ? visible : hidden);
-  setLayerVisibility(map, LAYER_DEPOT_LABELS, visibility.depots ? visible : hidden);
+  setLayerVisibility(map, LAYER_DEPOT_LABELS, visibility.depotLabels ? visible : hidden);
   setLayerVisibility(map, LAYER_DEPOT_SELECTED, visibility.depots ? visible : hidden);
 }
 
@@ -1594,7 +1519,7 @@ function stationIconLayout(iconId = STATION_ICON_ID, iconScale = stationIconScal
 
 function stationLabelLayout() {
   return {
-    "text-field": ["coalesce", ["get", "stop_cn"], ["get", "name"], ["get", "stop_name"], ["get", "stop_en"], ""],
+    "text-field": ["coalesce", ["get", "stop_name"], ["get", "name"], ""],
     "text-size": ["interpolate", ["linear"], ["zoom"], 9, 10, 12, 12, 15, 14],
     "text-anchor": "left",
     "text-offset": [1.05, 0],
@@ -1617,10 +1542,10 @@ function stationLabelPaint() {
 
 function depotLabelLayout() {
   return {
-    "text-field": ["coalesce", ["get", "depot_name"], ["get", "name"], ["get", "场站名称"], ""],
+    "text-field": ["coalesce", ["get", "depot_name"], ["get", "name"], ["get", "场站名称"], ["get", "F002"], ""],
     "text-size": ["interpolate", ["linear"], ["zoom"], 9, 10, 12, 12, 15, 14],
     "text-anchor": "left",
-    "text-offset": [1.1, 0],
+    "text-offset": [1.5, 0],
     "text-max-width": 10,
     "text-allow-overlap": true,
     "text-ignore-placement": true,
@@ -1628,24 +1553,23 @@ function depotLabelLayout() {
   };
 }
 
-function depotCirclePaint() {
+function depotIconLayout(iconId = DEPOT_ICON_ID, iconScale = depotIconScale()) {
   return {
-    "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 4, 12, 6, 15, 8],
-    "circle-color": "#2f6f73",
-    "circle-opacity": 0.88,
-    "circle-stroke-color": "#f8fbfc",
-    "circle-stroke-width": 1.5,
+    "icon-image": iconId,
+    "icon-size": iconScale,
+    "icon-anchor": "center",
+    "icon-allow-overlap": true,
+    "icon-ignore-placement": true,
+    "icon-padding": 2,
   };
 }
 
-function selectedDepotCirclePaint() {
-  return {
-    "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 7, 12, 10, 15, 13],
-    "circle-color": "#315d8a",
-    "circle-opacity": 0.96,
-    "circle-stroke-color": "#1f3132",
-    "circle-stroke-width": 2,
-  };
+function depotIconScale() {
+  return ["interpolate", ["exponential", 1.25], ["zoom"], 8, 0.1, 10, 0.14, 12, 0.19, 14, 0.24, 16, 0.32];
+}
+
+function selectedDepotIconScale() {
+  return ["interpolate", ["exponential", 1.25], ["zoom"], 8, 0.14, 10, 0.19, 12, 0.26, 14, 0.33, 16, 0.44];
 }
 
 async function ensureStationIcon(map) {
@@ -1656,6 +1580,10 @@ async function ensureStationIcon(map) {
   if (!map.hasImage?.(STATION_HIGHLIGHT_ICON_ID)) {
     const image = await loadIconImageData(busStationHighlightIconUrl, STATION_ICON_BASE_SIZE);
     map.addImage(STATION_HIGHLIGHT_ICON_ID, image);
+  }
+  if (!map.hasImage?.(DEPOT_ICON_ID)) {
+    const image = await loadIconImageData(busDepotIconUrl, DEPOT_ICON_BASE_SIZE);
+    map.addImage(DEPOT_ICON_ID, image);
   }
 }
 
@@ -1842,11 +1770,12 @@ function normalizeRouteStopFeatureCollection(collection) {
 function lineFeatureKey(feature, index = 0) {
   const properties = feature?.properties || {};
   return String(
-    properties._lineKey ||
+      properties._lineKey ||
       properties._featureId ||
+      [properties.line_id, properties.dir, properties.route_id].filter(Boolean).join("-") ||
       properties.route_id ||
       properties.id ||
-      [routeName(properties), properties.s_stop_cn, properties.e_stop_cn, index].filter(Boolean).join("-") ||
+      [routeName(properties), index].filter(Boolean).join("-") ||
       `line-${index}`,
   );
 }
@@ -1885,7 +1814,7 @@ function normalizeRouteStopFeature(feature, index = 0) {
       _featureId: properties._featureId || feature?.id || properties._featureId,
       _routeStopKey: String(
         properties._routeStopKey ||
-          [properties.route_id, properties.route_cn, properties.stop_id, properties.sequence, coordinates?.[0], coordinates?.[1], index].filter(Boolean).join("-") ||
+          [properties.line_id, properties.stop_id, properties.seq, coordinates?.[0], coordinates?.[1], index].filter(Boolean).join("-") ||
           `route-stop-${index}`,
       ),
     },
@@ -1906,13 +1835,302 @@ function normalizeDepotFeature(feature, index = 0) {
   };
 }
 
+function normalizeAdminDistrictCollection(collection) {
+  const features = Array.isArray(collection?.features) ? collection.features : [];
+  return {
+    type: "FeatureCollection",
+    features: features
+      .map((feature, index) => {
+        const properties = feature?.properties || {};
+        const name = districtFeatureName(feature);
+        return {
+          type: "Feature",
+          id: feature?.id || `district-${index}`,
+          geometry: feature?.geometry || null,
+          properties: {
+            ...properties,
+            _districtName: name,
+          },
+        };
+      })
+      .filter((feature) => feature.geometry && feature.properties._districtName),
+  };
+}
+
+function districtNamesFromCollection(collection) {
+  const names = [];
+  const seen = new Set();
+  for (const feature of collection?.features || []) {
+    const name = districtFeatureName(feature);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+}
+
+function districtFeatureName(feature) {
+  const properties = feature?.properties || {};
+  return String(
+    properties._districtName ||
+      properties.Name ||
+      properties.name ||
+      properties.NAME ||
+      properties["名称"] ||
+      properties["区名"] ||
+      properties["行政区"] ||
+      properties["行政区名"] ||
+      properties["区县"] ||
+      properties["县区"] ||
+      properties.district ||
+      properties.District ||
+      properties.AdminName ||
+      "",
+  ).trim();
+}
+
+function applyDisplayRangeFilter(options = {}) {
+  const { updateSources = true, clearSelection: shouldClearSelection = false } = options;
+  const context = activeDisplayRangeContext();
+  if (!context) {
+    realDataCollections = {
+      lines: realDataAllCollections.lines,
+      stations: realDataAllCollections.stations,
+      routeStops: realDataAllCollections.routeStops,
+      depots: realDataAllCollections.depots,
+    };
+  } else {
+    realDataCollections = {
+      lines: featureCollectionFromFeatures((realDataAllCollections.lines?.features || []).filter((feature) => lineFeatureIntersectsRange(feature, context))),
+      stations: featureCollectionFromFeatures((realDataAllCollections.stations?.features || []).filter((feature) => pointFeatureInRange(feature, context))),
+      routeStops: featureCollectionFromFeatures((realDataAllCollections.routeStops?.features || []).filter((feature) => pointFeatureInRange(feature, context))),
+      depots: featureCollectionFromFeatures((realDataAllCollections.depots?.features || []).filter((feature) => pointFeatureInRange(feature, context))),
+    };
+  }
+  realDataCollectionsRevision.value += 1;
+  lineSearchIndex = buildLineSearchIndex(realDataCollections.lines);
+  stationSearchIndex = buildStationSearchIndex(realDataCollections.stations);
+  depotSearchIndex = buildDepotSearchIndex(realDataCollections.depots);
+  if (shouldClearSelection) {
+    clearSelectionState();
+  }
+  if (updateSources) {
+    syncRealDataSourceData();
+  }
+}
+
+function activeDisplayRangeContext() {
+  const rangeName = selectedDisplayRange.value;
+  if (!rangeName || rangeName === DISPLAY_RANGE_ALL) return null;
+  const feature = (adminDistrictCollection?.features || []).find((item) => districtFeatureName(item) === rangeName);
+  if (!feature?.geometry) return null;
+  const polygons = geometryPolygonRings(feature.geometry);
+  if (!polygons.length) return null;
+  const bounds = geometryBounds(feature.geometry);
+  if (!bounds) return null;
+  return {
+    name: rangeName,
+    feature,
+    polygons,
+    bounds,
+  };
+}
+
+function syncRealDataSourceData() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  map.getSource(SOURCE_LINES)?.setData?.(realDataCollections.lines);
+  map.getSource(SOURCE_STATIONS)?.setData?.(realDataCollections.stations);
+  map.getSource(SOURCE_DEPOTS)?.setData?.(realDataCollections.depots);
+  updateStationSelectionLayers();
+  if (selectedRoute.value) {
+    updateSelectedLineLayer(selectedRoute.value.feature);
+  } else {
+    clearSelectedLineLayer();
+  }
+  updateSelectedDepotLayer(selectedDepot.value?.feature || null);
+  applyLayerPaint();
+}
+
+function featureCollectionFromFeatures(features = []) {
+  return {
+    type: "FeatureCollection",
+    features,
+    featureCount: features.length,
+    bounds: featureCollectionBounds(features),
+  };
+}
+
+function pointFeatureInRange(feature, context) {
+  const coordinate = pointCoordinates(feature?.geometry);
+  return coordinate ? pointInRangeContext(coordinate, context) : false;
+}
+
+function lineFeatureIntersectsRange(feature, context) {
+  const paths = lineCoordinatePaths(feature?.geometry);
+  if (!paths.length) return pointFeatureInRange(feature, context);
+  for (const path of paths) {
+    const coordinates = path.map(validLngLat).filter(Boolean);
+    if (!coordinates.length) continue;
+    if (coordinates.some((coordinate) => pointInRangeContext(coordinate, context))) {
+      return true;
+    }
+    for (let index = 1; index < coordinates.length; index += 1) {
+      if (segmentIntersectsRangeContext(coordinates[index - 1], coordinates[index], context)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function pointInRangeContext(coordinate, context) {
+  if (!coordinate || !boundsContainPoint(context.bounds, coordinate)) return false;
+  return context.polygons.some((rings) => pointInPolygonRings(coordinate, rings));
+}
+
+function segmentIntersectsRangeContext(start, end, context) {
+  if (!boundsIntersect(segmentBounds(start, end), context.bounds)) return false;
+  for (const rings of context.polygons) {
+    for (const ring of rings) {
+      for (let index = 1; index < ring.length; index += 1) {
+        if (segmentsIntersect(start, end, ring[index - 1], ring[index])) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function geometryPolygonRings(geometry) {
+  const coordinates = geometry?.coordinates;
+  if (!Array.isArray(coordinates)) return [];
+  if (geometry.type === "Polygon") {
+    return [normalizePolygonRings(coordinates)].filter((rings) => rings.length);
+  }
+  if (geometry.type === "MultiPolygon") {
+    return coordinates.map(normalizePolygonRings).filter((rings) => rings.length);
+  }
+  return [];
+}
+
+function normalizePolygonRings(rawRings) {
+  if (!Array.isArray(rawRings)) return [];
+  return rawRings
+    .map((ring) => (Array.isArray(ring) ? ring.map(validLngLat).filter(Boolean) : []))
+    .filter((ring) => ring.length >= 3);
+}
+
+function pointInPolygonRings(point, rings) {
+  if (!rings.length || !pointInRing(point, rings[0])) return false;
+  for (let index = 1; index < rings.length; index += 1) {
+    if (pointInRing(point, rings[index])) return false;
+  }
+  return true;
+}
+
+function pointInRing(point, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const current = ring[i];
+    const previous = ring[j];
+    if (pointOnSegment(point, previous, current)) return true;
+    const intersects = current[1] > point[1] !== previous[1] > point[1]
+      && point[0] < ((previous[0] - current[0]) * (point[1] - current[1])) / (previous[1] - current[1]) + current[0];
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const o1 = orientation(a, b, c);
+  const o2 = orientation(a, b, d);
+  const o3 = orientation(c, d, a);
+  const o4 = orientation(c, d, b);
+  if (o1 !== o2 && o3 !== o4) return true;
+  return (o1 === 0 && pointOnSegment(c, a, b))
+    || (o2 === 0 && pointOnSegment(d, a, b))
+    || (o3 === 0 && pointOnSegment(a, c, d))
+    || (o4 === 0 && pointOnSegment(b, c, d));
+}
+
+function orientation(a, b, c) {
+  const value = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1]);
+  if (Math.abs(value) < 1e-12) return 0;
+  return value > 0 ? 1 : 2;
+}
+
+function pointOnSegment(point, start, end) {
+  const cross = (point[1] - start[1]) * (end[0] - start[0]) - (point[0] - start[0]) * (end[1] - start[1]);
+  if (Math.abs(cross) > 1e-12) return false;
+  return point[0] <= Math.max(start[0], end[0]) + 1e-12
+    && point[0] + 1e-12 >= Math.min(start[0], end[0])
+    && point[1] <= Math.max(start[1], end[1]) + 1e-12
+    && point[1] + 1e-12 >= Math.min(start[1], end[1]);
+}
+
+function segmentBounds(start, end) {
+  return [
+    Math.min(start[0], end[0]),
+    Math.min(start[1], end[1]),
+    Math.max(start[0], end[0]),
+    Math.max(start[1], end[1]),
+  ];
+}
+
+function boundsContainPoint(bounds, point) {
+  return Array.isArray(bounds)
+    && point[0] >= bounds[0]
+    && point[0] <= bounds[2]
+    && point[1] >= bounds[1]
+    && point[1] <= bounds[3];
+}
+
+function boundsIntersect(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right)) return true;
+  return left[0] <= right[2] && left[2] >= right[0] && left[1] <= right[3] && left[3] >= right[1];
+}
+
+function featureCollectionBounds(features = []) {
+  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  features.forEach((feature) => expandGeometryBounds(feature?.geometry, bounds));
+  return Number.isFinite(bounds[0]) ? bounds : null;
+}
+
+function geometryBounds(geometry) {
+  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  expandGeometryBounds(geometry, bounds);
+  return Number.isFinite(bounds[0]) ? bounds : null;
+}
+
+function expandGeometryBounds(geometry, bounds) {
+  if (!geometry?.coordinates) return;
+  expandCoordinateBounds(geometry.coordinates, bounds);
+}
+
+function expandCoordinateBounds(value, bounds) {
+  if (!Array.isArray(value)) return;
+  if (value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))) {
+    const lng = Number(value[0]);
+    const lat = Number(value[1]);
+    bounds[0] = Math.min(bounds[0], lng);
+    bounds[1] = Math.min(bounds[1], lat);
+    bounds[2] = Math.max(bounds[2], lng);
+    bounds[3] = Math.max(bounds[3], lat);
+    return;
+  }
+  value.forEach((item) => expandCoordinateBounds(item, bounds));
+}
+
 function stationFeatureKey(feature, index = 0) {
   const properties = feature?.properties || {};
   const coordinates = pointCoordinates(feature?.geometry);
   return String(
     properties.stop_id ||
+      properties.stop_name ||
       properties.id ||
-      `${properties.stop_cn || properties.name_cn || properties.name || "station"}-${coordinates?.[0] ?? "x"}-${coordinates?.[1] ?? "y"}-${index}`,
+      `${properties.stop_name || properties.name || "station"}-${coordinates?.[0] ?? "x"}-${coordinates?.[1] ?? "y"}-${index}`,
   );
 }
 
@@ -1964,6 +2182,13 @@ function clearRealDataLayers() {
     routeStops: emptyFeatureCollection(),
     depots: emptyFeatureCollection(),
   };
+  realDataAllCollections = {
+    lines: emptyFeatureCollection(),
+    stations: emptyFeatureCollection(),
+    routeStops: emptyFeatureCollection(),
+    depots: emptyFeatureCollection(),
+  };
+  realDataCollectionsRevision.value += 1;
 }
 
 function applyLayerPaint() {
@@ -2120,6 +2345,11 @@ function handleOverviewMapClick(event) {
     selectStation(stationFeature);
     return;
   }
+  const depotFeature = firstRenderedFeature(point, [LAYER_DEPOT_SELECTED, LAYER_DEPOTS]);
+  if (depotFeature) {
+    selectDepot(depotFeature);
+    return;
+  }
   const lineFeature = selectLineNetwork(event);
   if (!lineFeature) {
     clearSelection();
@@ -2164,11 +2394,8 @@ function handleDepotUpdateClick(event) {
   }
   const feature = firstRenderedFeature(point, [LAYER_DEPOT_SELECTED, LAYER_DEPOTS]);
   if (feature) {
-    updateSelectedDepotLayer(feature);
-    showEditActionMenu(event, "depot", feature, [
-      { key: "rename_depot", label: "修改场站名称" },
-      { key: "delete_depot", label: "删除场站" },
-    ]);
+    selectDepot(feature);
+    openAttributeTable("depot", selectedDepot.value);
     return;
   }
   clearSelection();
@@ -2264,8 +2491,8 @@ function cancelPendingAdd() {
 
 function handleUploadShpClick() {
   const datasetType = activeEditDataset.value;
-  if (datasetType !== "line" && datasetType !== "station") {
-    ElMessage.warning("当前仅支持上传标准线路或站点 SHP");
+  if (datasetType !== "line" && datasetType !== "station" && datasetType !== "depot") {
+    ElMessage.warning("当前仅支持上传标准线路、站点或场站 SHP");
     return;
   }
   if (shpUploadInput.value) {
@@ -2277,7 +2504,7 @@ function handleUploadShpClick() {
 async function handleUploadShpFiles(event) {
   const files = Array.from(event?.target?.files || []);
   const datasetType = activeEditDataset.value;
-  if (!files.length || (datasetType !== "line" && datasetType !== "station")) return;
+  if (!files.length || (datasetType !== "line" && datasetType !== "station" && datasetType !== "depot")) return;
   const areaName = selectedArea.value;
   const formData = new FormData();
   formData.append("areaName", areaName);
@@ -2297,7 +2524,9 @@ async function handleUploadShpFiles(event) {
       return;
     }
     appendUploadOperations(datasetType, operations);
-    ElMessage.success(`已从上传 SHP 识别 ${operations.length} 条${datasetTypeLabel(datasetType)}修改`);
+    ElMessage.success(`已从上传 SHP 识别 ${operations.length} 条${datasetTypeLabel(datasetType)}修改，请在右侧核对后提交`);
+  } catch (error) {
+    ElMessage.error(error?.message || "上传 SHP 比对失败，请检查文件格式");
   } finally {
     isSubmittingEdit.value = false;
     if (event?.target) event.target.value = "";
@@ -2305,7 +2534,7 @@ async function handleUploadShpFiles(event) {
 }
 
 function isAttributeEditableDataset(datasetType) {
-  return datasetType === "line" || datasetType === "station";
+  return datasetType === "line" || datasetType === "station" || datasetType === "depot";
 }
 
 function openAttributeTable(datasetType, target) {
@@ -2365,6 +2594,9 @@ function attributeTableSubtitle(datasetType, target, scope = attributeTable.scop
   if (datasetType === "line") {
     return `当前筛选：${parsePickerRoute(target.name || routeName(target.properties)).mainName}`;
   }
+  if (datasetType === "depot") {
+    return `当前筛选：${target?.name || depotName(target?.feature?.properties || target?.properties)}`;
+  }
   const station = target.station || target;
   const route = target.route;
   const stationText = station.name || stationName(station.feature?.properties);
@@ -2383,6 +2615,10 @@ function buildAttributeTableRows(datasetType, target, scope = attributeTable.sco
     const features = routeFeaturesForOption(target);
     return features.map((feature, index) => attributeRowFromFeature(datasetType, feature, index));
   }
+  if (datasetType === "depot") {
+    const feature = target?.feature || target;
+    return feature?.geometry || feature?.properties ? [attributeRowFromFeature(datasetType, feature, 0)] : [];
+  }
   if (scope === "route" && target?.route) {
     return routeStopFeaturesForRoute(target.route.properties || {}, target.route)
       .map(({ feature }, index) => attributeRowFromFeature(datasetType, feature, index));
@@ -2398,7 +2634,6 @@ function routeStopFeaturesForSelectedStation(target) {
   const properties = selectedFeature?.properties || {};
   const stationId = valueOrEmpty(selectedStationTarget?.id || properties.stop_id || properties._stationKey);
   const name = valueOrEmpty(selectedStationTarget?.name || stationName(properties));
-  const routeLabel = route ? routeName(route.properties || {}) || route.name : "";
   const routeId = route ? routeDataId(route.properties || {}) : "";
   const routeStops = Array.isArray(realDataCollections.routeStops?.features) ? realDataCollections.routeStops.features : [];
   const matches = routeStops.filter((feature) => {
@@ -2406,7 +2641,7 @@ function routeStopFeaturesForSelectedStation(target) {
     const stopId = valueOrEmpty(stopProperties.stop_id || stopProperties._stationKey);
     const stationMatches = (stationId && stopId && stationId === stopId) || Boolean(name && stationName(stopProperties) === name);
     if (!stationMatches) return false;
-    return route ? isRouteStopMatch(stopProperties, routeLabel, routeId) : true;
+    return route ? isRouteStopMatch(stopProperties, routeId) : true;
   });
   if (matches.length) return matches;
   return selectedFeature?.geometry ? [selectedFeature] : [];
@@ -2442,40 +2677,68 @@ function isInternalAttributeKey(key) {
 }
 
 function buildAttributeTableColumns(datasetType, rows) {
-  const ordered = datasetType === "line" ? LINE_ATTRIBUTE_FIELD_ORDER : STATION_ATTRIBUTE_FIELD_ORDER;
+  const ordered = datasetType === "line" ? LINE_ATTRIBUTE_FIELD_ORDER : datasetType === "depot" ? [] : STATION_ATTRIBUTE_FIELD_ORDER;
   const keys = new Set();
   ordered.forEach((key) => keys.add(key));
   rows.forEach((row) => Object.keys(row.properties || {}).forEach((key) => keys.add(key)));
-  return [...keys].filter(Boolean).map((key) => ({ key, label: attributeColumnLabel(key) }));
+  return [...keys].filter(Boolean).map((key) => {
+    let maxLen = String(attributeColumnLabel(key)).length;
+    rows.forEach((row) => {
+      const value = row.properties?.[key];
+      if (value != null) maxLen = Math.max(maxLen, String(value).length);
+    });
+    return { key, label: attributeColumnLabel(key), wide: maxLen > 16 };
+  });
 }
+
+const DEPOT_FIELD_LABELS = {
+  F001: "序号",
+  F002: "场站名称",
+  F003: "场站地点",
+  F004: "用地面积(㎡)",
+  F005: "建筑面积(㎡)",
+  F006: "站务房面积(㎡)",
+  F007: "场站类型",
+  F008: "场站功能",
+  F009: "服务线路及所属公司",
+  F010: "服务线路总数",
+  F011: "设计停车能力(辆)",
+  F012: "日间运营车辆(辆)",
+  F013: "夜间停放车辆(辆)",
+  F014: "夜间停放合计(辆)",
+  F015: "充电桩数量(个)",
+  F016: "夜间空余车位",
+  F017: "用地性质",
+  F018: "用地权属",
+  F019: "运营状态",
+  F020: "启用时间",
+  F021: "停用时间",
+  F022: "场站管理企业",
+  F023: "站长",
+  F024: "联系电话",
+  F025: "备注",
+  F026: "经纬度坐标",
+  depot_name: "场站名称",
+};
 
 function attributeColumnLabel(key) {
   const labels = {
-    route_cn: "线路中文名",
-    route_en: "线路英文名",
-    route_id: "线路ID",
-    route_type: "线路类型",
-    company_cn: "公司中文名",
-    company_en: "公司英文名",
-    s_stop_cn: "首站中文名",
-    s_stop_en: "首站英文名",
-    e_stop_cn: "末站中文名",
-    e_stop_en: "末站英文名",
-    distance: "距离",
-    total_stop: "站点数",
-    start_time: "首班时间",
-    end_time: "末班时间",
-    basic_prc: "基础票价",
-    total_prc: "全程票价",
-    city_cn: "城市中文名",
-    city_en: "城市英文名",
-    type_en: "英文类型",
+    line_id: "线路ID",
+    dir: "方向",
+    route_id: "线路编号",
+    first: "首班时间",
+    last: "末班时间",
     interval: "发车间隔",
-    name_cn: "站点中文名",
-    name_en: "站点英文名",
+    price: "票价",
+    company: "所属公司",
+    mode: "交通方式",
+    name: "名称",
+    stop_name: "站点名称",
+    seq: "站序",
+    lon: "经度",
+    lat: "纬度",
     stop_id: "站点ID",
-    city_code: "城市编码",
-    sequence: "站序",
+    ...DEPOT_FIELD_LABELS,
   };
   return labels[key] || key;
 }
@@ -2501,18 +2764,22 @@ function addAttributeTableRow() {
     properties[column.key] = "";
   });
   if (attributeTable.datasetType === "line") {
-    properties.route_cn = selectedRoute.value?.name || properties.route_cn || "";
+    properties.name = selectedRoute.value?.name || properties.name || "";
+  } else if (attributeTable.datasetType === "depot") {
+    // 场站属性列来自 shp 字段，新增行保持空值由用户填写
   } else {
     fillRoutePropertiesForNewStationRow(properties);
     if (attributeTable.showRouteStations) {
-      properties.sequence = properties.sequence || String(nextAttributeRouteSequence());
+      properties.seq = properties.seq || String(nextAttributeRouteSequence());
       properties.stop_id = properties.stop_id || featureId;
     } else {
       const tableStation = attributeTable.station || selectedStation.value;
-      properties.name_cn = tableStation?.name || properties.name_cn || "";
+      properties.stop_name = tableStation?.name || properties.stop_name || "";
       properties.stop_id = tableStation?.id || properties.stop_id || featureId;
     }
   }
+  const depotKeyProps = { _depotKey: featureId };
+  const stationKeyProps = { _stationKey: properties.stop_id || featureId, _routeStopKey: featureId };
   const row = {
     rowId: featureId,
     status: "added",
@@ -2521,7 +2788,7 @@ function addAttributeTableRow() {
     geometry: defaultAttributeRowGeometry(attributeTable.datasetType),
     baseProperties: {
       _featureId: featureId,
-      ...(attributeTable.datasetType === "line" ? { _lineKey: featureId } : { _stationKey: properties.stop_id || featureId, _routeStopKey: featureId }),
+      ...(attributeTable.datasetType === "line" ? { _lineKey: featureId } : attributeTable.datasetType === "depot" ? depotKeyProps : stationKeyProps),
     },
     originalProperties: {},
     properties,
@@ -2537,17 +2804,13 @@ function addAttributeTableRow() {
 function fillRoutePropertiesForNewStationRow(properties) {
   const routeProperties = attributeTable.route?.properties || {};
   if (!attributeTable.route) return;
-  properties.route_cn = properties.route_cn || routeName(routeProperties) || attributeTable.route.name || "";
-  properties.route_en = properties.route_en || valueOrEmpty(routeProperties.route_en || routeProperties.name_en || routeProperties.route_name_en);
-  properties.route_id = properties.route_id || routeDataId(routeProperties);
-  properties.city_code = properties.city_code || valueOrEmpty(routeProperties.city_code);
-  properties.city_cn = properties.city_cn || valueOrEmpty(routeProperties.city_cn);
-  properties.city_en = properties.city_en || valueOrEmpty(routeProperties.city_en);
+  properties.line_id = properties.line_id || routeDataId(routeProperties);
+  properties.dir = properties.dir || valueOrEmpty(routeProperties.dir);
 }
 
 function nextAttributeRouteSequence() {
   const values = attributeTable.rows
-    .map((row) => Number(firstAvailableValue(row.properties || {}, ["sequence", "seq", "stop_seq", "stop_order", "order"])))
+    .map((row) => Number(firstAvailableValue(row.properties || {}, ["seq"])))
     .filter((value) => Number.isFinite(value));
   return values.length ? Math.max(...values) + 1 : attributeTable.rows.length + 1;
 }
@@ -2555,6 +2818,10 @@ function nextAttributeRouteSequence() {
 function defaultAttributeRowGeometry(datasetType) {
   if (datasetType === "line") {
     return selectedRoute.value?.feature?.geometry ? deepClone(selectedRoute.value.feature.geometry) : null;
+  }
+  if (datasetType === "depot") {
+    const depotFeature = attributeTable.target?.feature || selectedDepot.value?.feature;
+    return depotFeature?.geometry ? deepClone(depotFeature.geometry) : null;
   }
   const station = attributeTable.station || selectedStation.value;
   return station?.feature?.geometry ? deepClone(station.feature.geometry) : null;
@@ -2601,24 +2868,19 @@ function attributeRowStatusLabel(row) {
   return "原始";
 }
 
-function attributeRowTagType(row) {
-  if (row.status === "added") return "success";
-  if (row.status === "deleted") return "danger";
-  if (attributeRowChanged(row)) return "warning";
-  return "info";
+function attributeRowStateKey(row) {
+  if (row.status === "added") return "added";
+  if (row.status === "deleted") return "deleted";
+  if (attributeRowChanged(row)) return "modified";
+  return "normal";
 }
 
-function attributeTableRowClassName({ row }) {
-  if (row.status === "deleted") return "is-deleted";
-  if (row.status === "added") return "is-added";
-  if (attributeRowChanged(row)) return "is-modified";
-  return "";
-}
-
-function attributeColumnWidth(key) {
-  if (["route_cn", "route_en", "company_cn", "company_en", "name_cn", "name_en"].includes(key)) return 170;
-  if (["s_stop_cn", "e_stop_cn", "s_stop_en", "e_stop_en"].includes(key)) return 180;
-  return 140;
+function attributeRecordTitle(row) {
+  const properties = row.properties || {};
+  const datasetType = attributeTable.datasetType;
+  if (datasetType === "line") return routeName(properties) || properties.name || "未命名线路";
+  if (datasetType === "depot") return depotName(properties) || "未命名场站";
+  return stationName(properties) || properties.stop_name || "未命名站点";
 }
 
 function toggleAttributeRouteStations() {
@@ -2705,6 +2967,7 @@ function attributeRowOperation(datasetType, row) {
         featureId: row.featureId || "",
         lineKey: datasetType === "line" ? row.baseProperties?._lineKey || "" : "",
         stationKey: datasetType === "station" ? row.baseProperties?._stationKey || row.properties?.stop_id || "" : "",
+        depotKey: datasetType === "depot" ? row.baseProperties?._depotKey || "" : "",
       },
     };
   }
@@ -2734,6 +2997,9 @@ function attributeRowFeature(row) {
     properties._stationKey = properties._stationKey || row.baseProperties?._stationKey || properties.stop_id || id;
     properties._routeStopKey = properties._routeStopKey || routeStopFeatureKey(properties) || id;
   }
+  if (datasetType === "depot") {
+    properties._depotKey = properties._depotKey || row.baseProperties?._depotKey || id;
+  }
   return {
     type: "Feature",
     id,
@@ -2754,20 +3020,24 @@ function changedAttributeLabels(row) {
 }
 
 function attributeOperationTitle(datasetType, row, feature) {
-  if (datasetType === "line") return routeName(feature.properties) || row.properties?.route_cn || "未命名线路";
-  return stationName(feature.properties) || row.properties?.name_cn || "未命名站点";
+  if (datasetType === "line") return routeName(feature.properties) || row.properties?.name || "未命名线路";
+  if (datasetType === "depot") return depotName(feature.properties) || depotName(row.properties) || "未命名场站";
+  return stationName(feature.properties) || row.properties?.stop_name || "未命名站点";
 }
 
 function attributeTargetId(datasetType, feature) {
   const properties = feature?.properties || {};
   if (datasetType === "station") {
-    return feature?.id || properties._featureId || routeStopFeatureKey(properties) || properties.stop_id || properties.name_cn || "";
+    return feature?.id || properties._featureId || routeStopFeatureKey(properties) || properties.stop_id || properties.stop_name || "";
   }
-  return feature?.id || properties._featureId || routeName(properties) || properties.route_en || properties.name || "";
+  if (datasetType === "depot") {
+    return feature?.id || properties._featureId || properties._depotKey || depotName(properties) || "";
+  }
+  return feature?.id || properties._featureId || [properties.line_id, properties.dir, properties.route_id].filter(Boolean).join("|") || properties.name || "";
 }
 
 function routeStopFeatureKey(properties = {}) {
-  return [properties.route_cn || properties.route_id, properties.stop_id || properties.name_cn, properties.sequence]
+  return [properties.line_id, properties.stop_id, properties.seq]
     .map((value) => valueOrEmpty(value))
     .filter(Boolean)
     .join("|");
@@ -2787,18 +3057,18 @@ function appendUploadOperations(datasetType, operations) {
     applyUploadOperationPreview(datasetType, operation);
   }
   if (datasetType === "station") {
-    realDataCollections.stations = deriveStationsFromRouteStops(realDataCollections.routeStops);
+    realDataAllCollections.stations = deriveStationsFromRouteStops(realDataAllCollections.routeStops);
   }
-  refreshDatasetSource(datasetType);
+  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
 }
 
 function applyUploadOperationPreview(datasetType, operation) {
-  const collection = datasetType === "station" ? realDataCollections.routeStops : collectionForDataset(datasetType);
+  const collection = datasetType === "station" ? realDataAllCollections.routeStops : collectionForDataset(datasetType, "all");
   const features = Array.isArray(collection?.features) ? collection.features : [];
   const targetId = operation.targetId || operation.payload?.targetId;
   const feature = operation.payload?.feature;
   if (operation.type?.startsWith("add_")) {
-    if (feature) features.push(feature);
+    if (feature) features.push(normalizePreviewFeature(datasetType, feature, features.length));
     return;
   }
   const index = features.findIndex((item) => uploadPreviewFeatureKey(item, datasetType) === targetId || featureTargetId(item) === targetId);
@@ -2806,14 +3076,21 @@ function applyUploadOperationPreview(datasetType, operation) {
   if (operation.type?.startsWith("delete_")) {
     features.splice(index, 1);
   } else if (operation.type?.startsWith("replace_") && feature) {
-    features.splice(index, 1, feature);
+    features.splice(index, 1, normalizePreviewFeature(datasetType, feature, index));
   }
+}
+
+function normalizePreviewFeature(datasetType, feature, index = 0) {
+  if (datasetType === "line") return normalizeLineFeature(feature, index);
+  if (datasetType === "depot") return normalizeDepotFeature(feature, index);
+  return normalizeRouteStopFeature(feature, index);
 }
 
 function uploadPreviewFeatureKey(feature, datasetType) {
   const properties = feature?.properties || {};
-  if (datasetType === "line") return routeName(properties) || properties._featureId || feature?.id || "";
-  return [properties.route_cn || properties.route_id || "", properties.stop_id || properties.name_cn || "", properties.sequence || ""].filter(Boolean).join("|");
+  if (datasetType === "line") return [properties.line_id, properties.dir, properties.route_id].filter(Boolean).join("|") || properties._featureId || feature?.id || "";
+  if (datasetType === "depot") return depotName(properties) || properties._featureId || feature?.id || properties._depotKey || "";
+  return [properties.line_id || "", properties.stop_id || "", properties.seq || ""].filter(Boolean).join("|");
 }
 
 function deriveStationsFromRouteStops(routeStops) {
@@ -2829,13 +3106,9 @@ function deriveStationsFromRouteStops(routeStops) {
       properties: {
         _featureId: key,
         stop_id: properties.stop_id,
-        stop_cn: properties.name_cn,
-        stop_en: properties.name_en,
-        name_cn: properties.name_cn,
-        name_en: properties.name_en,
-        city_cn: properties.city_cn,
-        city_en: properties.city_en,
-        city_code: properties.city_code,
+        stop_name: properties.stop_name,
+        line_id: properties.line_id,
+        dir: properties.dir,
       },
     }, stationMap.size));
   }
@@ -2858,11 +3131,30 @@ function closeStylePopover() {
   showStylePopover.value = false;
 }
 
+function closeRangePopover() {
+  showRangePopover.value = false;
+}
+
+function toggleRangePopover() {
+  if (!showRangePopover.value) {
+    closeSearchResults();
+    closeEditActionMenu();
+    closeLineRoutePicker();
+    closeStylePopover();
+  }
+  showRangePopover.value = !showRangePopover.value;
+}
+
+function handleDisplayRangeSelect() {
+  closeRangePopover();
+}
+
 function toggleStylePopover() {
   if (!showStylePopover.value) {
     closeSearchResults();
     closeEditActionMenu();
     closeLineRoutePicker();
+    closeRangePopover();
   }
   showStylePopover.value = !showStylePopover.value;
 }
@@ -2870,6 +3162,7 @@ function toggleStylePopover() {
 function closeTransientSurfaces() {
   closeSearchResults();
   closeStylePopover();
+  closeRangePopover();
   closeEditActionMenu();
   closeLineRoutePicker();
 }
@@ -2980,28 +3273,36 @@ function applyLocalEdit(datasetType, action, target, payload) {
 }
 
 function applyLocalDelete(datasetType, target) {
-  const collection = collectionForDataset(datasetType);
+  const collection = collectionForDataset(datasetType, "all");
   const targetId = featureTargetId(target);
   collection.features = collection.features.filter((feature) => featureTargetId(feature) !== targetId);
-  refreshDatasetSource(datasetType);
+  applyDisplayRangeFilter({ updateSources: true, clearSelection: true });
   clearSelection();
 }
 
 function addLocalFeature(datasetType, payload) {
-  const collection = collectionForDataset(datasetType);
+  const collection = collectionForDataset(datasetType, "all");
   const featureId = `${datasetType}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const properties = {
     _featureId: featureId,
     [datasetType === "station" ? "_stationKey" : "_depotKey"]: featureId,
-    [datasetType === "station" ? "stop_cn" : "depot_name"]: payload.name || "未命名",
+    [datasetType === "station" ? "stop_name" : "depot_name"]: payload.name || "未命名",
   };
+  if (datasetType === "station") {
+    properties.stop_id = featureId;
+    properties.line_id = "";
+    properties.dir = "";
+    properties.seq = "";
+    properties.lon = Number(payload.lng);
+    properties.lat = Number(payload.lat);
+  }
   collection.features.push({
     type: "Feature",
     id: featureId,
     geometry: { type: "Point", coordinates: [Number(payload.lng), Number(payload.lat)] },
     properties,
   });
-  refreshDatasetSource(datasetType);
+  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
 }
 
 function updateLocalFeatureProperties(datasetType, target, updater) {
@@ -3009,34 +3310,29 @@ function updateLocalFeatureProperties(datasetType, target, updater) {
 }
 
 function updateLocalFeature(datasetType, target, updater) {
-  const collection = collectionForDataset(datasetType);
+  const collection = collectionForDataset(datasetType, "all");
   const targetId = featureTargetId(target);
   const feature = collection.features.find((item) => featureTargetId(item) === targetId);
   if (!feature) return;
   updater(feature);
-  refreshDatasetSource(datasetType);
+  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
 }
 
 function refreshDatasetSource(datasetType) {
-  const map = MapRef.value?.map;
-  const collection = collectionForDataset(datasetType);
-  const sourceId = datasetType === "station" ? SOURCE_STATIONS : datasetType === "line" ? SOURCE_LINES : SOURCE_DEPOTS;
-  map?.getSource(sourceId)?.setData?.(collection);
-  if (datasetType === "station") updateStationSelectionLayers();
-  if (datasetType === "line") clearSelectedLineLayer();
-  if (datasetType === "depot") updateSelectedDepotLayer(null);
+  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
 }
 
-function collectionForDataset(datasetType) {
-  if (datasetType === "station") return realDataCollections.stations;
-  if (datasetType === "line") return realDataCollections.lines;
-  if (datasetType === "depot") return realDataCollections.depots;
+function collectionForDataset(datasetType, scope = "visible") {
+  const source = scope === "all" ? realDataAllCollections : realDataCollections;
+  if (datasetType === "station") return source.stations;
+  if (datasetType === "line") return source.lines;
+  if (datasetType === "depot") return source.depots;
   return emptyFeatureCollection();
 }
 
 function featureTargetId(feature) {
   const properties = feature?.properties || {};
-  return String(properties._featureId || feature?.id || properties._stationKey || properties._lineKey || properties._depotKey || properties.stop_id || properties.route_cn || properties.name || "");
+  return String(properties._featureId || feature?.id || properties._stationKey || properties._lineKey || properties._depotKey || properties.stop_id || properties.line_id || properties.name || "");
 }
 
 function editTargetName(datasetType, feature) {
@@ -3047,7 +3343,7 @@ function editTargetName(datasetType, feature) {
 }
 
 function namePropertyForDataset(datasetType, properties = {}) {
-  const candidates = datasetType === "line" ? ["route_cn", "name", "route_name"] : datasetType === "depot" ? ["depot_name", "name", "场站名称"] : ["stop_cn", "name", "stop_name"];
+  const candidates = datasetType === "line" ? ["name"] : datasetType === "depot" ? ["depot_name", "name", "场站名称"] : ["stop_name"];
   return candidates.find((key) => Object.prototype.hasOwnProperty.call(properties, key)) || candidates[0];
 }
 
@@ -3079,6 +3375,13 @@ function operationLabel(type) {
   if (value.includes("headway")) return "间隔";
   if (value.includes("stations")) return "站点";
   return "修改";
+}
+
+function operationKind(type) {
+  const value = String(type || "");
+  if (value.startsWith("add_")) return "is-add";
+  if (value.startsWith("delete_")) return "is-delete";
+  return "is-modify";
 }
 
 function datasetTypeLabel(datasetType) {
@@ -3194,8 +3497,11 @@ function selectSearchResult(result) {
     return;
   }
   if (result.type === "depot") {
-    updateSelectedDepotLayer(result.feature);
+    selectDepot(result.feature);
     focusFeature(result.feature, { pointZoom: 15 });
+    if (activeKey.value === "update_depot") {
+      openAttributeTable("depot", selectedDepot.value);
+    }
     return;
   }
   if (!historyPreview.visible && activeKey.value !== "update_line") {
@@ -3269,9 +3575,37 @@ function selectStation(feature) {
     feature: selectedFeature,
   };
   selectedRoute.value = null;
+  selectedDepot.value = null;
+  closeLineRoutePicker();
+  clearSelectedLineLayer();
+  updateSelectedDepotLayer(null);
+  updateStationSelectionLayers();
+}
+
+function selectDepot(feature) {
+  if (!feature) return;
+  const properties = feature.properties || {};
+  const selectedFeature = {
+    type: "Feature",
+    id: feature.id,
+    geometry: feature.geometry ? deepClone(feature.geometry) : null,
+    properties: {
+      ...properties,
+      _depotKey: String(properties._depotKey || depotFeatureKey(feature)),
+    },
+  };
+  selectedDepot.value = {
+    id: selectedFeature.properties._depotKey,
+    name: depotName(selectedFeature.properties),
+    feature: selectedFeature,
+    properties: selectedFeature.properties,
+  };
+  selectedStation.value = null;
+  selectedRoute.value = null;
   closeLineRoutePicker();
   clearSelectedLineLayer();
   updateStationSelectionLayers();
+  updateSelectedDepotLayer(selectedFeature);
 }
 
 function stationRouteOptions(station = selectedStation.value) {
@@ -3355,7 +3689,9 @@ function selectRouteFeature(feature) {
   const fullFeature = fullLineFeatureFor(feature) || feature;
   selectedRoute.value = routeOptionFromProperties(fullFeature.properties, fullFeature);
   selectedStation.value = null;
+  selectedDepot.value = null;
   closeLineRoutePicker();
+  updateSelectedDepotLayer(null);
   updateStationSelectionLayers();
   updateSelectedLineLayer(fullFeature);
 }
@@ -3382,6 +3718,7 @@ function clearSelection() {
 function clearSelectionState() {
   selectedStation.value = null;
   selectedRoute.value = null;
+  selectedDepot.value = null;
   closeLineRoutePicker();
   pendingMoveTarget.value = null;
   pendingAddDataset.value = "";
@@ -3585,32 +3922,16 @@ function clampPickerPosition(value, size, maxSize) {
 }
 
 function stationName(properties = {}) {
-  return String(properties.stop_cn || properties.name_cn || properties.name || properties.stop_name || properties.name_en || properties.stop_en || "未命名站点");
+  return String(properties.stop_name || properties.name || properties.stop_id || "未命名站点");
 }
 
 function depotName(properties = {}) {
-  return String(properties.depot_name || properties.name || properties["场站名称"] || properties.station_name || "未命名场站");
+  return String(properties.depot_name || properties.name || properties["场站名称"] || properties.station_name || properties["名称"] || properties.F002 || "未命名场站");
 }
 
 function routesForStation(feature) {
   const explicitRoutes = routeNamesForStation(feature);
-  if (explicitRoutes.length) return explicitRoutes;
-  const coordinates = pointCoordinates(feature.geometry);
-  if (!coordinates) return [];
-  const point = lngLatToWebMercator(coordinates[0], coordinates[1]);
-  let matches = matchRoutes(point, STATION_ROUTE_MATCH_METERS);
-  if (!matches.length) {
-    matches = matchRoutes(point, STATION_ROUTE_FALLBACK_MATCH_METERS);
-  }
-  const seen = new Set();
-  const routes = [];
-  for (const match of matches.sort((left, right) => left.distance - right.distance)) {
-    if (!match.name || seen.has(match.name)) continue;
-    seen.add(match.name);
-    routes.push(match.name);
-  }
-  const expectedCount = Number(feature.properties?.num);
-  return Number.isFinite(expectedCount) && expectedCount > 0 && routes.length > expectedCount ? routes.slice(0, expectedCount) : routes;
+  return explicitRoutes;
 }
 
 function routeNamesForStation(feature) {
@@ -3628,7 +3949,10 @@ function routeNamesForStation(feature) {
       return matchesId || matchesName;
     })
     .sort((left, right) => routeStopSequence(left.properties) - routeStopSequence(right.properties))
-    .map((stopFeature) => routeName(stopFeature.properties))
+    .map((stopFeature) => {
+      const matchedLine = lineSearchIndex.find((item) => isSameLogicalRoute(stopFeature.properties || {}, item.feature?.properties || {}));
+      return matchedLine?.name || routeName(stopFeature.properties);
+    })
     .filter((name) => {
       if (!name || seen.has(name)) return false;
       seen.add(name);
@@ -3668,23 +3992,32 @@ function dedupeRouteOptions(routes) {
 }
 
 function routeEndpoints(properties = {}) {
-  const start = valueOrEmpty(properties.s_stop_cn || properties.start_stop || properties.start);
-  const end = valueOrEmpty(properties.e_stop_cn || properties.end_stop || properties.end);
+  const [nameStart, nameEnd] = routeNameEndpoints(properties);
+  const start = routeStartName(properties) || nameStart;
+  const end = routeEndName(properties) || nameEnd;
   if (!start && !end) return "暂无";
   return `${start || "未知"} - ${end || "未知"}`;
 }
 
 function routeServiceTime(properties = {}) {
-  const start = formatRouteTime(properties.start_time);
-  const end = formatRouteTime(properties.end_time);
+  const start = formatRouteTime(properties.first);
+  const end = formatRouteTime(properties.last);
   if (!start && !end) return "暂无";
   return `${start || "未知"} - ${end || "未知"}`;
 }
 
 function routeHeadway(properties = {}) {
-  const value = firstAvailableValue(properties, ["avg_headway", "headway", "interval", "avg_interval", "平均发车间隔", "发车间隔"]);
+  const value = firstAvailableValue(properties, ["interval"]);
   if (!value) return "暂无";
   return String(value).match(/[分m]/i) ? String(value) : `${value} 分钟`;
+}
+
+function routeFare(properties = {}) {
+  return firstAvailableValue(properties, ["price"]) || "-";
+}
+
+function routeCompany(properties = {}) {
+  return firstAvailableValue(properties, ["company"]) || "-";
 }
 
 function routeTripCount(properties = {}) {
@@ -3697,10 +4030,7 @@ function getRouteStations(properties, route = selectedRoute.value) {
   if (editedStations.length) return editedStations;
   const routeStopStations = routeStopsForRoute(properties, route);
   if (routeStopStations.length) return routeStopStations;
-  const spatialStations = routeStationsFromGeometry(route);
-  if (spatialStations.length) return spatialStations;
-  const start = valueOrEmpty(properties.s_stop_cn || properties.start_stop || properties.start);
-  const end = valueOrEmpty(properties.e_stop_cn || properties.end_stop || properties.end);
+  const [start, end] = routeNameEndpoints(properties);
   return [start, end].filter(Boolean).map((name, index) => ({ facilityId: `endpoint-${index}-${name}`, facilityName: name }));
 }
 
@@ -3716,12 +4046,11 @@ function parseRouteStationText(text) {
 function routeStopFeaturesForRoute(properties = {}, route = selectedRoute.value) {
   const routeStops = Array.isArray(realDataCollections.routeStops?.features) ? realDataCollections.routeStops.features : [];
   if (!routeStops.length) return [];
-  const routeLabel = routeName(properties) || route?.name || "";
   const routeId = routeDataId(properties);
   return routeStops
     .map((feature, index) => {
       const stopProperties = feature.properties || {};
-      if (!isRouteStopMatch(stopProperties, routeLabel, routeId)) return null;
+      if (!isRouteStopMatch(stopProperties, routeId)) return null;
       const sequence = routeStopSequence(stopProperties);
       return { feature, sequence, sourceIndex: index };
     })
@@ -3744,58 +4073,19 @@ function routeStopsForRoute(properties = {}, route = selectedRoute.value) {
     .map(({ facilityId, facilityName }) => ({ facilityId, facilityName }));
 }
 
-function isRouteStopMatch(stopProperties = {}, routeLabel = "", routeId = "") {
+function isRouteStopMatch(stopProperties = {}, routeId = "") {
   const stopRouteId = routeDataId(stopProperties);
   if (routeId && stopRouteId && routeId === stopRouteId) return true;
-  const stopRouteLabel = valueOrEmpty(stopProperties.route_cn || stopProperties.route_name || stopProperties.route);
-  return Boolean(routeLabel && stopRouteLabel && stopRouteLabel === routeLabel);
+  return false;
 }
 
 function routeStopSequence(properties = {}) {
-  const value = Number(firstAvailableValue(properties, ["sequence", "seq", "stop_seq", "stop_order", "order"]));
+  const value = Number(firstAvailableValue(properties, ["seq"]));
   return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
 function routeDataId(properties = {}) {
-  return valueOrEmpty(properties.route_id || properties.routeId || properties.line_id || properties.lineId);
-}
-
-function routeStationsFromGeometry(route = selectedRoute.value) {
-  const paths = projectedRoutePathsForOption(route);
-  if (!paths.length) return [];
-  const bounds = projectedPathBounds(paths);
-  const routeShape = { paths, bounds };
-  const stationFeatures = Array.isArray(realDataCollections.stations?.features) ? realDataCollections.stations.features : [];
-  const threshold = STATION_ROUTE_FALLBACK_MATCH_METERS;
-  const candidates = [];
-  stationFeatures.forEach((feature, index) => {
-    const coordinates = pointCoordinates(feature.geometry);
-    if (!coordinates) return;
-    const point = lngLatToWebMercator(coordinates[0], coordinates[1]);
-    if (!isValidPoint(point) || !containsPointWithPadding(bounds, point, threshold)) return;
-    const distance = distanceToRoute(point, routeShape, threshold);
-    if (distance > threshold) return;
-    const projected = projectPointAlongPaths(point, paths);
-    if (!projected) return;
-    const stationProperties = feature.properties || {};
-    candidates.push({
-      facilityId: stationProperties._stationKey || stationProperties.stop_id || stationProperties.id || `${stationName(stationProperties)}-${index}`,
-      facilityName: stationName(stationProperties),
-      distance,
-      order: projected.order,
-      sourceIndex: index,
-    });
-  });
-  return dedupeRouteStationCandidates(candidates)
-    .sort((left, right) => left.order - right.order || left.distance - right.distance || left.sourceIndex - right.sourceIndex)
-    .map(({ facilityId, facilityName }) => ({ facilityId, facilityName }));
-}
-
-function projectedRoutePathsForOption(route = selectedRoute.value) {
-  return routeFeaturesForOption(route)
-    .flatMap((feature) => lineCoordinatePaths(feature.geometry))
-    .map((path) => path.map((coordinate) => lngLatToWebMercator(coordinate[0], coordinate[1])).filter(isValidPoint))
-    .filter((path) => path.length > 1);
+  return valueOrEmpty(properties.line_id || properties.lineId || properties.route_id || properties.routeId);
 }
 
 function routeFeaturesForOption(route = selectedRoute.value) {
@@ -3813,72 +4103,15 @@ function isSameLogicalRoute(routeProperties = {}, featureProperties = {}) {
   const routeId = routeDataId(routeProperties);
   const featureRouteId = routeDataId(featureProperties);
   if (routeId && featureRouteId && routeId === featureRouteId) return true;
-  const routeLabel = routeName(routeProperties);
-  const featureLabel = routeName(featureProperties);
-  if (!routeLabel || !featureLabel || routeLabel !== featureLabel) return false;
-  const routeStart = routeStartName(routeProperties);
-  const routeEnd = routeEndName(routeProperties);
-  const featureStart = routeStartName(featureProperties);
-  const featureEnd = routeEndName(featureProperties);
-  return (!routeStart || !featureStart || routeStart === featureStart) && (!routeEnd || !featureEnd || routeEnd === featureEnd);
+  return false;
 }
 
 function routeStartName(properties = {}) {
-  return valueOrEmpty(properties.s_stop_cn || properties.start_stop || properties.start);
+  return routeNameEndpoints(properties)[0] || "";
 }
 
 function routeEndName(properties = {}) {
-  return valueOrEmpty(properties.e_stop_cn || properties.end_stop || properties.end);
-}
-
-function projectPointAlongPaths(point, paths) {
-  let best = null;
-  let pathOffset = 0;
-  for (const path of paths) {
-    let segmentOffset = 0;
-    for (let index = 1; index < path.length; index += 1) {
-      const projection = projectPointToSegment(point, path[index - 1], path[index]);
-      const order = pathOffset + segmentOffset + projection.along;
-      if (!best || projection.distance < best.distance) {
-        best = { distance: projection.distance, order };
-      }
-      segmentOffset += projection.segmentLength;
-    }
-    pathOffset += segmentOffset;
-  }
-  return best;
-}
-
-function projectPointToSegment(point, start, end) {
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const lengthSquared = dx * dx + dy * dy;
-  if (!lengthSquared) {
-    return {
-      distance: Math.hypot(point[0] - start[0], point[1] - start[1]),
-      along: 0,
-      segmentLength: 0,
-    };
-  }
-  const ratio = Math.max(0, Math.min(1, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / lengthSquared));
-  const segmentLength = Math.sqrt(lengthSquared);
-  return {
-    distance: Math.hypot(point[0] - (start[0] + ratio * dx), point[1] - (start[1] + ratio * dy)),
-    along: ratio * segmentLength,
-    segmentLength,
-  };
-}
-
-function dedupeRouteStationCandidates(candidates) {
-  const seen = new Set();
-  const result = [];
-  for (const candidate of candidates) {
-    const key = candidate.facilityId || candidate.facilityName;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push(candidate);
-  }
-  return result;
+  return routeNameEndpoints(properties)[1] || "";
 }
 
 function getRouteLength(properties) {
@@ -3888,11 +4121,11 @@ function getRouteLength(properties) {
 }
 
 function getRouteFirstTime(properties) {
-  return formatRouteTime(properties.start_time) || "暂无";
+  return formatRouteTime(properties.first) || "暂无";
 }
 
 function getRouteLastTime(properties) {
-  return formatRouteTime(properties.end_time) || "暂无";
+  return formatRouteTime(properties.last) || "暂无";
 }
 
 function getRouteDirectness(properties, route = selectedRoute.value) {
@@ -3919,11 +4152,23 @@ function getRouteAvgStationDistance(properties) {
   return "暂无";
 }
 
-function routeLengthMeters(properties = {}) {
+function routeLengthMeters(properties = {}, route = selectedRoute.value) {
   const value = firstAvailableValue(properties, ["length", "distance", "routeDist", "route_len", "line_length"]);
   const number = parseFloat(value);
-  if (!Number.isFinite(number) || number <= 0) return null;
-  return number > 100 ? number : number * 1000;
+  if (Number.isFinite(number) && number > 0) return number > 100 ? number : number * 1000;
+  return routeGeometryLengthMeters(route);
+}
+
+function routeGeometryLengthMeters(route = selectedRoute.value) {
+  return routeFeaturesForOption(route)
+    .flatMap((feature) => lineCoordinatePaths(feature.geometry))
+    .reduce((total, path) => {
+      let pathLength = 0;
+      for (let index = 1; index < path.length; index += 1) {
+        pathLength += lngLatDistanceMeters(path[index - 1], path[index]) || 0;
+      }
+      return total + pathLength;
+    }, 0);
 }
 
 function routeStraightDistanceMeters(properties = {}, route = selectedRoute.value) {
@@ -4012,6 +4257,15 @@ function valueOrEmpty(value) {
   return text && text !== "[]" ? text : "";
 }
 
+function splitOperatorCompanies(value) {
+  const text = valueOrEmpty(value);
+  if (!text) return [];
+  return text
+    .split(/[、,，/／;；]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function formatRouteTime(value) {
   const raw = valueOrEmpty(value);
   const colonTime = raw.match(/(\d{1,2})[:：](\d{2})/);
@@ -4024,37 +4278,19 @@ function formatRouteTime(value) {
   return `${padded.slice(0, 2)}:${padded.slice(2)}`;
 }
 
-function matchRoutes(point, thresholdMeters) {
-  const matches = [];
-  for (const route of routeSpatialIndex) {
-    if (!containsPointWithPadding(route.bounds, point, thresholdMeters)) continue;
-    const distance = distanceToRoute(point, route, thresholdMeters);
-    if (distance <= thresholdMeters) {
-      matches.push({ name: route.name, distance });
-    }
-  }
-  return matches;
-}
-
-function buildRouteSpatialIndex(collection) {
-  const features = Array.isArray(collection?.features) ? collection.features : [];
-  return features
-    .map((feature) => {
-      const paths = lineCoordinatePaths(feature.geometry)
-        .map((path) => path.map((coordinate) => lngLatToWebMercator(coordinate[0], coordinate[1])).filter(isValidPoint))
-        .filter((path) => path.length > 1);
-      if (!paths.length) return null;
-      return {
-        name: routeName(feature.properties),
-        paths,
-        bounds: projectedPathBounds(paths),
-      };
-    })
-    .filter(Boolean);
-}
-
 function routeName(properties = {}) {
-  return String(properties.route_cn || properties.name || properties.route_name || properties.route_en || "").trim();
+  return String(properties.name || properties.line_id || properties.route_id || "").trim();
+}
+
+function routeNameEndpoints(properties = {}) {
+  const parsed = parsePickerRoute(routeName(properties));
+  if (!parsed.desc) return ["", ""];
+  const parts = parsed.desc
+    .split(/\s+-\s+|--|—|－|至|到/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return ["", ""];
+  return [parts[0], parts[parts.length - 1]];
 }
 
 function buildStationSearchIndex(collection) {
@@ -4068,7 +4304,7 @@ function buildStationSearchIndex(collection) {
       typeLabel: "站点",
       name,
       feature,
-      searchText: normalizeSearchText([name, properties.name_cn, properties.name_en, properties.stop_en, properties.stop_id, properties.route_cn].filter(Boolean).join(" ")),
+      searchText: normalizeSearchText([name, properties.stop_name, properties.stop_id, properties.line_id].filter(Boolean).join(" ")),
     };
   });
 }
@@ -4084,7 +4320,7 @@ function buildLineSearchIndex(collection) {
       typeLabel: "线路",
       name,
       feature,
-      searchText: normalizeSearchText([name, properties.route_en, properties.s_stop_cn, properties.e_stop_cn].filter(Boolean).join(" ")),
+      searchText: normalizeSearchText([name, properties.line_id, properties.route_id, properties.dir, properties.mode].filter(Boolean).join(" ")),
     };
   });
 }
@@ -4160,41 +4396,6 @@ function lineCoordinatePaths(geometry) {
   if (geometry.type === "LineString") return [geometry.coordinates];
   if (geometry.type === "MultiLineString") return geometry.coordinates;
   return [];
-}
-
-function projectedPathBounds(paths) {
-  const bounds = {
-    minX: Infinity,
-    minY: Infinity,
-    maxX: -Infinity,
-    maxY: -Infinity,
-  };
-  for (const path of paths) {
-    for (const point of path) {
-      bounds.minX = Math.min(bounds.minX, point[0]);
-      bounds.minY = Math.min(bounds.minY, point[1]);
-      bounds.maxX = Math.max(bounds.maxX, point[0]);
-      bounds.maxY = Math.max(bounds.maxY, point[1]);
-    }
-  }
-  return bounds;
-}
-
-function containsPointWithPadding(bounds, point, padding) {
-  return point[0] >= bounds.minX - padding && point[0] <= bounds.maxX + padding && point[1] >= bounds.minY - padding && point[1] <= bounds.maxY + padding;
-}
-
-function distanceToRoute(point, route, earlyStopDistance = 0) {
-  let minDistance = Infinity;
-  for (const path of route.paths) {
-    for (let index = 1; index < path.length; index += 1) {
-      minDistance = Math.min(minDistance, distanceToSegment(point, path[index - 1], path[index]));
-      if (earlyStopDistance && minDistance <= earlyStopDistance) {
-        return minDistance;
-      }
-    }
-  }
-  return minDistance;
 }
 
 function distanceToSegment(point, start, end) {
@@ -4451,9 +4652,21 @@ function exitHistoryPreview() {
   loadHistoryList();
 }
 
-function discardActiveEdits() {
+async function discardActiveEdits() {
   const datasetType = activeEditDataset.value;
   if (!datasetType) return;
+  const pendingCount = editOperations[datasetType]?.length || 0;
+  if (pendingCount) {
+    try {
+      await ElMessageBox.confirm(`放弃当前 ${pendingCount} 条未提交修改？放弃后无法恢复。`, "放弃修改", {
+        confirmButtonText: "放弃",
+        cancelButtonText: "继续编辑",
+        type: "warning",
+      });
+    } catch {
+      return;
+    }
+  }
   editOperations[datasetType].splice(0);
   closeTransientSurfaces();
   pendingMoveTarget.value = null;
@@ -4526,6 +4739,10 @@ watch(selectedArea, async (nextArea, previousArea) => {
   if (confirmedAreaSelection) {
     confirmedAreaSelection = false;
   }
+  selectedDisplayRange.value = DISPLAY_RANGE_ALL;
+  adminDistrictCollection = emptyFeatureCollection();
+  displayRangeList.value = [DISPLAY_RANGE_ALL];
+  loadDisplayRanges();
   closeHistoryDetails();
   if (activeKey.value === "history") {
     if (historyPreview.visible) {
@@ -4536,6 +4753,10 @@ watch(selectedArea, async (nextArea, previousArea) => {
     return;
   }
   loadOverviewLayers({ fit: true });
+});
+watch(selectedDisplayRange, () => {
+  closeTransientSurfaces();
+  applyDisplayRangeFilter({ updateSources: true, clearSelection: true });
 });
 watch(activeKey, (key) => {
   closeTransientSurfaces();
@@ -4581,6 +4802,7 @@ onMounted(async () => {
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleEscapeKey);
   await handleGetAreaList();
+  await loadDisplayRanges();
   await loadOverviewLayers({ fit: true });
 });
 
@@ -4703,7 +4925,7 @@ onBeforeUnmount(() => {
 
   .brand-text {
     font-size: 15px;
-    font-weight: 750;
+    font-weight: 700;
     color: #111827;
     letter-spacing: 0.03em;
     text-transform: uppercase;
@@ -5047,7 +5269,7 @@ onBeforeUnmount(() => {
   &.active {
     background: rgba(21, 105, 222, 0.09);
     color: var(--app-blue);
-    font-weight: 650;
+    font-weight: 600;
 
     .nav-icon {
       color: var(--app-blue);
@@ -5294,14 +5516,14 @@ onBeforeUnmount(() => {
     color: #9a5a05;
     font-size: 11px;
     line-height: 1.25;
-    font-weight: 780;
+    font-weight: 700;
   }
 
   strong {
     color: #12304f;
     font-size: 13px;
     line-height: 1.3;
-    font-weight: 800;
+    font-weight: 700;
     word-break: break-word;
   }
 
@@ -5310,7 +5532,7 @@ onBeforeUnmount(() => {
     color: #64748b;
     font-size: 12px;
     line-height: 1.35;
-    font-weight: 620;
+    font-weight: 600;
     word-break: break-word;
   }
 }
@@ -5335,12 +5557,12 @@ onBeforeUnmount(() => {
     color: #12304f;
     font-size: 13px;
     line-height: 1.35;
-    font-weight: 780;
+    font-weight: 700;
   }
 
   p {
     margin: 0;
-    font-weight: 620;
+    font-weight: 600;
   }
 
   ol {
@@ -5357,7 +5579,7 @@ onBeforeUnmount(() => {
     min-height: 22px;
     padding-left: 30px;
     color: #4a6078;
-    font-weight: 640;
+    font-weight: 600;
 
     &::before {
       counter-increment: edit-guide;
@@ -5375,7 +5597,7 @@ onBeforeUnmount(() => {
       color: var(--app-blue-strong);
       font-family: var(--app-font-number);
       font-size: 11px;
-      font-weight: 850;
+      font-weight: 700;
     }
   }
 
@@ -5407,422 +5629,7 @@ onBeforeUnmount(() => {
   padding: 22px 26px;
   overflow-y: auto;
   background: #f7f9fc;
-}
-
-.history-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-
-  .panel-kicker {
-    margin: 0 0 6px;
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 760;
-  }
-
-  h1 {
-    margin: 0;
-    color: #10243f;
-    font-size: 24px;
-    line-height: 1.25;
-    font-weight: 800;
-    letter-spacing: 0;
-  }
-}
-
-.history-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.history-current-version,
-.history-list-panel,
-.history-risk-panel {
-  border: 1px solid rgba(21, 105, 222, 0.12);
-  border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.96));
-  box-shadow:
-    0 14px 32px rgba(15, 66, 125, 0.08),
-    inset 0 1px 0 rgba(255, 255, 255, 0.88);
-}
-
-.history-current-version {
-  display: grid;
-  gap: 6px;
-  padding: 16px 18px;
-
-  span {
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  strong {
-    min-width: 0;
-    color: #12304f;
-    font-size: 20px;
-    line-height: 1.2;
-    font-weight: 820;
-    word-break: break-word;
-  }
-}
-
-.history-content {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 16px;
-  align-items: start;
-}
-
-.history-list-panel {
-  min-width: 0;
-  padding: 16px;
-}
-
-.history-list-title {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(21, 105, 222, 0.09);
-  cursor: pointer;
-
-  h2 {
-    margin: 0;
-    color: #10243f;
-    font-size: 18px;
-    line-height: 1.25;
-    font-weight: 780;
-  }
-
-  p {
-    margin: 5px 0 0;
-    color: #64748b;
-    font-size: 12px;
-    line-height: 1.45;
-    font-weight: 620;
-  }
-}
-
-.history-timeline-panel {
-  overflow: hidden;
-}
-
-.history-timeline {
-  position: relative;
-  display: grid;
-  gap: 0;
-  margin-top: 14px;
-}
-
-.history-version-node {
-  position: relative;
-  display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) 132px;
-  gap: 14px;
-  padding: 14px 0;
-  border-bottom: 1px solid rgba(15, 39, 68, 0.08);
-
-  &.active-data {
-    .history-version-main {
-      background: #f1fbf7;
-      border-color: rgba(16, 185, 129, 0.48);
-    }
-
-    .history-timeline-dot {
-      background: #10b981;
-      box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.14);
-    }
-  }
-}
-
-.history-timeline-rail {
-  position: relative;
-  display: flex;
-  justify-content: center;
-
-  &::before {
-    content: "";
-    position: absolute;
-    top: 18px;
-    bottom: -16px;
-    width: 1px;
-    background: rgba(21, 105, 222, 0.16);
-  }
-}
-
-.history-version-node:last-child {
-  border-bottom: 0;
-
-  .history-timeline-rail::before {
-    display: none;
-  }
-}
-
-.history-timeline-dot {
-  position: relative;
-  z-index: 1;
-  width: 10px;
-  height: 10px;
-  margin-top: 8px;
-  border-radius: 50%;
-  background: #8aa4c2;
-  box-shadow: 0 0 0 4px rgba(21, 105, 222, 0.08);
-}
-
-.history-version-main {
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid rgba(21, 105, 222, 0.1);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.82);
-  box-shadow: 0 4px 12px rgba(15, 66, 125, 0.035);
-  transition:
-    border-color var(--app-motion-normal) var(--app-ease-out),
-    box-shadow var(--app-motion-normal) var(--app-ease-out),
-    transform var(--app-motion-fast) var(--app-ease-press);
-}
-
-.history-version-node:hover .history-version-main {
-  transform: translateY(-1px);
-  border-color: rgba(21, 105, 222, 0.22);
-  box-shadow: 0 10px 24px rgba(15, 66, 125, 0.08);
-}
-
-.history-version-title-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  min-width: 0;
-
-  strong {
-    min-width: 0;
-    color: #10243f;
-    font-size: 14px;
-    line-height: 1.3;
-    font-weight: 800;
-    word-break: break-word;
-  }
-
-  p {
-    margin: 5px 0 0;
-    color: #475569;
-    font-size: 12px;
-    line-height: 1.45;
-    font-weight: 620;
-    word-break: break-word;
-  }
-}
-
-.history-current-tag {
-  flex-shrink: 0;
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: rgba(16, 185, 129, 0.14);
-  color: #047857;
-  font-size: 11px;
-  line-height: 1.25;
-  font-weight: 780;
-}
-
-.history-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-top: 7px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.35;
-  font-weight: 640;
-}
-
-.history-operation-preview {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-.history-operation-chip {
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 3px 7px;
-  border-radius: 6px;
-  background: rgba(21, 105, 222, 0.08);
-  color: #1556b7;
-  font-size: 11px;
-  line-height: 1.3;
-  font-weight: 700;
-}
-
-.history-version-side {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.history-risk-panel {
-  padding: 16px;
-  color: #334155;
-  border-left: 3px solid rgba(21, 105, 222, 0.7);
-
-  h2 {
-    margin: 0 0 10px;
-    color: #10243f;
-    font-size: 16px;
-    line-height: 1.25;
-    font-weight: 780;
-  }
-
-  p {
-    margin: 0 0 10px;
-    font-size: 12px;
-    line-height: 1.6;
-    font-weight: 620;
-  }
-}
-
-.history-loading,
-.history-empty,
-.history-error {
-  margin-top: 14px;
-  padding: 18px;
-  border-radius: 8px;
-  background: #f5f8fc;
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 680;
-}
-
-.history-error {
-  color: #b42318;
-  background: #fff4f2;
-}
-
-.history-preview-panel {
-  position: fixed;
-  left: 278px;
-  top: calc(var(--app-header-height) + 66px);
-  z-index: calc(var(--z-panel) + 2);
-  width: 440px;
-  max-height: calc(100vh - var(--app-header-height) - 92px);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 14px;
-  overflow-y: auto;
-  border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.95));
-  border: 1px solid rgba(21, 105, 222, 0.15);
-  box-shadow:
-    0 18px 44px rgba(15, 66, 125, 0.14),
-    inset 0 1px 0 rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(18px) saturate(165%);
-  -webkit-backdrop-filter: blur(18px) saturate(165%);
-  scrollbar-width: thin;
-}
-
-.history-preview-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid rgba(21, 105, 222, 0.08);
-
-  .panel-kicker {
-    margin: 0 0 5px;
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 760;
-  }
-
-  h2 {
-    margin: 0;
-    color: #10243f;
-    font-size: 17px;
-    line-height: 1.3;
-    font-weight: 800;
-    letter-spacing: 0;
-    word-break: break-word;
-  }
-
-  span {
-    display: block;
-    margin-top: 7px;
-    color: #64748b;
-    font-size: 12px;
-    line-height: 1.35;
-    font-weight: 650;
-  }
-}
-
-.history-preview-groups {
-  display: grid;
-  gap: 12px;
-}
-
-.history-preview-group {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid rgba(21, 105, 222, 0.09);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 4px 12px rgba(15, 66, 125, 0.035);
-
-  :deep(.el-table) {
-    --el-table-border-color: rgba(21, 105, 222, 0.09);
-    --el-table-header-bg-color: rgba(21, 105, 222, 0.05);
-    --el-table-row-hover-bg-color: rgba(21, 105, 222, 0.035);
-    border-radius: 6px;
-    overflow: hidden;
-    font-size: 12px;
-  }
-}
-
-.history-preview-group-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-
-  h3 {
-    margin: 0;
-    color: #12304f;
-    font-size: 13px;
-    font-weight: 800;
-  }
-
-  span {
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 700;
-  }
-}
-
-.history-preview-empty {
-  margin: 0;
-  padding: 9px 10px;
-  border-radius: 7px;
-  background: rgba(245, 248, 252, 0.84);
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.overview-title-row {
+}.overview-title-row {
   position: relative;
   display: flex;
   align-items: flex-start;
@@ -5835,7 +5642,7 @@ onBeforeUnmount(() => {
     margin: 0 0 4px;
     color: #60758e;
     font-size: 12px;
-    font-weight: 760;
+    font-weight: 700;
     letter-spacing: 0.04em;
   }
 
@@ -5844,7 +5651,7 @@ onBeforeUnmount(() => {
     color: #10243f;
     font-size: 20px;
     line-height: 1.25;
-    font-weight: 820;
+    font-weight: 700;
     letter-spacing: 0;
     word-break: break-word;
   }
@@ -5858,7 +5665,7 @@ onBeforeUnmount(() => {
       color: #6b7d90;
       font-size: 11.5px;
       line-height: 1.35;
-      font-weight: 640;
+      font-weight: 600;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -5868,40 +5675,9 @@ onBeforeUnmount(() => {
   :deep(.el-tag) {
     --el-tag-border-radius: 6px;
     flex-shrink: 0;
-    font-weight: 740;
+    font-weight: 700;
   }
 }
-
-.overview-metric-list {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 14px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(21, 105, 222, 0.18) transparent;
-  padding-right: 2px;
-
-  &::-webkit-scrollbar {
-    width: 4px;
-  }
-
-  &::-webkit-scrollbar-thumb {
-    background: rgba(21, 105, 222, 0.18);
-    border-radius: 10px;
-  }
-}
-
-.overview-source-note {
-  margin: 0;
-  padding: 2px 4px 0;
-  color: #64748b;
-  font-size: 11.5px;
-  line-height: 1.4;
-  font-weight: 620;
-}
-
 /* Base Metric Card */
 .metric-card {
   position: relative;
@@ -5926,7 +5702,7 @@ onBeforeUnmount(() => {
   .label-text {
     color: #40566f;
     font-size: 13.5px;
-    font-weight: 720;
+    font-weight: 700;
     line-height: 1.2;
   }
 
@@ -5950,12 +5726,6 @@ onBeforeUnmount(() => {
     align-items: center;
     justify-content: space-between;
     margin-bottom: 6px;
-
-    .metric-note {
-      font-size: 10px;
-      font-weight: 700;
-      color: rgba(21, 105, 222, 0.66);
-    }
   }
 
   .value-row {
@@ -5967,7 +5737,7 @@ onBeforeUnmount(() => {
       color: var(--app-blue-strong);
       font-family: var(--app-font-number);
       font-size: 34px;
-      font-weight: 900;
+      font-weight: 700;
       line-height: 1.1;
       letter-spacing: 0;
     }
@@ -5991,68 +5761,6 @@ onBeforeUnmount(() => {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
-
-.grid-card {
-  min-height: 84px;
-  padding: 13px;
-
-  .card-header {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 8px;
-
-    .card-icon {
-      width: 15px;
-      height: 15px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: transform 0.3s ease;
-    }
-  }
-
-  .grid-num {
-    color: #1e3a8a;
-    font-family: var(--app-font-number);
-    font-size: 23px;
-    font-weight: 850;
-    line-height: 1.1;
-  }
-
-  .grid-unit {
-    align-self: flex-end;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: #6b7280;
-    margin-top: 2px;
-  }
-
-  &.routes-card {
-    background: rgba(248, 251, 255, 0.94);
-    .card-icon { color: var(--app-blue); }
-  }
-
-  &.stations-card {
-    background: rgba(247, 252, 251, 0.94);
-    border-color: rgba(13, 148, 136, 0.1);
-    
-    .card-icon { color: #0d9488; }
-    .grid-num { color: #0f766e; }
-
-    &:hover {
-      border-color: rgba(13, 148, 136, 0.2);
-      background: rgba(246, 251, 253, 0.99);
-    }
-  }
-
-  &:hover {
-    .card-icon {
-      transform: scale(1.15) translateY(-1px);
-    }
-  }
-}
-
 /* 3. Density Card */
 .density-card {
   flex-direction: row;
@@ -6085,7 +5793,7 @@ onBeforeUnmount(() => {
       color: var(--app-blue-strong);
       font-family: var(--app-font-number);
       font-size: 19px;
-      font-weight: 800;
+      font-weight: 700;
     }
 
     .unit-val {
@@ -6106,12 +5814,6 @@ onBeforeUnmount(() => {
     align-items: center;
     justify-content: space-between;
     margin-bottom: 12px;
-
-    .metric-note {
-      font-size: 9px;
-      font-weight: 700;
-      color: rgba(21, 105, 222, 0.5);
-    }
   }
 
   .coverage-bar-group {
@@ -6133,14 +5835,14 @@ onBeforeUnmount(() => {
       span {
         color: #4b5563;
         font-size: 13.5px;
-        font-weight: 650;
+        font-weight: 600;
       }
 
       strong {
         color: var(--app-blue-strong);
         font-family: var(--app-font-number);
         font-size: 16px;
-        font-weight: 800;
+        font-weight: 700;
       }
     }
 
@@ -6168,12 +5870,11 @@ onBeforeUnmount(() => {
     }
   }
 }
-
 .load-error {
   margin: 12px 0 0;
   color: var(--app-coral);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .detail-close-btn {
@@ -6219,7 +5920,7 @@ onBeforeUnmount(() => {
   color: #10243f;
   font-size: 20px;
   line-height: 1.3;
-  font-weight: 780;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 
@@ -6252,7 +5953,7 @@ onBeforeUnmount(() => {
     color: #64748b;
     font-size: 11px;
     line-height: 1.2;
-    font-weight: 680;
+    font-weight: 600;
   }
 
   strong {
@@ -6260,15 +5961,11 @@ onBeforeUnmount(() => {
     color: #12304f;
     font-size: 14px;
     line-height: 1.25;
-    font-weight: 820;
+    font-weight: 700;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-}
-
-.detail-summary-card.single-card {
-  grid-template-columns: minmax(0, 1fr);
 }
 
 .ranking-header {
@@ -6380,7 +6077,7 @@ onBeforeUnmount(() => {
   height: 20px;
   border-radius: 50%;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   color: #60758e;
   background: rgba(113, 128, 150, 0.1);
   border: 1px solid rgba(113, 128, 150, 0.1);
@@ -6450,7 +6147,7 @@ onBeforeUnmount(() => {
   border: 1px dashed rgba(21, 105, 222, 0.1);
 }
 
-.route-detail-panel {
+.depot-detail-panel {
   flex: 1;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -6472,27 +6169,130 @@ onBeforeUnmount(() => {
   }
 }
 
-.route-name-block {
-  display: grid;
-  gap: 7px;
-  padding: 14px 16px;
-  border-radius: 7px;
-  background: #fffde2;
-  border: 1px solid rgba(245, 233, 6, 0.36);
+.depot-locate {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 14px;
+  border-radius: 11px;
+  border: 1px solid rgba(21, 105, 222, 0.14);
+  background:
+    linear-gradient(135deg, rgba(47, 111, 255, 0.09), rgba(47, 111, 255, 0.015));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
 
-  span {
-    color: #7c6f00;
-    font-size: 13.5px;
-    font-weight: 700;
+.depot-locate-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  color: #1d4ed8;
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(21, 105, 222, 0.16);
+
+  svg {
+    width: 17px;
+    height: 17px;
+  }
+}
+
+.depot-locate-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.depot-locate-label {
+  color: #5a76a0;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.depot-locate-value {
+  color: #14336b;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+  font-feature-settings: "tnum" 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.depot-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(21, 105, 222, 0.1);
+  border: 1px solid rgba(21, 105, 222, 0.12);
+  box-shadow: 0 8px 22px rgba(15, 66, 125, 0.05);
+}
+
+.depot-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 12px;
+  background: #fbfdff;
+
+  &.is-wide {
+    grid-column: 1 / -1;
+  }
+}
+
+.depot-fact-label {
+  color: #5a76a0;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.depot-fact-value {
+  min-width: 0;
+  color: #11305a;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+
+.depot-fact.is-wide .depot-fact-value {
+  font-weight: 600;
+  color: #1c3b66;
+}
+
+.route-detail-panel {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(21, 105, 222, 0.18) transparent;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 12px;
+  margin-top: 14px;
+  padding-right: 2px;
+
+  &::-webkit-scrollbar {
+    width: 4px;
   }
 
-  strong {
-    min-width: 0;
-    color: #111827;
-    font-size: 18px;
-    line-height: 1.35;
-    font-weight: 820;
-    word-break: break-word;
+  &::-webkit-scrollbar-thumb {
+    background: rgba(21, 105, 222, 0.18);
+    border-radius: 10px;
   }
 }
 
@@ -6531,7 +6331,7 @@ onBeforeUnmount(() => {
     
     .value {
       font-size: 15.5px;
-      font-weight: 820;
+      font-weight: 700;
       color: var(--app-blue);
       font-family: var(--app-font-number);
     }
@@ -6550,7 +6350,7 @@ onBeforeUnmount(() => {
   
   .section-title {
     font-size: 13.5px;
-    font-weight: 800;
+    font-weight: 700;
     color: #12304f;
     margin-bottom: 12px;
   }
@@ -6648,7 +6448,7 @@ onBeforeUnmount(() => {
       
       .station-name {
         font-size: 13px;
-        font-weight: 680;
+        font-weight: 600;
         color: #1e293b;
         transition: color 0.2s ease;
         overflow: hidden;
@@ -6716,7 +6516,7 @@ onBeforeUnmount(() => {
   padding-bottom: 6px;
   color: #64748b;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   border-bottom: 1px solid rgba(21, 105, 222, 0.08);
@@ -6899,7 +6699,7 @@ onBeforeUnmount(() => {
 
 .td-btn {
   font-size: 11px;
-  font-weight: 850;
+  font-weight: 700;
 }
 
 .compass-btn .pitch-arrows {
@@ -6910,9 +6710,9 @@ onBeforeUnmount(() => {
   color: currentColor;
 }
 
+.range-popover,
 .style-popover {
   position: absolute;
-  top: 188px;
   right: 48px;
   width: min(240px, calc(100vw - 96px));
   padding: 14px 14px 12px;
@@ -6922,11 +6722,41 @@ onBeforeUnmount(() => {
   box-shadow: 0 16px 34px rgba(15, 39, 68, 0.14);
 }
 
+.range-popover {
+  top: 188px;
+}
+
+.style-popover {
+  top: 236px;
+}
+
 .popover-title {
   color: #12304f;
   font-size: 13px;
-  font-weight: 760;
+  font-weight: 700;
   margin-bottom: 10px;
+}
+
+.range-select {
+  width: 100%;
+}
+
+.range-select :deep(.el-input__wrapper) {
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96) !important;
+  box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.14) inset !important;
+}
+
+.range-select :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1.5px var(--app-blue) inset, 0 0 0 3px rgba(21, 105, 222, 0.12) !important;
+}
+
+.range-error {
+  margin: 8px 0 0;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 600;
 }
 
 .slider-row {
@@ -6939,7 +6769,7 @@ onBeforeUnmount(() => {
     justify-content: space-between;
     color: #38536e;
     font-size: 12px;
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .val-text {
@@ -7130,7 +6960,7 @@ onBeforeUnmount(() => {
 .sidebar-brand .brand-text {
   color: var(--dm-ink-strong);
   font-size: 14px;
-  font-weight: 780;
+  font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: none;
 }
@@ -7146,7 +6976,7 @@ onBeforeUnmount(() => {
   border-radius: 15px;
   color: #4e5e5d;
   font-size: 13.5px;
-  font-weight: 680;
+  font-weight: 600;
   transition:
     background-color 360ms var(--dm-ease),
     color 360ms var(--dm-ease),
@@ -7192,7 +7022,7 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   color: #697775;
   font-size: 12.5px;
-  font-weight: 650;
+  font-weight: 600;
   transition:
     background-color 340ms var(--dm-ease),
     color 340ms var(--dm-ease),
@@ -7226,7 +7056,7 @@ onBeforeUnmount(() => {
 .datebase_box .handle {
   color: var(--dm-ink);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: 700;
 }
 
 .datebase_box .el-select {
@@ -7266,7 +7096,7 @@ onBeforeUnmount(() => {
   background: rgba(252, 250, 244, 0.92);
   color: var(--dm-ink-strong);
   font-size: 13px;
-  font-weight: 650;
+  font-weight: 600;
   box-shadow: 0 14px 32px rgba(31, 49, 50, 0.11), inset 0 1px 0 rgba(255, 255, 255, 0.72);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -7306,6 +7136,7 @@ onBeforeUnmount(() => {
 .search-result-list,
 .line-route-picker,
 .edit-action-menu,
+.range-popover,
 .style-popover {
   border: 1px solid rgba(42, 59, 58, 0.14);
   border-radius: 18px;
@@ -7399,7 +7230,7 @@ onBeforeUnmount(() => {
   color: var(--dm-accent-strong);
   background: rgba(47, 111, 115, 0.09);
   font-size: 10.5px;
-  font-weight: 780;
+  font-weight: 700;
   letter-spacing: 0.08em;
 }
 
@@ -7407,7 +7238,7 @@ onBeforeUnmount(() => {
 .overview-station-title,
 .history-preview-head h2 {
   color: var(--dm-ink-strong);
-  font-weight: 840;
+  font-weight: 700;
   letter-spacing: -0.015em;
   text-wrap: balance;
 }
@@ -7476,16 +7307,6 @@ onBeforeUnmount(() => {
 .station-route-empty {
   color: var(--dm-muted);
 }
-
-.hero-card {
-  min-height: 116px;
-  padding: 18px;
-  border-color: rgba(47, 111, 115, 0.17);
-  background:
-    radial-gradient(circle at 92% 8%, rgba(184, 135, 70, 0.14), transparent 38%),
-    linear-gradient(145deg, rgba(47, 111, 115, 0.14), rgba(255, 255, 252, 0.82) 54%, rgba(184, 135, 70, 0.1));
-}
-
 .hero-card .label-row .metric-note,
 .coverage-card .card-title-row .metric-note {
   color: rgba(184, 135, 70, 0.82);
@@ -7509,25 +7330,10 @@ onBeforeUnmount(() => {
 .grid-card .grid-unit {
   color: var(--dm-muted);
 }
-
-.metric-grid {
-  gap: 11px;
-}
-
-.grid-card {
-  min-height: 96px;
-}
-
 .grid-card .card-header .card-icon,
 .density-card .card-left .card-icon {
   color: var(--dm-accent);
 }
-
-.grid-card.stations-card {
-  border-color: rgba(47, 111, 115, 0.13);
-  background: rgba(247, 249, 241, 0.75);
-}
-
 .grid-card.stations-card .grid-num,
 .flow-value {
   color: var(--dm-accent);
@@ -7655,8 +7461,13 @@ onBeforeUnmount(() => {
   color: var(--dm-accent-strong);
 }
 
-.style-popover {
+.range-popover {
   top: 198px;
+  right: 52px;
+}
+
+.style-popover {
+  top: 248px;
   right: 52px;
 }
 
@@ -7684,88 +7495,6 @@ onBeforeUnmount(() => {
     repeating-linear-gradient(135deg, rgba(31, 49, 50, 0.026) 0 1px, transparent 1px 9px);
   box-shadow: var(--dm-shadow);
 }
-
-.history-header h1 {
-  color: var(--dm-ink-strong);
-  font-size: clamp(24px, 2.1vw, 34px);
-  font-weight: 850;
-  letter-spacing: -0.02em;
-}
-
-.history-current-version,
-.history-list-panel,
-.history-risk-panel {
-  border: 1px solid rgba(42, 59, 58, 0.12);
-  border-radius: 22px;
-  background: rgba(255, 255, 252, 0.74);
-  box-shadow: var(--dm-shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.history-current-version {
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 18px;
-  padding: 18px 20px;
-}
-
-.history-current-version span {
-  color: var(--dm-muted);
-}
-
-.history-current-version strong {
-  color: var(--dm-accent-strong);
-  font-family: var(--dm-number-font);
-  font-size: 23px;
-}
-
-.history-content {
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
-  gap: 18px;
-}
-
-.history-list-title {
-  border-bottom-color: rgba(42, 59, 58, 0.09);
-}
-
-.history-list-title h2,
-.history-risk-panel h2 {
-  color: var(--dm-ink-strong);
-}
-
-.history-list-title p,
-.history-risk-panel p,
-.history-meta,
-.history-preview-empty {
-  color: var(--dm-muted);
-}
-
-.history-version-node {
-  grid-template-columns: 28px minmax(0, 1fr) 136px;
-  border-bottom-color: rgba(42, 59, 58, 0.08);
-}
-
-.history-version-main {
-  border: 1px solid rgba(42, 59, 58, 0.1);
-  border-radius: 18px;
-  background: rgba(255, 255, 252, 0.76);
-  box-shadow: 0 10px 24px rgba(31, 49, 50, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.74);
-}
-
-.history-version-node:hover .history-version-main {
-  transform: translateY(-2px);
-  border-color: rgba(47, 111, 115, 0.24);
-  box-shadow: 0 18px 36px rgba(31, 49, 50, 0.1);
-}
-
-.history-timeline-rail::before {
-  background: rgba(47, 111, 115, 0.18);
-}
-
-.history-timeline-dot {
-  background: var(--dm-muted-soft);
-  box-shadow: 0 0 0 5px rgba(47, 111, 115, 0.1);
-}
-
 .history-version-node.active-data .history-version-main {
   background: rgba(235, 246, 239, 0.86);
   border-color: rgba(47, 111, 115, 0.36);
@@ -7775,30 +7504,6 @@ onBeforeUnmount(() => {
 .history-current-tag {
   background: var(--dm-accent);
 }
-
-.history-current-tag {
-  color: #fffaf1;
-}
-
-.history-risk-panel {
-  border-left: 0;
-  background:
-    linear-gradient(145deg, rgba(47, 111, 115, 0.1), rgba(255, 255, 252, 0.76));
-}
-
-.history-loading,
-.history-empty,
-.history-error {
-  border-radius: 16px;
-  background: rgba(47, 111, 115, 0.07);
-  color: var(--dm-muted);
-}
-
-.history-error {
-  background: rgba(184, 84, 70, 0.1);
-  color: #9b463d;
-}
-
 .history-preview-panel {
   left: 288px;
   top: calc(var(--app-header-height) + 76px);
@@ -8041,6 +7746,7 @@ onBeforeUnmount(() => {
 .search-result-list,
 .line-route-picker,
 .edit-action-menu,
+.range-popover,
 .style-popover {
   background: rgba(249, 252, 253, 0.96);
   border-color: rgba(35, 50, 55, 0.12);
@@ -8090,13 +7796,6 @@ onBeforeUnmount(() => {
   background: rgba(250, 253, 254, 0.78);
   border-color: rgba(35, 50, 55, 0.1);
 }
-
-.hero-card {
-  background:
-    radial-gradient(circle at 92% 8%, rgba(49, 93, 138, 0.11), transparent 38%),
-    linear-gradient(145deg, rgba(47, 111, 115, 0.12), rgba(250, 253, 254, 0.86) 55%, rgba(49, 93, 138, 0.07));
-}
-
 .hero-card .label-row .metric-note,
 .coverage-card .card-title-row .metric-note,
 .slider-row .val-text {
@@ -8115,7 +7814,7 @@ onBeforeUnmount(() => {
 }
 
 .coverage-card .progress-fill.fill-500 {
-  box-shadow: 0 0 14px rgba(49, 93, 138, 0.16);
+  box-shadow: none;
 }
 
 .timeline-container .timeline-item .timeline-dot.last {
@@ -8125,11 +7824,6 @@ onBeforeUnmount(() => {
 .timeline-container .timeline-item .timeline-dot.last .dot-inner {
   background: var(--dm-secondary);
 }
-
-.history-current-tag {
-  color: #f8fbfc;
-}
-
 .dm-history-page {
   left: 260px;
   right: 0;
@@ -8137,16 +7831,9 @@ onBeforeUnmount(() => {
   bottom: 0;
   border: 0;
   border-radius: 0;
-  background:
-    linear-gradient(180deg, rgba(248, 251, 252, 0.98), rgba(239, 246, 248, 0.96)),
-    repeating-linear-gradient(135deg, rgba(35, 50, 55, 0.018) 0 1px, transparent 1px 9px);
+  background: #f7f9fb;
   box-shadow: none;
 }
-
-.history-risk-panel {
-  background: linear-gradient(145deg, rgba(47, 111, 115, 0.09), rgba(250, 253, 254, 0.82));
-}
-
 .history-version-main,
 .history-version-node.active-data .history-version-main,
 .route-name-block {
@@ -8232,6 +7919,8 @@ onBeforeUnmount(() => {
   --dm-shadow: 0 18px 48px rgba(15, 23, 42, 0.1), 0 3px 12px rgba(15, 23, 42, 0.04);
   --dm-shadow-soft: 0 10px 28px rgba(15, 23, 42, 0.07);
   --dm-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  /* 统一纯白：侧栏 / 面板 / 顶栏同色（应用户要求，去掉此前的偏蓝底色） */
+  --dm-surface: #ffffff;
 }
 
 .dm-sidebar,
@@ -8245,9 +7934,10 @@ onBeforeUnmount(() => {
 .search-result-list,
 .line-route-picker,
 .edit-action-menu,
+.range-popover,
 .style-popover,
 .control-block {
-  background: #ffffff !important;
+  background: var(--dm-surface) !important;
   background-image: none !important;
 }
 
@@ -8310,6 +8000,7 @@ onBeforeUnmount(() => {
 .search-result-list,
 .line-route-picker,
 .edit-action-menu,
+.range-popover,
 .style-popover,
 .control-block {
   border: 1px solid var(--dm-border);
@@ -8349,7 +8040,7 @@ onBeforeUnmount(() => {
 .history-detail-row {
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 8px;
-  background: #ffffff !important;
+  background: var(--dm-surface) !important;
   background-image: none !important;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
 }
@@ -8373,7 +8064,7 @@ onBeforeUnmount(() => {
 
 .coverage-card .progress-track {
   height: 6px;
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(15, 39, 68, 0.06);
   box-shadow: none;
 }
 
@@ -8397,8 +8088,8 @@ onBeforeUnmount(() => {
   gap: 8px;
   margin: 12px -2px 0;
   padding: 12px 2px 0;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
-  background: #ffffff;
+  border-top: 1px solid rgba(15, 39, 68, 0.08);
+  background: var(--dm-surface);
 }
 
 .edit-operation-list,
@@ -8435,16 +8126,6 @@ onBeforeUnmount(() => {
   border-color: var(--dm-accent);
   color: #ffffff;
 }
-
-.history-version-node {
-  grid-template-columns: 28px minmax(0, 1fr) 166px;
-  cursor: default;
-}
-
-.history-version-side {
-  justify-content: center;
-}
-
 .history-version-side :deep(.el-button) {
   width: 112px;
   margin-left: 0;
@@ -8454,169 +8135,6 @@ onBeforeUnmount(() => {
   padding: 24px 26px;
   overflow-y: auto;
 }
-
-.history-risk-panel {
-  border-left: 0;
-}
-
-.history-detail-panel {
-  position: fixed;
-  top: calc(var(--app-header-height) + 18px);
-  right: 24px;
-  bottom: 24px;
-  z-index: calc(var(--z-panel) + 14);
-  width: min(520px, calc(100vw - 320px));
-  display: flex;
-  flex-direction: column;
-  padding: 16px;
-  border: 1px solid var(--dm-border);
-  border-radius: 18px;
-  box-shadow: var(--dm-shadow);
-  overflow: hidden;
-}
-
-.history-detail-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.history-detail-head h2 {
-  margin: 0;
-  color: var(--dm-ink-strong);
-  font-size: 18px;
-  line-height: 1.3;
-  font-weight: 800;
-}
-
-.history-detail-head span {
-  display: block;
-  margin-top: 6px;
-  color: var(--dm-muted);
-  font-size: 12px;
-  line-height: 1.4;
-  font-weight: 600;
-}
-
-.history-detail-groups {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  gap: 12px;
-  overflow-y: auto;
-  padding-top: 12px;
-}
-
-.history-detail-group {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-}
-
-.history-detail-group-title,
-.history-detail-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.history-detail-group-title h3 {
-  margin: 0;
-  color: var(--dm-ink-strong);
-  font-size: 14px;
-  line-height: 1.3;
-  font-weight: 800;
-}
-
-.history-detail-group-title span {
-  color: var(--dm-muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.history-detail-list {
-  display: grid;
-  gap: 8px;
-}
-
-.history-detail-row {
-  padding: 11px 12px;
-}
-
-.history-detail-row-main {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-
-.history-detail-action {
-  width: fit-content;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--dm-accent-soft);
-  color: var(--dm-accent-strong);
-  font-size: 11px;
-  line-height: 1.2;
-  font-weight: 760;
-}
-
-.history-detail-row-main strong,
-.history-detail-row-main p {
-  margin: 0;
-  min-width: 0;
-  word-break: break-word;
-}
-
-.history-detail-row-main strong {
-  color: var(--dm-ink-strong);
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-.history-detail-row-main p,
-.history-detail-row-meta {
-  color: var(--dm-muted);
-  font-size: 12px;
-  line-height: 1.45;
-  font-weight: 600;
-}
-
-.history-detail-row-meta {
-  flex: 0 0 132px;
-  display: grid;
-  gap: 4px;
-  text-align: right;
-}
-
-.history-evidence-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.history-evidence-thumb {
-  width: 64px;
-  height: 48px;
-  padding: 0;
-  border: 1px solid rgba(15, 39, 68, 0.12);
-  border-radius: 8px;
-  background: #f8fbff;
-  overflow: hidden;
-  cursor: pointer;
-
-  img {
-    display: block;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-}
-
 .history-preview-exit {
   position: fixed;
   top: calc(var(--app-header-height) + 16px);
@@ -8646,24 +8164,39 @@ onBeforeUnmount(() => {
 :global(.dm-edit-dialog .el-dialog),
 :global(.dm-commit-dialog.el-dialog),
 :global(.dm-commit-dialog .el-dialog) {
-  border-radius: 18px;
-  background: #ffffff;
-  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.18);
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-xl);
+  background: var(--dm2-surface);
+  box-shadow: var(--dm2-shadow-dialog);
   overflow: hidden;
+}
+
+:global(.dm-commit-dialog.el-dialog),
+:global(.dm-commit-dialog .el-dialog) {
+  position: relative;
+  width: min(520px, calc(100vw - 32px)) !important;
+}
+
+:global(.dm-commit-dialog.el-dialog) {
+  margin: 0 auto !important;
+}
+
+:global(.dm-commit-dialog .el-dialog) {
+  margin: 0 !important;
 }
 
 :global(.dm-edit-dialog .el-dialog__header),
 :global(.dm-commit-dialog .el-dialog__header) {
   margin: 0;
-  padding: 22px 24px 8px;
+  padding: 20px 24px 10px;
 }
 
 :global(.dm-edit-dialog .el-dialog__title),
 :global(.dm-commit-dialog .el-dialog__title) {
-  color: #111827;
+  color: var(--dm2-ink);
   font-size: 19px;
   line-height: 1.3;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 :global(.dm-edit-dialog .el-dialog__body),
@@ -8673,8 +8206,35 @@ onBeforeUnmount(() => {
 
 :global(.dm-edit-dialog .el-dialog__footer),
 :global(.dm-commit-dialog .el-dialog__footer) {
-  padding: 14px 24px 22px;
-  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 14px 24px 20px;
+  border-top: 1px solid var(--dm2-line-faint);
+  background: var(--dm2-surface);
+}
+
+:global(.dm-commit-dialog .el-dialog__headerbtn) {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  left: auto;
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--dm2-radius-sm);
+  background: transparent;
+  transition: background 160ms ease;
+}
+
+:global(.dm-commit-dialog .el-dialog__headerbtn:hover),
+:global(.dm-commit-dialog .el-dialog__headerbtn:focus-visible) {
+  background: rgba(15, 23, 42, 0.06);
+  outline: none;
+}
+
+:global(.dm-commit-dialog .el-dialog__close) {
+  color: var(--dm2-ink-soft);
+  font-size: 18px;
+  font-weight: 700;
 }
 
 .edit-dialog-subtitle {
@@ -8696,22 +8256,22 @@ onBeforeUnmount(() => {
 
 .dm-edit-form :deep(.el-form-item__label) {
   margin-bottom: 7px;
-  color: #1f2937;
+  color: var(--dm2-ink-soft);
   font-size: 13px;
   line-height: 1.35;
-  font-weight: 760;
+  font-weight: 700;
 }
 
 .dm-edit-form :deep(.el-input__wrapper),
 .dm-edit-form :deep(.el-textarea__inner) {
   border-radius: 10px;
-  background: #ffffff !important;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset !important;
+  background: var(--dm2-surface) !important;
+  box-shadow: 0 0 0 1px var(--dm2-line-strong) inset !important;
 }
 
 .dm-edit-form :deep(.el-input__wrapper.is-focus),
 .dm-edit-form :deep(.el-textarea__inner:focus) {
-  box-shadow: 0 0 0 1.5px var(--dm-accent) inset, 0 0 0 4px rgba(0, 113, 227, 0.1) !important;
+  box-shadow: 0 0 0 1.5px var(--dm2-accent) inset, 0 0 0 4px var(--dm2-accent-ring) !important;
 }
 
 .field-hint {
@@ -8720,11 +8280,45 @@ onBeforeUnmount(() => {
   color: var(--dm-muted);
   font-size: 12px;
   line-height: 1.45;
-  font-weight: 560;
+  font-weight: 500;
 }
 
 .commit-form {
-  gap: 16px;
+  gap: 15px;
+}
+
+.commit-dialog-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+  margin: 0 0 16px;
+  padding: 9px 12px;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius);
+  background: var(--dm2-surface-sunken);
+}
+
+.commit-dialog-summary span,
+.commit-dialog-summary strong {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.commit-dialog-summary span {
+  color: var(--dm2-muted);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.commit-dialog-summary strong {
+  flex-shrink: 0;
+  color: var(--dm2-accent);
+  font-weight: 700;
 }
 
 .evidence-file-input {
@@ -8737,21 +8331,28 @@ onBeforeUnmount(() => {
 
 .evidence-dropzone {
   width: 100%;
-  min-height: 112px;
+  min-height: 82px;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 18px;
-  border: 1px dashed rgba(21, 105, 222, 0.34);
-  border-radius: 14px;
-  background: rgba(237, 245, 255, 0.62);
-  color: #225a92;
+  gap: 12px;
+  padding: 14px;
+  border: 1px dashed var(--dm2-line-strong);
+  border-radius: var(--dm2-radius);
+  background: var(--dm2-surface-sunken);
+  color: var(--dm2-ink-soft);
   cursor: pointer;
-  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  transition: background 180ms ease, border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 
-  svg {
+  .evidence-dropzone-icon {
     flex: 0 0 auto;
-    color: var(--dm-accent);
+    width: 38px;
+    height: 38px;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid var(--dm2-line);
+    border-radius: 10px;
+    background: var(--dm2-surface);
+    color: var(--dm2-accent);
   }
 
   div {
@@ -8761,14 +8362,14 @@ onBeforeUnmount(() => {
   }
 
   strong {
-    color: #123458;
+    color: var(--dm2-ink);
     font-size: 14px;
     line-height: 1.35;
-    font-weight: 780;
+    font-weight: 700;
   }
 
   span {
-    color: #64748b;
+    color: var(--dm2-muted);
     font-size: 12px;
     line-height: 1.45;
     font-weight: 600;
@@ -8777,10 +8378,14 @@ onBeforeUnmount(() => {
   &:hover,
   &:focus-visible,
   &.is-dragging {
-    border-color: rgba(21, 105, 222, 0.72);
-    background: rgba(226, 239, 255, 0.86);
-    box-shadow: 0 0 0 4px rgba(21, 105, 222, 0.1);
+    border-color: var(--dm2-accent);
+    background: var(--dm2-surface);
+    box-shadow: 0 0 0 4px var(--dm2-accent-ring);
     outline: none;
+  }
+
+  &.has-images {
+    border-style: solid;
   }
 }
 
@@ -8796,16 +8401,16 @@ onBeforeUnmount(() => {
   position: relative;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid rgba(15, 39, 68, 0.1);
-  border-radius: 10px;
-  background: #f8fbff;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface);
 
   img {
     display: block;
     width: 100%;
     aspect-ratio: 1.35;
     object-fit: cover;
-    background: #e8eef6;
+    background: var(--dm2-surface-sunken);
   }
 
   button {
@@ -8819,17 +8424,17 @@ onBeforeUnmount(() => {
     border: 0;
     border-radius: 50%;
     background: rgba(15, 23, 42, 0.72);
-    color: #f8fbff;
+    color: var(--dm2-surface);
     cursor: pointer;
   }
 
   span {
     display: block;
     padding: 6px 8px;
-    color: #334155;
+    color: var(--dm2-ink-soft);
     font-size: 11px;
     line-height: 1.35;
-    font-weight: 650;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -8842,151 +8447,32 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-:global(.dm-attribute-dialog.el-dialog),
-:global(.dm-attribute-dialog .el-dialog) {
-  display: flex;
-  flex-direction: column;
-  max-height: calc(100vh - 48px);
-  border-radius: 14px;
-  background: #f8fbff;
-  box-shadow: 0 26px 72px rgba(15, 23, 42, 0.22);
-  overflow: hidden;
+.commit-dialog-footer :deep(.el-button) {
+  min-width: 78px;
+  height: 34px;
+  border-radius: var(--dm2-radius-sm);
+  font-weight: 700;
 }
 
-:global(.dm-attribute-dialog .el-dialog__header) {
-  margin: 0;
-  padding: 18px 22px 10px;
-  border-bottom: 1px solid rgba(21, 105, 222, 0.1);
+.commit-dialog-footer :deep(.el-button--primary) {
+  background: var(--dm2-accent);
+  border-color: var(--dm2-accent);
 }
 
-:global(.dm-attribute-dialog .el-dialog__title) {
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 780;
-}
-
-:global(.dm-attribute-dialog .el-dialog__body) {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 14px 18px 0;
-}
-
-:global(.dm-attribute-dialog .el-dialog__footer) {
-  flex: 0 0 auto;
-  padding: 14px 18px 18px;
-  border-top: 1px solid rgba(21, 105, 222, 0.1);
-}
-
-.attribute-dialog-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 14px;
-  flex: 0 0 auto;
-  margin-bottom: 12px;
-
-  p {
-    margin: 0 0 4px;
-    color: #0f253e;
-    font-size: 14px;
-    font-weight: 720;
-  }
-
-  span {
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 560;
-  }
-}
-
-.attribute-dialog-tools {
-  display: inline-flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.attribute-grid {
-  flex: 1 1 auto;
-  min-height: 0;
-  border-radius: 10px;
-  overflow: hidden;
-
-  :deep(.el-table__header th) {
-    background: #edf5ff !important;
-    color: #18314f;
-    font-size: 12px;
-    font-weight: 760;
-  }
-
-  :deep(.el-table__cell) {
-    padding: 6px 0;
-  }
-
-  :deep(.el-input__wrapper) {
-    min-height: 30px;
-    border-radius: 7px;
-    background: #ffffff;
-    box-shadow: 0 0 0 1px rgba(15, 39, 68, 0.1) inset !important;
-  }
-
-  :deep(.el-input__wrapper.is-focus) {
-    box-shadow: 0 0 0 1.5px var(--dm-accent) inset, 0 0 0 3px rgba(21, 105, 222, 0.1) !important;
-  }
-
-  :deep(.el-scrollbar__bar.is-vertical),
-  :deep(.el-scrollbar__bar.is-horizontal) {
-    opacity: 1;
-  }
-
-  :deep(.is-added td) {
-    background: rgba(16, 185, 129, 0.06) !important;
-  }
-
-  :deep(.is-modified td) {
-    background: rgba(245, 158, 11, 0.07) !important;
-  }
-
-  :deep(.is-deleted td) {
-    background: rgba(239, 68, 68, 0.06) !important;
-  }
-
-  :deep(.is-deleted .el-input__inner) {
-    text-decoration: line-through;
-    color: #94a3b8;
-  }
-}
-
-.attribute-footer {
-  align-items: center;
-  justify-content: space-between;
-
-  > span {
-    color: #64748b;
-    font-size: 12px;
-    font-weight: 560;
-  }
-
-  > div {
-    display: inline-flex;
-    gap: 10px;
-  }
-}
 
 .dm-edit-panel .overview-title-row {
   flex-shrink: 0;
   align-items: flex-start;
   gap: 14px;
   padding-bottom: 14px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid rgba(15, 39, 68, 0.08);
 }
 
 .dm-edit-panel .overview-title-row h2 {
   margin-top: 6px;
   font-size: 28px;
   line-height: 1.18;
-  font-weight: 780;
+  font-weight: 700;
 }
 
 .dm-edit-panel .overview-title-row :deep(.el-tag) {
@@ -8994,7 +8480,7 @@ onBeforeUnmount(() => {
   padding: 0 13px;
   border-radius: 9px;
   font-size: 14px;
-  font-weight: 760;
+  font-weight: 700;
 }
 
 .edit-operation-list {
@@ -9016,7 +8502,7 @@ onBeforeUnmount(() => {
   color: var(--dm-accent-strong);
   font-size: 13px;
   line-height: 1.45;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .edit-operation-item {
@@ -9031,7 +8517,7 @@ onBeforeUnmount(() => {
   padding: 14px 15px !important;
   overflow: visible !important;
   border-radius: 8px !important;
-  background: #ffffff !important;
+  background: var(--dm-surface) !important;
 }
 
 .edit-operation-item::before {
@@ -9055,7 +8541,7 @@ onBeforeUnmount(() => {
   color: var(--dm-accent-strong) !important;
   font-size: 12px !important;
   line-height: 1 !important;
-  font-weight: 760 !important;
+  font-weight: 700 !important;
   white-space: nowrap;
 }
 
@@ -9065,7 +8551,7 @@ onBeforeUnmount(() => {
   color: #111827;
   font-size: 15px;
   line-height: 1.45;
-  font-weight: 760;
+  font-weight: 700;
   overflow-wrap: anywhere;
 }
 
@@ -9076,7 +8562,7 @@ onBeforeUnmount(() => {
   color: var(--dm-muted);
   font-size: 13px;
   line-height: 1.55;
-  font-weight: 560;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 
@@ -9096,7 +8582,7 @@ onBeforeUnmount(() => {
 .edit-panel-actions :deep(.el-button) {
   height: 40px;
   border-radius: 8px;
-  font-weight: 720;
+  font-weight: 700;
 }
 
 .datebase_box.database-box {
@@ -9110,7 +8596,7 @@ onBeforeUnmount(() => {
 .datebase_box.database-box .handle {
   color: var(--dm-ink);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: 700;
 }
 
 .datebase_box.database-box .el-select {
@@ -9223,5 +8709,303 @@ onBeforeUnmount(() => {
     width: auto;
     max-width: none;
   }
+}
+
+/* Resolution lock: the 1430x686 desktop composition scales as a single system. */
+.datebase_box,
+.dm-sidebar,
+.map-search,
+.dm-overview-panel,
+.dm-edit-panel,
+.history-preview-panel,
+.history-preview-exit,
+.history-detail-panel,
+.map-controls-toolbar,
+.line-route-picker,
+.edit-action-menu {
+  --dm-panel-scale: var(--app-layout-scale);
+}
+
+.dm-sidebar {
+  top: var(--app-header-height);
+  bottom: auto;
+  left: 0;
+  width: 260px;
+  height: var(--app-dm-sidebar-height);
+  transform-origin: left top;
+  scale: var(--dm-panel-scale);
+}
+
+.datebase_box {
+  top: calc(var(--app-header-height) / 2);
+  right: calc(var(--app-edge) + var(--app-scaled-70));
+  transform-origin: right center;
+}
+
+.map-search {
+  top: calc(var(--app-header-height) + var(--app-scaled-20));
+  left: var(--app-scaled-282);
+  width: 292px;
+  transform-origin: top left;
+}
+
+.map-search.is-focused {
+  width: 292px;
+}
+
+.dm-overview-panel,
+.dm-edit-panel {
+  top: calc(var(--app-header-height) + var(--app-scaled-12));
+  right: var(--app-edge);
+  width: 398px;
+  height: var(--app-dm-panel-height);
+  transform-origin: right top;
+}
+
+.history-preview-panel {
+  left: var(--app-scaled-282);
+  top: calc(var(--app-header-height) + var(--app-scaled-76));
+  max-height: var(--app-dm-history-preview-height);
+  transform-origin: left top;
+}
+.history-preview-exit {
+  top: calc(var(--app-header-height) + var(--app-scaled-16));
+  right: var(--app-edge);
+  max-width: min(460px, var(--app-dm-history-side-width));
+  transform-origin: right top;
+}
+
+.map-controls-toolbar {
+  top: calc(var(--app-header-height) + var(--app-scaled-18));
+  right: calc(var(--app-edge) + var(--app-scaled-2));
+  transform-origin: top right;
+}
+
+.map-controls-toolbar.with-panel {
+  right: calc(var(--app-edge) + var(--app-scaled-414));
+}
+
+.dm-history-page {
+  left: var(--app-scaled-260);
+  top: var(--app-header-height);
+  right: 0;
+  bottom: 0;
+  padding: var(--app-scaled-24) var(--app-scaled-26);
+  border-radius: 0;
+}
+
+/* Adapted overview panel: keep the full enterprise table visible at locked desktop scale. */
+.dm-overview-panel {
+  min-height: 0;
+}
+
+.dm-overview-panel .overview-title-row {
+  flex-shrink: 0;
+  padding-bottom: 10px;
+}
+
+.dm-overview-panel .metric-card {
+  flex-shrink: 0;
+}
+
+
+/* ──────────────────────────────────────────────────────────────
+   线路/站点/场站数据更新面板 — 整洁化
+   仅做减法：移除堆叠装饰、让列表可滚动、按动作类型克制着色。
+   条目的两列栅格沿用上方“Resolution lock”定义，这里不再重排结构。
+   ────────────────────────────────────────────────────────────── */
+
+/* 1) 面板回归一块干净白卡：去掉彩条 / 光晕 / 纸纹等叠加装饰 */
+.dm-edit-panel::before,
+.dm-edit-panel::after {
+  content: none;
+  display: none;
+}
+
+.dm-edit-panel {
+  padding: 18px 16px 16px;
+  border-radius: var(--dm2-radius-lg);
+  border: 1px solid var(--dm2-line);
+  background: var(--dm2-surface);
+  box-shadow: var(--dm2-shadow-panel);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.dm-edit-panel .overview-title-row {
+  flex-shrink: 0;
+  padding: 0 2px 14px;
+  border-bottom: 1px solid var(--dm2-line-faint);
+}
+
+/* 待提交计数：去掉 Element 的琥珀色告警胶囊，改为安静的中性小标 */
+.dm-edit-panel .edit-pending-count {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--dm2-muted);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dm-edit-panel .edit-pending-count.has-pending {
+  background: var(--dm2-accent-weak);
+  color: var(--dm2-accent);
+}
+
+/* 2) 列表可滚动：min-height:0 让 flex 子项收缩并触发内部滚动；标题/按钮固定 */
+.dm-edit-panel .edit-operation-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding-right: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.2) transparent;
+}
+
+.dm-edit-panel .edit-operation-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.dm-edit-panel .edit-operation-list::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.16);
+  border-radius: 999px;
+}
+
+.dm-edit-panel .edit-operation-summary {
+  flex-shrink: 0;
+  padding: 7px 10px;
+  border-radius: var(--dm2-radius-sm);
+  background: rgba(15, 23, 42, 0.04);
+  color: var(--dm2-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* 3) 条目：保留两列栅格，只做减法；动作色彩仅靠文字传达，不再加色块/色条 */
+.dm-edit-panel .edit-operation-item {
+  --k-color: var(--dm2-accent);
+  flex-shrink: 0;
+  border: 1px solid var(--dm2-line);
+  box-shadow: none;
+}
+
+.dm-edit-panel .edit-operation-item.is-add {
+  --k-color: var(--dm2-add);
+}
+
+.dm-edit-panel .edit-operation-item.is-delete {
+  --k-color: var(--dm2-delete);
+}
+
+.dm-edit-panel .edit-operation-item:hover {
+  transform: none;
+  border-color: var(--dm2-line-strong);
+  background: rgba(15, 23, 42, 0.02);
+  box-shadow: none;
+}
+
+/* 动作不再用胶囊徽标，改为安静的纯色文字（去掉 AI 感的小色块） */
+.dm-edit-panel .edit-operation-item .operation-type {
+  min-width: 0 !important;
+  height: auto !important;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--k-color) !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+/* 4) 空状态与底部操作区，安静收敛 */
+.dm-edit-panel .edit-empty {
+  flex-shrink: 0;
+  border-radius: var(--dm2-radius);
+  border: 1px solid var(--dm2-line);
+  background: rgba(15, 23, 42, 0.02);
+  box-shadow: none;
+}
+
+.dm-edit-panel .edit-panel-actions {
+  flex-shrink: 0;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--dm2-line-faint);
+}
+
+/* ── 数据总览面板：与编辑面板统一为干净白卡，去掉纸纹/内嵌层装饰 ── */
+.dm-overview-panel::before,
+.dm-overview-panel::after {
+  content: none;
+  display: none;
+}
+
+.dm-overview-panel {
+  padding: 18px 16px 16px;
+  border-radius: var(--dm2-radius-lg);
+  border: 1px solid var(--dm2-line);
+  background: var(--dm2-surface);
+  box-shadow: var(--dm2-shadow-panel);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 指标区样式已迁移至 OverviewMetrics.vue（自包含、全令牌）；此处只保留面板外壳。 */
+
+/* ── Action 2 /quieter：历史页统一到令牌冷静配色（青蓝 → 单一蓝），去胶囊、收阴影 ── */
+
+/* 「当前版本」标记：去掉实心彩色胶囊，改为安静浅色文字小标 */
+.dm-history-page .history-current-tag {
+  background: var(--dm2-accent-weak) !important;
+  border-color: transparent !important;
+  color: var(--dm2-accent) !important;
+}
+
+/* 当前版本横幅：数值改为中性墨色，不再用青色强调 */
+.dm-history-page .history-current-version strong {
+  color: var(--dm2-ink);
+}
+
+/* 时间轴「当前数据版本」圆点：青色 → 统一蓝 */
+.dm-history-page .history-version-node.active-data .history-timeline-dot {
+  background: var(--dm2-accent) !important;
+  border-color: var(--dm2-accent) !important;
+}
+
+/* 修改明细的动作标记：去掉青色胶囊，改为安静纯色文字 */
+.dm-history-page .history-detail-action {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dm2-accent);
+  font-weight: 600;
+}
+
+/* 历史卡片：收掉偏重的投影，统一为细边 + 无影的冷静表面 */
+.dm-history-page .history-current-version,
+.dm-history-page .history-list-panel,
+.dm-history-page .history-risk-panel,
+.dm-history-page .history-version-main,
+.dm-history-page .history-detail-group,
+.dm-history-page .history-detail-row {
+  border-color: var(--dm2-line) !important;
+  box-shadow: none !important;
+}
+
+.dm-history-page .history-version-node:hover .history-version-main {
+  border-color: var(--dm2-line-strong) !important;
+  box-shadow: none !important;
+  transform: none;
 }
 </style>

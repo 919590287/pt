@@ -11,6 +11,8 @@ public interface RealDataService {
 
     List<String> areaList();
 
+    Map<String, Object> adminDistricts(String areaName);
+
     Map<String, Object> busLineStation(String areaName, String versionId);
 
     Map<String, Object> history(String areaName);

@@ -32,6 +32,12 @@ public class RealDataController {
         return AjaxResult.ok(realDataService.areaList());
     }
 
+    @Operation(summary = "行政区范围")
+    @PostMapping("/adminDistricts")
+    public AjaxResult adminDistricts(@RequestBody RealDataParam param) {
+        return AjaxResult.ok(realDataService.adminDistricts(param.getAreaName()));
+    }
+
     @Operation(summary = "公交线路站点")
     @PostMapping("/busLineStation")
     public AjaxResult busLineStation(@RequestBody RealDataParam param) {

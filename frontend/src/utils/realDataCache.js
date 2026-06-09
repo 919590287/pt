@@ -1,4 +1,4 @@
-import { getBusLineStation, getRealDataAreaList, getRealDataHistory } from "@/api/realData.js";
+import { getAdminDistricts, getBusLineStation, getRealDataAreaList, getRealDataHistory } from "@/api/realData.js";
 
 const DEFAULT_AREA = "广州市";
 
@@ -8,8 +8,11 @@ const realDataCache = new Map();
 const realDataPromises = new Map();
 const historyCache = new Map();
 const historyPromises = new Map();
+const adminDistrictCache = new Map();
+const adminDistrictPromises = new Map();
 const realDataGenerations = new Map();
 const historyGenerations = new Map();
+const adminDistrictGenerations = new Map();
 
 function normalizeArea(areaName) {
   return areaName || DEFAULT_AREA;
@@ -82,6 +85,29 @@ export async function getCachedRealData(areaName = DEFAULT_AREA, options = {}) {
   return request;
 }
 
+export async function getCachedAdminDistricts(areaName = DEFAULT_AREA, options = {}) {
+  const { force = false } = options;
+  const area = normalizeArea(areaName);
+  const generation = adminDistrictGenerations.get(area) || 0;
+  if (!force && adminDistrictCache.has(area)) return adminDistrictCache.get(area);
+  if (!force && adminDistrictPromises.has(area)) return adminDistrictPromises.get(area);
+
+  const request = getAdminDistricts({ areaName: area }, { silentError: true })
+    .then((res) => {
+      const data = res?.data || {};
+      if ((adminDistrictGenerations.get(area) || 0) === generation) {
+        adminDistrictCache.set(area, data);
+      }
+      return data;
+    })
+    .finally(() => {
+      adminDistrictPromises.delete(area);
+    });
+
+  adminDistrictPromises.set(area, request);
+  return request;
+}
+
 export async function getCachedRealDataHistory(areaName = DEFAULT_AREA, options = {}) {
   const { force = false } = options;
   const area = normalizeArea(areaName);
@@ -134,7 +160,20 @@ export function invalidateCachedHistory(areaName = "") {
   historyPromises.delete(area);
 }
 
+export function invalidateCachedAdminDistricts(areaName = "") {
+  if (!areaName) {
+    adminDistrictCache.clear();
+    adminDistrictPromises.clear();
+    return;
+  }
+  const area = normalizeArea(areaName);
+  adminDistrictGenerations.set(area, (adminDistrictGenerations.get(area) || 0) + 1);
+  adminDistrictCache.delete(area);
+  adminDistrictPromises.delete(area);
+}
+
 export function warmRealData(areaName = DEFAULT_AREA) {
   getCachedAreaList().catch(() => [DEFAULT_AREA]);
+  getCachedAdminDistricts(areaName).catch(() => null);
   getCachedRealData(areaName).catch(() => null);
 }

@@ -38,6 +38,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -54,7 +55,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Predicate;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -70,14 +70,10 @@ public class RealDataServiceImpl implements RealDataService {
     private static final String VERSION_FOLDER = "_versions";
     private static final DateTimeFormatter VERSION_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS");
     private static final List<String> STANDARD_ROUTE_FIELDS = List.of(
-            "route_cn", "route_en", "city_code", "route_type", "company_cn", "company_en",
-            "s_stop_cn", "s_stop_en", "e_stop_cn", "e_stop_en", "distance", "total_stop",
-            "start_time", "end_time", "loop", "status", "basic_prc", "total_prc",
-            "city_cn", "city_en", "type_en", "length", "interval"
+            "line_id", "dir", "route_id", "first", "last", "interval", "mode", "name", "price", "company"
     );
     private static final List<String> STANDARD_STOP_FIELDS = List.of(
-            "name_cn", "name_en", "stop_id", "route_cn", "route_en", "route_id",
-            "city_code", "city_cn", "city_en", "sequence"
+            "line_id", "dir", "stop_id", "stop_name", "seq", "lon", "lat"
     );
     private static final double EARTH_RADIUS_METERS = 6_378_137.0;
     private static final double COVERAGE_300_METERS = 300.0;
@@ -94,6 +90,37 @@ public class RealDataServiceImpl implements RealDataService {
     @Override
     public List<String> areaList() {
         return matsimConfig.areaNames();
+    }
+
+    @Override
+    public Map<String, Object> adminDistricts(String areaName) {
+        String safeAreaName = safeText(areaName);
+        if (safeAreaName.isBlank()) {
+            throw new BusinessException("区域名称不能为空");
+        }
+        Path root = matsimConfig.realDataPath(safeAreaName);
+        Map<String, Object> collection = readFirstShp(root.resolve(ADMIN_AREA_FOLDER));
+        List<Map<String, Object>> features = mutableMapList(collection.get("features"));
+        List<String> districts = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (Map<String, Object> feature : features) {
+            Map<String, Object> properties = featureProperties(feature);
+            String name = adminDistrictName(properties);
+            if (name.isBlank()) {
+                continue;
+            }
+            properties.put("_districtName", name);
+            if (seen.add(name)) {
+                districts.add(name);
+            }
+        }
+        collection.put("features", features);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("areaName", safeAreaName);
+        result.put("districts", districts);
+        result.put("collection", collection);
+        return result;
     }
 
     @Override
@@ -245,8 +272,8 @@ public class RealDataServiceImpl implements RealDataService {
         if (safeAreaName.isBlank()) {
             throw new BusinessException("区域名称不能为空");
         }
-        if (!"line".equals(safeDatasetType) && !"station".equals(safeDatasetType)) {
-            throw new BusinessException("仅支持上传标准线路或站点 SHP");
+        if (!"line".equals(safeDatasetType) && !"station".equals(safeDatasetType) && !"depot".equals(safeDatasetType)) {
+            throw new BusinessException("仅支持上传标准线路、站点或场站 SHP");
         }
         if (files == null || files.isEmpty()) {
             throw new BusinessException("请上传 SHP 压缩包或完整配套文件");
@@ -260,18 +287,35 @@ public class RealDataServiceImpl implements RealDataService {
             if (uploadedShp == null) {
                 throw new BusinessException("上传文件中未找到 .shp 文件");
             }
+            assertShpCompanionFiles(uploadedShp);
 
-            List<String> expectedFields = "line".equals(safeDatasetType) ? STANDARD_ROUTE_FIELDS : STANDARD_STOP_FIELDS;
-            Class<? extends Geometry> expectedGeometry = "line".equals(safeDatasetType) ? LineString.class : Point.class;
-            Map<String, Object> uploaded = readShp(uploadedShp, expectedFields, expectedGeometry, datasetTypeLabel(safeDatasetType));
+            List<String> expectedFields = switch (safeDatasetType) {
+                case "line" -> STANDARD_ROUTE_FIELDS;
+                case "station" -> STANDARD_STOP_FIELDS;
+                default -> List.of();
+            };
+            // 场站字段不固定，不做严格字段/几何校验；线路、站点沿用标准模板校验。
+            Class<? extends Geometry> expectedGeometry = switch (safeDatasetType) {
+                case "line" -> LineString.class;
+                case "station" -> Point.class;
+                default -> null;
+            };
+            List<String> expectedFieldsForRead = expectedFields.isEmpty() ? null : expectedFields;
+            Map<String, Object> uploaded = readShp(uploadedShp, expectedFieldsForRead, expectedGeometry, datasetTypeLabel(safeDatasetType));
+            // 上传 SHP 允许包含多余字段，但比对时仅以标准字段为准，避免多余字段导致逐条误判为“修改”。
+            if (!expectedFields.isEmpty()) {
+                retainStandardFields(uploaded, expectedFields);
+            }
 
             Path root = matsimConfig.realDataPath(safeAreaName);
             Map<String, Object> state = readEditState(root);
             TargetVersion target = activeTargetVersion(state);
             Path dataRoot = dataRootForVersion(root, target);
-            Map<String, Object> current = "line".equals(safeDatasetType)
-                    ? readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路")
-                    : readStandardShp(dataRoot.resolve(BUS_STATION_FOLDER), STANDARD_STOP_FIELDS, Point.class, "站点");
+            Map<String, Object> current = switch (safeDatasetType) {
+                case "line" -> readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
+                case "station" -> readStandardShp(dataRoot.resolve(BUS_STATION_FOLDER), STANDARD_STOP_FIELDS, Point.class, "站点");
+                default -> readFirstShp(dataRoot.resolve(BUS_DEPOT_FOLDER));
+            };
             if (!target.materializedData()) {
                 applyUploadComparableEdits(target.operations(), current, safeDatasetType);
             }
@@ -423,6 +467,38 @@ public class RealDataServiceImpl implements RealDataService {
         }
     }
 
+    private void assertShpCompanionFiles(File uploadedShp) {
+        String shpName = uploadedShp.getName();
+        String baseName = shpName.substring(0, shpName.length() - ".shp".length());
+        Path folder = uploadedShp.toPath().getParent();
+        // .dbf 存放属性表（字段），.shx 为索引；二者缺失会导致字段读不到而被误判为“字段不一样”。
+        List<String> missing = new ArrayList<>();
+        for (String ext : List.of(".dbf", ".shx")) {
+            if (!companionExists(folder, baseName, ext)) {
+                missing.add(baseName + ext);
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new BusinessException("上传的 SHP 配套文件不完整，缺少 " + missing
+                    + "。请同时选择同名的 .shp/.shx/.dbf/.prj/.cpg 全部文件，或直接打包为 zip 上传");
+        }
+    }
+
+    private boolean companionExists(Path folder, String baseName, String extension) {
+        if (folder == null || !Files.isDirectory(folder)) {
+            return false;
+        }
+        try (Stream<Path> stream = Files.list(folder)) {
+            return stream
+                    .filter(Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> !name.startsWith("._"))
+                    .anyMatch(name -> name.equalsIgnoreCase(baseName + extension));
+        } catch (IOException error) {
+            return false;
+        }
+    }
+
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> diffUploadedFeatures(Map<String, Object> current, Map<String, Object> uploaded, String datasetType, String areaName) {
         Map<String, Map<String, Object>> currentIndex = indexFeaturesForDiff(current, datasetType);
@@ -471,16 +547,55 @@ public class RealDataServiceImpl implements RealDataService {
     private String diffFeatureKey(Map<String, Object> feature, String datasetType) {
         Map<String, Object> properties = featureProperties(feature);
         if ("line".equals(datasetType)) {
-            return firstText(properties, "route_cn", "route_en", "_featureId");
+            return routeFeatureKey(properties);
+        }
+        if ("depot".equals(datasetType)) {
+            return depotFeatureKey(feature);
         }
         return routeStopFeatureKey(properties);
     }
 
+    private String depotFeatureKey(Map<String, Object> feature) {
+        Map<String, Object> properties = featureProperties(feature);
+        String name = firstText(properties, "depot_name", "name", "场站名称", "station_name");
+        if (!name.isBlank()) {
+            return name;
+        }
+        String coords = depotCoordinateKey(feature.get("geometry"));
+        if (!coords.isBlank()) {
+            return coords;
+        }
+        return firstText(properties, "_featureId");
+    }
+
+    private String depotCoordinateKey(Object geometryValue) {
+        if (!(geometryValue instanceof Map<?, ?> geometry)) {
+            return "";
+        }
+        Object coordinates = geometry.get("coordinates");
+        if (coordinates instanceof List<?> list && list.size() >= 2
+                && list.get(0) instanceof Number lng && list.get(1) instanceof Number lat) {
+            return round6(lng.doubleValue()) + "," + round6(lat.doubleValue());
+        }
+        return "";
+    }
+
+    private String routeFeatureKey(Map<String, Object> properties) {
+        return List.of(
+                        firstText(properties, "line_id"),
+                        firstText(properties, "dir"),
+                        firstText(properties, "route_id")
+                ).stream()
+                .filter(value -> !value.isBlank())
+                .reduce((left, right) -> left + "|" + right)
+                .orElse(firstText(properties, "_featureId", "name"));
+    }
+
     private String routeStopFeatureKey(Map<String, Object> properties) {
         return List.of(
-                        firstText(properties, "route_cn", "route_id"),
-                        firstText(properties, "stop_id", "name_cn"),
-                        firstText(properties, "sequence")
+                        firstText(properties, "line_id"),
+                        firstText(properties, "stop_id"),
+                        firstText(properties, "seq")
                 ).stream()
                 .filter(value -> !value.isBlank())
                 .reduce((left, right) -> left + "|" + right)
@@ -519,9 +634,12 @@ public class RealDataServiceImpl implements RealDataService {
     private String editTargetNameForFeature(String datasetType, Map<String, Object> feature) {
         Map<String, Object> properties = featureProperties(feature);
         if ("line".equals(datasetType)) {
-            return firstText(properties, "route_cn", "route_en", "_featureId");
+            return firstText(properties, "name", "line_id", "route_id", "_featureId");
         }
-        return firstText(properties, "name_cn", "name_en", "stop_id", "_featureId");
+        if ("depot".equals(datasetType)) {
+            return firstText(properties, "depot_name", "name", "场站名称", "station_name", "_featureId");
+        }
+        return firstText(properties, "stop_name", "stop_id", "_featureId");
     }
 
     private String datasetTypeLabel(String datasetType) {
@@ -1109,10 +1227,7 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private void writeStandardShp(Path folder, List<String> expectedFields, Class<? extends Geometry> expectedGeometryType, String datasetLabel, Map<String, Object> collection) {
-        File shpFile = findFirstShp(folder, path -> path.getFileName().toString().toLowerCase(Locale.ROOT).contains("clean"));
-        if (shpFile == null) {
-            shpFile = findFirstShp(folder);
-        }
+        File shpFile = findFirstShp(folder);
         if (shpFile == null) {
             throw new BusinessException("缺少标准" + datasetLabel + "SHP: " + folder);
         }
@@ -1126,7 +1241,7 @@ public class RealDataServiceImpl implements RealDataService {
             dataStore = new ShapefileDataStore(shpFile.toURI().toURL());
             dataStore.setMemoryMapped(false);
             dataStore.setBufferCachingEnabled(false);
-            dataStore.setCharset(StandardCharsets.UTF_8);
+            dataStore.setCharset(shapefileCharset(shpFile));
             String typeName = dataStore.getTypeNames()[0];
             SimpleFeatureType schema = dataStore.getSchema(typeName);
             validateStandardSchema(shpFile, schema, expectedFields, expectedGeometryType, datasetLabel);
@@ -1416,13 +1531,15 @@ public class RealDataServiceImpl implements RealDataService {
             if (type.startsWith("rename_")) {
                 String name = firstText(payload, "name", "newName", "stationName");
                 if (!name.isBlank()) {
-                    properties.put("name_cn", name);
+                    properties.put("stop_name", name);
                 }
             } else if (type.startsWith("move_")) {
                 Double lng = doubleValue(payload.get("lng"));
                 Double lat = doubleValue(payload.get("lat"));
                 if (lng != null && lat != null) {
                     feature.put("geometry", pointGeometry(lng, lat));
+                    properties.put("lon", round6(lng));
+                    properties.put("lat", round6(lat));
                 }
             }
         }
@@ -1436,7 +1553,7 @@ public class RealDataServiceImpl implements RealDataService {
         if (targetId.equals(routeStopFeatureKey(properties))) {
             return true;
         }
-        return targetId.equals(firstText(properties, "_featureId", "_stationKey", "stop_id", "id", "name_cn", "stop_cn"));
+        return targetId.equals(firstText(properties, "_featureId", "_stationKey", "line_id", "stop_id", "id", "stop_name"));
     }
 
     private Map<String, Object> standardStopFeatureFromOperation(Map<String, Object> operation, Map<String, Object> payload) {
@@ -1445,19 +1562,17 @@ public class RealDataServiceImpl implements RealDataService {
             return null;
         }
         Map<String, Object> properties = featureProperties(feature);
-        String name = firstText(properties, "stop_cn", "name", "name_cn");
+        String name = firstText(properties, "stop_name", "name");
+        String id = safeText(feature.get("id"));
         properties.clear();
-        properties.put("_featureId", safeText(feature.get("id")));
-        properties.put("name_cn", name.isBlank() ? "未命名站点" : name);
-        properties.put("name_en", "");
-        properties.put("stop_id", safeText(feature.get("id")));
-        properties.put("route_cn", "");
-        properties.put("route_en", "");
-        properties.put("route_id", "");
-        properties.put("city_code", "");
-        properties.put("city_cn", "");
-        properties.put("city_en", "");
-        properties.put("sequence", "");
+        properties.put("_featureId", id);
+        properties.put("line_id", "");
+        properties.put("dir", "");
+        properties.put("stop_id", id);
+        properties.put("stop_name", name.isBlank() ? "未命名站点" : name);
+        properties.put("seq", "");
+        properties.put("lon", firstCoordinateValue(feature, 0));
+        properties.put("lat", firstCoordinateValue(feature, 1));
         return feature;
     }
 
@@ -1585,7 +1700,10 @@ public class RealDataServiceImpl implements RealDataService {
                 return index;
             }
             Map<String, Object> properties = featureProperties(feature);
-            if (targetId.equals(firstText(properties, "_featureId", "_stationKey", "stop_id", "id", "route_cn", "route_en", "name", "stop_cn"))) {
+            if (targetId.equals(routeFeatureKey(properties))
+                    || targetId.equals(routeStopFeatureKey(properties))
+                    || targetId.equals(depotFeatureKey(feature))
+                    || targetId.equals(firstText(properties, "_featureId", "_stationKey", "line_id", "stop_id", "id", "name", "stop_name", "depot_name", "场站名称", "station_name"))) {
                 return index;
             }
         }
@@ -1607,9 +1725,9 @@ public class RealDataServiceImpl implements RealDataService {
 
     private String nameField(Map<String, Object> properties, String datasetType) {
         List<String> candidates = switch (datasetType) {
-            case "line" -> List.of("route_cn", "name", "route_name", "route_en");
+            case "line" -> List.of("name");
             case "depot" -> List.of("depot_name", "name", "场站名称", "station_name");
-            default -> List.of("stop_cn", "name", "stop_name", "站点名称", "stop_en");
+            default -> List.of("stop_name");
         };
         for (String candidate : candidates) {
             if (properties.containsKey(candidate)) {
@@ -1620,12 +1738,7 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private String lineHeadwayField(Map<String, Object> properties) {
-        for (String candidate : List.of("avg_headway", "headway", "interval", "avg_interval", "发车间隔")) {
-            if (properties.containsKey(candidate)) {
-                return candidate;
-            }
-        }
-        return "headway";
+        return "interval";
     }
 
     private String firstText(Map<String, Object> source, String... keys) {
@@ -1636,6 +1749,23 @@ public class RealDataServiceImpl implements RealDataService {
             }
         }
         return "";
+    }
+
+    private String adminDistrictName(Map<String, Object> properties) {
+        return firstText(properties,
+                "_districtName",
+                "Name",
+                "name",
+                "NAME",
+                "名称",
+                "区名",
+                "行政区",
+                "行政区名",
+                "区县",
+                "县区",
+                "district",
+                "District",
+                "AdminName");
     }
 
     private String textValue(Object value) {
@@ -1670,10 +1800,7 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private Map<String, Object> readStandardShp(Path folder, List<String> expectedFields, Class<? extends Geometry> expectedGeometryType, String datasetLabel) {
-        File shpFile = findFirstShp(folder, path -> path.getFileName().toString().toLowerCase().contains("clean"));
-        if (shpFile == null) {
-            shpFile = findFirstShp(folder);
-        }
+        File shpFile = findFirstShp(folder);
         if (shpFile == null) {
             throw new BusinessException("缺少标准" + datasetLabel + "SHP: " + folder);
         }
@@ -1690,7 +1817,7 @@ public class RealDataServiceImpl implements RealDataService {
             dataStore = new ShapefileDataStore(shpFile.toURI().toURL());
             dataStore.setMemoryMapped(false);
             dataStore.setBufferCachingEnabled(false);
-            dataStore.setCharset(StandardCharsets.UTF_8);
+            dataStore.setCharset(shapefileCharset(shpFile));
             String typeName = dataStore.getTypeNames()[0];
             validateStandardSchema(shpFile, dataStore.getSchema(typeName), expectedFields, expectedGeometryType, datasetLabel);
             Map<String, Object> collection = emptyFeatureCollection();
@@ -1735,24 +1862,91 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private File findFirstShp(Path folder) {
-        return findFirstShp(folder, path -> true);
-    }
-
-    private File findFirstShp(Path folder, Predicate<Path> predicate) {
         if (!Files.isDirectory(folder)) {
             return null;
         }
         try (Stream<Path> stream = Files.list(folder)) {
-            return stream
+            List<Path> shpFiles = stream
                     .filter(path -> path.getFileName().toString().toLowerCase().endsWith(".shp"))
                     .filter(path -> !path.getFileName().toString().startsWith("._"))
-                    .filter(predicate)
                     .sorted()
-                    .map(Path::toFile)
-                    .findFirst()
-                    .orElse(null);
+                    .toList();
+            if (shpFiles.size() > 1) {
+                List<String> fileNames = shpFiles.stream().map(path -> path.getFileName().toString()).toList();
+                throw new BusinessException("真实数据目录只能保留一个 SHP: " + folder + "；当前文件 " + fileNames);
+            }
+            return shpFiles.isEmpty() ? null : shpFiles.get(0).toFile();
+        } catch (BusinessException error) {
+            throw error;
         } catch (Exception error) {
             throw new BusinessException("扫描真实数据目录失败: " + folder, error);
+        }
+    }
+
+    private Charset shapefileCharset(File shpFile) {
+        if (shpFile == null) {
+            return StandardCharsets.UTF_8;
+        }
+        String fileName = shpFile.getName();
+        String baseName = fileName.toLowerCase(Locale.ROOT).endsWith(".shp")
+                ? fileName.substring(0, fileName.length() - ".shp".length())
+                : fileName;
+        Path cpgFile = shpFile.toPath().resolveSibling(baseName + ".cpg");
+        if (!Files.isRegularFile(cpgFile)) {
+            return StandardCharsets.UTF_8;
+        }
+        try {
+            String cpg = Files.readString(cpgFile, StandardCharsets.UTF_8).trim();
+            if (cpg.startsWith("\uFEFF")) {
+                cpg = cpg.substring(1).trim();
+            }
+            cpg = cpg.replace("\"", "").replace("'", "").trim();
+            if (cpg.isBlank()) {
+                return StandardCharsets.UTF_8;
+            }
+            return Charset.forName(normalizeCpgCharset(cpg));
+        } catch (Exception ignored) {
+            return StandardCharsets.UTF_8;
+        }
+    }
+
+    private String normalizeCpgCharset(String cpg) {
+        return switch (cpg.toUpperCase(Locale.ROOT)) {
+            case "65001", "UTF8" -> "UTF-8";
+            case "936", "CP936" -> "GBK";
+            case "54936", "CP54936" -> "GB18030";
+            default -> cpg;
+        };
+    }
+
+    private Object firstCoordinateValue(Map<String, Object> feature, int index) {
+        Object geometryValue = feature.get("geometry");
+        if (!(geometryValue instanceof Map<?, ?> rawGeometry)) {
+            return "";
+        }
+        Object coordinatesValue = rawGeometry.get("coordinates");
+        if (!(coordinatesValue instanceof List<?> coordinates) || coordinates.size() <= index) {
+            return "";
+        }
+        return coordinates.get(index);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void retainStandardFields(Map<String, Object> collection, List<String> expectedFields) {
+        Object featuresValue = collection.get("features");
+        if (!(featuresValue instanceof List<?> features)) {
+            return;
+        }
+        Set<String> allowed = new LinkedHashSet<>(expectedFields);
+        for (Object item : features) {
+            if (!(item instanceof Map<?, ?> rawFeature)) {
+                continue;
+            }
+            Object propertiesValue = ((Map<String, Object>) rawFeature).get("properties");
+            if (propertiesValue instanceof Map<?, ?> rawProperties) {
+                Map<String, Object> properties = (Map<String, Object>) rawProperties;
+                properties.keySet().removeIf(key -> !allowed.contains(key) && !key.startsWith("_"));
+            }
         }
     }
 
@@ -1764,13 +1958,13 @@ public class RealDataServiceImpl implements RealDataService {
                 .filter(descriptor -> schema.getGeometryDescriptor() == null || !descriptor.getName().equals(schema.getGeometryDescriptor().getName()))
                 .map(descriptor -> descriptor.getName().getLocalPart())
                 .toList();
-        if (!expectedFields.equals(actualFields)) {
-            List<String> missing = expectedFields.stream().filter(field -> !actualFields.contains(field)).toList();
-            List<String> extra = actualFields.stream().filter(field -> !expectedFields.contains(field)).toList();
-            throw new BusinessException(datasetLabel + "SHP 字段格式不符合标准: " + shpFile.getName()
-                    + "；缺少字段 " + missing
-                    + "；多余字段 " + extra
-                    + "；标准字段顺序为 " + expectedFields);
+        // 仅要求包含全部标准字段（可以有多余字段，不能缺少），不限制字段顺序。
+        List<String> missing = expectedFields.stream().filter(field -> !actualFields.contains(field)).toList();
+        if (!missing.isEmpty()) {
+            throw new BusinessException(datasetLabel + "SHP 字段不完整: " + shpFile.getName()
+                    + "；缺少标准字段 " + missing
+                    + "；标准字段为 " + expectedFields
+                    + "（可包含额外字段，但不能缺少标准字段）");
         }
     }
 
@@ -1802,7 +1996,7 @@ public class RealDataServiceImpl implements RealDataService {
             Map<String, Object> properties = featureProperties(feature);
             String key = firstText(properties, "stop_id");
             if (key.isBlank()) {
-                key = firstText(properties, "name_cn", "name_en") + "|" + safeText(feature.get("geometry"));
+                key = firstText(properties, "stop_name") + "|" + safeText(feature.get("geometry"));
             }
             if (key.isBlank()) {
                 continue;
@@ -1818,13 +2012,9 @@ public class RealDataServiceImpl implements RealDataService {
             Map<String, Object> stationProperties = new LinkedHashMap<>();
             stationProperties.put("_featureId", key);
             stationProperties.put("stop_id", firstText(properties, "stop_id"));
-            stationProperties.put("stop_cn", firstText(properties, "name_cn"));
-            stationProperties.put("stop_en", firstText(properties, "name_en"));
-            stationProperties.put("name_cn", firstText(properties, "name_cn"));
-            stationProperties.put("name_en", firstText(properties, "name_en"));
-            stationProperties.put("city_cn", firstText(properties, "city_cn"));
-            stationProperties.put("city_en", firstText(properties, "city_en"));
-            stationProperties.put("city_code", firstText(properties, "city_code"));
+            stationProperties.put("stop_name", firstText(properties, "stop_name"));
+            stationProperties.put("line_id", firstText(properties, "line_id"));
+            stationProperties.put("dir", firstText(properties, "dir"));
             station.put("properties", stationProperties);
             stationByKey.put(key, station);
             uniqueFeatures.add(station);
@@ -1896,7 +2086,7 @@ public class RealDataServiceImpl implements RealDataService {
         ShapefileDataStore dataStore = null;
         try {
             dataStore = new ShapefileDataStore(shpFile.toURI().toURL());
-            dataStore.setCharset(StandardCharsets.UTF_8);
+            dataStore.setCharset(shapefileCharset(shpFile));
             String typeName = dataStore.getTypeNames()[0];
             double total = 0;
             try (SimpleFeatureIterator iterator = dataStore.getFeatureSource(typeName).getFeatures().features()) {
@@ -2013,7 +2203,7 @@ public class RealDataServiceImpl implements RealDataService {
         ShapefileDataStore dataStore = null;
         try {
             dataStore = new ShapefileDataStore(shpFile.toURI().toURL());
-            dataStore.setCharset(StandardCharsets.UTF_8);
+            dataStore.setCharset(shapefileCharset(shpFile));
             String typeName = dataStore.getTypeNames()[0];
             List<Coordinate> coordinates = new ArrayList<>();
             try (SimpleFeatureIterator iterator = dataStore.getFeatureSource(typeName).getFeatures().features()) {
@@ -2047,7 +2237,7 @@ public class RealDataServiceImpl implements RealDataService {
         ShapefileDataStore dataStore = null;
         try {
             dataStore = new ShapefileDataStore(shpFile.toURI().toURL());
-            dataStore.setCharset(StandardCharsets.UTF_8);
+            dataStore.setCharset(shapefileCharset(shpFile));
             String typeName = dataStore.getTypeNames()[0];
             List<Geometry> geometries = new ArrayList<>();
             try (SimpleFeatureIterator iterator = dataStore.getFeatureSource(typeName).getFeatures().features()) {
