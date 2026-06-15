@@ -5,10 +5,28 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.core.config.Config;
+import org.matsim.core.config.ConfigGroup;
 import org.matsim.core.config.ConfigUtils;
+import org.matsim.core.config.ReflectiveConfigGroup;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.OutputKeys;
+import javax.xml.transform.Transformer;
+import javax.xml.transform.TransformerFactory;
+import javax.xml.transform.dom.DOMSource;
+import javax.xml.transform.stream.StreamResult;
 import java.io.*;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * matsim output文件
@@ -329,7 +347,7 @@ public class MatsimOutFile {
             File versionFile;
             if (cacheDir == null || cacheDir.isBlank()) {
                 newVersion = filename;
-                versionFile = new File(filename + ".2025.version");
+                versionFile = new File(filename + INPLACE_VERSION_SUFFIX);
                 if (versionFile.exists()) {
                     return filename;
                 }
@@ -338,7 +356,7 @@ public class MatsimOutFile {
                 if (!generatedDir.exists() && !generatedDir.mkdirs()) {
                     throw new RuntimeException("创建缓存输入目录失败: " + generatedDir.getAbsolutePath());
                 }
-                newVersion = new File(generatedDir, source.getName().replace(".xml", "") + ".v2025.xml").getAbsolutePath();
+                newVersion = new File(generatedDir, source.getName().replace(".xml", "") + CONVERTED_XML_SUFFIX).getAbsolutePath();
                 versionFile = new File(newVersion + ".version");
                 if (versionFile.exists() && new File(newVersion).exists()) {
                     return newVersion;
@@ -370,7 +388,151 @@ public class MatsimOutFile {
         }
         xmlval = xmlval.replaceAll("<param name=\"travelTimeCalculator.+", "");
         xmlval = xmlval.replaceAll("<param name=\"networkRouteConsistencyCheck.+", "");
+        // 删除当前 MATSim 版本严格配置组（如 controller）无法识别的参数，
+        // 否则会抛出 "Module ... doesn't accept unknown parameters" / SAXParseException 导致整模型加载失败。
+        xmlval = stripUnknownStrictParams(xmlval);
         return xmlval;
+    }
+
+    /**
+     * 转换后配置文件名后缀。一旦清理逻辑发生变化，请递增其中的版本标识（v2025 -> v2025s ...），
+     * 以便使旧的缓存转换结果失效并重新生成。
+     */
+    private static final String CONVERTED_XML_SUFFIX = ".v2025s.xml";
+    private static final String INPLACE_VERSION_SUFFIX = ".2025s.version";
+
+    /**
+     * 当前 MATSim 运行时中“严格”配置组（不接受未知参数）允许的参数名白名单。
+     * key = module name，value = 该 module 合法的直接参数名集合。基于实际加载的 MATSim 版本反射构建，
+     * 因此随依赖版本自动保持正确，无需硬编码各版本的参数差异。
+     */
+    private static volatile Map<String, Set<String>> strictModuleParamsCache;
+
+    private static Map<String, Set<String>> strictModuleParams() {
+        Map<String, Set<String>> cached = strictModuleParamsCache;
+        if (cached != null) {
+            return cached;
+        }
+        Map<String, Set<String>> map = new HashMap<>();
+        try {
+            Config probe = ConfigUtils.createConfig();
+            Field storeField = ReflectiveConfigGroup.class.getDeclaredField("storeUnknownParameters");
+            storeField.setAccessible(true);
+            for (Map.Entry<String, ConfigGroup> entry : probe.getModules().entrySet()) {
+                // 单个配置组取参数失败（例如某些已废弃的组）不应影响其余组（如 controller）的白名单构建
+                try {
+                    ConfigGroup group = entry.getValue();
+                    if (!(group instanceof ReflectiveConfigGroup)) {
+                        continue; // 普通 ConfigGroup 默认接受并存储未知参数，不会报错，无需清理
+                    }
+                    if (!isStrictGroup(group, storeField)) {
+                        continue;
+                    }
+                    map.put(entry.getKey(), new HashSet<>(group.getParams().keySet()));
+                } catch (Exception perGroup) {
+                    log.debug("跳过配置组[{}]的参数白名单构建: {}", entry.getKey(), perGroup.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("构建严格配置组参数白名单失败，跳过未知参数清理: {}", e.getMessage());
+        }
+        strictModuleParamsCache = map;
+        return map;
+    }
+
+    /**
+     * 判断配置组是否会因未知参数抛错：storeUnknownParameters=false 且未自定义 handleAddUnknownParam。
+     */
+    private static boolean isStrictGroup(ConfigGroup group, Field storeField) {
+        boolean strict;
+        try {
+            strict = !storeField.getBoolean(group);
+        } catch (Exception ex) {
+            strict = true; // ReflectiveConfigGroup 单参构造默认即严格
+        }
+        if (!strict) {
+            return false;
+        }
+        try {
+            // 若子类重写了 handleAddUnknownParam（自行消化未知参数），则实际不会抛错，无需清理
+            Method handler = group.getClass().getMethod("handleAddUnknownParam", String.class, String.class);
+            if (handler.getDeclaringClass() != ReflectiveConfigGroup.class) {
+                return false;
+            }
+        } catch (Exception ex) {
+            // 取不到方法时保守认为严格
+        }
+        return true;
+    }
+
+    /**
+     * 移除当前 MATSim 版本严格配置组无法识别的参数。不同 MATSim 版本（如广州模型V5）导出的 config
+     * 可能携带本版本已删除/改名的参数，而 controller 等严格配置组会直接抛出
+     * SAXParseException 使整模型加载失败。这里仅删除严格 module 下的“直接 param 子节点”，
+     * 保留 parameterset 内部参数与普通模块参数；被删除的参数将回退为 MATSim 默认值（仅用于结果展示，安全）。
+     */
+    static String stripUnknownStrictParams(String xmlval) {
+        Map<String, Set<String>> validByModule = strictModuleParams();
+        if (validByModule.isEmpty()) {
+            return xmlval;
+        }
+        try {
+            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+            // 离线环境下禁止加载外部 DTD，避免联网拉取造成卡顿
+            dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+            dbf.setFeature("http://xml.org/sax/features/validation", false);
+            dbf.setValidating(false);
+            DocumentBuilder builder = dbf.newDocumentBuilder();
+            Document doc = builder.parse(new InputSource(new StringReader(xmlval)));
+
+            boolean removedAny = false;
+            NodeList modules = doc.getElementsByTagName("module");
+            for (int i = 0; i < modules.getLength(); i++) {
+                Element module = (Element) modules.item(i);
+                Set<String> valid = validByModule.get(module.getAttribute("name"));
+                if (valid == null) {
+                    continue;
+                }
+                List<Element> toRemove = new ArrayList<>();
+                NodeList children = module.getChildNodes();
+                for (int j = 0; j < children.getLength(); j++) {
+                    Node child = children.item(j);
+                    if (child.getNodeType() == Node.ELEMENT_NODE && "param".equals(child.getNodeName())) {
+                        String paramName = ((Element) child).getAttribute("name");
+                        if (!paramName.isEmpty() && !valid.contains(paramName)) {
+                            toRemove.add((Element) child);
+                        }
+                    }
+                }
+                for (Element param : toRemove) {
+                    log.warn("移除当前 MATSim 版本不支持的配置参数: module={}, param={}",
+                            module.getAttribute("name"), param.getAttribute("name"));
+                    module.removeChild(param);
+                    removedAny = true;
+                }
+            }
+            if (!removedAny) {
+                return xmlval;
+            }
+            return serializeXml(doc, xmlval);
+        } catch (Exception e) {
+            log.warn("清理未知配置参数失败，使用原始配置内容: {}", e.getMessage());
+            return xmlval;
+        }
+    }
+
+    private static String serializeXml(Document doc, String original) throws Exception {
+        TransformerFactory tf = TransformerFactory.newInstance();
+        Transformer transformer = tf.newTransformer();
+        transformer.setOutputProperty(OutputKeys.ENCODING, "UTF-8");
+        // 保留原始 DOCTYPE，使 MATSim 仍按 config_v2 解析
+        Matcher m = Pattern.compile("<!DOCTYPE\\s+\\S+\\s+SYSTEM\\s+\"([^\"]+)\"").matcher(original);
+        if (m.find()) {
+            transformer.setOutputProperty(OutputKeys.DOCTYPE_SYSTEM, m.group(1));
+        }
+        StringWriter writer = new StringWriter();
+        transformer.transform(new DOMSource(doc), new StreamResult(writer));
+        return writer.toString();
     }
 
     static Map<String, String> v15to2024 = new HashMap<>();
