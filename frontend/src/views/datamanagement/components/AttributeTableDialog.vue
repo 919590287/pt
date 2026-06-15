@@ -11,29 +11,24 @@
     destroy-on-close
     @update:model-value="$emit('update:visible', $event)"
   >
-    <div class="attribute-dialog-head">
-      <div>
-        <p>{{ model.subtitle }}</p>
-        <span>共 {{ model.rows.length }} 条记录 · {{ changedCount }} 条改动</span>
-      </div>
+    <div v-if="model.datasetType === 'line' && model.route" class="attribute-dialog-head">
       <div class="attribute-dialog-tools">
         <el-button
-          v-if="model.datasetType === 'station' && model.route"
           size="small"
           @click="$emit('toggle-route')"
         >
-          {{ model.showRouteStations ? "仅编辑本站" : "编辑全线站点" }}
+          {{ model.showRouteStations ? "返回线路属性" : "查看全线站点" }}
         </el-button>
-        <el-button size="small" :disabled="!changedCount" @click="$emit('reset')">重置</el-button>
       </div>
     </div>
 
-    <div v-if="!model.rows.length" class="attribute-records-empty">未找到可编辑的属性记录</div>
+    <div v-if="!model.rows.length" class="attribute-records-empty">
+      {{ isRouteStationMode ? "当前线路暂无站点" : "未找到可编辑的属性记录" }}
+    </div>
     <div v-else class="attr-table-scroll">
       <table class="attr-table">
         <thead>
           <tr>
-            <th class="col-idx">#</th>
             <th
               v-for="column in model.columns"
               :key="column.key"
@@ -46,27 +41,56 @@
         </thead>
         <tbody>
           <tr
-            v-for="(row, rowIndex) in model.rows"
+            v-for="row in model.rows"
             :key="row.rowId"
-            :class="`state-${stateKey(row)}`"
+            :class="[
+              `state-${stateKey(row)}`,
+              {
+                'is-dragging': draggingRowId === row.rowId,
+                'is-drag-over-before': dragOverRowId === row.rowId && dragOverPosition === 'before',
+                'is-drag-over-after': dragOverRowId === row.rowId && dragOverPosition === 'after',
+              },
+            ]"
+            @dragover.prevent="handleRowDragOver($event, row)"
+            @dragleave="handleRowDragLeave($event, row)"
+            @drop.prevent="handleRowDrop($event, row)"
           >
-            <td class="col-idx">
-              <span class="row-idx">{{ rowIndex + 1 }}</span>
-              <span
-                v-if="stateKey(row) !== 'normal'"
-                class="row-flag"
-                :class="`flag-${stateKey(row)}`"
-              >{{ statusLabel(row) }}</span>
-            </td>
             <td
               v-for="column in model.columns"
               :key="column.key"
               :class="{ 'col-wide': column.wide }"
             >
+              <template v-if="isRouteSequenceColumn(column)">
+                <div class="route-sequence-cell">
+                  <button
+                    type="button"
+                    class="route-drag-handle"
+                    :disabled="row.status === 'deleted'"
+                    draggable="true"
+                    :aria-label="`拖动调整${row.properties.stop_name || '站点'}站序`"
+                    title="拖动调整站序，上下方向键也可调整"
+                    @dragstart="handleRowDragStart($event, row)"
+                    @dragend="clearDragState"
+                    @keydown.up.prevent="handleRowKeyMove(row, -1)"
+                    @keydown.down.prevent="handleRowKeyMove(row, 1)"
+                  >
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                      <circle cx="5" cy="3" r="1"></circle>
+                      <circle cx="11" cy="3" r="1"></circle>
+                      <circle cx="5" cy="8" r="1"></circle>
+                      <circle cx="11" cy="8" r="1"></circle>
+                      <circle cx="5" cy="13" r="1"></circle>
+                      <circle cx="11" cy="13" r="1"></circle>
+                    </svg>
+                  </button>
+                  <span>{{ row.properties.seq || "—" }}</span>
+                </div>
+              </template>
               <el-input
+                v-else
                 v-model="row.properties[column.key]"
                 size="small"
-                :disabled="row.status === 'deleted'"
+                :disabled="row.status === 'deleted' || isReadOnlyColumn(row, column)"
                 @input="$emit('touch-row', row)"
               />
             </td>
@@ -85,10 +109,56 @@
       </table>
     </div>
 
+    <section v-if="['station', 'line', 'depot'].includes(model.datasetType)" class="station-history" :aria-label="`${datasetLabel}历史修改记录`">
+      <div class="station-history-title">
+        <span>历史修改记录</span>
+        <small v-if="model.historyRows.length">{{ model.historyRows.length }} 条</small>
+      </div>
+      <div v-if="model.historyLoading" class="station-history-state">加载中</div>
+      <div v-else-if="model.historyError" class="station-history-state">{{ model.historyError }}</div>
+      <div v-else-if="!model.historyRows.length" class="station-history-state">暂无修改记录</div>
+      <div v-else class="history-table-scroll">
+        <table class="attr-table history-table">
+          <thead>
+            <tr>
+              <th
+                v-for="column in historyColumns"
+                :key="column.key"
+                :class="{ 'col-wide': column.wide }"
+              >
+                {{ column.label }}
+              </th>
+              <th class="history-user-column">修改人</th>
+              <th class="history-time-column">修改时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="record in model.historyRows" :key="record.key">
+              <td
+                v-for="column in historyColumns"
+                :key="column.key"
+                class="history-data-cell"
+                :class="[
+                  { 'col-wide': column.wide },
+                  record.changedKeys.includes(column.key) ? 'is-changed' : 'is-muted',
+                ]"
+              >
+                {{ record.values[column.key] || "—" }}
+              </td>
+              <td class="history-meta-cell">{{ record.username }}</td>
+              <td class="history-meta-cell history-time-column">
+                <time>{{ formatTime(record.committedAt) }}</time>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <template #footer>
       <div class="attribute-footer">
-        <span>{{ changedCount ? "修改会先进入右侧待提交列表" : "编辑单元格、新增或删除记录后再生成修改项" }}</span>
         <div>
+          <el-button size="small" :disabled="!changedCount" @click="$emit('reset')">重置</el-button>
           <el-button @click="$emit('update:visible', false)">关闭</el-button>
           <el-button type="primary" :disabled="!changedCount" @click="$emit('apply')">生成修改项</el-button>
         </div>
@@ -98,7 +168,9 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed, ref } from "vue";
+
+const props = defineProps({
   // attributeTable 响应式对象，按引用传入：子组件内对 row.properties 的修改会同步回父级
   model: { type: Object, required: true },
   changedCount: { type: Number, default: 0 },
@@ -106,9 +178,105 @@ defineProps({
   stateKey: { type: Function, required: true },
   statusLabel: { type: Function, required: true },
   recordTitle: { type: Function, required: true },
+  formatTime: { type: Function, required: true },
 });
 
-defineEmits(["update:visible", "toggle-route", "reset", "remove-row", "restore-row", "touch-row", "apply"]);
+const emit = defineEmits([
+  "update:visible",
+  "toggle-route",
+  "reorder-row",
+  "reset",
+  "remove-row",
+  "restore-row",
+  "touch-row",
+  "apply",
+]);
+
+const isRouteStationMode = computed(() =>
+  props.model.datasetType === "line" && props.model.scope === "route",
+);
+const historyColumns = computed(() =>
+  Array.isArray(props.model.historyColumns) && props.model.historyColumns.length
+    ? props.model.historyColumns
+    : props.model.columns,
+);
+const datasetLabel = computed(() => {
+  if (props.model.datasetType === "line") return "线路";
+  if (props.model.datasetType === "depot") return "场站";
+  return "站点";
+});
+const draggingRowId = ref("");
+const dragOverRowId = ref("");
+const dragOverPosition = ref("before");
+const derivedFields = new Set(["len_km", "directness", "stop_count", "avg_stop_m", "route_cnt"]);
+
+function isRouteSequenceColumn(column) {
+  return isRouteStationMode.value && column.key === "seq";
+}
+
+function isReadOnlyColumn(row, column) {
+  if (isRouteStationMode.value) {
+    return true;
+  }
+  if (derivedFields.has(column.key)) {
+    return true;
+  }
+  return props.model.viewDatasetType === "station" && (column.key === "lon" || column.key === "lat");
+}
+
+function handleRowDragStart(event, row) {
+  if (!isRouteStationMode.value || row.status === "deleted") {
+    event.preventDefault();
+    return;
+  }
+  draggingRowId.value = row.rowId;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", row.rowId);
+  const tableRow = event.currentTarget.closest("tr");
+  if (tableRow) {
+    event.dataTransfer.setDragImage(tableRow, 24, Math.min(tableRow.offsetHeight / 2, 24));
+  }
+}
+
+function handleRowDragOver(event, row) {
+  if (!draggingRowId.value || row.status === "deleted" || row.rowId === draggingRowId.value) {
+    dragOverRowId.value = "";
+    return;
+  }
+  const bounds = event.currentTarget.getBoundingClientRect();
+  dragOverRowId.value = row.rowId;
+  dragOverPosition.value = event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before";
+  event.dataTransfer.dropEffect = "move";
+}
+
+function handleRowDragLeave(event, row) {
+  if (dragOverRowId.value !== row.rowId) return;
+  const relatedTarget = event.relatedTarget;
+  if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+  dragOverRowId.value = "";
+}
+
+function handleRowKeyMove(row, direction) {
+  const activeRows = props.model.rows.filter((item) => item.status !== "deleted");
+  const sourceIndex = activeRows.findIndex((item) => item.rowId === row.rowId);
+  const targetRow = activeRows[sourceIndex + direction];
+  if (!targetRow) return;
+  emit("reorder-row", row.rowId, targetRow.rowId, direction < 0 ? "before" : "after");
+}
+
+function handleRowDrop(event, row) {
+  const sourceRowId = draggingRowId.value || event.dataTransfer.getData("text/plain");
+  if (sourceRowId && sourceRowId !== row.rowId && row.status !== "deleted") {
+    emit("reorder-row", sourceRowId, row.rowId, dragOverPosition.value);
+  }
+  clearDragState();
+}
+
+function clearDragState() {
+  draggingRowId.value = "";
+  dragOverRowId.value = "";
+  dragOverPosition.value = "before";
+}
 </script>
 
 <style lang="scss" scoped>
@@ -209,9 +377,9 @@ defineEmits(["update:visible", "toggle-route", "reset", "remove-row", "restore-r
   font-weight: 500;
 }
 
-/* 表格批量编辑：双向滚动 + 表头/序号列冻结 */
+/* 表格批量编辑：双向滚动 */
 .attr-table-scroll {
-  max-height: calc(100vh - 320px);
+  max-height: calc(100vh - 430px);
   min-height: 160px;
   overflow: auto;
   border: 1px solid var(--dm2-line);
@@ -264,59 +432,32 @@ defineEmits(["update:visible", "toggle-route", "reset", "remove-row", "restore-r
   border-bottom: none;
 }
 
+.attr-table tbody tr {
+  position: relative;
+  transition: opacity 140ms ease, background-color 140ms ease;
+}
+
+.attr-table tbody tr.is-dragging {
+  opacity: 0.42;
+}
+
+.attr-table tbody tr.is-drag-over-before td {
+  box-shadow: inset 0 2px 0 var(--dm2-accent);
+}
+
+.attr-table tbody tr.is-drag-over-after td {
+  box-shadow: inset 0 -2px 0 var(--dm2-accent);
+}
+
 /* 数据列：限定宽度，超长由单元格内输入框内部滚动 */
-.attr-table th:not(.col-idx):not(.col-act),
-.attr-table td:not(.col-idx):not(.col-act) {
+.attr-table th:not(.col-act),
+.attr-table td:not(.col-act) {
   min-width: 132px;
 }
 
 .attr-table th.col-wide,
 .attr-table td.col-wide {
   min-width: 240px;
-}
-
-/* 序号列：冻结在左侧 */
-.attr-table .col-idx {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  width: 64px;
-  min-width: 64px;
-  padding: 5px 10px;
-  background: var(--dm2-surface);
-  border-right: 1px solid var(--dm2-line);
-  text-align: left;
-  white-space: nowrap;
-}
-
-.attr-table thead th.col-idx {
-  z-index: 3;
-  background: var(--dm2-surface-sunken);
-}
-
-.attr-table .row-idx {
-  color: var(--dm2-muted);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-.attr-table .row-flag {
-  display: block;
-  margin-top: 2px;
-  font-size: 11px;
-  font-weight: 600;
-
-  &.flag-added {
-    color: var(--dm2-add);
-  }
-
-  &.flag-modified {
-    color: var(--dm2-modify);
-  }
-
-  &.flag-deleted {
-    color: var(--dm2-delete);
-  }
 }
 
 /* 操作列：冻结在右侧 */
@@ -339,15 +480,15 @@ defineEmits(["update:visible", "toggle-route", "reset", "remove-row", "restore-r
 }
 
 /* 行状态：极淡底色仅作用于数据单元格；冻结列保持不透明白底以正确遮挡滚动内容 */
-.attr-table tbody tr.state-added td:not(.col-idx):not(.col-act) {
+.attr-table tbody tr.state-added td:not(.col-act) {
   background: var(--dm2-add-weak);
 }
 
-.attr-table tbody tr.state-modified td:not(.col-idx):not(.col-act) {
+.attr-table tbody tr.state-modified td:not(.col-act) {
   background: var(--dm2-modify-weak);
 }
 
-.attr-table tbody tr.state-deleted td:not(.col-idx):not(.col-act) {
+.attr-table tbody tr.state-deleted td:not(.col-act) {
   background: var(--dm2-delete-weak);
 }
 
@@ -397,21 +538,167 @@ defineEmits(["update:visible", "toggle-route", "reset", "remove-row", "restore-r
   color: var(--dm2-ink);
 }
 
+.route-sequence-cell {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  color: var(--dm2-ink-soft);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.route-drag-handle {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dm2-radius-sm);
+  background: transparent;
+  color: var(--dm2-muted-soft);
+  cursor: grab;
+  touch-action: none;
+  transition: color 140ms ease, background-color 140ms ease;
+
+  &:hover {
+    background: var(--dm2-accent-weak);
+    color: var(--dm2-accent);
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--dm2-accent);
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    color: var(--dm2-line-strong);
+    cursor: not-allowed;
+  }
+
+  svg {
+    fill: currentColor;
+  }
+}
+
+.attr-table :deep(.el-select) {
+  width: 100%;
+}
+
+.attr-table :deep(.el-select__wrapper) {
+  min-height: 32px;
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-field);
+  box-shadow: none;
+}
+
 .attr-table .state-deleted :deep(.el-input__inner) {
   text-decoration: line-through;
   color: var(--dm2-muted-soft);
 }
 
+.attr-table :deep(.el-input.is-disabled .el-input__wrapper) {
+  background: var(--dm2-surface-sunken);
+  border-color: transparent;
+}
+
+.attr-table :deep(.el-input.is-disabled .el-input__inner) {
+  color: var(--dm2-muted);
+  -webkit-text-fill-color: var(--dm2-muted);
+  cursor: default;
+}
+
+.station-history {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--dm2-line-faint);
+}
+
+.station-history-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--dm2-ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+
+  small {
+    color: var(--dm2-muted-soft);
+    font-size: 11px;
+    font-weight: 500;
+  }
+}
+
+.station-history-state {
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+  border: 1px solid var(--dm2-line-faint);
+  border-radius: var(--dm2-radius);
+  color: var(--dm2-muted-soft);
+  font-size: 12px;
+}
+
+.history-table-scroll {
+  max-height: 224px;
+  overflow: auto;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.2) transparent;
+}
+
+.history-table {
+  table-layout: auto;
+
+  tbody td {
+    height: 42px;
+    padding: 9px 12px;
+    white-space: nowrap;
+  }
+
+  .history-data-cell {
+    background: rgba(246, 248, 251, 0.7);
+    color: var(--dm2-muted);
+    font-size: 12.5px;
+    transition: color 160ms ease, background 160ms ease;
+  }
+
+  .history-data-cell.is-muted {
+    color: rgba(100, 116, 139, 0.5);
+  }
+
+  .history-data-cell.is-changed {
+    background: rgba(255, 59, 48, 0.065);
+    color: #d92d20;
+    font-weight: 650;
+  }
+
+  .history-meta-cell {
+    min-width: 104px;
+    color: var(--dm2-muted-soft);
+    font-size: 11.5px;
+  }
+
+  .history-user-column {
+    min-width: 104px;
+  }
+
+  .history-time-column {
+    min-width: 154px;
+  }
+}
+
 .attribute-footer {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-
-  > span {
-    color: var(--dm2-muted);
-    font-size: 13px;
-    font-weight: 500;
-  }
+  justify-content: flex-end;
 
   > div {
     display: inline-flex;

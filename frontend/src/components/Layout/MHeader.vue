@@ -9,18 +9,18 @@
         <path d="M10 18 C 14 13, 22 13, 26 18" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" class="route-flow top-flow" />
         
         <!-- Bottom Arch: Base Track + Pulse Flow -->
-        <path d="M10 18 C 14 23, 22 23, 26 18" stroke="#8db9ba" stroke-width="2" stroke-linecap="round" class="route-track" />
-        <path d="M10 18 C 14 23, 22 23, 26 18" stroke="#8db9ba" stroke-width="2" stroke-linecap="round" class="route-flow bottom-flow" />
-        
+        <path d="M10 18 C 14 23, 22 23, 26 18" stroke="#9ec9ff" stroke-width="2" stroke-linecap="round" class="route-track" />
+        <path d="M10 18 C 14 23, 22 23, 26 18" stroke="#9ec9ff" stroke-width="2" stroke-linecap="round" class="route-flow bottom-flow" />
+
         <!-- Station Nodes -->
         <circle cx="10" cy="18" r="3.5" fill="#ffffff" class="node-point node-white" />
-        <circle cx="18" cy="15" r="3" fill="#9fb6bd" class="node-point node-pink" />
-        <circle cx="26" cy="18" r="3.5" fill="#8db9ba" class="node-point node-cyan" />
+        <circle cx="18" cy="15" r="3" fill="#bcd9ff" class="node-point node-pink" />
+        <circle cx="26" cy="18" r="3.5" fill="#7fb6ff" class="node-point node-cyan" />
         <defs>
           <linearGradient id="logo-gradient" x1="0" y1="0" x2="36" y2="36" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stop-color="#20353a" />
-            <stop offset="48%" stop-color="#2f6f73" />
-            <stop offset="100%" stop-color="#6fa1a4" />
+            <stop offset="0%" stop-color="#0a3f86" />
+            <stop offset="52%" stop-color="#0071e3" />
+            <stop offset="100%" stop-color="#54a8ff" />
           </linearGradient>
         </defs>
       </svg>
@@ -570,25 +570,23 @@ const headerMenus = [
   }
 }
 
-/* Unified chrome for data-heavy platform pages. */
+/* Unified chrome for data-heavy platform pages —— 统一到「高端蓝」单一强调色 */
 .header-container {
-  --platform-ink: #17282c;
-  --platform-muted: #5d6b70;
-  --platform-accent: #2f6f73;
-  --platform-accent-strong: #204f53;
-  --platform-surface: rgba(249, 252, 253, 0.96);
-  --platform-border: rgba(35, 50, 55, 0.1);
+  --platform-ink: #1c2024;
+  --platform-muted: #667085;
+  --platform-accent: #0071e3;
+  --platform-accent-strong: #005bb5;
+  --platform-surface: #ffffff;
+  --platform-border: rgba(17, 32, 58, 0.08);
   --platform-ease: cubic-bezier(0.32, 0.72, 0, 1);
   --title-width: 286px;
   grid-template-columns: minmax(240px, var(--title-width)) minmax(360px, 1fr) auto;
   column-gap: 24px;
   height: var(--header-height);
   padding: 0 21px;
-  background:
-    linear-gradient(180deg, rgba(252, 254, 255, 0.98), rgba(244, 249, 250, 0.96)),
-    repeating-linear-gradient(135deg, rgba(35, 50, 55, 0.018) 0 1px, transparent 1px 8px);
+  background: #ffffff;
   border-bottom: 1px solid var(--platform-border);
-  box-shadow: none;
+  box-shadow: 0 1px 0 rgba(17, 32, 58, 0.05), 0 10px 28px -20px rgba(13, 38, 76, 0.22);
 }
 
 .title-box {
@@ -598,7 +596,7 @@ const headerMenus = [
 .title-box .logo-icon {
   width: 32px;
   height: 32px;
-  filter: drop-shadow(0 7px 14px rgba(47, 111, 115, 0.16));
+  filter: drop-shadow(0 6px 14px rgba(0, 113, 227, 0.22));
 }
 
 .title-box .route-flow {
@@ -617,11 +615,11 @@ const headerMenus = [
 }
 
 .title-box:hover .logo-icon .node-point.node-pink {
-  fill: #b7c8cd;
+  fill: #bcd9ff;
 }
 
 .title-box:hover .logo-icon .node-point.node-cyan {
-  fill: #a6ccce;
+  fill: #7fb6ff;
 }
 
 .nav-list {
@@ -645,25 +643,25 @@ const headerMenus = [
 
 .nav-list .item:hover {
   color: var(--platform-ink);
-  background: rgba(47, 111, 115, 0.07);
+  background: rgba(0, 113, 227, 0.07);
   transform: translateY(-1px);
 }
 
 .nav-list .item.active {
   color: var(--platform-accent-strong);
-  background: linear-gradient(90deg, rgba(47, 111, 115, 0.12), rgba(49, 93, 138, 0.07));
-  box-shadow: inset 0 0 0 1px rgba(47, 111, 115, 0.12);
+  background: linear-gradient(90deg, rgba(0, 113, 227, 0.12), rgba(0, 113, 227, 0.07));
+  box-shadow: inset 0 0 0 1px rgba(0, 113, 227, 0.12);
 }
 
 .nav-list .item.active:hover {
-  background: linear-gradient(90deg, rgba(47, 111, 115, 0.15), rgba(49, 93, 138, 0.09));
+  background: linear-gradient(90deg, rgba(0, 113, 227, 0.15), rgba(0, 113, 227, 0.09));
 }
 
 .user-profile-btn {
-  border: 1px solid rgba(47, 111, 115, 0.16);
+  border: 1px solid rgba(0, 113, 227, 0.16);
   background: rgba(255, 255, 255, 0.74);
   color: var(--platform-accent);
-  box-shadow: 0 10px 22px rgba(24, 43, 50, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  box-shadow: 0 10px 22px rgba(13, 38, 76, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.78);
   transition:
     background-color 360ms var(--platform-ease),
     border-color 360ms var(--platform-ease),
@@ -673,9 +671,9 @@ const headerMenus = [
 
 .user-profile-btn:hover,
 .user-profile-btn:focus-visible {
-  background: rgba(47, 111, 115, 0.09);
-  border-color: rgba(47, 111, 115, 0.32);
-  box-shadow: 0 14px 28px rgba(24, 43, 50, 0.12), 0 0 0 4px rgba(47, 111, 115, 0.08);
+  background: rgba(0, 113, 227, 0.09);
+  border-color: rgba(0, 113, 227, 0.32);
+  box-shadow: 0 14px 28px rgba(13, 38, 76, 0.12), 0 0 0 4px rgba(0, 113, 227, 0.08);
   transform: translateY(-1px);
 }
 
@@ -902,26 +900,26 @@ const headerMenus = [
     border-radius: 14px !important;
     border-color: rgba(35, 50, 55, 0.12) !important;
     background: rgba(249, 252, 253, 0.98) !important;
-    box-shadow: 0 22px 52px rgba(24, 43, 50, 0.16) !important;
+    box-shadow: 0 22px 52px rgba(13, 38, 76, 0.16) !important;
     backdrop-filter: none;
   }
 
   .user-menu-head {
     border-bottom-color: rgba(35, 50, 55, 0.08) !important;
-    color: #17282c !important;
+    color: #1c2024 !important;
   }
 
   .user-menu-head .user-avatar-badge {
-    background: linear-gradient(135deg, #20353a, #2f6f73) !important;
-    box-shadow: 0 8px 18px rgba(47, 111, 115, 0.2) !important;
+    background: linear-gradient(135deg, #0a3f86, #0071e3) !important;
+    box-shadow: 0 8px 18px rgba(0, 113, 227, 0.2) !important;
   }
 
   .user-menu-head .user-info-text .user-menu-label {
-    color: #7b898d !important;
+    color: #667085 !important;
   }
 
   .user-menu-head .user-info-text .user-menu-name {
-    color: #17282c !important;
+    color: #1c2024 !important;
   }
 
   .el-dropdown-menu__item.custom-dropdown-item {
@@ -931,13 +929,13 @@ const headerMenus = [
 
   .el-dropdown-menu__item.custom-dropdown-item:hover,
   .el-dropdown-menu__item.custom-dropdown-item:focus {
-    background-color: rgba(47, 111, 115, 0.08) !important;
-    color: #204f53 !important;
+    background-color: rgba(0, 113, 227, 0.08) !important;
+    color: #005bb5 !important;
   }
 
   .el-dropdown-menu__item.custom-dropdown-item:hover .item-icon,
   .el-dropdown-menu__item.custom-dropdown-item:focus .item-icon {
-    color: #2f6f73 !important;
+    color: #0071e3 !important;
   }
 
   .el-popper__arrow::before {

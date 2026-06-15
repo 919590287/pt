@@ -123,6 +123,80 @@ button {
   appearance: none;
 }
 
+/*
+ * MapLibre uses a grab cursor for the map canvas. Keep that affordance on the
+ * map, but explicitly restore native cursor semantics for UI layered above it.
+ */
+:where(
+  .model_box,
+  .box1,
+  .box2,
+  .dm-sidebar,
+  .dm-overview-panel,
+  .dm-edit-panel,
+  .history-preview-panel,
+  .history-detail-panel,
+  .comparison-panel,
+  .scenario-panel,
+  .placeholder-panel,
+  .datebase_box,
+  .map-controls-toolbar,
+  .map-search,
+  .edit-action-menu,
+  .model-loading-card
+) {
+  cursor: default;
+}
+
+:where(
+  .model_box,
+  .box1,
+  .box2,
+  .dm-overview-panel,
+  .dm-edit-panel,
+  .history-preview-panel,
+  .history-detail-panel,
+  .comparison-panel,
+  .scenario-panel,
+  .placeholder-panel,
+  .model-loading-card
+) :where(p, span, strong, small, label, h1, h2, h3, h4, h5, h6, li, td, th, dd, dt) {
+  user-select: text;
+}
+
+:where(
+  button,
+  a[href],
+  [role="button"],
+  summary,
+  label[for],
+  .el-button,
+  .el-radio,
+  .el-radio-button__inner,
+  .el-checkbox,
+  .el-select__wrapper,
+  .el-tabs__item,
+  .el-pagination button,
+  .collapse-tab,
+  .dm-panel-collapse-tab,
+  .control-btn
+):not(:disabled, [aria-disabled="true"], .is-disabled) {
+  cursor: pointer;
+}
+
+:where(button, [role="button"], .el-button, .el-radio-button__inner, .collapse-tab, .dm-panel-collapse-tab, .control-btn) {
+  user-select: none;
+}
+
+.el-select__wrapper:not(.is-disabled) {
+  cursor: pointer !important;
+}
+
+:where(input:not([type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"]), textarea, [contenteditable="true"]) {
+  cursor: text;
+  user-select: text;
+}
+
 button:disabled,
 [aria-disabled="true"] {
   cursor: not-allowed;

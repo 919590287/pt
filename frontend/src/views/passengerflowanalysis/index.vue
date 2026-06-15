@@ -72,7 +72,7 @@
             <polyline points="15 18 9 12 15 6"></polyline>
           </svg>
         </button>
-        <div class="tab_list" ref="box1Handle" style="cursor: move; display: flex; align-items: center; justify-content: space-between; padding: 10px var(--space-md); background: rgba(21, 105, 222, 0.07); border-bottom: 1px solid rgba(21, 105, 222, 0.15); border-top-left-radius: var(--app-panel-radius); border-top-right-radius: var(--app-panel-radius);">
+        <div class="tab_list panel-drag-handle" ref="box1Handle" style="display: flex; align-items: center; justify-content: space-between; padding: 10px var(--space-md); background: rgba(21, 105, 222, 0.07); border-bottom: 1px solid rgba(21, 105, 222, 0.15); border-top-left-radius: var(--app-panel-radius); border-top-right-radius: var(--app-panel-radius);">
           <div class="header-title" style="display: flex; align-items: center; gap: var(--space-xs); font-size: 15px; font-weight: 750; color: var(--app-blue);">
             <span class="icon">📈</span>
             <span>客流分析</span>
@@ -1438,6 +1438,8 @@ onUnmounted(() => {
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
   min-width: min(430px, calc((100vw - 48px) / var(--app-panel-scale)));
   min-height: 0;
+  cursor: default;
+  user-select: text;
   transform-origin: top left;
   transition: transform var(--app-motion-slow) var(--app-ease-out);
   
@@ -1450,8 +1452,14 @@ onUnmounted(() => {
     }
   }
   
+  .panel-drag-handle,
   .handle {
-    cursor: move;
+    cursor: grab;
+    user-select: none;
+
+    &:active {
+      cursor: grabbing;
+    }
   }
 
   &.cache-loading-panel {

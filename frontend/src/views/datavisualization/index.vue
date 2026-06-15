@@ -1397,6 +1397,8 @@ onUnmounted(() => {
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
   min-width: min(430px, calc((100vw - 48px) / var(--app-panel-scale)));
   min-height: 0;
+  cursor: default;
+  user-select: text;
   transform-origin: top left;
   transition: transform var(--app-motion-slow) var(--app-ease-out);
   
@@ -1409,8 +1411,14 @@ onUnmounted(() => {
     }
   }
   
+  .tab_list,
   .handle {
-    cursor: move;
+    cursor: grab;
+    user-select: none;
+
+    &:active {
+      cursor: grabbing;
+    }
   }
 
   &.cache-loading-panel {

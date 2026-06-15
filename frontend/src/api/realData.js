@@ -59,3 +59,14 @@ export function getRealDataHistory(data, config = {}) {
     ...config,
   });
 }
+
+export function exportRealDataVersion(data, config = {}) {
+  return request({
+    url: "/pt/real-data/export",
+    method: "POST",
+    data,
+    responseType: "blob",
+    timeout: 1000 * 60 * 5,
+    ...config,
+  });
+}

@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.TypeReference;
 import com.jts.gjcxfzksh.api.model.params.RealDataCommitParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataParam;
+import com.jts.gjcxfzksh.api.model.vo.RealDataExportVO;
 import com.jts.gjcxfzksh.api.service.RealDataService;
 import com.jts.gjcxfzksh.config.MatsimConfig;
 import com.jts.gjcxfzksh.exception.BusinessException;
@@ -18,10 +19,12 @@ import org.geotools.api.data.SimpleFeatureStore;
 import org.geotools.api.data.Transaction;
 import org.geotools.data.DefaultTransaction;
 import org.geotools.data.shapefile.ShapefileDataStore;
+import org.geotools.data.shapefile.ShapefileDataStoreFactory;
 import org.geotools.data.simple.SimpleFeatureCollection;
 import org.geotools.data.simple.SimpleFeatureIterator;
 import org.geotools.feature.DefaultFeatureCollection;
 import org.geotools.feature.simple.SimpleFeatureBuilder;
+import org.geotools.feature.simple.SimpleFeatureTypeBuilder;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.CoordinateFilter;
 import org.locationtech.jts.geom.Geometry;
@@ -34,9 +37,11 @@ import org.locationtech.jts.operation.union.UnaryUnionOp;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Serializable;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -53,11 +58,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 @Service
 public class RealDataServiceImpl implements RealDataService {
@@ -75,6 +82,22 @@ public class RealDataServiceImpl implements RealDataService {
     private static final List<String> STANDARD_STOP_FIELDS = List.of(
             "line_id", "dir", "stop_id", "stop_name", "seq", "lon", "lat"
     );
+    // 物理唯一站台格式：站点 SHP 每个站台一个点，线路经停关系存于同目录 CSV。
+    private static final List<String> UNIQUE_STOP_FIELDS = List.of(
+            "stop_id", "stop_name", "lon", "lat"
+    );
+    private static final List<String> DERIVED_ROUTE_FIELDS = List.of(
+            "len_km", "directness", "stop_count", "avg_stop_m"
+    );
+    private static final List<String> DERIVED_STOP_FIELDS = List.of("route_cnt");
+    private static final Set<String> DERIVED_FIELDS = Set.of(
+            "len_km", "directness", "stop_count", "avg_stop_m", "route_cnt"
+    );
+    private static final Set<String> ROUTE_STOP_RELATION_FIELDS = Set.of("line_id", "dir", "seq");
+    private static final String STATION_SEQUENCE_CSV = "line_stop_sequence.csv";
+    private static final String GEOMETRY_FIELD = "geometry";
+    private static final String EXISTENCE_FIELD = "__existence__";
+    private static final String DELETION_FIELD = "__deletion__";
     private static final double EARTH_RADIUS_METERS = 6_378_137.0;
     private static final double COVERAGE_300_METERS = 300.0;
     private static final double COVERAGE_500_METERS = 500.0;
@@ -86,6 +109,7 @@ public class RealDataServiceImpl implements RealDataService {
     MatsimConfig matsimConfig;
 
     private final Map<String, CachedOverview> overviewCache = new ConcurrentHashMap<>();
+    private final Map<String, PendingShpComparison> pendingShpComparisons = new ConcurrentHashMap<>();
 
     @Override
     public List<String> areaList() {
@@ -130,11 +154,12 @@ public class RealDataServiceImpl implements RealDataService {
         TargetVersion target = safeText(versionId).isBlank() ? activeTargetVersion(state) : targetVersion(versionId, mutableMapList(state.get("versions")));
         Path dataRoot = dataRootForVersion(root, target);
         Map<String, Object> lines = readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
-        Map<String, Object> routeStops = readStandardShp(dataRoot.resolve(BUS_STATION_FOLDER), STANDARD_STOP_FIELDS, Point.class, "站点");
+        Map<String, Object> routeStops = readStationData(dataRoot.resolve(BUS_STATION_FOLDER));
         Map<String, Object> depots = readFirstShp(dataRoot.resolve(BUS_DEPOT_FOLDER));
         if (!target.materializedData()) {
             applyCurrentEdits(target.operations(), lines, routeStops, depots);
         }
+        enrichDerivedAttributes(lines, routeStops);
         Map<String, Object> stations = uniqueStationsFromRouteStops(routeStops);
         int lineCount = numberValue(lines.get("featureCount")).intValue();
         int stationCount = numberValue(stations.get("featureCount")).intValue();
@@ -166,6 +191,165 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     @Override
+    public RealDataExportVO exportVersion(String areaName, String versionId, String datasetType, String format) {
+        String safeAreaName = safeText(areaName);
+        String safeDatasetType = normalizeDatasetType(datasetType);
+        String safeFormat = safeText(format).toLowerCase(Locale.ROOT);
+        if (safeAreaName.isBlank()) {
+            throw new BusinessException("区域名称不能为空");
+        }
+        if (!"line".equals(safeDatasetType) && !"station".equals(safeDatasetType) && !"depot".equals(safeDatasetType)) {
+            throw new BusinessException("仅支持导出线路、站点或场站数据");
+        }
+        if (!"csv".equals(safeFormat) && !"shp".equals(safeFormat)) {
+            throw new BusinessException("仅支持导出 CSV 或 SHP");
+        }
+
+        Path root = matsimConfig.realDataPath(safeAreaName);
+        Map<String, Object> state = readEditState(root);
+        TargetVersion target = safeText(versionId).isBlank()
+                ? activeTargetVersion(state)
+                : targetVersion(versionId, mutableMapList(state.get("versions")));
+        VersionCollections collections = versionCollections(root, target);
+        String versionLabel = "__base__".equals(target.id()) ? "原始数据" : target.id();
+        String datasetLabel = datasetTypeLabel(safeDatasetType);
+        String filePrefix = exportFileNamePart(safeAreaName) + "_" + exportFileNamePart(versionLabel) + "_" + datasetLabel;
+
+        ExportDataset exportDataset = exportDataset(collections, safeDatasetType);
+        if ("csv".equals(safeFormat)) {
+            byte[] content = exportCsv(exportDataset);
+            return new RealDataExportVO(filePrefix + "_属性表.csv", "text/csv;charset=UTF-8", content);
+        }
+
+        byte[] content = exportShpArchive(safeDatasetType, collections, exportDataset);
+        return new RealDataExportVO(filePrefix + "_SHP.zip", "application/zip", content);
+    }
+
+    private VersionCollections versionCollections(Path root, TargetVersion target) {
+        Path dataRoot = dataRootForVersion(root, target);
+        Map<String, Object> lines = readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
+        Map<String, Object> routeStops = readStationData(dataRoot.resolve(BUS_STATION_FOLDER));
+        Map<String, Object> depots = readFirstShp(dataRoot.resolve(BUS_DEPOT_FOLDER));
+        if (!target.materializedData()) {
+            applyCurrentEdits(target.operations(), lines, routeStops, depots);
+        }
+        enrichDerivedAttributes(lines, routeStops);
+        return new VersionCollections(dataRoot, lines, routeStops, depots);
+    }
+
+    private byte[] exportCsv(ExportDataset dataset) {
+        List<Map<String, Object>> features = mutableMapList(dataset.collection().get("features"));
+        StringBuilder csv = new StringBuilder("\uFEFF");
+        csv.append(dataset.fields().stream().map(this::csvCell).collect(java.util.stream.Collectors.joining(","))).append('\n');
+        for (Map<String, Object> feature : features) {
+            Map<String, Object> properties = featureProperties(feature);
+            if ("station".equals(dataset.datasetType())) {
+                properties.putIfAbsent("lon", firstCoordinateValue(feature, 0));
+                properties.putIfAbsent("lat", firstCoordinateValue(feature, 1));
+            }
+            boolean first = true;
+            for (String field : dataset.fields()) {
+                if (!first) csv.append(',');
+                csv.append(csvCell(safeText(properties.get(field))));
+                first = false;
+            }
+            csv.append('\n');
+        }
+        return csv.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private ExportDataset exportDataset(VersionCollections collections, String datasetType) {
+        Map<String, Object> collection = switch (datasetType) {
+            case "line" -> collections.lines();
+            case "station" -> uniqueStationsFromRouteStops(collections.routeStops());
+            default -> collections.depots();
+        };
+        LinkedHashSet<String> fields = new LinkedHashSet<>();
+        if ("line".equals(datasetType)) {
+            fields.addAll(STANDARD_ROUTE_FIELDS);
+        } else if ("station".equals(datasetType)) {
+            fields.addAll(UNIQUE_STOP_FIELDS);
+        }
+        fields.addAll(stringList(collection.get("attributeFields")));
+        for (Map<String, Object> feature : mutableMapList(collection.get("features"))) {
+            featureProperties(feature).keySet().stream()
+                    .filter(key -> !key.startsWith("_"))
+                    .filter(key -> !"station".equals(datasetType) || !ROUTE_STOP_RELATION_FIELDS.contains(key))
+                    .forEach(fields::add);
+        }
+        if ("line".equals(datasetType)) {
+            fields.addAll(DERIVED_ROUTE_FIELDS);
+        } else if ("station".equals(datasetType)) {
+            fields.addAll(DERIVED_STOP_FIELDS);
+        }
+        return new ExportDataset(datasetType, collection, List.copyOf(fields));
+    }
+
+    private byte[] exportShpArchive(String datasetType, VersionCollections collections, ExportDataset dataset) {
+        Path sourceFolder = collections.dataRoot().resolve(datasetFolder(datasetType));
+        Path exportRoot = null;
+        try {
+            File sourceShp = findFirstShp(sourceFolder);
+            if (sourceShp == null) {
+                throw new BusinessException("缺少" + datasetTypeLabel(datasetType) + "SHP: " + sourceFolder);
+            }
+            exportRoot = Files.createTempDirectory("real-data-version-export-");
+            Path folderToZip = exportRoot.resolve(datasetTypeLabel(datasetType));
+            Files.createDirectories(folderToZip);
+            Path outputShp = folderToZip.resolve(sourceShp.getName());
+            Class<? extends Geometry> geometryType = switch (datasetType) {
+                case "line" -> LineString.class;
+                case "station" -> Point.class;
+                default -> null;
+            };
+            writeNewShapefile(sourceShp, outputShp, dataset.fields(), geometryType, datasetTypeLabel(datasetType), dataset.collection());
+            if ("station".equals(datasetType)) {
+                writeSequenceCsv(folderToZip.resolve(STATION_SEQUENCE_CSV), collections.routeStops());
+            }
+            return zipDatasetFolder(folderToZip, datasetTypeLabel(datasetType));
+        } catch (BusinessException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new BusinessException("导出历史版本 SHP 失败", error);
+        } finally {
+            deleteRecursively(exportRoot);
+        }
+    }
+
+    private String datasetFolder(String datasetType) {
+        return switch (datasetType) {
+            case "line" -> BUS_LINE_FOLDER;
+            case "station" -> BUS_STATION_FOLDER;
+            case "depot" -> BUS_DEPOT_FOLDER;
+            default -> throw new BusinessException("数据类型无效");
+        };
+    }
+
+    private byte[] zipDatasetFolder(Path folder, String rootName) throws IOException {
+        if (!Files.isDirectory(folder)) {
+            throw new BusinessException("导出目录不存在: " + folder);
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8);
+             Stream<Path> paths = Files.walk(folder)) {
+            for (Path path : paths.filter(Files::isRegularFile).sorted().toList()) {
+                String name = path.getFileName().toString();
+                if (name.startsWith("._") || ".DS_Store".equals(name)) continue;
+                String entryName = rootName + "/" + folder.relativize(path).toString().replace(File.separatorChar, '/');
+                zip.putNextEntry(new ZipEntry(entryName));
+                Files.copy(path, zip);
+                zip.closeEntry();
+            }
+        }
+        return output.toByteArray();
+    }
+
+    private String exportFileNamePart(String value) {
+        String safe = safeText(value).replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+        return safe.isBlank() ? "数据" : safe;
+    }
+
+    @Override
     public synchronized Map<String, Object> commitEdits(String username, RealDataCommitParam param) {
         String areaName = safeText(param == null ? null : param.getAreaName());
         String datasetType = normalizeDatasetType(param == null ? null : param.getDatasetType());
@@ -179,6 +363,17 @@ public class RealDataServiceImpl implements RealDataService {
         if (operations.isEmpty()) {
             throw new BusinessException("没有需要提交的修改");
         }
+        if ("all".equals(datasetType) && operations.stream()
+                .anyMatch(operation -> normalizeDatasetType(textValue(operation.get("datasetType"))).isBlank()
+                        || "all".equals(normalizeDatasetType(textValue(operation.get("datasetType")))))) {
+            throw new BusinessException("综合提交中的每条修改都必须标明线路、站点或场站类型");
+        }
+        if (operations.stream().anyMatch(this::isUnconfirmedShpDeletion)) {
+            throw new BusinessException("上传 SHP 识别出的疑似删除项必须逐项确认后才能提交");
+        }
+        if (param.getBaseRevision() == null || safeText(param.getBaseVersionId()).isBlank()) {
+            throw new BusinessException("缺少数据版本信息，请刷新当前区域后再提交");
+        }
         if (safeText(param == null ? null : param.getMessage()).isBlank()) {
             throw new BusinessException("请填写本次修改信息");
         }
@@ -186,6 +381,7 @@ public class RealDataServiceImpl implements RealDataService {
 
         Path root = matsimConfig.realDataPath(areaName);
         assertFreshRevision(root, param == null ? null : param.getBaseRevision());
+        validatePendingShpOperations(username, areaName, operations, root);
         String versionId = LocalDateTime.now().format(VERSION_TIME_FORMAT) + "_" + UUID.randomUUID().toString().substring(0, 8);
         Path versionDir = root.resolve(VERSION_FOLDER).resolve(versionId);
         boolean stateSaved = false;
@@ -212,6 +408,7 @@ public class RealDataServiceImpl implements RealDataService {
             result.put("revision", savedManifest.get("revision"));
             result.put("history", historySummary(root));
             result.put("versionPath", versionDir.toString());
+            removeCommittedShpComparisons(operations);
             return result;
         } catch (BusinessException error) {
             if (!stateSaved) {
@@ -301,32 +498,58 @@ public class RealDataServiceImpl implements RealDataService {
                 default -> null;
             };
             List<String> expectedFieldsForRead = expectedFields.isEmpty() ? null : expectedFields;
-            Map<String, Object> uploaded = readShp(uploadedShp, expectedFieldsForRead, expectedGeometry, datasetTypeLabel(safeDatasetType));
-            // 上传 SHP 允许包含多余字段，但比对时仅以标准字段为准，避免多余字段导致逐条误判为“修改”。
-            if (!expectedFields.isEmpty()) {
-                retainStandardFields(uploaded, expectedFields);
+            Map<String, Object> uploaded;
+            if ("station".equals(safeDatasetType) && isUniqueStationShp(uploadedShp)) {
+                // 物理唯一站台格式上传：站点 SHP + 同包内 line_stop_sequence.csv
+                Map<String, Object> uniqueStops = readShp(uploadedShp, UNIQUE_STOP_FIELDS, Point.class, "站点");
+                uploaded = routeStopsFromSequenceCsv(uploadedShp.toPath().getParent(), uniqueStops);
+            } else {
+                uploaded = readShp(uploadedShp, expectedFieldsForRead, expectedGeometry, datasetTypeLabel(safeDatasetType));
             }
+            stripDerivedProperties(uploaded);
 
             Path root = matsimConfig.realDataPath(safeAreaName);
             Map<String, Object> state = readEditState(root);
             TargetVersion target = activeTargetVersion(state);
+            long comparisonRevision = stateRevision(state);
             Path dataRoot = dataRootForVersion(root, target);
             Map<String, Object> current = switch (safeDatasetType) {
                 case "line" -> readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
-                case "station" -> readStandardShp(dataRoot.resolve(BUS_STATION_FOLDER), STANDARD_STOP_FIELDS, Point.class, "站点");
+                case "station" -> readStationData(dataRoot.resolve(BUS_STATION_FOLDER));
                 default -> readFirstShp(dataRoot.resolve(BUS_DEPOT_FOLDER));
             };
             if (!target.materializedData()) {
                 applyUploadComparableEdits(target.operations(), current, safeDatasetType);
             }
 
-            List<Map<String, Object>> operations = diffUploadedFeatures(current, uploaded, safeDatasetType, safeAreaName);
+            UploadDiffResult diff = diffUploadedFeatures(
+                    current,
+                    uploaded,
+                    safeDatasetType,
+                    safeAreaName,
+                    target.operations()
+            );
+            List<Map<String, Object>> operations = diff.operations();
+            String comparisonToken = registerShpComparison(
+                    username,
+                    safeAreaName,
+                    comparisonRevision,
+                    target.id(),
+                    operations
+            );
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("areaName", safeAreaName);
             result.put("datasetType", safeDatasetType);
             result.put("fileName", uploadedShp.getName());
             result.put("fieldSchema", expectedFields);
             result.put("operationCount", operations.size());
+            result.put("candidateDeletionCount", diff.candidateDeletionCount());
+            result.put("protectedFeatureCount", diff.protectedFeatureCount());
+            result.put("protectedFieldCount", diff.protectedFieldCount());
+            result.put("skippedByManualDeletionCount", diff.skippedByManualDeletionCount());
+            result.put("comparisonToken", comparisonToken);
+            result.put("comparisonRevision", comparisonRevision);
+            result.put("comparisonVersionId", target.id());
             result.put("operations", operations);
             return result;
         } catch (BusinessException error) {
@@ -499,52 +722,237 @@ public class RealDataServiceImpl implements RealDataService {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private List<Map<String, Object>> diffUploadedFeatures(Map<String, Object> current, Map<String, Object> uploaded, String datasetType, String areaName) {
-        Map<String, Map<String, Object>> currentIndex = indexFeaturesForDiff(current, datasetType);
-        Map<String, Map<String, Object>> uploadedIndex = indexFeaturesForDiff(uploaded, datasetType);
+    private UploadDiffResult diffUploadedFeatures(
+            Map<String, Object> current,
+            Map<String, Object> uploaded,
+            String datasetType,
+            String areaName,
+            List<Map<String, Object>> activeOperations
+    ) {
+        List<DiffFeature> currentFeatures = featuresForDiff(current, datasetType);
+        List<DiffFeature> uploadedFeatures = featuresForDiff(uploaded, datasetType);
+        Map<String, DiffFeature> currentByMatchKey = new LinkedHashMap<>();
+        Map<String, DiffFeature> uploadedByMatchKey = new LinkedHashMap<>();
+        currentFeatures.forEach(item -> currentByMatchKey.put(item.matchKey(), item));
+        uploadedFeatures.forEach(item -> uploadedByMatchKey.put(item.matchKey(), item));
+
         List<Map<String, Object>> operations = new ArrayList<>();
+        Set<String> matchedCurrentKeys = new LinkedHashSet<>();
+        Set<String> matchedUploadedKeys = new LinkedHashSet<>();
+        int protectedFeatureCount = 0;
+        int protectedFieldCount = 0;
+        int skippedByManualDeletionCount = 0;
 
-        for (Map.Entry<String, Map<String, Object>> entry : uploadedIndex.entrySet()) {
-            String key = entry.getKey();
-            Map<String, Object> uploadedFeature = entry.getValue();
-            Map<String, Object> currentFeature = currentIndex.get(key);
+        for (DiffFeature uploadedFeature : uploadedFeatures) {
+            DiffFeature currentFeature = currentByMatchKey.get(uploadedFeature.matchKey());
             if (currentFeature == null) {
-                operations.add(uploadOperation("add", datasetType, key, uploadedFeature, areaName));
-            } else if (!sameFeatureContent(currentFeature, uploadedFeature)) {
-                operations.add(uploadOperation("replace", datasetType, key, uploadedFeature, areaName));
+                continue;
+            }
+            MergeFeatureResult merge = mergeUploadedFeature(
+                    currentFeature.feature(),
+                    uploadedFeature.feature(),
+                    datasetType,
+                    activeOperations
+            );
+            matchedCurrentKeys.add(currentFeature.matchKey());
+            matchedUploadedKeys.add(uploadedFeature.matchKey());
+            if (merge.hasManualProtection()) {
+                protectedFeatureCount++;
+                protectedFieldCount += merge.protectedFields().size();
+            }
+            if (!merge.changedFields().isEmpty()) {
+                operations.add(uploadOperation(
+                        "replace",
+                        datasetType,
+                        currentFeature.targetId(),
+                        merge.feature(),
+                        areaName,
+                        merge.changedFields(),
+                        merge.protectedFields(),
+                        false
+                ));
             }
         }
 
-        for (Map.Entry<String, Map<String, Object>> entry : currentIndex.entrySet()) {
-            if (!uploadedIndex.containsKey(entry.getKey())) {
-                operations.add(uploadOperation("delete", datasetType, entry.getKey(), entry.getValue(), areaName));
+        Map<String, DiffFeature> unmatchedCurrentByIdentity = uniqueFeaturesByIdentity(
+                currentFeatures.stream().filter(item -> !matchedCurrentKeys.contains(item.matchKey())).toList()
+        );
+        for (DiffFeature uploadedFeature : uploadedFeatures) {
+            if (matchedUploadedKeys.contains(uploadedFeature.matchKey())) {
+                continue;
+            }
+            String identity = featureIdentity(uploadedFeature.feature());
+            DiffFeature currentFeature = identity.isBlank() ? null : unmatchedCurrentByIdentity.remove(identity);
+            if (currentFeature == null) {
+                continue;
+            }
+            MergeFeatureResult merge = mergeUploadedFeature(
+                    currentFeature.feature(),
+                    uploadedFeature.feature(),
+                    datasetType,
+                    activeOperations
+            );
+            matchedCurrentKeys.add(currentFeature.matchKey());
+            matchedUploadedKeys.add(uploadedFeature.matchKey());
+            if (merge.hasManualProtection()) {
+                protectedFeatureCount++;
+                protectedFieldCount += merge.protectedFields().size();
+            }
+            if (!merge.changedFields().isEmpty()) {
+                operations.add(uploadOperation(
+                        "replace",
+                        datasetType,
+                        currentFeature.targetId(),
+                        merge.feature(),
+                        areaName,
+                        merge.changedFields(),
+                        merge.protectedFields(),
+                        false
+                ));
             }
         }
-        return operations;
+
+        Map<String, DiffFeature> unmatchedUploadedByAlias = uniqueFeaturesByAlias(
+                uploadedFeatures.stream()
+                        .filter(item -> !matchedUploadedKeys.contains(item.matchKey()))
+                        .toList(),
+                datasetType
+        );
+        for (DiffFeature currentFeature : currentFeatures) {
+            if (matchedCurrentKeys.contains(currentFeature.matchKey())) {
+                continue;
+            }
+            DiffFeature uploadedFeature = null;
+            for (String originalAlias : manualOriginalAliasesForFeature(
+                    datasetType,
+                    currentFeature.feature(),
+                    activeOperations
+            )) {
+                uploadedFeature = unmatchedUploadedByAlias.remove(originalAlias);
+                if (uploadedFeature != null) {
+                    break;
+                }
+            }
+            if (uploadedFeature == null || matchedUploadedKeys.contains(uploadedFeature.matchKey())) {
+                continue;
+            }
+            MergeFeatureResult merge = mergeUploadedFeature(
+                    currentFeature.feature(),
+                    uploadedFeature.feature(),
+                    datasetType,
+                    activeOperations
+            );
+            matchedCurrentKeys.add(currentFeature.matchKey());
+            matchedUploadedKeys.add(uploadedFeature.matchKey());
+            if (merge.hasManualProtection()) {
+                protectedFeatureCount++;
+                protectedFieldCount += merge.protectedFields().size();
+            }
+            if (!merge.changedFields().isEmpty()) {
+                operations.add(uploadOperation(
+                        "replace",
+                        datasetType,
+                        currentFeature.targetId(),
+                        merge.feature(),
+                        areaName,
+                        merge.changedFields(),
+                        merge.protectedFields(),
+                        false
+                ));
+            }
+        }
+
+        for (DiffFeature uploadedFeature : uploadedFeatures) {
+            if (matchedUploadedKeys.contains(uploadedFeature.matchKey())) {
+                continue;
+            }
+            ManualProtection protection = manualProtectionForFeature(datasetType, uploadedFeature.feature(), activeOperations);
+            if (protection.manuallyDeleted()) {
+                skippedByManualDeletionCount++;
+                protectedFeatureCount++;
+                continue;
+            }
+            operations.add(uploadOperation(
+                    "add",
+                    datasetType,
+                    uploadedFeature.targetId(),
+                    uploadedFeature.feature(),
+                    areaName,
+                    nonInternalFeatureFields(uploadedFeature.feature(), true),
+                    List.of(),
+                    false
+            ));
+        }
+
+        int candidateDeletionCount = 0;
+        for (DiffFeature currentFeature : currentFeatures) {
+            if (matchedCurrentKeys.contains(currentFeature.matchKey())) {
+                continue;
+            }
+            ManualProtection protection = manualProtectionForFeature(datasetType, currentFeature.feature(), activeOperations);
+            List<String> protectedFields = sortedFields(protection.fields());
+            if (!protectedFields.isEmpty()) {
+                protectedFeatureCount++;
+                protectedFieldCount += protectedFields.size();
+            }
+            if (protection.fields().contains(EXISTENCE_FIELD)) {
+                continue;
+            }
+            operations.add(uploadOperation(
+                    "delete",
+                    datasetType,
+                    currentFeature.targetId(),
+                    currentFeature.feature(),
+                    areaName,
+                    List.of(),
+                    protectedFields,
+                    true
+            ));
+            candidateDeletionCount++;
+        }
+        return new UploadDiffResult(
+                operations,
+                candidateDeletionCount,
+                protectedFeatureCount,
+                protectedFieldCount,
+                skippedByManualDeletionCount
+        );
     }
 
     @SuppressWarnings("unchecked")
-    private Map<String, Map<String, Object>> indexFeaturesForDiff(Map<String, Object> collection, String datasetType) {
-        Map<String, Map<String, Object>> index = new LinkedHashMap<>();
+    private List<DiffFeature> featuresForDiff(Map<String, Object> collection, String datasetType) {
+        Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
         Object featuresValue = collection.get("features");
         if (!(featuresValue instanceof List<?> features)) {
-            return index;
+            return List.of();
         }
         for (Object item : features) {
             if (!(item instanceof Map<?, ?> rawFeature)) {
                 continue;
             }
             Map<String, Object> feature = (Map<String, Object>) rawFeature;
-            String key = diffFeatureKey(feature, datasetType);
-            if (!key.isBlank()) {
-                index.put(key, feature);
+            String stableKey = stableDiffFeatureKey(feature, datasetType);
+            if (!stableKey.isBlank()) {
+                grouped.computeIfAbsent(stableKey, ignored -> new ArrayList<>()).add(feature);
             }
         }
-        return index;
+        List<DiffFeature> result = new ArrayList<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry : grouped.entrySet()) {
+            List<Map<String, Object>> group = entry.getValue();
+            group.sort(Comparator.comparing(feature -> featureSortKey(feature, datasetType)));
+            for (int index = 0; index < group.size(); index++) {
+                Map<String, Object> feature = group.get(index);
+                result.add(new DiffFeature(
+                        entry.getKey() + "#" + index,
+                        operationTargetId(feature, datasetType),
+                        feature
+                ));
+            }
+        }
+        return result;
     }
 
-    private String diffFeatureKey(Map<String, Object> feature, String datasetType) {
+    private String stableDiffFeatureKey(Map<String, Object> feature, String datasetType) {
         Map<String, Object> properties = featureProperties(feature);
         if ("line".equals(datasetType)) {
             return routeFeatureKey(properties);
@@ -552,11 +960,108 @@ public class RealDataServiceImpl implements RealDataService {
         if ("depot".equals(datasetType)) {
             return depotFeatureKey(feature);
         }
-        return routeStopFeatureKey(properties);
+        return routeStopStableKey(properties);
+    }
+
+    private String featureSortKey(Map<String, Object> feature, String datasetType) {
+        Map<String, Object> properties = featureProperties(feature);
+        if ("station".equals(datasetType)) {
+            String sequence = firstText(properties, "seq", "sequence");
+            try {
+                return String.format(Locale.ROOT, "%020d", Long.parseLong(sequence)) + "|" + featureIdentity(feature);
+            } catch (NumberFormatException ignored) {
+                return sequence + "|" + featureIdentity(feature);
+            }
+        }
+        return featureIdentity(feature);
+    }
+
+    private Map<String, DiffFeature> uniqueFeaturesByIdentity(List<DiffFeature> features) {
+        Map<String, DiffFeature> unique = new LinkedHashMap<>();
+        Set<String> duplicates = new LinkedHashSet<>();
+        for (DiffFeature feature : features) {
+            String identity = featureIdentity(feature.feature());
+            if (identity.isBlank()) {
+                continue;
+            }
+            if (unique.putIfAbsent(identity, feature) != null) {
+                duplicates.add(identity);
+            }
+        }
+        duplicates.forEach(unique::remove);
+        return unique;
+    }
+
+    private Map<String, DiffFeature> uniqueFeaturesByAlias(List<DiffFeature> features, String datasetType) {
+        Map<String, DiffFeature> unique = new LinkedHashMap<>();
+        Set<String> duplicates = new LinkedHashSet<>();
+        for (DiffFeature feature : features) {
+            for (String alias : featureAliases(feature.feature(), datasetType)) {
+                if (unique.putIfAbsent(alias, feature) != null) {
+                    duplicates.add(alias);
+                }
+            }
+        }
+        duplicates.forEach(unique::remove);
+        return unique;
+    }
+
+    private Set<String> manualOriginalAliasesForFeature(
+            String datasetType,
+            Map<String, Object> feature,
+            List<Map<String, Object>> activeOperations
+    ) {
+        Set<String> currentAliases = featureAliases(feature, datasetType);
+        Set<String> originalAliases = new LinkedHashSet<>();
+        for (Map<String, Object> operation : activeOperations) {
+            if (!datasetType.equals(normalizeDatasetType(textValue(operation.get("datasetType"))))
+                    || isShpUploadOperation(operation)) {
+                continue;
+            }
+            Map<String, Object> payloadFeature = payloadFeature(operationPayload(operation));
+            if (payloadFeature == null) {
+                continue;
+            }
+            Set<String> payloadAliases = featureAliases(payloadFeature, datasetType);
+            if (payloadAliases.stream().noneMatch(currentAliases::contains)) {
+                continue;
+            }
+            addAlias(originalAliases, targetId(operation, operationPayload(operation)));
+        }
+        return originalAliases;
+    }
+
+    private String featureIdentity(Map<String, Object> feature) {
+        Map<String, Object> properties = featureProperties(feature);
+        return firstText(properties, "_featureId").isBlank()
+                ? safeText(feature.get("id"))
+                : firstText(properties, "_featureId");
+    }
+
+    private String operationTargetId(Map<String, Object> feature, String datasetType) {
+        String identity = safeText(feature.get("id"));
+        if (!identity.isBlank()) {
+            return identity;
+        }
+        Map<String, Object> properties = featureProperties(feature);
+        String internalIdentity = firstText(properties, "_featureId");
+        if (!internalIdentity.isBlank()) {
+            return internalIdentity;
+        }
+        return switch (datasetType) {
+            case "line" -> routeFeatureKey(properties);
+            case "station" -> routeStopFeatureKey(properties);
+            case "depot" -> depotFeatureKey(feature);
+            default -> "";
+        };
     }
 
     private String depotFeatureKey(Map<String, Object> feature) {
         Map<String, Object> properties = featureProperties(feature);
+        String id = firstText(properties, "depot_id", "station_id", "id", "code", "F001");
+        if (!id.isBlank()) {
+            return id;
+        }
         String name = firstText(properties, "depot_name", "name", "场站名称", "station_name");
         if (!name.isBlank()) {
             return name;
@@ -594,6 +1099,7 @@ public class RealDataServiceImpl implements RealDataService {
     private String routeStopFeatureKey(Map<String, Object> properties) {
         return List.of(
                         firstText(properties, "line_id"),
+                        firstText(properties, "dir"),
                         firstText(properties, "stop_id"),
                         firstText(properties, "seq")
                 ).stream()
@@ -602,32 +1108,184 @@ public class RealDataServiceImpl implements RealDataService {
                 .orElse("");
     }
 
-    private Map<String, Object> uploadOperation(String action, String datasetType, String targetId, Map<String, Object> feature, String areaName) {
+    private String routeStopStableKey(Map<String, Object> properties) {
+        return List.of(
+                        firstText(properties, "line_id"),
+                        firstText(properties, "dir"),
+                        firstText(properties, "stop_id")
+                ).stream()
+                .filter(value -> !value.isBlank())
+                .reduce((left, right) -> left + "|" + right)
+                .orElse(firstText(properties, "stop_id", "_featureId"));
+    }
+
+    private Map<String, Object> uploadOperation(
+            String action,
+            String datasetType,
+            String targetId,
+            Map<String, Object> feature,
+            String areaName,
+            List<String> changedFields,
+            List<String> protectedFields,
+            boolean candidateDeletion
+    ) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("targetId", targetId);
         if (!"delete".equals(action)) {
             payload.put("feature", feature);
         }
+        payload.put("changedFields", changedFields);
+        payload.put("protectedFields", protectedFields);
+        if ("station".equals(datasetType)) {
+            payload.put("stationScope", "route");
+        }
 
         String name = editTargetNameForFeature(datasetType, feature);
         Map<String, Object> operation = new LinkedHashMap<>();
-        operation.put("operationId", "upload_" + datasetType + "_" + action + "_" + Math.abs(targetId.hashCode()));
+        operation.put("operationId", "upload_" + datasetType + "_" + action + "_"
+                + Integer.toUnsignedString(targetId.hashCode()) + "_"
+                + UUID.randomUUID().toString().substring(0, 8));
         operation.put("areaName", areaName);
         operation.put("datasetType", datasetType);
         operation.put("type", action + "_" + datasetType + "_from_shp");
+        operation.put("source", "shp");
         operation.put("targetId", targetId);
         operation.put("title", name);
-        operation.put("detail", uploadOperationDetail(action, datasetType));
+        operation.put("detail", uploadOperationDetail(action, datasetType, changedFields, protectedFields));
+        operation.put("changedFields", changedFields);
+        operation.put("protectedFields", protectedFields);
+        operation.put("manualProtected", !protectedFields.isEmpty());
+        operation.put("candidateDeletion", candidateDeletion);
         operation.put("payload", payload);
         return operation;
     }
 
-    private String uploadOperationDetail(String action, String datasetType) {
+    private String registerShpComparison(
+            String username,
+            String areaName,
+            long revision,
+            String versionId,
+            List<Map<String, Object>> operations
+    ) {
+        if (operations.isEmpty()) {
+            return "";
+        }
+        String token = UUID.randomUUID().toString();
+        Map<String, String> canonicalOperations = new LinkedHashMap<>();
+        for (Map<String, Object> operation : operations) {
+            operation.put("comparisonToken", token);
+            String operationId = safeText(operation.get("operationId"));
+            canonicalOperations.put(operationId, canonicalOperationJson(operation));
+        }
+        pendingShpComparisons.put(token, new PendingShpComparison(
+                safeText(username),
+                areaName,
+                revision,
+                versionId,
+                canonicalOperations
+        ));
+        return token;
+    }
+
+    private void validatePendingShpOperations(
+            String username,
+            String areaName,
+            List<Map<String, Object>> operations,
+            Path root
+    ) {
+        Map<String, Object> state = readEditState(root);
+        long currentRevision = stateRevision(state);
+        String currentVersionId = activeTargetVersion(state).id();
+        for (Map<String, Object> operation : operations) {
+            if (!isShpUploadOperation(operation) && safeText(operation.get("comparisonToken")).isBlank()) {
+                continue;
+            }
+            String token = safeText(operation.get("comparisonToken"));
+            PendingShpComparison comparison = pendingShpComparisons.get(token);
+            if (comparison == null
+                    || !comparison.username().equals(safeText(username))
+                    || !comparison.areaName().equals(areaName)
+                    || comparison.revision() != currentRevision
+                    || !comparison.versionId().equals(currentVersionId)) {
+                throw new BusinessException("SHP 比对结果已失效，请重新上传并比对");
+            }
+            String operationId = safeText(operation.get("operationId"));
+            String expected = comparison.canonicalOperations().get(operationId);
+            if (expected == null || !expected.equals(canonicalOperationJson(operation))) {
+                throw new BusinessException("SHP 比对结果已被修改，请重新上传并比对");
+            }
+        }
+    }
+
+    private void removeCommittedShpComparisons(List<Map<String, Object>> operations) {
+        operations.stream()
+                .map(operation -> safeText(operation.get("comparisonToken")))
+                .filter(token -> !token.isBlank())
+                .distinct()
+                .forEach(pendingShpComparisons::remove);
+    }
+
+    private String canonicalOperationJson(Map<String, Object> operation) {
+        Map<String, Object> copy = new LinkedHashMap<>(operation);
+        copy.remove("deletionConfirmed");
+        return JSON.toJSONString(canonicalJsonValue(copy));
+    }
+
+    private Object canonicalJsonValue(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> sorted = new TreeMap<>();
+            map.forEach((key, item) -> sorted.put(String.valueOf(key), canonicalJsonValue(item)));
+            return sorted;
+        }
+        if (value instanceof List<?> list) {
+            return list.stream().map(this::canonicalJsonValue).toList();
+        }
+        return value;
+    }
+
+    private String uploadOperationDetail(String action, String datasetType, List<String> changedFields, List<String> protectedFields) {
         String label = datasetTypeLabel(datasetType);
-        return switch (action) {
+        String detail = switch (action) {
             case "add" -> "上传 SHP 新增" + label;
-            case "delete" -> "上传 SHP 删除" + label;
-            default -> "上传 SHP 替换" + label + "属性或几何";
+            case "delete" -> "上传 SHP 中缺少该" + label + "，待确认是否删除";
+            default -> "上传 SHP 更新" + label + "：" + changedFields.stream()
+                    .map(this::fieldDisplayName)
+                    .collect(java.util.stream.Collectors.joining("、"));
+        };
+        if (!protectedFields.isEmpty()) {
+            detail += "；保留人工修改：" + protectedFields.stream()
+                    .map(this::fieldDisplayName)
+                    .collect(java.util.stream.Collectors.joining("、"));
+        }
+        return detail;
+    }
+
+    private boolean isUnconfirmedShpDeletion(Map<String, Object> operation) {
+        String type = safeText(operation.get("type"));
+        return type.startsWith("delete_")
+                && type.endsWith("_from_shp")
+                && !booleanValue(operation.get("deletionConfirmed"));
+    }
+
+    private String fieldDisplayName(String field) {
+        return switch (safeText(field)) {
+            case GEOMETRY_FIELD -> "线路走向/位置";
+            case "line_id" -> "线路ID";
+            case "dir" -> "方向";
+            case "route_id" -> "线路编号";
+            case "first" -> "首班时间";
+            case "last" -> "末班时间";
+            case "interval" -> "发车间隔";
+            case "mode" -> "交通方式";
+            case "name" -> "名称";
+            case "price" -> "票价";
+            case "company" -> "所属公司";
+            case "stop_id" -> "站点ID";
+            case "stop_name" -> "站点名称";
+            case "seq" -> "站序";
+            case "lon" -> "经度";
+            case "lat" -> "纬度";
+            default -> safeText(field);
         };
     }
 
@@ -647,6 +1305,7 @@ public class RealDataServiceImpl implements RealDataService {
             case "line" -> "线路";
             case "station" -> "站点";
             case "depot" -> "场站";
+            case "all" -> "综合";
             default -> "数据";
         };
     }
@@ -657,11 +1316,332 @@ public class RealDataServiceImpl implements RealDataService {
 
     private Map<String, Object> normalizedFeatureForDiff(Map<String, Object> feature) {
         Map<String, Object> normalized = new LinkedHashMap<>();
-        normalized.put("geometry", feature.get("geometry"));
-        Map<String, Object> properties = new LinkedHashMap<>(featureProperties(feature));
-        properties.keySet().removeIf(key -> key.startsWith("_"));
+        normalized.put("geometry", normalizedValueForDiff(feature.get("geometry")));
+        Map<String, Object> properties = new TreeMap<>();
+        featureProperties(feature).forEach((key, value) -> {
+            if (!key.startsWith("_") && !DERIVED_FIELDS.contains(key)) {
+                properties.put(key, normalizedValueForDiff(value));
+            }
+        });
         normalized.put("properties", properties);
         return normalized;
+    }
+
+    private Object normalizedValueForDiff(Object value) {
+        if (value instanceof Number number) {
+            return round6(number.doubleValue());
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> normalized = new TreeMap<>();
+            map.forEach((key, item) -> normalized.put(String.valueOf(key), normalizedValueForDiff(item)));
+            return normalized;
+        }
+        if (value instanceof List<?> list) {
+            return list.stream().map(this::normalizedValueForDiff).toList();
+        }
+        return value == null ? null : String.valueOf(value).trim();
+    }
+
+    private MergeFeatureResult mergeUploadedFeature(
+            Map<String, Object> currentFeature,
+            Map<String, Object> uploadedFeature,
+            String datasetType,
+            List<Map<String, Object>> activeOperations
+    ) {
+        ManualProtection protection = manualProtectionForFeature(datasetType, currentFeature, activeOperations);
+        Map<String, Object> merged = new LinkedHashMap<>(uploadedFeature);
+        Map<String, Object> mergedProperties = new LinkedHashMap<>(featureProperties(uploadedFeature));
+        Map<String, Object> currentProperties = featureProperties(currentFeature);
+        for (String field : protection.fields()) {
+            if (GEOMETRY_FIELD.equals(field) || EXISTENCE_FIELD.equals(field) || DELETION_FIELD.equals(field)) {
+                continue;
+            }
+            if (currentProperties.containsKey(field)) {
+                mergedProperties.put(field, currentProperties.get(field));
+            } else {
+                mergedProperties.remove(field);
+            }
+        }
+        if (protection.fields().contains(GEOMETRY_FIELD)) {
+            merged.put("geometry", currentFeature.get("geometry"));
+        }
+        merged.put("properties", mergedProperties);
+        List<String> changedFields = changedFeatureFields(currentFeature, merged);
+        return new MergeFeatureResult(
+                merged,
+                changedFields,
+                sortedFields(protection.fields().stream()
+                        .filter(field -> !EXISTENCE_FIELD.equals(field) && !DELETION_FIELD.equals(field))
+                        .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new))),
+                !protection.fields().isEmpty()
+        );
+    }
+
+    private List<String> changedFeatureFields(Map<String, Object> currentFeature, Map<String, Object> mergedFeature) {
+        List<String> changed = new ArrayList<>();
+        if (!JSON.toJSONString(normalizedValueForDiff(currentFeature.get("geometry")))
+                .equals(JSON.toJSONString(normalizedValueForDiff(mergedFeature.get("geometry"))))) {
+            changed.add(GEOMETRY_FIELD);
+        }
+        Map<String, Object> currentProperties = featureProperties(currentFeature);
+        Map<String, Object> mergedProperties = featureProperties(mergedFeature);
+        Set<String> keys = new LinkedHashSet<>();
+        keys.addAll(currentProperties.keySet());
+        keys.addAll(mergedProperties.keySet());
+        keys.stream()
+                .filter(key -> !key.startsWith("_") && !DERIVED_FIELDS.contains(key))
+                .sorted()
+                .filter(key -> !JSON.toJSONString(normalizedValueForDiff(currentProperties.get(key)))
+                        .equals(JSON.toJSONString(normalizedValueForDiff(mergedProperties.get(key)))))
+                .forEach(changed::add);
+        return changed;
+    }
+
+    private List<String> nonInternalFeatureFields(Map<String, Object> feature, boolean includeGeometry) {
+        List<String> fields = featureProperties(feature).keySet().stream()
+                .filter(key -> !key.startsWith("_") && !DERIVED_FIELDS.contains(key))
+                .sorted()
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (includeGeometry && feature.get("geometry") != null) {
+            fields.add(0, GEOMETRY_FIELD);
+        }
+        return fields;
+    }
+
+    private ManualProtection manualProtectionForFeature(
+            String datasetType,
+            Map<String, Object> feature,
+            List<Map<String, Object>> activeOperations
+    ) {
+        Set<String> fields = new LinkedHashSet<>();
+        boolean manuallyDeleted = false;
+        for (Map<String, Object> operation : activeOperations) {
+            if (!datasetType.equals(normalizeDatasetType(textValue(operation.get("datasetType"))))
+                    || isShpUploadOperation(operation)) {
+                continue;
+            }
+            String type = safeText(operation.get("type"));
+            if ("station".equals(datasetType) && "reorder_line_stations".equals(type)) {
+                if (reorderOperationMatchesFeature(operation, feature)) {
+                    fields.add("seq");
+                }
+                continue;
+            }
+            if (!operationMatchesFeature(operation, feature, datasetType)) {
+                continue;
+            }
+            if (type.startsWith("delete_")) {
+                fields.add(DELETION_FIELD);
+                manuallyDeleted = true;
+                continue;
+            }
+            fields.addAll(manualChangedFields(operation, feature, datasetType));
+        }
+        return new ManualProtection(fields, manuallyDeleted);
+    }
+
+    private boolean isShpUploadOperation(Map<String, Object> operation) {
+        return "shp".equalsIgnoreCase(safeText(operation.get("source")))
+                || safeText(operation.get("type")).endsWith("_from_shp");
+    }
+
+    private boolean operationMatchesFeature(Map<String, Object> operation, Map<String, Object> feature, String datasetType) {
+        if ("station".equals(datasetType) && "route".equals(stationOperationScope(operation))) {
+            return routeStationOperationMatchesFeature(operation, feature);
+        }
+        Set<String> aliases = featureAliases(feature, datasetType);
+        String targetId = targetId(operation, operationPayload(operation));
+        if (!targetId.isBlank() && aliases.contains(targetId)) {
+            return true;
+        }
+        Map<String, Object> payloadFeature = payloadFeature(operationPayload(operation));
+        if (payloadFeature == null) {
+            return false;
+        }
+        Set<String> payloadAliases = featureAliases(payloadFeature, datasetType);
+        return payloadAliases.stream().anyMatch(aliases::contains);
+    }
+
+    private String stationOperationScope(Map<String, Object> operation) {
+        Map<String, Object> payload = operationPayload(operation);
+        String scope = firstText(operation, "stationScope", "scope");
+        return scope.isBlank() ? firstText(payload, "stationScope", "scope") : scope;
+    }
+
+    private boolean routeStationOperationMatchesFeature(Map<String, Object> operation, Map<String, Object> feature) {
+        String targetId = targetId(operation, operationPayload(operation));
+        if (!targetId.isBlank() && isExactStationTarget(feature, targetId)) {
+            return true;
+        }
+        Map<String, Object> payloadFeature = payloadFeature(operationPayload(operation));
+        if (payloadFeature == null) {
+            return false;
+        }
+        return routeStopStableKey(featureProperties(feature))
+                .equals(routeStopStableKey(featureProperties(payloadFeature)));
+    }
+
+    private Set<String> featureAliases(Map<String, Object> feature, String datasetType) {
+        Set<String> aliases = new LinkedHashSet<>();
+        Map<String, Object> properties = featureProperties(feature);
+        addAlias(aliases, safeText(feature.get("id")));
+        for (String key : List.of("_featureId", "_stationKey", "_lineKey", "_depotKey")) {
+            addAlias(aliases, firstText(properties, key));
+        }
+        if ("line".equals(datasetType)) {
+            addAlias(aliases, routeFeatureKey(properties));
+            addAlias(aliases, firstText(properties, "line_id"));
+            addAlias(aliases, firstText(properties, "route_id"));
+        } else if ("station".equals(datasetType)) {
+            addAlias(aliases, routeStopFeatureKey(properties));
+            addAlias(aliases, routeStopStableKey(properties));
+            addAlias(aliases, firstText(properties, "stop_id"));
+        } else if ("depot".equals(datasetType)) {
+            addAlias(aliases, depotFeatureKey(feature));
+            addAlias(aliases, firstText(properties, "depot_id", "station_id", "id", "code", "F001"));
+            addAlias(aliases, firstText(properties, "depot_name", "name", "场站名称", "station_name"));
+        }
+        return aliases;
+    }
+
+    private void addAlias(Set<String> aliases, String value) {
+        if (!safeText(value).isBlank()) {
+            aliases.add(safeText(value));
+        }
+    }
+
+    private boolean reorderOperationMatchesFeature(Map<String, Object> operation, Map<String, Object> feature) {
+        Map<String, Object> payload = operationPayload(operation);
+        Map<String, Object> properties = featureProperties(feature);
+        String lineId = firstText(payload, "lineId", "line_id");
+        if (!lineId.isBlank() && !lineId.equals(firstText(properties, "line_id", "route_id"))) {
+            return false;
+        }
+        String direction = firstText(payload, "dir", "direction");
+        if (!direction.isBlank() && !direction.equals(firstText(properties, "dir", "direction"))) {
+            return false;
+        }
+        String featureStopId = firstText(properties, "stop_id");
+        String featureSequence = firstText(properties, "seq", "sequence");
+        for (Map<String, Object> change : mutableMapList(payload.get("changes"))) {
+            String target = firstText(change, "targetId", "featureId");
+            String changeDirection = firstText(change, "dir", "direction");
+            if (!changeDirection.isBlank() && !changeDirection.equals(firstText(properties, "dir", "direction"))) {
+                continue;
+            }
+            if (!target.isBlank() && isExactStationTarget(feature, target)) {
+                return true;
+            }
+            String stopId = firstText(change, "stopId", "stop_id");
+            String fromSequence = firstText(change, "fromSeq", "from_sequence");
+            String toSequence = firstText(change, "toSeq", "seq");
+            if (!stopId.isBlank() && stopId.equals(featureStopId)
+                    && (featureSequence.equals(fromSequence) || featureSequence.equals(toSequence))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private Set<String> manualChangedFields(Map<String, Object> operation, Map<String, Object> feature, String datasetType) {
+        Map<String, Object> payload = operationPayload(operation);
+        Set<String> fields = new LinkedHashSet<>();
+        stringList(operation.get("changedFields")).forEach(field -> fields.add(normalizeProtectedField(field)));
+        stringList(payload.get("changedFields")).forEach(field -> fields.add(normalizeProtectedField(field)));
+        String type = safeText(operation.get("type"));
+        if (type.startsWith("add_")) {
+            if (fields.isEmpty()) {
+                fields.addAll(nonInternalFeatureFields(feature, true));
+            }
+            fields.add(EXISTENCE_FIELD);
+        } else if (fields.isEmpty()) {
+            if (type.startsWith("rename_")) {
+                fields.add(switch (datasetType) {
+                    case "line" -> "name";
+                    case "station" -> "stop_name";
+                    case "depot" -> nameField(featureProperties(feature), "depot");
+                    default -> "name";
+                });
+            } else if (type.startsWith("move_")) {
+                fields.add(GEOMETRY_FIELD);
+                if ("station".equals(datasetType)) {
+                    fields.add("lon");
+                    fields.add("lat");
+                }
+            } else if ("update_line_headway".equals(type)) {
+                fields.add("interval");
+            } else if ("update_line_stations".equals(type)) {
+                fields.add("station_list_edit");
+            } else if (type.startsWith("replace_")) {
+                fields.addAll(legacyChangedFields(operation, feature));
+                if (fields.isEmpty()) {
+                    Map<String, Object> payloadFeature = payloadFeature(payload);
+                    fields.addAll(nonInternalFeatureFields(payloadFeature == null ? feature : payloadFeature, true));
+                }
+            }
+        }
+        if ("station".equals(datasetType) && (fields.contains("lon") || fields.contains("lat"))) {
+            fields.add(GEOMETRY_FIELD);
+        }
+        fields.removeIf(String::isBlank);
+        return fields;
+    }
+
+    private Set<String> legacyChangedFields(Map<String, Object> operation, Map<String, Object> feature) {
+        String detail = safeText(operation.get("detail"));
+        int separator = Math.max(detail.lastIndexOf('：'), detail.lastIndexOf(':'));
+        if (separator < 0 || separator >= detail.length() - 1) {
+            return Set.of();
+        }
+        Map<String, String> labels = Map.ofEntries(
+                Map.entry("线路ID", "line_id"),
+                Map.entry("方向", "dir"),
+                Map.entry("线路编号", "route_id"),
+                Map.entry("首班时间", "first"),
+                Map.entry("末班时间", "last"),
+                Map.entry("发车间隔", "interval"),
+                Map.entry("交通方式", "mode"),
+                Map.entry("名称", nameField(featureProperties(feature), "depot")),
+                Map.entry("票价", "price"),
+                Map.entry("所属公司", "company"),
+                Map.entry("站点ID", "stop_id"),
+                Map.entry("站点名称", "stop_name"),
+                Map.entry("站序", "seq"),
+                Map.entry("经度", "lon"),
+                Map.entry("纬度", "lat"),
+                Map.entry("线路走向", GEOMETRY_FIELD),
+                Map.entry("几何", GEOMETRY_FIELD)
+        );
+        Set<String> fields = new LinkedHashSet<>();
+        for (String label : detail.substring(separator + 1).split("[、,，;；]")) {
+            String text = safeText(label);
+            if (text.isBlank() || "属性".equals(text)) {
+                continue;
+            }
+            String field = labels.get(text);
+            if (field == null && featureProperties(feature).containsKey(text)) {
+                field = text;
+            }
+            if (field != null) {
+                fields.add(field);
+            }
+        }
+        return fields;
+    }
+
+    private String normalizeProtectedField(String field) {
+        String normalized = safeText(field);
+        if ("the_geom".equalsIgnoreCase(normalized)
+                || "$geometry".equalsIgnoreCase(normalized)
+                || "线路走向".equals(normalized)
+                || "位置".equals(normalized)) {
+            return GEOMETRY_FIELD;
+        }
+        return normalized;
+    }
+
+    private List<String> sortedFields(Set<String> fields) {
+        return fields.stream().filter(field -> !field.isBlank()).sorted().toList();
     }
 
     private void deleteRecursively(Path path) {
@@ -1076,7 +2056,8 @@ public class RealDataServiceImpl implements RealDataService {
             }
             enriched.put("versionId", versionId);
             enriched.put("areaName", areaName);
-            enriched.put("datasetType", datasetType);
+            String operationDatasetType = normalizeDatasetType(textValue(operation.get("datasetType")));
+            enriched.put("datasetType", operationDatasetType.isBlank() ? datasetType : operationDatasetType);
             enriched.put("username", manifest.get("username"));
             enriched.put("committedAt", committedAt);
             if (evidenceImages != null && !evidenceImages.isEmpty()) {
@@ -1190,15 +2171,14 @@ public class RealDataServiceImpl implements RealDataService {
             return;
         }
         Set<String> datasetTypes = materializableDatasetTypes(operations);
-        if (datasetTypes.contains("line")) {
+        if (datasetTypes.contains("line") || datasetTypes.contains("station")) {
             Map<String, Object> lines = readStandardShp(versionDir.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
+            Map<String, Object> routeStops = readStationData(versionDir.resolve(BUS_STATION_FOLDER));
             applyUploadComparableEdits(operations, lines, "line");
-            writeStandardShp(versionDir.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路", lines);
-        }
-        if (datasetTypes.contains("station")) {
-            Map<String, Object> routeStops = readStandardShp(versionDir.resolve(BUS_STATION_FOLDER), STANDARD_STOP_FIELDS, Point.class, "站点");
             applyUploadComparableEdits(operations, routeStops, "station");
-            writeStandardShp(versionDir.resolve(BUS_STATION_FOLDER), STANDARD_STOP_FIELDS, Point.class, "站点", routeStops);
+            enrichDerivedAttributes(lines, routeStops);
+            writeStandardShp(versionDir.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路", lines);
+            writeStationData(versionDir.resolve(BUS_STATION_FOLDER), routeStops);
         }
         if (datasetTypes.contains("depot")) {
             Map<String, Object> depots = readFirstShp(versionDir.resolve(BUS_DEPOT_FOLDER));
@@ -1245,6 +2225,13 @@ public class RealDataServiceImpl implements RealDataService {
             String typeName = dataStore.getTypeNames()[0];
             SimpleFeatureType schema = dataStore.getSchema(typeName);
             validateStandardSchema(shpFile, schema, expectedFields, expectedGeometryType, datasetLabel);
+            List<String> expandedFields = expandedAttributeFields(schema, collection);
+            if (expandedFields.size() > schemaAttributeFields(schema).size()) {
+                dataStore.dispose();
+                dataStore = null;
+                rewriteExpandedShapefile(shpFile, expandedFields, expectedGeometryType, datasetLabel, collection);
+                return;
+            }
             SimpleFeatureCollection features = toSimpleFeatureCollection(schema, collection, expectedGeometryType, datasetLabel);
             SimpleFeatureSource source = dataStore.getFeatureSource(typeName);
             if (!(source instanceof SimpleFeatureStore store)) {
@@ -1267,6 +2254,215 @@ public class RealDataServiceImpl implements RealDataService {
                 dataStore.dispose();
             }
         }
+    }
+
+    private void rewriteExpandedShapefile(
+            File shpFile,
+            List<String> fields,
+            Class<? extends Geometry> expectedGeometryType,
+            String datasetLabel,
+            Map<String, Object> collection
+    ) {
+        Path tempDir = null;
+        try {
+            tempDir = Files.createTempDirectory(shpFile.toPath().getParent(), ".shp-rewrite-");
+            Path tempShp = tempDir.resolve(shpFile.getName());
+            writeNewShapefile(shpFile, tempShp, fields, expectedGeometryType, datasetLabel, collection);
+            replaceShapefileBundle(tempShp, shpFile.toPath());
+        } catch (BusinessException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new BusinessException("扩展" + datasetLabel + "SHP 字段失败: " + shpFile.getAbsolutePath(), error);
+        } finally {
+            deleteRecursively(tempDir);
+        }
+    }
+
+    private void writeNewShapefile(
+            File sourceShp,
+            Path targetShp,
+            List<String> fields,
+            Class<? extends Geometry> expectedGeometryType,
+            String datasetLabel,
+            Map<String, Object> collection
+    ) {
+        ShapefileDataStore sourceStore = null;
+        ShapefileDataStore targetStore = null;
+        Transaction transaction = null;
+        try {
+            sourceStore = new ShapefileDataStore(sourceShp.toURI().toURL());
+            sourceStore.setMemoryMapped(false);
+            sourceStore.setBufferCachingEnabled(false);
+            Charset charset = shapefileCharset(sourceShp);
+            sourceStore.setCharset(charset);
+            SimpleFeatureType sourceSchema = sourceStore.getSchema(sourceStore.getTypeNames()[0]);
+            Class<?> geometryBinding = sourceSchema.getGeometryDescriptor() == null
+                    ? expectedGeometryType
+                    : sourceSchema.getGeometryDescriptor().getType().getBinding();
+            if ("station".equals(normalizeDatasetType(datasetLabel))) {
+                geometryBinding = Point.class;
+            }
+
+            SimpleFeatureTypeBuilder schemaBuilder = new SimpleFeatureTypeBuilder();
+            schemaBuilder.setName(sourceSchema.getTypeName());
+            if (sourceSchema.getCoordinateReferenceSystem() != null) {
+                schemaBuilder.setCRS(sourceSchema.getCoordinateReferenceSystem());
+            }
+            String geometryName = sourceSchema.getGeometryDescriptor() == null
+                    ? "the_geom"
+                    : sourceSchema.getGeometryDescriptor().getName().getLocalPart();
+            schemaBuilder.add(geometryName, geometryBinding == null ? Geometry.class : geometryBinding);
+
+            Map<String, AttributeDescriptor> sourceDescriptors = new LinkedHashMap<>();
+            for (AttributeDescriptor descriptor : sourceSchema.getAttributeDescriptors()) {
+                if (sourceSchema.getGeometryDescriptor() != null
+                        && descriptor.getName().equals(sourceSchema.getGeometryDescriptor().getName())) {
+                    continue;
+                }
+                sourceDescriptors.put(descriptor.getName().getLocalPart(), descriptor);
+            }
+            for (String field : fields) {
+                AttributeDescriptor sourceDescriptor = sourceDescriptors.get(field);
+                if (sourceDescriptor != null) {
+                    schemaBuilder.add(sourceDescriptor);
+                    continue;
+                }
+                Class<?> binding = inferredAttributeBinding(collection, field);
+                if (String.class.equals(binding)) {
+                    schemaBuilder.length(inferredStringLength(collection, field));
+                }
+                schemaBuilder.add(field, binding);
+            }
+            SimpleFeatureType targetSchema = schemaBuilder.buildFeatureType();
+
+            Files.createDirectories(targetShp.getParent());
+            ShapefileDataStoreFactory factory = new ShapefileDataStoreFactory();
+            Map<String, Serializable> params = new LinkedHashMap<>();
+            params.put("url", targetShp.toUri().toURL());
+            params.put("create spatial index", Boolean.TRUE);
+            targetStore = (ShapefileDataStore) factory.createNewDataStore(params);
+            targetStore.setCharset(charset);
+            targetStore.createSchema(targetSchema);
+
+            SimpleFeatureCollection features = toSimpleFeatureCollection(
+                    targetStore.getSchema(targetStore.getTypeNames()[0]),
+                    collection,
+                    expectedGeometryType,
+                    datasetLabel
+            );
+            SimpleFeatureSource source = targetStore.getFeatureSource(targetStore.getTypeNames()[0]);
+            if (!(source instanceof SimpleFeatureStore store)) {
+                throw new BusinessException(datasetLabel + "SHP 不支持写入: " + targetShp);
+            }
+            transaction = new DefaultTransaction("create-real-data-shp");
+            store.setTransaction(transaction);
+            store.addFeatures(features);
+            transaction.commit();
+            Files.writeString(sidecarPath(targetShp, ".cpg"), charset.name(), StandardCharsets.UTF_8);
+            copyProjectionIfMissing(sourceShp.toPath(), targetShp);
+        } catch (BusinessException error) {
+            rollbackQuietly(transaction);
+            throw error;
+        } catch (Exception error) {
+            rollbackQuietly(transaction);
+            throw new BusinessException("生成" + datasetLabel + "SHP 失败: " + targetShp, error);
+        } finally {
+            closeQuietly(transaction);
+            if (targetStore != null) {
+                targetStore.dispose();
+            }
+            if (sourceStore != null) {
+                sourceStore.dispose();
+            }
+        }
+    }
+
+    private List<String> expandedAttributeFields(SimpleFeatureType schema, Map<String, Object> collection) {
+        LinkedHashSet<String> fields = new LinkedHashSet<>(schemaAttributeFields(schema));
+        for (Map<String, Object> feature : mutableMapList(collection.get("features"))) {
+            featureProperties(feature).keySet().stream()
+                    .filter(key -> !key.startsWith("_"))
+                    .forEach(fields::add);
+        }
+        return List.copyOf(fields);
+    }
+
+    private List<String> schemaAttributeFields(SimpleFeatureType schema) {
+        return schema.getAttributeDescriptors().stream()
+                .filter(descriptor -> schema.getGeometryDescriptor() == null
+                        || !descriptor.getName().equals(schema.getGeometryDescriptor().getName()))
+                .map(descriptor -> descriptor.getName().getLocalPart())
+                .toList();
+    }
+
+    private Class<?> inferredAttributeBinding(Map<String, Object> collection, String field) {
+        boolean sawValue = false;
+        boolean allIntegral = true;
+        boolean allNumeric = true;
+        boolean allBoolean = true;
+        for (Map<String, Object> feature : mutableMapList(collection.get("features"))) {
+            Object value = featureProperties(feature).get(field);
+            if (value == null || safeText(value).isBlank()) {
+                continue;
+            }
+            sawValue = true;
+            allBoolean &= value instanceof Boolean;
+            allNumeric &= value instanceof Number;
+            allIntegral &= value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long;
+        }
+        if (!sawValue) return String.class;
+        if (allBoolean) return Boolean.class;
+        if (allIntegral) return Long.class;
+        if (allNumeric) return Double.class;
+        return String.class;
+    }
+
+    private int inferredStringLength(Map<String, Object> collection, String field) {
+        int length = 32;
+        for (Map<String, Object> feature : mutableMapList(collection.get("features"))) {
+            length = Math.max(length, safeText(featureProperties(feature).get(field)).length());
+        }
+        return Math.min(length, 254);
+    }
+
+    private void replaceShapefileBundle(Path sourceShp, Path targetShp) throws IOException {
+        String targetBaseName = fileBaseName(targetShp.getFileName().toString());
+        Path targetFolder = targetShp.getParent();
+        try (Stream<Path> stream = Files.list(targetFolder)) {
+            for (Path path : stream.filter(Files::isRegularFile).toList()) {
+                if (fileBaseName(path.getFileName().toString()).equalsIgnoreCase(targetBaseName)) {
+                    Files.deleteIfExists(path);
+                }
+            }
+        }
+        Path sourceFolder = sourceShp.getParent();
+        String sourceBaseName = fileBaseName(sourceShp.getFileName().toString());
+        try (Stream<Path> stream = Files.list(sourceFolder)) {
+            for (Path path : stream.filter(Files::isRegularFile).toList()) {
+                if (!fileBaseName(path.getFileName().toString()).equalsIgnoreCase(sourceBaseName)) {
+                    continue;
+                }
+                Files.move(path, targetFolder.resolve(path.getFileName()), StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private void copyProjectionIfMissing(Path sourceShp, Path targetShp) throws IOException {
+        Path targetPrj = sidecarPath(targetShp, ".prj");
+        if (Files.isRegularFile(targetPrj)) return;
+        Path sourcePrj = sidecarPath(sourceShp, ".prj");
+        if (Files.isRegularFile(sourcePrj)) {
+            Files.copy(sourcePrj, targetPrj, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private Path sidecarPath(Path shpPath, String extension) {
+        return shpPath.resolveSibling(fileBaseName(shpPath.getFileName().toString()) + extension);
+    }
+
+    private String fileBaseName(String fileName) {
+        int dot = fileName.lastIndexOf('.');
+        return dot > 0 ? fileName.substring(0, dot) : fileName;
     }
 
     private SimpleFeatureCollection toSimpleFeatureCollection(SimpleFeatureType schema, Map<String, Object> collection, Class<? extends Geometry> expectedGeometryType, String datasetLabel) {
@@ -1476,9 +2672,59 @@ public class RealDataServiceImpl implements RealDataService {
         }
     }
 
+    private void applyLineStationReorder(List<Map<String, Object>> features, Map<String, Object> payload) {
+        String lineId = firstText(payload, "lineId", "line_id");
+        String direction = firstText(payload, "dir", "direction");
+        List<Map<String, Object>> changes = mutableMapList(payload.get("changes"));
+        List<Map<String, Object>> matchedFeatures = new ArrayList<>();
+        List<Object> sequenceValues = new ArrayList<>();
+        for (Map<String, Object> change : changes) {
+            String targetId = firstText(change, "targetId", "featureId");
+            String stopId = firstText(change, "stopId", "stop_id");
+            String changeDirection = firstText(change, "dir", "direction");
+            String targetDirection = changeDirection.isBlank() ? direction : changeDirection;
+            String fromSequence = firstText(change, "fromSeq", "from_sequence");
+            String toSequence = firstText(change, "toSeq", "seq");
+            if ((targetId.isBlank() && stopId.isBlank()) || toSequence.isBlank()) {
+                continue;
+            }
+            String routeStopTarget = lineId.isBlank() || targetDirection.isBlank()
+                    || stopId.isBlank() || fromSequence.isBlank()
+                    ? ""
+                    : lineId + "|" + targetDirection + "|" + stopId + "|" + fromSequence;
+            for (Map<String, Object> feature : features) {
+                Map<String, Object> properties = featureProperties(feature);
+                if (!lineId.isBlank() && !lineId.equals(firstText(properties, "line_id", "route_id"))) {
+                    continue;
+                }
+                if (!targetDirection.isBlank()
+                        && !targetDirection.equals(firstText(properties, "dir", "direction"))) {
+                    continue;
+                }
+                if ((!targetId.isBlank() && isExactStationTarget(feature, targetId))
+                        || (!routeStopTarget.isBlank() && isExactStationTarget(feature, routeStopTarget))
+                        || (!stopId.isBlank()
+                            && stopId.equals(firstText(properties, "stop_id"))
+                            && fromSequence.equals(firstText(properties, "seq", "sequence")))) {
+                    matchedFeatures.add(feature);
+                    sequenceValues.add(integerOrText(toSequence));
+                    break;
+                }
+            }
+        }
+        for (int index = 0; index < matchedFeatures.size(); index++) {
+            featureProperties(matchedFeatures.get(index)).put("seq", sequenceValues.get(index));
+        }
+    }
+
     private Map<String, Object> payloadFeature(Map<String, Object> payload) {
         Object featureValue = payload.get("feature");
-        return featureValue instanceof Map<?, ?> feature ? stringObjectMap(feature) : null;
+        if (!(featureValue instanceof Map<?, ?> feature)) {
+            return null;
+        }
+        Map<String, Object> result = stringObjectMap(feature);
+        featureProperties(result).keySet().removeIf(DERIVED_FIELDS::contains);
+        return result;
     }
 
     @SuppressWarnings("unchecked")
@@ -1490,6 +2736,10 @@ public class RealDataServiceImpl implements RealDataService {
         List<Map<String, Object>> features = (List<Map<String, Object>>) rawFeatures;
         String type = safeText(operation.get("type"));
         Map<String, Object> payload = operationPayload(operation);
+        if ("reorder_line_stations".equals(type)) {
+            applyLineStationReorder(features, payload);
+            return;
+        }
         if (type.startsWith("add_")) {
             Map<String, Object> payloadFeature = payloadFeature(payload);
             if (payloadFeature != null) {
@@ -1506,13 +2756,32 @@ public class RealDataServiceImpl implements RealDataService {
         if (targetId.isBlank()) {
             return;
         }
+        boolean routeScoped = "route".equals(stationOperationScope(operation));
         if (type.startsWith("replace_")) {
             Map<String, Object> payloadFeature = payloadFeature(payload);
             if (payloadFeature == null) {
                 return;
             }
+            Map<String, Object> payloadProperties = featureProperties(payloadFeature);
+            String payloadStationKey = firstText(payloadProperties, "_stationKey");
+            String payloadStopId = firstText(payloadProperties, "stop_id");
+            if (!routeScoped && (targetId.equals(payloadStationKey) || targetId.equals(payloadStopId))) {
+                for (Map<String, Object> feature : features) {
+                    if (isStationTarget(feature, targetId)) {
+                        if (type.endsWith("_from_shp")) {
+                            featureProperties(feature).keySet().removeIf(key ->
+                                    !key.startsWith("_")
+                                            && !ROUTE_STOP_RELATION_FIELDS.contains(key)
+                                            && !DERIVED_FIELDS.contains(key)
+                                            && !payloadProperties.containsKey(key));
+                        }
+                        applyPhysicalStationReplacement(feature, payloadFeature);
+                    }
+                }
+                return;
+            }
             for (int index = 0; index < features.size(); index++) {
-                if (isStationTarget(features.get(index), targetId)) {
+                if (stationTargetMatches(features.get(index), targetId, routeScoped)) {
                     features.set(index, payloadFeature);
                     return;
                 }
@@ -1520,11 +2789,11 @@ public class RealDataServiceImpl implements RealDataService {
             return;
         }
         if (type.startsWith("delete_")) {
-            features.removeIf(feature -> isStationTarget(feature, targetId));
+            features.removeIf(feature -> stationTargetMatches(feature, targetId, routeScoped));
             return;
         }
         for (Map<String, Object> feature : features) {
-            if (!isStationTarget(feature, targetId)) {
+            if (!stationTargetMatches(feature, targetId, routeScoped)) {
                 continue;
             }
             Map<String, Object> properties = featureProperties(feature);
@@ -1545,7 +2814,41 @@ public class RealDataServiceImpl implements RealDataService {
         }
     }
 
+    private void applyPhysicalStationReplacement(Map<String, Object> targetFeature, Map<String, Object> replacementFeature) {
+        Object geometry = replacementFeature.get("geometry");
+        if (geometry != null) {
+            targetFeature.put("geometry", geometry);
+        }
+        Map<String, Object> targetProperties = featureProperties(targetFeature);
+        Map<String, Object> replacementProperties = featureProperties(replacementFeature);
+        replacementProperties.forEach((key, value) -> {
+            if (!key.startsWith("_")
+                    && !ROUTE_STOP_RELATION_FIELDS.contains(key)
+                    && !DERIVED_FIELDS.contains(key)) {
+                targetProperties.put(key, value);
+            }
+        });
+    }
+
     private boolean isStationTarget(Map<String, Object> feature, String targetId) {
+        if (isExactStationTarget(feature, targetId)) {
+            return true;
+        }
+        Map<String, Object> properties = featureProperties(feature);
+        for (String key : List.of("_stationKey", "stop_id", "line_id", "id", "stop_name")) {
+            String value = firstText(properties, key);
+            if (!value.isBlank() && targetId.equals(value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean stationTargetMatches(Map<String, Object> feature, String targetId, boolean routeScoped) {
+        return routeScoped ? isExactStationTarget(feature, targetId) : isStationTarget(feature, targetId);
+    }
+
+    private boolean isExactStationTarget(Map<String, Object> feature, String targetId) {
         if (targetId.equals(safeText(feature.get("id")))) {
             return true;
         }
@@ -1553,7 +2856,13 @@ public class RealDataServiceImpl implements RealDataService {
         if (targetId.equals(routeStopFeatureKey(properties))) {
             return true;
         }
-        return targetId.equals(firstText(properties, "_featureId", "_stationKey", "line_id", "stop_id", "id", "stop_name"));
+        for (String key : List.of("_featureId", "_routeStopKey")) {
+            String value = firstText(properties, key);
+            if (!value.isBlank() && targetId.equals(value)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Map<String, Object> standardStopFeatureFromOperation(Map<String, Object> operation, Map<String, Object> payload) {
@@ -1655,6 +2964,7 @@ public class RealDataServiceImpl implements RealDataService {
             case "station", "stations", "站点" -> "station";
             case "line", "lines", "route", "线路" -> "line";
             case "depot", "depots", "场站" -> "depot";
+            case "all", "mixed", "综合", "全部数据" -> "all";
             default -> "";
         };
     }
@@ -1702,9 +3012,18 @@ public class RealDataServiceImpl implements RealDataService {
             Map<String, Object> properties = featureProperties(feature);
             if (targetId.equals(routeFeatureKey(properties))
                     || targetId.equals(routeStopFeatureKey(properties))
-                    || targetId.equals(depotFeatureKey(feature))
-                    || targetId.equals(firstText(properties, "_featureId", "_stationKey", "line_id", "stop_id", "id", "name", "stop_name", "depot_name", "场站名称", "station_name"))) {
+                    || targetId.equals(depotFeatureKey(feature))) {
                 return index;
+            }
+            for (String key : List.of(
+                    "_featureId", "_stationKey", "_lineKey", "_depotKey",
+                    "line_id", "route_id", "stop_id", "depot_id", "station_id",
+                    "id", "name", "stop_name", "depot_name", "场站名称", "station_name"
+            )) {
+                String value = firstText(properties, key);
+                if (!value.isBlank() && targetId.equals(value)) {
+                    return index;
+                }
             }
         }
         return -1;
@@ -1807,6 +3126,397 @@ public class RealDataServiceImpl implements RealDataService {
         return readShp(shpFile, expectedFields, expectedGeometryType, datasetLabel);
     }
 
+    /**
+     * 读取站点数据为"线路经停占位"集合（line_id/dir/stop_id/stop_name/seq/lon/lat）。
+     * 兼容两种磁盘格式：
+     * 1) 旧标准：站点 SHP 即占位级（含 line_id/seq 字段），直接读取；
+     * 2) 物理唯一站台：站点 SHP 每站台一个点（stop_id/stop_name/lon/lat），
+     *    经停关系由同目录 line_stop_sequence.csv 提供，读取时合成占位集合。
+     */
+    private Map<String, Object> readStationData(Path folder) {
+        File shpFile = findFirstShp(folder);
+        if (shpFile == null) {
+            throw new BusinessException("缺少标准站点SHP: " + folder);
+        }
+        if (isUniqueStationShp(shpFile)) {
+            Map<String, Object> uniqueStops = readShp(shpFile, UNIQUE_STOP_FIELDS, Point.class, "站点");
+            return routeStopsFromSequenceCsv(folder, uniqueStops);
+        }
+        return readShp(shpFile, STANDARD_STOP_FIELDS, Point.class, "站点");
+    }
+
+    /**
+     * 写回站点数据，保持磁盘原有格式：
+     * 旧标准直接重写占位 SHP；物理唯一站台格式则聚合站台重写 SHP，并同步经停 CSV。
+     */
+    private void writeStationData(Path folder, Map<String, Object> routeStops) {
+        File shpFile = findFirstShp(folder);
+        if (shpFile == null) {
+            throw new BusinessException("缺少标准站点SHP: " + folder);
+        }
+        if (isUniqueStationShp(shpFile)) {
+            Map<String, Object> uniqueStops = uniqueStationCollectionForWrite(routeStops);
+            rewriteShp(shpFile, UNIQUE_STOP_FIELDS, Point.class, "站点", uniqueStops);
+            writeSequenceCsv(folder.resolve(STATION_SEQUENCE_CSV), routeStops);
+            return;
+        }
+        rewriteShp(shpFile, STANDARD_STOP_FIELDS, Point.class, "站点", routeStops);
+    }
+
+    private boolean isUniqueStationShp(File shpFile) {
+        List<String> fields = shapefileFieldNames(shpFile);
+        return fields.contains("stop_id")
+                && !(fields.contains("line_id") && fields.contains("seq"));
+    }
+
+    private List<String> shapefileFieldNames(File shpFile) {
+        ShapefileDataStore dataStore = null;
+        try {
+            dataStore = new ShapefileDataStore(shpFile.toURI().toURL());
+            dataStore.setMemoryMapped(false);
+            dataStore.setBufferCachingEnabled(false);
+            SimpleFeatureType schema = dataStore.getSchema(dataStore.getTypeNames()[0]);
+            return schema.getAttributeDescriptors().stream()
+                    .filter(descriptor -> schema.getGeometryDescriptor() == null
+                            || !descriptor.getName().equals(schema.getGeometryDescriptor().getName()))
+                    .map(descriptor -> descriptor.getName().getLocalPart())
+                    .toList();
+        } catch (Exception error) {
+            throw new BusinessException("读取真实数据 shp 字段失败: " + shpFile.getAbsolutePath(), error);
+        } finally {
+            if (dataStore != null) {
+                dataStore.dispose();
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> routeStopsFromSequenceCsv(Path folder, Map<String, Object> uniqueStops) {
+        Path csvFile = folder == null ? null : folder.resolve(STATION_SEQUENCE_CSV);
+        if (csvFile == null || !Files.isRegularFile(csvFile)) {
+            throw new BusinessException("站点为物理唯一站台格式，但缺少经停关系文件 "
+                    + STATION_SEQUENCE_CSV + ": " + folder
+                    + "；该文件需与站点 SHP 同目录，包含 line_id,seq,stop_id,stop_name,lon,lat 列");
+        }
+
+        Map<String, Map<String, Object>> stationByStopId = new LinkedHashMap<>();
+        for (Map<String, Object> feature : mutableMapList(uniqueStops.get("features"))) {
+            String stopId = firstText(featureProperties(feature), "stop_id");
+            if (!stopId.isBlank()) {
+                if (stationByStopId.putIfAbsent(stopId, feature) != null) {
+                    throw new BusinessException("站点 SHP 存在重复 stop_id: " + stopId);
+                }
+            }
+        }
+
+        Map<String, Object> collection = emptyFeatureCollection();
+        List<Map<String, Object>> features = (List<Map<String, Object>>) collection.get("features");
+        Set<String> referencedStopIds = new LinkedHashSet<>();
+        for (Map<String, String> row : readSequenceCsv(csvFile)) {
+            String lineId = safeText(row.get("line_id"));
+            String direction = safeText(row.getOrDefault("dir", "0"));
+            if (direction.isBlank()) {
+                direction = "0";
+            }
+            String seq = safeText(row.getOrDefault("seq", row.get("sequence")));
+            String stopId = safeText(row.get("stop_id"));
+            if (lineId.isBlank() || stopId.isBlank()) {
+                continue;
+            }
+            referencedStopIds.add(stopId);
+            Map<String, Object> station = stationByStopId.get(stopId);
+            Object geometry = null;
+            String stopName = safeText(row.get("stop_name"));
+            if (station != null) {
+                geometry = station.get("geometry");
+                String stationName = firstText(featureProperties(station), "stop_name");
+                if (!stationName.isBlank()) {
+                    stopName = stationName;
+                }
+            }
+            Double lon = doubleValue(row.get("lon"));
+            Double lat = doubleValue(row.get("lat"));
+            if (geometry == null && lon != null && lat != null) {
+                geometry = pointGeometry(lon, lat);
+            }
+            if (geometry == null) {
+                continue;
+            }
+            if (lon == null || lat == null) {
+                Object coordsLon = firstCoordinateOf(geometry, 0);
+                Object coordsLat = firstCoordinateOf(geometry, 1);
+                lon = coordsLon instanceof Number number ? number.doubleValue() : null;
+                lat = coordsLat instanceof Number number ? number.doubleValue() : null;
+            }
+            String featureId = "rs." + lineId + "." + direction + "." + seq;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", "Feature");
+            item.put("id", featureId);
+            item.put("geometry", geometry);
+            Map<String, Object> properties = new LinkedHashMap<>();
+            if (station != null) {
+                featureProperties(station).forEach((key, value) -> {
+                    if (!key.startsWith("_") && !ROUTE_STOP_RELATION_FIELDS.contains(key)) {
+                        properties.put(key, value);
+                    }
+                });
+            }
+            properties.put("line_id", lineId);
+            properties.put("dir", direction);
+            properties.put("stop_id", stopId);
+            properties.put("stop_name", stopName);
+            properties.put("seq", integerOrText(seq));
+            properties.put("lon", lon == null ? null : round6(lon));
+            properties.put("lat", lat == null ? null : round6(lat));
+            properties.put("_featureId", featureId);
+            item.put("properties", properties);
+            features.add(item);
+        }
+
+        // 不在任何线路经停关系中的站台（例如编辑新增的独立站点）需保留，
+        // 否则写回后再读取会丢失。
+        for (Map.Entry<String, Map<String, Object>> entry : stationByStopId.entrySet()) {
+            if (referencedStopIds.contains(entry.getKey())) {
+                continue;
+            }
+            Map<String, Object> station = entry.getValue();
+            Map<String, Object> stationProperties = featureProperties(station);
+            String featureId = "rs.orphan." + entry.getKey();
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("type", "Feature");
+            item.put("id", featureId);
+            item.put("geometry", station.get("geometry"));
+            Map<String, Object> properties = new LinkedHashMap<>();
+            stationProperties.forEach((key, value) -> {
+                if (!key.startsWith("_") && !ROUTE_STOP_RELATION_FIELDS.contains(key)) {
+                    properties.put(key, value);
+                }
+            });
+            properties.put("line_id", "");
+            properties.put("dir", "");
+            properties.put("stop_id", entry.getKey());
+            properties.put("stop_name", firstText(stationProperties, "stop_name"));
+            properties.put("seq", "");
+            properties.put("lon", stationProperties.get("lon"));
+            properties.put("lat", stationProperties.get("lat"));
+            properties.put("_featureId", featureId);
+            item.put("properties", properties);
+            features.add(item);
+        }
+
+        refreshFeatureCollectionMetadata(collection);
+        collection.put("fileName", uniqueStops.get("fileName"));
+        collection.put("sequenceCsv", csvFile.getFileName().toString());
+        return collection;
+    }
+
+    private Object integerOrText(String value) {
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (Exception ignored) {
+            return value;
+        }
+    }
+
+    private Object firstCoordinateOf(Object geometryValue, int index) {
+        if (!(geometryValue instanceof Map<?, ?> geometry)) {
+            return null;
+        }
+        Object coordinates = geometry.get("coordinates");
+        if (coordinates instanceof List<?> list && list.size() > index) {
+            return list.get(index);
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> uniqueStationCollectionForWrite(Map<String, Object> routeStops) {
+        Map<String, Object> collection = emptyFeatureCollection();
+        List<Map<String, Object>> uniqueFeatures = (List<Map<String, Object>>) collection.get("features");
+        Map<String, Map<String, Object>> stationByKey = new LinkedHashMap<>();
+        Map<String, Set<String>> lineIdsByKey = new LinkedHashMap<>();
+        for (Map<String, Object> feature : mutableMapList(routeStops.get("features"))) {
+            Map<String, Object> properties = featureProperties(feature);
+            String key = firstText(properties, "stop_id");
+            if (key.isBlank()) {
+                key = firstText(properties, "_featureId", "_stationKey");
+            }
+            if (key.isBlank()) {
+                key = safeText(feature.get("id"));
+            }
+            if (key.isBlank()) {
+                continue;
+            }
+            String lineId = firstText(properties, "line_id");
+            if (!lineId.isBlank()) {
+                lineIdsByKey.computeIfAbsent(key, ignored -> new LinkedHashSet<>()).add(lineId);
+            }
+            if (stationByKey.containsKey(key)) {
+                continue;
+            }
+            Object lon = properties.get("lon");
+            Object lat = properties.get("lat");
+            if (!(lon instanceof Number) || !(lat instanceof Number)) {
+                Object coordsLon = firstCoordinateOf(feature.get("geometry"), 0);
+                Object coordsLat = firstCoordinateOf(feature.get("geometry"), 1);
+                lon = coordsLon instanceof Number ? coordsLon : lon;
+                lat = coordsLat instanceof Number ? coordsLat : lat;
+            }
+            Map<String, Object> station = new LinkedHashMap<>();
+            station.put("type", "Feature");
+            station.put("id", key);
+            station.put("geometry", feature.get("geometry"));
+            Map<String, Object> stationProperties = new LinkedHashMap<>();
+            properties.forEach((propertyKey, value) -> {
+                if (!propertyKey.startsWith("_") && !ROUTE_STOP_RELATION_FIELDS.contains(propertyKey)) {
+                    stationProperties.put(propertyKey, value);
+                }
+            });
+            stationProperties.put("stop_id", key);
+            stationProperties.put("stop_name", firstText(properties, "stop_name", "name"));
+            stationProperties.put("lon", lon instanceof Number number ? round6(number.doubleValue()) : null);
+            stationProperties.put("lat", lat instanceof Number number ? round6(number.doubleValue()) : null);
+            stationProperties.put("_featureId", key);
+            station.put("properties", stationProperties);
+            stationByKey.put(key, station);
+            uniqueFeatures.add(station);
+        }
+        for (Map.Entry<String, Map<String, Object>> entry : stationByKey.entrySet()) {
+            Set<String> lineIds = lineIdsByKey.getOrDefault(entry.getKey(), Set.of());
+            featureProperties(entry.getValue()).put("route_cnt", lineIds.size());
+        }
+        refreshFeatureCollectionMetadata(collection);
+        LinkedHashSet<String> fields = new LinkedHashSet<>(UNIQUE_STOP_FIELDS);
+        uniqueFeatures.forEach(feature -> featureProperties(feature).keySet().stream()
+                .filter(key -> !key.startsWith("_"))
+                .forEach(fields::add));
+        collection.put("attributeFields", List.copyOf(fields));
+        return collection;
+    }
+
+    private List<Map<String, String>> readSequenceCsv(Path csvFile) {
+        try {
+            List<String> lines = Files.readAllLines(csvFile, StandardCharsets.UTF_8);
+            List<Map<String, String>> rows = new ArrayList<>();
+            if (lines.isEmpty()) {
+                return rows;
+            }
+            String headerLine = lines.get(0);
+            if (headerLine.startsWith("\uFEFF")) {
+                headerLine = headerLine.substring(1);
+            }
+            List<String> header = parseCsvLine(headerLine);
+            for (int i = 1; i < lines.size(); i++) {
+                String line = lines.get(i);
+                if (line.isBlank()) {
+                    continue;
+                }
+                List<String> cells = parseCsvLine(line);
+                Map<String, String> row = new LinkedHashMap<>();
+                for (int c = 0; c < header.size() && c < cells.size(); c++) {
+                    row.put(header.get(c).trim(), cells.get(c));
+                }
+                rows.add(row);
+            }
+            return rows;
+        } catch (IOException error) {
+            throw new BusinessException("读取经停关系 CSV 失败: " + csvFile, error);
+        }
+    }
+
+    private List<String> parseCsvLine(String line) {
+        List<String> cells = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+            if (inQuotes) {
+                if (ch == '"') {
+                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                        current.append('"');
+                        i++;
+                    } else {
+                        inQuotes = false;
+                    }
+                } else {
+                    current.append(ch);
+                }
+            } else if (ch == '"') {
+                inQuotes = true;
+            } else if (ch == ',') {
+                cells.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        cells.add(current.toString());
+        return cells;
+    }
+
+    private void writeSequenceCsv(Path csvFile, Map<String, Object> routeStops) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> feature : mutableMapList(routeStops.get("features"))) {
+            Map<String, Object> properties = featureProperties(feature);
+            String lineId = firstText(properties, "line_id");
+            String seq = safeText(properties.get("seq"));
+            if (lineId.isBlank() || seq.isBlank()) {
+                continue;
+            }
+            Object lon = properties.get("lon");
+            Object lat = properties.get("lat");
+            if (!(lon instanceof Number) || !(lat instanceof Number)) {
+                Object coordsLon = firstCoordinateOf(feature.get("geometry"), 0);
+                Object coordsLat = firstCoordinateOf(feature.get("geometry"), 1);
+                lon = coordsLon instanceof Number ? coordsLon : lon;
+                lat = coordsLat instanceof Number ? coordsLat : lat;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("line_id", lineId);
+            row.put("dir", firstText(properties, "dir"));
+            row.put("seq", seq);
+            row.put("stop_id", firstText(properties, "stop_id", "_featureId"));
+            row.put("stop_name", firstText(properties, "stop_name", "name"));
+            row.put("lon", lon instanceof Number number ? String.valueOf(round6(number.doubleValue())) : "");
+            row.put("lat", lat instanceof Number number ? String.valueOf(round6(number.doubleValue())) : "");
+            rows.add(row);
+        }
+        rows.sort(Comparator
+                .comparing((Map<String, Object> row) -> safeText(row.get("line_id")))
+                .thenComparing(row -> safeText(row.get("dir")))
+                .thenComparing(row -> {
+                    try {
+                        return Integer.parseInt(safeText(row.get("seq")));
+                    } catch (NumberFormatException ignored) {
+                        return Integer.MAX_VALUE;
+                    }
+                }));
+        StringBuilder builder = new StringBuilder("\uFEFF");
+        builder.append("line_id,dir,seq,stop_id,stop_name,lon,lat\n");
+        for (Map<String, Object> row : rows) {
+            builder
+                    .append(csvCell(safeText(row.get("line_id")))).append(',')
+                    .append(csvCell(safeText(row.get("dir")))).append(',')
+                    .append(csvCell(safeText(row.get("seq")))).append(',')
+                    .append(csvCell(safeText(row.get("stop_id")))).append(',')
+                    .append(csvCell(safeText(row.get("stop_name")))).append(',')
+                    .append(csvCell(safeText(row.get("lon")))).append(',')
+                    .append(csvCell(safeText(row.get("lat")))).append('\n');
+        }
+        try {
+            Files.writeString(csvFile, builder.toString(), StandardCharsets.UTF_8);
+        } catch (IOException error) {
+            throw new BusinessException("写入经停关系 CSV 失败: " + csvFile, error);
+        }
+    }
+
+    private String csvCell(String value) {
+        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
+    }
+
     private Map<String, Object> readShp(File shpFile, List<String> expectedFields, Class<? extends Geometry> expectedGeometryType, String datasetLabel) {
         if (shpFile == null) {
             return emptyFeatureCollection();
@@ -1849,6 +3559,7 @@ public class RealDataServiceImpl implements RealDataService {
             }
             collection.put("featureCount", features.size());
             collection.put("fileName", shpFile.getName());
+            collection.put("attributeFields", schemaAttributeFields(dataStore.getSchema(typeName)));
             return collection;
         } catch (BusinessException error) {
             throw error;
@@ -1931,22 +3642,9 @@ public class RealDataServiceImpl implements RealDataService {
         return coordinates.get(index);
     }
 
-    @SuppressWarnings("unchecked")
-    private void retainStandardFields(Map<String, Object> collection, List<String> expectedFields) {
-        Object featuresValue = collection.get("features");
-        if (!(featuresValue instanceof List<?> features)) {
-            return;
-        }
-        Set<String> allowed = new LinkedHashSet<>(expectedFields);
-        for (Object item : features) {
-            if (!(item instanceof Map<?, ?> rawFeature)) {
-                continue;
-            }
-            Object propertiesValue = ((Map<String, Object>) rawFeature).get("properties");
-            if (propertiesValue instanceof Map<?, ?> rawProperties) {
-                Map<String, Object> properties = (Map<String, Object>) rawProperties;
-                properties.keySet().removeIf(key -> !allowed.contains(key) && !key.startsWith("_"));
-            }
+    private void stripDerivedProperties(Map<String, Object> collection) {
+        for (Map<String, Object> feature : mutableMapList(collection.get("features"))) {
+            featureProperties(feature).keySet().removeIf(DERIVED_FIELDS::contains);
         }
     }
 
@@ -1978,6 +3676,95 @@ public class RealDataServiceImpl implements RealDataService {
         return expectedGeometryType.isInstance(geometry);
     }
 
+    private void enrichDerivedAttributes(Map<String, Object> lines, Map<String, Object> routeStops) {
+        List<Map<String, Object>> stopFeatures = mutableMapList(routeStops.get("features"));
+        Map<String, Set<String>> routeIdsByStation = new LinkedHashMap<>();
+        for (Map<String, Object> stopFeature : stopFeatures) {
+            Map<String, Object> stopProperties = featureProperties(stopFeature);
+            String stationKey = stationPhysicalKey(stopFeature);
+            String lineId = firstText(stopProperties, "line_id", "route_id");
+            if (!stationKey.isBlank() && !lineId.isBlank()) {
+                routeIdsByStation.computeIfAbsent(stationKey, ignored -> new LinkedHashSet<>()).add(lineId);
+            }
+        }
+        for (Map<String, Object> stopFeature : stopFeatures) {
+            String stationKey = stationPhysicalKey(stopFeature);
+            featureProperties(stopFeature).put("route_cnt", routeIdsByStation.getOrDefault(stationKey, Set.of()).size());
+        }
+
+        for (Map<String, Object> lineFeature : mutableMapList(lines.get("features"))) {
+            Map<String, Object> lineProperties = featureProperties(lineFeature);
+            List<Map<String, Object>> matchedStops = stopFeatures.stream()
+                    .filter(stop -> routeStopMatchesLine(featureProperties(stop), lineProperties))
+                    .sorted(Comparator.comparingInt(stop -> sequenceValue(featureProperties(stop))))
+                    .toList();
+            Geometry geometry = geometryFromGeoJson(lineFeature.get("geometry"));
+            double lengthMeters = geometry == null ? 0 : geometryLengthMeters(geometry);
+            double straightMeters = routeStraightDistanceMeters(matchedStops, geometry);
+            lineProperties.put("len_km", lengthMeters > 0 ? round4(lengthMeters / 1000.0) : null);
+            lineProperties.put("directness", lengthMeters > 0 && straightMeters > 0
+                    ? round4(lengthMeters / straightMeters)
+                    : null);
+            lineProperties.put("stop_count", matchedStops.size());
+            lineProperties.put("avg_stop_m", matchedStops.size() > 1 && lengthMeters > 0
+                    ? round2(lengthMeters / (matchedStops.size() - 1))
+                    : null);
+        }
+    }
+
+    private boolean routeStopMatchesLine(Map<String, Object> stopProperties, Map<String, Object> lineProperties) {
+        String lineId = firstText(lineProperties, "line_id", "route_id");
+        String stopLineId = firstText(stopProperties, "line_id", "route_id");
+        if (lineId.isBlank() || stopLineId.isBlank() || !lineId.equals(stopLineId)) {
+            return false;
+        }
+        String direction = firstText(lineProperties, "dir");
+        String stopDirection = firstText(stopProperties, "dir");
+        return direction.isBlank() || stopDirection.isBlank() || direction.equals(stopDirection);
+    }
+
+    private int sequenceValue(Map<String, Object> properties) {
+        try {
+            return Integer.parseInt(safeText(properties.get("seq")));
+        } catch (NumberFormatException ignored) {
+            return Integer.MAX_VALUE;
+        }
+    }
+
+    private double routeStraightDistanceMeters(List<Map<String, Object>> stops, Geometry lineGeometry) {
+        if (stops.size() > 1) {
+            Coordinate first = firstPointCoordinate(stops.get(0));
+            Coordinate last = firstPointCoordinate(stops.get(stops.size() - 1));
+            if (first != null && last != null) {
+                double distance = distanceMeters(first, last);
+                if (distance > 0) return distance;
+            }
+        }
+        if (lineGeometry != null) {
+            Coordinate[] coordinates = lineGeometry.getCoordinates();
+            if (coordinates.length > 1) {
+                return distanceMeters(coordinates[0], coordinates[coordinates.length - 1]);
+            }
+        }
+        return 0;
+    }
+
+    private Coordinate firstPointCoordinate(Map<String, Object> feature) {
+        Object lon = firstCoordinateOf(feature.get("geometry"), 0);
+        Object lat = firstCoordinateOf(feature.get("geometry"), 1);
+        if (lon instanceof Number lng && lat instanceof Number latitude) {
+            return new Coordinate(lng.doubleValue(), latitude.doubleValue());
+        }
+        return null;
+    }
+
+    private String stationPhysicalKey(Map<String, Object> feature) {
+        Map<String, Object> properties = featureProperties(feature);
+        String key = firstText(properties, "stop_id", "_stationKey");
+        if (!key.isBlank()) return key;
+        return firstText(properties, "stop_name") + "|" + safeText(feature.get("geometry"));
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> uniqueStationsFromRouteStops(Map<String, Object> routeStops) {
         Map<String, Object> collection = emptyFeatureCollection();
@@ -1987,7 +3774,6 @@ public class RealDataServiceImpl implements RealDataService {
         }
         List<Map<String, Object>> uniqueFeatures = (List<Map<String, Object>>) collection.get("features");
         Map<String, Map<String, Object>> stationByKey = new LinkedHashMap<>();
-        Map<String, Integer> routeCountByKey = new LinkedHashMap<>();
         for (Object item : features) {
             if (!(item instanceof Map<?, ?> rawFeature)) {
                 continue;
@@ -2001,7 +3787,6 @@ public class RealDataServiceImpl implements RealDataService {
             if (key.isBlank()) {
                 continue;
             }
-            routeCountByKey.put(key, routeCountByKey.getOrDefault(key, 0) + 1);
             if (stationByKey.containsKey(key)) {
                 continue;
             }
@@ -2011,19 +3796,29 @@ public class RealDataServiceImpl implements RealDataService {
             station.put("geometry", feature.get("geometry"));
             Map<String, Object> stationProperties = new LinkedHashMap<>();
             stationProperties.put("_featureId", key);
+            properties.forEach((propertyKey, value) -> {
+                if (!propertyKey.startsWith("_") && !ROUTE_STOP_RELATION_FIELDS.contains(propertyKey)) {
+                    stationProperties.put(propertyKey, value);
+                }
+            });
             stationProperties.put("stop_id", firstText(properties, "stop_id"));
-            stationProperties.put("stop_name", firstText(properties, "stop_name"));
-            stationProperties.put("line_id", firstText(properties, "line_id"));
-            stationProperties.put("dir", firstText(properties, "dir"));
+            stationProperties.put("stop_name", firstText(properties, "stop_name", "name"));
+            Object lon = properties.get("lon");
+            Object lat = properties.get("lat");
+            stationProperties.put("lon", lon == null ? firstCoordinateOf(feature.get("geometry"), 0) : lon);
+            stationProperties.put("lat", lat == null ? firstCoordinateOf(feature.get("geometry"), 1) : lat);
             station.put("properties", stationProperties);
             stationByKey.put(key, station);
             uniqueFeatures.add(station);
         }
-        for (Map.Entry<String, Map<String, Object>> entry : stationByKey.entrySet()) {
-            featureProperties(entry.getValue()).put("num", routeCountByKey.getOrDefault(entry.getKey(), 0));
-        }
         refreshFeatureCollectionMetadata(collection);
         collection.put("sourceFileName", routeStops.get("fileName"));
+        LinkedHashSet<String> fields = new LinkedHashSet<>(UNIQUE_STOP_FIELDS);
+        uniqueFeatures.forEach(feature -> featureProperties(feature).keySet().stream()
+                .filter(key -> !key.startsWith("_"))
+                .filter(key -> !ROUTE_STOP_RELATION_FIELDS.contains(key))
+                .forEach(fields::add));
+        collection.put("attributeFields", List.copyOf(fields));
         return collection;
     }
 
@@ -2474,6 +4269,57 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private record CachedOverview(String signature, Map<String, Object> overview) {
+    }
+
+    private record VersionCollections(
+            Path dataRoot,
+            Map<String, Object> lines,
+            Map<String, Object> routeStops,
+            Map<String, Object> depots
+    ) {
+    }
+
+    private record ExportDataset(
+            String datasetType,
+            Map<String, Object> collection,
+            List<String> fields
+    ) {
+    }
+
+    private record DiffFeature(
+            String matchKey,
+            String targetId,
+            Map<String, Object> feature
+    ) {
+    }
+
+    private record ManualProtection(Set<String> fields, boolean manuallyDeleted) {
+    }
+
+    private record MergeFeatureResult(
+            Map<String, Object> feature,
+            List<String> changedFields,
+            List<String> protectedFields,
+            boolean hasManualProtection
+    ) {
+    }
+
+    private record UploadDiffResult(
+            List<Map<String, Object>> operations,
+            int candidateDeletionCount,
+            int protectedFeatureCount,
+            int protectedFieldCount,
+            int skippedByManualDeletionCount
+    ) {
+    }
+
+    private record PendingShpComparison(
+            String username,
+            String areaName,
+            long revision,
+            String versionId,
+            Map<String, String> canonicalOperations
+    ) {
     }
 
     private record TargetVersion(String id, String dataVersionId, String label, List<String> operationIds, List<Map<String, Object>> operations, boolean materializedData) {

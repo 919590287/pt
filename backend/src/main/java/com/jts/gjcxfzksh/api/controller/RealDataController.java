@@ -3,12 +3,17 @@ package com.jts.gjcxfzksh.api.controller;
 import com.jts.gjcxfzksh.api.common.AjaxResult;
 import com.jts.gjcxfzksh.api.common.CurrentUser;
 import com.jts.gjcxfzksh.api.model.params.RealDataCommitParam;
+import com.jts.gjcxfzksh.api.model.params.RealDataExportParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataParam;
+import com.jts.gjcxfzksh.api.model.vo.RealDataExportVO;
 import com.jts.gjcxfzksh.api.service.RealDataService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -17,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
+import java.nio.charset.StandardCharsets;
 
 @RestController
 @RequestMapping("/pt/real-data")
@@ -48,6 +54,26 @@ public class RealDataController {
     @PostMapping("/history")
     public AjaxResult history(@RequestBody RealDataParam param) {
         return AjaxResult.ok(realDataService.history(param.getAreaName()));
+    }
+
+    @Operation(summary = "导出真实数据历史版本")
+    @PostMapping("/export")
+    public ResponseEntity<byte[]> export(@RequestBody RealDataExportParam param) {
+        RealDataExportVO file = realDataService.exportVersion(
+                param.getAreaName(),
+                param.getVersionId(),
+                param.getDatasetType(),
+                param.getFormat()
+        );
+        String disposition = ContentDisposition.attachment()
+                .filename(file.fileName(), StandardCharsets.UTF_8)
+                .build()
+                .toString();
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition)
+                .contentType(MediaType.parseMediaType(file.contentType()))
+                .contentLength(file.content().length)
+                .body(file.content());
     }
 
     @Operation(summary = "提交真实数据编辑")

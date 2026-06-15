@@ -1,52 +1,76 @@
 /* ──────────────────────────────────────────────────────────────
    数据管理模块 · 设计令牌（单一来源）
-   目标：收敛此前三套互相 !important 打架的主题（蓝 --app-* / 青 --dm-* /
-   米色 lock 层）为一套「冷静专业」令牌。新代码与被整洁化的区块统一引用这里。
-   命名用 --dm2-* 前缀，避免与历史 --dm-* / --app-* 冲突，便于逐步迁移。
+   目标：把此前互相 !important 打架的多套主题（蓝 --app-* / 青铜 --dm-* /
+   米色 paper 层）收敛为一套「冷静专业 · 高端蓝玻璃」令牌。
+   全模块统一引用这里；命名沿用 --dm2-* 前缀，旧名值一律保留以免破坏既有引用。
+   设计语言：Apple 蓝单一强调色 + 冷中性灰 + 浮于地图之上的磨砂玻璃面板 +
+   分层冷调投影 + 受控的弹性动效。
    ────────────────────────────────────────────────────────────── */
 :root {
-  /* 文字 */
-  --dm2-ink: #1d1d1f; /* 主文字 */
-  --dm2-ink-soft: #444448; /* 次文字 */
-  --dm2-muted: #86868b; /* 弱化/标签 */
-  --dm2-muted-soft: #a1a1a6; /* 更弱 */
+  /* 文字（冷中性灰阶，与蓝色强调/冷调投影同族） */
+  --dm2-ink: #1c2024; /* 主文字 */
+  --dm2-ink-soft: #3b4452; /* 次文字 */
+  --dm2-muted: #667085; /* 弱化/标签（对白底对比≈5:1） */
+  --dm2-muted-soft: #98a2b3; /* 更弱 */
 
   /* 表面 */
-  --dm2-surface: #ffffff; /* 卡片/面板 */
-  --dm2-surface-sunken: #f6f8fa; /* 浅底/填充/hero */
-  --dm2-surface-page: #f7f9fb; /* 页面底 */
-  --dm2-field: #f5f5f7; /* 输入框填充 */
+  --dm2-surface: #ffffff; /* 卡片/面板内核（清晰白） */
+  --dm2-surface-sunken: #f4f7fb; /* 浅底/填充/hero */
+  --dm2-surface-page: #eef2f7; /* 页面底 */
+  --dm2-field: #f1f4f9; /* 输入框填充 */
 
-  /* 线条 */
-  --dm2-line: rgba(15, 23, 42, 0.08); /* 常规细线/边框 */
-  --dm2-line-strong: rgba(15, 23, 42, 0.16); /* hover/强调边框 */
-  --dm2-line-faint: rgba(15, 23, 42, 0.06); /* 分隔细线 */
+  /* 玻璃表面（浮于地图之上的面板/控件 —— 磨砂折射感） */
+  --dm2-glass: rgba(255, 255, 255, 0.72); /* 轻量浮层（搜索/工具条/弹出层） */
+  --dm2-glass-strong: rgba(255, 255, 255, 0.86); /* 密集数据面板（保证可读性） */
+  --dm2-glass-blur: blur(28px) saturate(185%); /* 标准磨砂 */
+  --dm2-glass-blur-soft: blur(20px) saturate(170%); /* 轻磨砂 */
+  --dm2-glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.72); /* 顶部高光（边缘折射） */
+  --dm2-glass-edge: rgba(255, 255, 255, 0.62); /* 玻璃内描边 */
 
-  /* 强调色（克制，仅用于主操作/焦点/链接） */
+  /* 线条（冷调） */
+  --dm2-line: rgba(17, 32, 58, 0.1); /* 常规细线/边框 */
+  --dm2-line-strong: rgba(17, 32, 58, 0.18); /* hover/强调边框 */
+  --dm2-line-faint: rgba(17, 32, 58, 0.07); /* 分隔细线 */
+
+  /* 强调色（克制，单一蓝 —— 仅用于主操作/焦点/链接/数据强调） */
   --dm2-accent: #0071e3; /* 主蓝（苹果蓝） */
+  --dm2-accent-strong: #005bb5; /* 深蓝（标题数值/激活态） */
   --dm2-accent-weak: rgba(0, 113, 227, 0.1);
-  --dm2-accent-ring: rgba(0, 113, 227, 0.15); /* 焦点光环 */
+  --dm2-accent-ring: rgba(0, 113, 227, 0.18); /* 焦点光环 */
+  --dm2-accent-grad: linear-gradient(135deg, #0a84ff 0%, #0071e3 52%, #0a63cc 100%);
+  --dm2-accent-glow: 0 6px 18px -6px rgba(0, 113, 227, 0.45); /* 主操作的冷调辉影 */
 
-  /* 语义色（增/改/删，低饱和文字用） */
+  /* 语义色（增/改/删，低饱和文字用 —— 仅用于数据语义，不作装饰） */
   --dm2-add: #1a8a3f;
-  --dm2-add-weak: rgba(52, 199, 89, 0.04);
+  --dm2-add-weak: rgba(52, 199, 89, 0.07);
   --dm2-add-line: rgba(52, 199, 89, 0.22);
   --dm2-modify: #b06a00;
-  --dm2-modify-weak: rgba(255, 159, 10, 0.05);
+  --dm2-modify-weak: rgba(255, 159, 10, 0.07);
   --dm2-modify-line: rgba(255, 159, 10, 0.24);
   --dm2-delete: #c4291c;
-  --dm2-delete-weak: rgba(255, 59, 48, 0.04);
+  --dm2-delete-weak: rgba(255, 59, 48, 0.06);
   --dm2-delete-line: rgba(255, 59, 48, 0.22);
 
-  /* 圆角 */
-  --dm2-radius-sm: 8px;
-  --dm2-radius: 12px;
-  --dm2-radius-lg: 16px;
-  --dm2-radius-xl: 18px;
+  /* 圆角（统一 squircle 尺度） */
+  --dm2-radius-sm: 10px;
+  --dm2-radius: 13px;
+  --dm2-radius-lg: 18px;
+  --dm2-radius-xl: 22px;
+  --dm2-radius-pill: 999px;
 
-  /* 阴影（单层、克制） */
-  --dm2-shadow-panel: 0 14px 36px rgba(15, 23, 42, 0.1), 0 2px 8px rgba(15, 23, 42, 0.05);
-  --dm2-shadow-dialog: 0 32px 80px rgba(15, 23, 42, 0.18), 0 4px 14px rgba(15, 23, 42, 0.06);
+  /* 阴影（分层 + 冷蓝着色 —— 接触影 + 环境影，取代单层平影） */
+  --dm2-shadow-card: 0 1px 2px rgba(13, 38, 76, 0.05), 0 4px 12px -4px rgba(13, 38, 76, 0.08);
+  --dm2-shadow-panel: 0 1px 1px rgba(13, 38, 76, 0.04), 0 10px 28px -12px rgba(13, 38, 76, 0.2),
+    0 30px 64px -28px rgba(13, 38, 76, 0.22);
+  --dm2-shadow-raised: 0 2px 4px rgba(13, 38, 76, 0.06), 0 16px 38px -12px rgba(13, 38, 76, 0.24);
+  --dm2-shadow-pop: 0 1px 2px rgba(13, 38, 76, 0.06), 0 18px 44px -16px rgba(13, 38, 76, 0.26);
+  --dm2-shadow-dialog: 0 2px 10px rgba(13, 38, 76, 0.08), 0 40px 96px -30px rgba(13, 38, 76, 0.36);
+
+  /* 字体 */
+  --dm2-font: "PingFang SC", "HarmonyOS Sans", "Microsoft YaHei", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", system-ui, sans-serif;
+  --dm2-font-num: "SF Pro Display", "DIN Alternate", "PingFang SC", -apple-system, BlinkMacSystemFont,
+    system-ui, sans-serif;
 
   /* 字号尺度 */
   --dm2-text-xs: 11px;
@@ -57,7 +81,7 @@
   --dm2-text-xl: 19px;
   --dm2-text-title: 24px;
 
-  /* 字重（收敛为四档，取代此前 850/780/680/620 等碎值） */
+  /* 字重（收敛为四档） */
   --dm2-fw-normal: 400;
   --dm2-fw-medium: 500;
   --dm2-fw-semibold: 600;
@@ -70,4 +94,11 @@
   --dm2-space-4: 16px;
   --dm2-space-5: 20px;
   --dm2-space-6: 24px;
+
+  /* 动效（高端弹性缓动 + 时长） */
+  --dm2-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dm2-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dm2-dur-fast: 140ms;
+  --dm2-dur: 240ms;
+  --dm2-dur-slow: 420ms;
 }

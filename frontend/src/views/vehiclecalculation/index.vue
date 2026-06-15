@@ -39,6 +39,8 @@ const { style: panelStyle } = useDraggable(panelRef, {
   border: 1px solid var(--app-border);
   box-shadow: var(--app-shadow-panel);
   border-radius: var(--app-panel-radius);
+  cursor: default;
+  user-select: text;
   display: flex;
   flex-direction: column;
   color: var(--app-ink);
@@ -54,6 +56,7 @@ const { style: panelStyle } = useDraggable(panelRef, {
 
 .panel-header {
   cursor: grab;
+  user-select: none;
   display: flex;
   padding: var(--space-xs) var(--space-md);
   align-items: center;

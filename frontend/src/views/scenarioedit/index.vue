@@ -1701,7 +1701,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   color: var(--app-ink);
-  user-select: none;
+  cursor: default;
+  user-select: text;
   overflow: hidden;
   scale: var(--app-panel-scale);
   transform-origin: top left;
@@ -1721,6 +1722,7 @@ onUnmounted(() => {
 
 .panel-header {
   cursor: grab;
+  user-select: none;
   display: flex;
   padding: var(--space-xs) var(--space-md);
   gap: var(--space-sm);

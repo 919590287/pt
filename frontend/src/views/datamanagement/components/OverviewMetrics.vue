@@ -25,55 +25,6 @@
       </div>
     </div>
 
-    <!-- 详情：站点覆盖率（同心圆环） -->
-    <div class="metric-card coverage-card">
-      <div class="card-title-row">
-        <span class="card-title">站点覆盖率分析</span>
-      </div>
-      <div class="coverage-dial-wrap">
-        <div class="coverage-dial">
-          <svg :viewBox="`0 0 ${dial.size} ${dial.size}`" aria-hidden="true" focusable="false">
-            <circle class="dial-track" fill="none" :cx="dial.center" :cy="dial.center" :r="dial.outer.radius" :stroke-width="dial.outer.stroke" />
-            <circle class="dial-track" fill="none" :cx="dial.center" :cy="dial.center" :r="dial.inner.radius" :stroke-width="dial.inner.stroke" />
-            <circle
-              class="dial-arc arc-500"
-              fill="none"
-              stroke-linecap="round"
-              :cx="dial.center"
-              :cy="dial.center"
-              :r="dial.outer.radius"
-              :stroke-width="dial.outer.stroke"
-              :stroke-dasharray="`${dial.outer.dash} ${dial.outer.circumference}`"
-              :transform="`rotate(-90 ${dial.center} ${dial.center})`"
-            />
-            <circle
-              class="dial-arc arc-300"
-              fill="none"
-              stroke-linecap="round"
-              :cx="dial.center"
-              :cy="dial.center"
-              :r="dial.inner.radius"
-              :stroke-width="dial.inner.stroke"
-              :stroke-dasharray="`${dial.inner.dash} ${dial.inner.circumference}`"
-              :transform="`rotate(-90 ${dial.center} ${dial.center})`"
-            />
-          </svg>
-        </div>
-        <ul class="coverage-legend">
-          <li class="legend-item">
-            <span class="legend-dot dot-300"></span>
-            <span class="legend-label">公交站点300米覆盖率</span>
-            <strong class="legend-value">{{ fmtPct(stats.stationCoverage300Rate) }}</strong>
-          </li>
-          <li class="legend-item">
-            <span class="legend-dot dot-500"></span>
-            <span class="legend-label">公交站点500米覆盖率</span>
-            <strong class="legend-value">{{ fmtPct(stats.stationCoverage500Rate) }}</strong>
-          </li>
-        </ul>
-      </div>
-    </div>
-
     <!-- 详情：企业线路统计 -->
     <div class="metric-card operator-table-card">
       <div class="card-title-row">
@@ -81,12 +32,23 @@
       </div>
       <div class="operator-table">
         <div class="operator-table-row operator-table-head">
-          <span>企业</span>
-          <span>线路数量</span>
+          <span class="operator-company">企业</span>
+          <span class="operator-number">线路数量</span>
+          <span class="operator-number">线路占比</span>
+          <span class="operator-number">车辆数</span>
+          <span class="operator-number">配车占比</span>
         </div>
-        <div v-for="row in operatorRows" :key="row.company" class="operator-table-row">
-          <span>{{ row.company }}</span>
-          <strong>{{ row.lineCount }}</strong>
+        <div
+          v-for="row in operatorRows"
+          :key="row.company"
+          class="operator-table-row"
+          :class="{ 'operator-table-total': row.isTotal }"
+        >
+          <span class="operator-company" :title="row.company">{{ row.company }}</span>
+          <strong class="operator-number">{{ row.lineCount }}</strong>
+          <strong class="operator-number operator-share">{{ fmtPct(row.lineShare) }}</strong>
+          <strong class="operator-number">{{ row.vehicleCount }}</strong>
+          <strong class="operator-number operator-share">{{ row.vehicleShare }}</strong>
         </div>
       </div>
     </div>
@@ -96,7 +58,6 @@
 <script setup>
 defineProps({
   stats: { type: Object, required: true }, // overviewStats
-  dial: { type: Object, required: true }, // coverageDial 几何
   operatorRows: { type: Array, default: () => [] },
   // 纯格式化函数，由父级注入以保持单一来源
   fmtInt: { type: Function, required: true },
@@ -135,22 +96,44 @@ defineProps({
   border: 1px solid var(--dm2-line);
   border-radius: var(--dm2-radius);
   background: var(--dm2-surface);
-  box-shadow: none;
+  box-shadow: var(--dm2-shadow-card);
+  transition:
+    border-color var(--dm2-dur) var(--dm2-ease),
+    box-shadow var(--dm2-dur) var(--dm2-ease),
+    transform var(--dm2-dur-fast) var(--dm2-ease);
 }
 
-/* ① 主指标 */
+/* ① 主指标 —— 唯一视觉焦点：沉底磨砂 + 极淡蓝色数据辉光 */
 .hero-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 16px 18px;
-  background: var(--dm2-surface-sunken);
+  gap: 9px;
+  padding: 18px 20px;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgba(0, 113, 227, 0.09), transparent 58%),
+    var(--dm2-surface-sunken);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.hero-card::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 16px;
+  bottom: 16px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--dm2-accent-grad);
+  opacity: 0.9;
 }
 
 .hero-label {
   color: var(--dm2-muted);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .hero-value {
@@ -160,16 +143,18 @@ defineProps({
 }
 
 .hero-num {
-  font-size: 40px;
-  line-height: 1;
+  font-family: var(--dm2-font-num);
+  font-size: 44px;
+  line-height: 0.98;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.035em;
   color: var(--dm2-ink);
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .hero-unit {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--dm2-muted);
 }
@@ -182,6 +167,7 @@ defineProps({
   border: 1px solid var(--dm2-line);
   border-radius: var(--dm2-radius);
   background: var(--dm2-surface);
+  box-shadow: var(--dm2-shadow-card);
   overflow: hidden;
 }
 
@@ -211,12 +197,14 @@ defineProps({
 }
 
 .stat-value strong {
-  font-size: 19px;
+  font-family: var(--dm2-font-num);
+  font-size: 20px;
   line-height: 1;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   color: var(--dm2-ink);
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .stat-value em {
@@ -233,91 +221,10 @@ defineProps({
 }
 
 .card-title {
-  color: var(--dm2-muted);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-/* 覆盖率卡 + 同心圆环 */
-.coverage-card {
-  padding: 14px 16px;
-}
-
-.coverage-dial-wrap {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.coverage-dial {
-  flex-shrink: 0;
-  width: 88px;
-  height: 88px;
-}
-
-.coverage-dial svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.coverage-dial .dial-track {
-  stroke: rgba(15, 23, 42, 0.08);
-}
-
-.coverage-dial .dial-arc.arc-500 {
-  stroke: var(--dm2-accent);
-}
-
-.coverage-dial .dial-arc.arc-300 {
-  stroke: var(--dm2-add);
-}
-
-.coverage-legend {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 11px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.legend-dot {
-  flex-shrink: 0;
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-}
-
-.legend-dot.dot-300 {
-  background: var(--dm2-add);
-}
-
-.legend-dot.dot-500 {
-  background: var(--dm2-accent);
-}
-
-.legend-label {
-  flex: 1;
-  min-width: 0;
   color: var(--dm2-ink-soft);
   font-size: 12.5px;
-  font-weight: 500;
-}
-
-.legend-value {
-  color: var(--dm2-ink);
-  font-size: 15px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 /* 企业线路统计表 */
@@ -327,7 +234,7 @@ defineProps({
 
 .operator-table {
   max-height: min(172px, 26vh);
-  overflow-y: auto;
+  overflow: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
 
@@ -343,10 +250,30 @@ defineProps({
 
 .operator-table-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 82px;
-  min-height: 30px;
+  grid-template-columns: minmax(112px, 1.7fr) repeat(4, minmax(48px, 0.75fr));
+  min-height: 38px;
   align-items: center;
   border-bottom: 1px solid var(--dm2-line-faint);
+  border-radius: 7px;
+  transition: background-color var(--dm2-dur) var(--dm2-ease);
+}
+
+.operator-table-row:not(.operator-table-head):hover {
+  background: rgba(0, 113, 227, 0.045);
+}
+
+.operator-table-total {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  border-top: 1px solid var(--dm2-line-strong);
+  background: var(--dm2-surface);
+}
+
+.operator-table-total span,
+.operator-table-total strong {
+  color: var(--dm2-ink);
+  font-weight: 800;
 }
 
 .operator-table-row:last-child {
@@ -355,20 +282,47 @@ defineProps({
 
 .operator-table-row span,
 .operator-table-row strong {
-  padding: 7px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  padding: 8px 4px;
   font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
   color: var(--dm2-ink-soft);
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.operator-table-row .operator-company {
+  padding-inline: 8px;
+}
+
+.operator-table-row .operator-number:last-child {
+  padding-inline-end: 8px;
 }
 
 .operator-table-row strong {
   color: var(--dm2-ink);
-  font-weight: 600;
-  text-align: right;
+  font-family: var(--dm2-font-num);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.operator-company {
+  text-align: center;
+}
+
+.operator-number {
+  text-align: center;
+}
+
+.operator-share {
+  color: var(--dm2-accent) !important;
 }
 
 .operator-table-head {
@@ -381,10 +335,11 @@ defineProps({
 
 .operator-table-head span {
   color: var(--dm2-muted);
+  font-size: 11.5px;
   font-weight: 600;
 }
 
 .operator-table-head span:last-child {
-  text-align: right;
+  text-align: center;
 }
 </style>

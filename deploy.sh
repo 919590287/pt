@@ -60,6 +60,8 @@ BACKEND_PID="$RUN_DIR/backend.pid"
 FRONTEND_PID="$RUN_DIR/frontend.pid"
 BACKEND_SCREEN="${BACKEND_SCREEN:-${APP_NAME}-backend}"
 FRONTEND_SCREEN="${FRONTEND_SCREEN:-${APP_NAME}-frontend}"
+BACKEND_PROCESS_MARKER="${BACKEND_PROCESS_MARKER:-${BACKEND_JAR:-$BACKEND_DIR/}}"
+FRONTEND_PROCESS_MARKER="${FRONTEND_PROCESS_MARKER:-$FRONTEND_SERVER_SCRIPT}"
 
 say() {
   printf '%s\n' "$*"
@@ -130,6 +132,76 @@ is_running() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
+process_matches() {
+  local pid="$1"
+  local marker="$2"
+  local command
+
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [ -n "$command" ] && [[ "$command" == *"$marker"* ]]
+}
+
+is_service_running() {
+  local pid_file="$1"
+  local marker="$2"
+  local pid
+
+  pid="$(pid_value "$pid_file" 2>/dev/null || true)"
+  process_matches "$pid" "$marker"
+}
+
+listening_pids() {
+  local port="$1"
+
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true
+}
+
+find_managed_listener_pid() {
+  local port="$1"
+  local marker="$2"
+  local pid
+
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    if process_matches "$pid" "$marker"; then
+      printf '%s' "$pid"
+      return 0
+    fi
+  done < <(listening_pids "$port")
+
+  return 1
+}
+
+port_is_listening() {
+  local port="$1"
+
+  if command -v lsof >/dev/null 2>&1; then
+    [ -n "$(listening_pids "$port")" ]
+  elif command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+  else
+    return 0
+  fi
+}
+
+describe_port_owner() {
+  local port="$1"
+  local pid
+  local command
+  local found=0
+
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    say "  pid=$pid ${command:-<command unavailable>}"
+    found=1
+  done < <(listening_pids "$port")
+
+  [ "$found" -eq 1 ] || say "  owner unavailable (install lsof for process details)"
+}
+
 find_backend_jar() {
   if [ -n "${BACKEND_JAR:-}" ]; then
     printf '%s' "$BACKEND_JAR"
@@ -148,6 +220,24 @@ wait_for_pid() {
 
   while [ "$attempts" -gt 0 ]; do
     if is_running "$pid_file"; then
+      return 0
+    fi
+    sleep 0.2
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+wait_for_service() {
+  local pid_file="$1"
+  local marker="$2"
+  local port="$3"
+  local attempts="${4:-150}"
+
+  while [ "$attempts" -gt 0 ]; do
+    is_service_running "$pid_file" "$marker" || return 1
+    if port_is_listening "$port"; then
       return 0
     fi
     sleep 0.2
@@ -185,16 +275,25 @@ start_detached() {
   local script_file="$2"
   local pid_file="$3"
   local screen_name="$4"
+  local marker="$5"
+  local port="$6"
+  local log_file="$7"
 
   rm -f "$pid_file"
   if command -v "$SCREEN_CMD" >/dev/null 2>&1; then
     stop_screen "$screen_name"
-    "$SCREEN_CMD" -dmS "$screen_name" "$script_file"
+    # macOS screen can fail to execute scripts directly from non-ASCII paths.
+    "$SCREEN_CMD" -dmS "$screen_name" /bin/bash "$script_file"
   else
-    nohup "$script_file" >/dev/null 2>&1 &
+    nohup /bin/bash "$script_file" >/dev/null 2>&1 &
   fi
 
-  wait_for_pid "$pid_file" 50 || die "$service_name failed to start. Check logs in $LOG_DIR"
+  if ! wait_for_pid "$pid_file" 50 || ! wait_for_service "$pid_file" "$marker" "$port" 150; then
+    rm -f "$pid_file"
+    say "== $service_name log tail ==" >&2
+    tail -n 40 "$log_file" >&2 2>/dev/null || true
+    die "$service_name failed to start on port $port. Full log: $log_file"
+  fi
 }
 
 write_backend_launcher() {
@@ -325,9 +424,22 @@ start_backend() {
   ensure_dirs
   require_cmd "$JAVA_CMD"
 
-  if is_running "$BACKEND_PID"; then
+  if is_service_running "$BACKEND_PID" "$BACKEND_PROCESS_MARKER"; then
     say "Backend already running, pid=$(pid_value "$BACKEND_PID")"
     return
+  fi
+
+  local managed_pid
+  managed_pid="$(find_managed_listener_pid "$BACKEND_PORT" "$BACKEND_PROCESS_MARKER" || true)"
+  if [ -n "$managed_pid" ]; then
+    printf '%s\n' "$managed_pid" > "$BACKEND_PID"
+    say "Backend already running on port $BACKEND_PORT, adopted pid=$managed_pid"
+    return
+  fi
+  if port_is_listening "$BACKEND_PORT"; then
+    say "Backend port $BACKEND_PORT is already in use:" >&2
+    describe_port_owner "$BACKEND_PORT" >&2
+    die "cannot start backend while port $BACKEND_PORT is occupied"
   fi
 
   local jar_file
@@ -345,7 +457,8 @@ start_backend() {
 
   local launcher="$RUN_DIR/start-backend.sh"
   write_backend_launcher "$launcher" "$jar_file"
-  start_detached backend "$launcher" "$BACKEND_PID" "$BACKEND_SCREEN"
+  start_detached backend "$launcher" "$BACKEND_PID" "$BACKEND_SCREEN" \
+    "$BACKEND_PROCESS_MARKER" "$BACKEND_PORT" "$LOG_DIR/backend-console.log"
   say "Backend started on port $BACKEND_PORT, pid=$(pid_value "$BACKEND_PID")"
 }
 
@@ -355,27 +468,47 @@ start_frontend() {
   [ -d "$DIST_DIR" ] || die "frontend dist not found: $DIST_DIR. Run ./deploy.sh build or ./deploy.sh deploy first."
   [ -f "$FRONTEND_SERVER_SCRIPT" ] || die "frontend server script not found: $FRONTEND_SERVER_SCRIPT"
 
-  if is_running "$FRONTEND_PID"; then
+  if is_service_running "$FRONTEND_PID" "$FRONTEND_PROCESS_MARKER"; then
     say "Frontend already running, pid=$(pid_value "$FRONTEND_PID")"
     return
   fi
 
+  local managed_pid
+  managed_pid="$(find_managed_listener_pid "$FRONTEND_PORT" "$FRONTEND_PROCESS_MARKER" || true)"
+  if [ -n "$managed_pid" ]; then
+    printf '%s\n' "$managed_pid" > "$FRONTEND_PID"
+    say "Frontend already running on port $FRONTEND_PORT, adopted pid=$managed_pid"
+    return
+  fi
+  if port_is_listening "$FRONTEND_PORT"; then
+    say "Frontend port $FRONTEND_PORT is already in use:" >&2
+    describe_port_owner "$FRONTEND_PORT" >&2
+    die "cannot start frontend while port $FRONTEND_PORT is occupied"
+  fi
+
   local launcher="$RUN_DIR/start-frontend.sh"
   write_frontend_launcher "$launcher"
-  start_detached frontend "$launcher" "$FRONTEND_PID" "$FRONTEND_SCREEN"
+  start_detached frontend "$launcher" "$FRONTEND_PID" "$FRONTEND_SCREEN" \
+    "$FRONTEND_PROCESS_MARKER" "$FRONTEND_PORT" "$LOG_DIR/frontend-console.log"
   say "Frontend started on port $FRONTEND_PORT, pid=$(pid_value "$FRONTEND_PID")"
 }
 
 stop_one() {
   local name="$1"
   local pid_file="$2"
-  local screen_name="${3:-}"
+  local screen_name="$3"
+  local port="$4"
+  local marker="$5"
   local pid
 
   pid="$(pid_value "$pid_file" 2>/dev/null || true)"
+  if ! process_matches "$pid" "$marker"; then
+    pid="$(find_managed_listener_pid "$port" "$marker" || true)"
+  fi
   if [ -z "$pid" ]; then
-    say "$name is not running: no pid file"
+    say "$name is not running"
     stop_screen "$screen_name"
+    rm -f "$pid_file"
     return
   fi
 
@@ -395,12 +528,12 @@ stop_one() {
 }
 
 stop_all() {
-  stop_one frontend "$FRONTEND_PID" "$FRONTEND_SCREEN"
-  stop_one backend "$BACKEND_PID" "$BACKEND_SCREEN"
+  stop_one frontend "$FRONTEND_PID" "$FRONTEND_SCREEN" "$FRONTEND_PORT" "$FRONTEND_PROCESS_MARKER"
+  stop_one backend "$BACKEND_PID" "$BACKEND_SCREEN" "$BACKEND_PORT" "$BACKEND_PROCESS_MARKER"
 }
 
 stop_frontend() {
-  stop_one frontend "$FRONTEND_PID" "$FRONTEND_SCREEN"
+  stop_one frontend "$FRONTEND_PID" "$FRONTEND_SCREEN" "$FRONTEND_PORT" "$FRONTEND_PROCESS_MARKER"
 }
 
 start_all() {
@@ -428,7 +561,8 @@ serve_all() {
   trap 'stop_all; exit 0' INT TERM
   start_all
   while true; do
-    if ! is_running "$BACKEND_PID" || ! is_running "$FRONTEND_PID"; then
+    if ! is_service_running "$BACKEND_PID" "$BACKEND_PROCESS_MARKER" \
+      || ! is_service_running "$FRONTEND_PID" "$FRONTEND_PROCESS_MARKER"; then
       say "A service exited; stopping remaining services"
       stop_all
       exit 1
@@ -440,9 +574,16 @@ serve_all() {
 print_one_status() {
   local name="$1"
   local pid_file="$2"
+  local port="$3"
+  local marker="$4"
+  local pid
 
-  if is_running "$pid_file"; then
+  if is_service_running "$pid_file" "$marker"; then
     say "$name: running, pid=$(pid_value "$pid_file")"
+  elif pid="$(find_managed_listener_pid "$port" "$marker" || true)" && [ -n "$pid" ]; then
+    say "$name: running without pid file, pid=$pid"
+  elif port_is_listening "$port"; then
+    say "$name: stopped (port $port is occupied by another process)"
   else
     say "$name: stopped"
   fi
@@ -450,8 +591,8 @@ print_one_status() {
 
 status_all() {
   ensure_dirs
-  print_one_status "Backend" "$BACKEND_PID"
-  print_one_status "Frontend" "$FRONTEND_PID"
+  print_one_status "Backend" "$BACKEND_PID" "$BACKEND_PORT" "$BACKEND_PROCESS_MARKER"
+  print_one_status "Frontend" "$FRONTEND_PID" "$FRONTEND_PORT" "$FRONTEND_PROCESS_MARKER"
   say "Frontend URL: http://localhost:$FRONTEND_PORT"
   say "Backend API:   http://localhost:$BACKEND_PORT"
   say "MATSIM_DATA:   $MATSIM_DATA"

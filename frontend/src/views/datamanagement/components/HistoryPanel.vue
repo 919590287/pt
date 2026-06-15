@@ -46,6 +46,30 @@
             </div>
             <div class="history-version-side">
               <el-button size="small" @click.stop="$emit('show-details', record)">修改明细</el-button>
+              <el-dropdown
+                trigger="click"
+                :disabled="exportLoadingKey.startsWith(`${record.versionId}:`)"
+                @click.stop
+                @command="handleExport(record, $event)"
+              >
+                <el-button
+                  size="small"
+                  :loading="exportLoadingKey.startsWith(`${record.versionId}:`)"
+                >
+                  导出
+                  <span class="export-caret" aria-hidden="true">⌄</span>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="line:csv">线路属性 CSV</el-dropdown-item>
+                    <el-dropdown-item command="line:shp">线路 SHP</el-dropdown-item>
+                    <el-dropdown-item command="station:csv" divided>站点属性 CSV</el-dropdown-item>
+                    <el-dropdown-item command="station:shp">站点 SHP</el-dropdown-item>
+                    <el-dropdown-item command="depot:csv" divided>场站属性 CSV</el-dropdown-item>
+                    <el-dropdown-item command="depot:shp">场站 SHP</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <el-button
                 size="small"
                 type="primary"
@@ -127,13 +151,20 @@ defineProps({
   versions: { type: Array, default: () => [] },
   activeLabel: { type: String, default: "" },
   previewLoadingId: { type: String, default: "" },
+  exportLoadingKey: { type: String, default: "" },
   details: { type: Object, required: true }, // { visible, record }
   detailGroups: { type: Array, default: () => [] },
   recordTitle: { type: Function, required: true },
   formatTime: { type: Function, required: true },
 });
 
-defineEmits(["refresh", "show-details", "preview", "close-details", "preview-evidence"]);
+const emit = defineEmits(["refresh", "show-details", "export", "preview", "close-details", "preview-evidence"]);
+
+function handleExport(record, command) {
+  const [datasetType, format] = String(command || "").split(":");
+  if (!datasetType || !format) return;
+  emit("export", record, { datasetType, format });
+}
 </script>
 
 <style lang="scss" scoped>
@@ -324,6 +355,13 @@ defineEmits(["refresh", "show-details", "preview", "close-details", "preview-evi
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.export-caret {
+  margin-left: 5px;
+  color: var(--dm2-muted);
+  font-size: 11px;
+  line-height: 1;
 }
 
 .history-risk-panel {

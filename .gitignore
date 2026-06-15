@@ -2,6 +2,7 @@ node_modules/
 frontend/node_modules/
 .DS_Store
 .codex/
+.claude/
 dist/
 frontend/dist/
 frontend/gjcxfzksh_web_dist/
@@ -18,6 +19,7 @@ gjcxfzksh-code-for-gpt-pro-*.zip
 .env
 .env.*
 .deploy/
+.tmp/
 deploy.local.env
 .agents/skills/adapt/SKILL.md
 .agents/skills/animate/SKILL.md
