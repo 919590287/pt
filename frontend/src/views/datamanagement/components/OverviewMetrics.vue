@@ -25,6 +25,33 @@
       </div>
     </div>
 
+    <!-- 覆盖率：常规公交站点服务范围 -->
+    <div class="metric-card coverage-card">
+      <div class="card-title-row coverage-title-row">
+        <span class="card-title">常规公交站点覆盖率</span>
+      </div>
+      <div class="coverage-metrics">
+        <div class="coverage-item">
+          <div class="coverage-label-row">
+            <span>300 米</span>
+            <strong>{{ fmtPct(stats.stationCoverage300Rate) }}</strong>
+          </div>
+          <div class="coverage-track" aria-hidden="true">
+            <span class="coverage-fill fill-300" :style="{ width: coverageWidth(stats.stationCoverage300Rate) }"></span>
+          </div>
+        </div>
+        <div class="coverage-item">
+          <div class="coverage-label-row">
+            <span>500 米</span>
+            <strong>{{ fmtPct(stats.stationCoverage500Rate) }}</strong>
+          </div>
+          <div class="coverage-track" aria-hidden="true">
+            <span class="coverage-fill fill-500" :style="{ width: coverageWidth(stats.stationCoverage500Rate) }"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 详情：企业线路统计 -->
     <div class="metric-card operator-table-card">
       <div class="card-title-row">
@@ -64,6 +91,12 @@ defineProps({
   fmtUnit: { type: Function, required: true },
   fmtPct: { type: Function, required: true },
 });
+
+function coverageWidth(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0%";
+  return `${Math.max(0, Math.min(100, number))}%`;
+}
 </script>
 
 <style lang="scss" scoped>
@@ -227,14 +260,90 @@ defineProps({
   letter-spacing: 0.01em;
 }
 
+/* 常规公交站点覆盖率 */
+.coverage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.coverage-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 0;
+}
+
+.coverage-metrics {
+  display: grid;
+  gap: 9px;
+}
+
+.coverage-item {
+  display: grid;
+  gap: 6px;
+}
+
+.coverage-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--dm2-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.coverage-label-row strong {
+  color: var(--dm2-accent);
+  font-family: var(--dm2-font-num);
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.coverage-track {
+  position: relative;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.07);
+}
+
+.coverage-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  min-width: 2px;
+  border-radius: inherit;
+}
+
+.fill-300 {
+  background: linear-gradient(90deg, rgba(0, 113, 227, 0.82), rgba(45, 140, 255, 0.92));
+}
+
+.fill-500 {
+  background: linear-gradient(90deg, rgba(13, 148, 136, 0.78), rgba(20, 184, 166, 0.9));
+}
+
 /* 企业线路统计表 */
 .operator-table-card {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 12px 14px;
 }
 
 .operator-table {
-  max-height: min(172px, 26vh);
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   overflow: auto;
+  padding-bottom: 1px;
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
 
