@@ -103,12 +103,14 @@ public class RealDataServiceImpl implements RealDataService {
     private static final double COVERAGE_500_METERS = 500.0;
     private static final int MAX_EVIDENCE_IMAGES = 6;
     private static final int MAX_EVIDENCE_DATA_URL_LENGTH = 2_000_000;
+    private static final int MAX_REAL_DATA_CACHE_ENTRIES = 6;
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
 
     @Resource
     MatsimConfig matsimConfig;
 
     private final Map<String, CachedOverview> overviewCache = new ConcurrentHashMap<>();
+    private final Map<String, CachedRealData> realDataCache = new ConcurrentHashMap<>();
     private final Map<String, PendingShpComparison> pendingShpComparisons = new ConcurrentHashMap<>();
 
     @Override
@@ -153,6 +155,12 @@ public class RealDataServiceImpl implements RealDataService {
         Map<String, Object> state = readEditState(root);
         TargetVersion target = safeText(versionId).isBlank() ? activeTargetVersion(state) : targetVersion(versionId, mutableMapList(state.get("versions")));
         Path dataRoot = dataRootForVersion(root, target);
+        String cacheKey = realDataCacheKey(areaName, target.id());
+        String signature = realDataSignature(root, dataRoot);
+        CachedRealData cached = realDataCache.get(cacheKey);
+        if (cached != null && cached.signature().equals(signature)) {
+            return cached.data();
+        }
         Map<String, Object> lines = readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
         Map<String, Object> routeStops = readStationData(dataRoot.resolve(BUS_STATION_FOLDER));
         Map<String, Object> depots = readFirstShp(dataRoot.resolve(BUS_DEPOT_FOLDER));
@@ -174,6 +182,8 @@ public class RealDataServiceImpl implements RealDataService {
         result.put("bounds", mergeBounds(mergeBounds(boundsOf(lines), boundsOf(stations)), boundsOf(depots)));
         result.put("overview", overview(areaName, dataRoot, stateFile(root), lineCount, stationCount, stations));
         result.put("history", historySummary(root));
+        realDataCache.put(cacheKey, new CachedRealData(signature, result, System.currentTimeMillis()));
+        trimRealDataCache();
         return result;
     }
 
@@ -398,7 +408,7 @@ public class RealDataServiceImpl implements RealDataService {
             Map<String, Object> savedManifest = appendCurrentEdits(root, manifest);
             stateSaved = true;
             Files.writeString(versionDir.resolve("manifest.json"), JSON.toJSONString(savedManifest), StandardCharsets.UTF_8);
-            overviewCache.remove(areaName);
+            invalidateAreaRealDataCaches(areaName);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("versionId", versionId);
@@ -445,7 +455,7 @@ public class RealDataServiceImpl implements RealDataService {
 
         try {
             Map<String, Object> savedState = switchActiveVersion(root, state, target, activeOperations, username);
-            overviewCache.remove(areaName);
+            invalidateAreaRealDataCaches(areaName);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("versionId", target.id());
@@ -3679,12 +3689,16 @@ public class RealDataServiceImpl implements RealDataService {
     private void enrichDerivedAttributes(Map<String, Object> lines, Map<String, Object> routeStops) {
         List<Map<String, Object>> stopFeatures = mutableMapList(routeStops.get("features"));
         Map<String, Set<String>> routeIdsByStation = new LinkedHashMap<>();
+        Map<String, List<Map<String, Object>>> stopsByLineId = new LinkedHashMap<>();
         for (Map<String, Object> stopFeature : stopFeatures) {
             Map<String, Object> stopProperties = featureProperties(stopFeature);
             String stationKey = stationPhysicalKey(stopFeature);
             String lineId = firstText(stopProperties, "line_id", "route_id");
             if (!stationKey.isBlank() && !lineId.isBlank()) {
                 routeIdsByStation.computeIfAbsent(stationKey, ignored -> new LinkedHashSet<>()).add(lineId);
+            }
+            if (!lineId.isBlank()) {
+                stopsByLineId.computeIfAbsent(lineId, ignored -> new ArrayList<>()).add(stopFeature);
             }
         }
         for (Map<String, Object> stopFeature : stopFeatures) {
@@ -3694,8 +3708,9 @@ public class RealDataServiceImpl implements RealDataService {
 
         for (Map<String, Object> lineFeature : mutableMapList(lines.get("features"))) {
             Map<String, Object> lineProperties = featureProperties(lineFeature);
-            List<Map<String, Object>> matchedStops = stopFeatures.stream()
-                    .filter(stop -> routeStopMatchesLine(featureProperties(stop), lineProperties))
+            String lineId = firstText(lineProperties, "line_id", "route_id");
+            List<Map<String, Object>> matchedStops = stopsByLineId.getOrDefault(lineId, List.of()).stream()
+                    .filter(stop -> routeStopDirectionMatches(featureProperties(stop), lineProperties))
                     .sorted(Comparator.comparingInt(stop -> sequenceValue(featureProperties(stop))))
                     .toList();
             Geometry geometry = geometryFromGeoJson(lineFeature.get("geometry"));
@@ -3712,12 +3727,7 @@ public class RealDataServiceImpl implements RealDataService {
         }
     }
 
-    private boolean routeStopMatchesLine(Map<String, Object> stopProperties, Map<String, Object> lineProperties) {
-        String lineId = firstText(lineProperties, "line_id", "route_id");
-        String stopLineId = firstText(stopProperties, "line_id", "route_id");
-        if (lineId.isBlank() || stopLineId.isBlank() || !lineId.equals(stopLineId)) {
-            return false;
-        }
+    private boolean routeStopDirectionMatches(Map<String, Object> stopProperties, Map<String, Object> lineProperties) {
         String direction = firstText(lineProperties, "dir");
         String stopDirection = firstText(stopProperties, "dir");
         return direction.isBlank() || stopDirection.isBlank() || direction.equals(stopDirection);
@@ -3848,6 +3858,36 @@ public class RealDataServiceImpl implements RealDataService {
             }
         }
         return builder.toString();
+    }
+
+    private String realDataSignature(Path root, Path dataRoot) {
+        return overviewSignature(
+                dataRoot.resolve(BUS_LINE_FOLDER),
+                dataRoot.resolve(BUS_STATION_FOLDER),
+                dataRoot.resolve(BUS_DEPOT_FOLDER),
+                root.resolve(ADMIN_AREA_FOLDER),
+                stateFile(root)
+        );
+    }
+
+    private String realDataCacheKey(String areaName, String versionId) {
+        return safeText(areaName) + "::" + (safeText(versionId).isBlank() ? "__base__" : safeText(versionId));
+    }
+
+    private void invalidateAreaRealDataCaches(String areaName) {
+        overviewCache.remove(areaName);
+        String prefix = safeText(areaName) + "::";
+        realDataCache.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
+    private void trimRealDataCache() {
+        int overflow = realDataCache.size() - MAX_REAL_DATA_CACHE_ENTRIES;
+        if (overflow <= 0) return;
+        realDataCache.entrySet().stream()
+                .sorted(Comparator.comparingLong(entry -> entry.getValue().createdAt()))
+                .limit(overflow)
+                .map(Map.Entry::getKey)
+                .forEach(realDataCache::remove);
     }
 
     private void appendFileSignature(StringBuilder builder, Path path) {
@@ -4269,6 +4309,9 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private record CachedOverview(String signature, Map<String, Object> overview) {
+    }
+
+    private record CachedRealData(String signature, Map<String, Object> data, long createdAt) {
     }
 
     private record VersionCollections(

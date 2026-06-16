@@ -851,8 +851,10 @@ const overviewStats = reactive({
   adminAreaKm2: null,
 });
 let overviewStatsBaseline = {
+  lineCount: 0,
   networkScaleKm: null,
   networkDensityKmPerKm2: null,
+  stationCount: 0,
   adminAreaKm2: null,
 };
 const lineWidth = ref(1.2);
@@ -964,6 +966,10 @@ let selectableHoverListenerId = null;
 let stationSearchIndex = [];
 let lineSearchIndex = [];
 let depotSearchIndex = [];
+let realDataRenderToken = 0;
+let realDataSourceDataRefs = new Map();
+let displayRangeFilterCache = new Map();
+let routeStopIndexCache = { token: -1, collection: null, byRouteId: new Map() };
 let isSuppressingRightMouseGesture = false;
 let suppressNextPanelToggleClick = false;
 let realDataCollections = {
@@ -1512,15 +1518,22 @@ async function loadOverviewLayers(options = {}) {
 
 function setOverviewStats(data) {
   const overview = data?.overview || {};
-  overviewStats.lineCount = physicalCountOrFallback(data?.lines, physicalLineKey, overview.lineCount ?? data?.lines?.featureCount);
+  overviewStats.lineCount = overviewCountOrFallback(overview.lineCount, data?.lines, physicalLineKey, data?.lines?.featureCount);
   overviewStatsBaseline = {
+    lineCount: overviewStats.lineCount,
     networkScaleKm: nullableNumber(overview.networkScaleKm),
     networkDensityKmPerKm2: nullableNumber(overview.networkDensityKmPerKm2),
+    stationCount: overviewCountOrFallback(
+      overview.stationCount,
+      data?.stations || data?.routeStops,
+      physicalStationKey,
+      data?.stations?.featureCount ?? data?.routeStops?.featureCount,
+    ),
     adminAreaKm2: nullableNumber(overview.adminAreaKm2),
   };
   overviewStats.networkScaleKm = overviewStatsBaseline.networkScaleKm;
   overviewStats.networkDensityKmPerKm2 = overviewStatsBaseline.networkDensityKmPerKm2;
-  overviewStats.stationCount = physicalCountOrFallback(data?.routeStops || data?.stations, physicalStationKey, overview.stationCount ?? data?.routeStops?.featureCount ?? data?.stations?.featureCount);
+  overviewStats.stationCount = overviewStatsBaseline.stationCount;
   overviewStats.stationCoverage300Rate = nullableNumber(overview.stationCoverage300Rate);
   overviewStats.stationCoverage500Rate = nullableNumber(overview.stationCoverage500Rate);
   overviewStats.adminAreaKm2 = overviewStatsBaseline.adminAreaKm2;
@@ -1630,10 +1643,18 @@ function resetOverviewStats() {
   overviewStats.stationCoverage500Rate = null;
   overviewStats.adminAreaKm2 = null;
   overviewStatsBaseline = {
+    lineCount: 0,
     networkScaleKm: null,
     networkDensityKmPerKm2: null,
+    stationCount: 0,
     adminAreaKm2: null,
   };
+}
+
+function overviewCountOrFallback(value, collection, keyFn, fallback = 0) {
+  const number = Number(value);
+  if (Number.isFinite(number)) return Math.max(0, Math.round(number));
+  return physicalCountOrFallback(collection, keyFn, fallback);
 }
 
 function nullableNumber(value) {
@@ -1666,6 +1687,8 @@ function ensureMapReady(callback) {
 function renderRealDataLayers(data, mode = "overview") {
   ensureMapReady(async (map) => {
     clearSelectionState();
+    realDataRenderToken += 1;
+    clearDisplayRangeFilterCache();
     const isOverview = mode === "overview";
     const isStationUpdate = mode === "station_update";
     const isLineUpdate = mode === "line_update";
@@ -1673,7 +1696,7 @@ function renderRealDataLayers(data, mode = "overview") {
     realDataAllCollections = {
       lines: normalizeLineFeatureCollection(data.lines),
       stations: normalizeStationFeatureCollection(data.stations),
-      routeStops: normalizeRouteStopFeatureCollection(data.routeStops),
+      routeStops: normalizeFeatureCollection(data.routeStops),
       depots: normalizeDepotFeatureCollection(data.depots),
     };
     applyDisplayRangeFilter({ updateSources: false, clearSelection: false });
@@ -1721,10 +1744,24 @@ function applyMapDataMode(key = activeKey.value) {
 function ensureSourceData(map, sourceId, data) {
   const source = map.getSource(sourceId);
   if (source?.setData) {
-    source.setData(data);
+    setGeoJsonSourceData(sourceId, data, map);
     return;
   }
   map.addSource(sourceId, { type: "geojson", data });
+  realDataSourceDataRefs.set(sourceId, data);
+}
+
+function setGeoJsonSourceData(sourceId, data, map = MapRef.value?.map) {
+  const source = map?.getSource(sourceId);
+  if (!source?.setData) return false;
+  if (realDataSourceDataRefs.get(sourceId) === data) return false;
+  source.setData(data);
+  realDataSourceDataRefs.set(sourceId, data);
+  return true;
+}
+
+function invalidateRenderedRealDataSources() {
+  [SOURCE_LINES, SOURCE_STATIONS, SOURCE_DEPOTS].forEach((sourceId) => realDataSourceDataRefs.delete(sourceId));
 }
 
 function ensureRealDataLayerSet(map) {
@@ -2112,6 +2149,7 @@ function stationOpacityPaint() {
 function normalizeLineFeatureCollection(collection) {
   const features = Array.isArray(collection?.features) ? collection.features : [];
   return {
+    ...collection,
     type: "FeatureCollection",
     features: features.map((feature, index) => normalizeLineFeature(feature, index)),
   };
@@ -2119,26 +2157,31 @@ function normalizeLineFeatureCollection(collection) {
 
 function normalizeFeatureCollection(collection) {
   return {
+    ...collection,
     type: "FeatureCollection",
     features: Array.isArray(collection?.features) ? collection.features : [],
   };
 }
 
 function normalizeLineFeature(feature, index = 0) {
+  if (!feature || typeof feature !== "object") {
+    const lineKey = `line-${index}`;
+    return { type: "Feature", id: lineKey, geometry: null, properties: { _lineKey: lineKey } };
+  }
+  if (!feature.properties || typeof feature.properties !== "object") {
+    feature.properties = {};
+  }
   const lineKey = lineFeatureKey(feature, index);
-  return {
-    ...feature,
-    id: feature?.id ?? lineKey,
-    properties: {
-      ...(feature?.properties || {}),
-      _lineKey: lineKey,
-    },
-  };
+  feature.type = feature.type || "Feature";
+  feature.id = feature.id ?? lineKey;
+  feature.properties._lineKey = feature.properties._lineKey || lineKey;
+  return feature;
 }
 
 function normalizeStationFeatureCollection(collection) {
   const features = Array.isArray(collection?.features) ? collection.features : [];
   return {
+    ...collection,
     type: "FeatureCollection",
     features: features.map((feature, index) => normalizeStationFeature(feature, index)),
   };
@@ -2147,6 +2190,7 @@ function normalizeStationFeatureCollection(collection) {
 function normalizeRouteStopFeatureCollection(collection) {
   const features = Array.isArray(collection?.features) ? collection.features : [];
   return {
+    ...collection,
     type: "FeatureCollection",
     features: features.map((feature, index) => normalizeRouteStopFeature(feature, index)),
   };
@@ -2168,56 +2212,63 @@ function lineFeatureKey(feature, index = 0) {
 function normalizeDepotFeatureCollection(collection) {
   const features = Array.isArray(collection?.features) ? collection.features : [];
   return {
+    ...collection,
     type: "FeatureCollection",
     features: features.map((feature, index) => normalizeDepotFeature(feature, index)),
   };
 }
 
 function normalizeStationFeature(feature, index = 0) {
-  const properties = feature?.properties || {};
-  return {
-    type: "Feature",
-    id: feature?.id,
-    geometry: feature?.geometry || null,
-    properties: {
-      ...properties,
-      _featureId: properties._featureId || feature?.id || properties._featureId,
-      _stationKey: stationFeatureKey(feature, index),
-    },
-  };
+  if (!feature || typeof feature !== "object") {
+    const stationKey = `station-${index}`;
+    return { type: "Feature", id: stationKey, geometry: null, properties: { _featureId: stationKey, _stationKey: stationKey } };
+  }
+  if (!feature.properties || typeof feature.properties !== "object") {
+    feature.properties = {};
+  }
+  const properties = feature.properties;
+  feature.type = feature.type || "Feature";
+  feature.geometry = feature.geometry || null;
+  properties._featureId = properties._featureId || feature.id || properties._featureId;
+  properties._stationKey = properties._stationKey || stationFeatureKey(feature, index);
+  return feature;
 }
 
 function normalizeRouteStopFeature(feature, index = 0) {
-  const properties = feature?.properties || {};
+  if (!feature || typeof feature !== "object") {
+    const routeStopKey = `route-stop-${index}`;
+    return { type: "Feature", id: routeStopKey, geometry: null, properties: { _featureId: routeStopKey, _routeStopKey: routeStopKey } };
+  }
+  if (!feature.properties || typeof feature.properties !== "object") {
+    feature.properties = {};
+  }
+  const properties = feature.properties;
   const coordinates = pointCoordinates(feature?.geometry);
-  return {
-    type: "Feature",
-    id: feature?.id,
-    geometry: feature?.geometry || null,
-    properties: {
-      ...properties,
-      _featureId: properties._featureId || feature?.id || properties._featureId,
-      _routeStopKey: String(
-        properties._routeStopKey ||
-          [properties.line_id, properties.stop_id, properties.seq, coordinates?.[0], coordinates?.[1], index].filter(Boolean).join("-") ||
-          `route-stop-${index}`,
-      ),
-    },
-  };
+  feature.type = feature.type || "Feature";
+  feature.geometry = feature.geometry || null;
+  properties._featureId = properties._featureId || feature.id || properties._featureId;
+  properties._routeStopKey = String(
+    properties._routeStopKey ||
+      [properties.line_id, properties.stop_id, properties.seq, coordinates?.[0], coordinates?.[1], index].filter(Boolean).join("-") ||
+      `route-stop-${index}`,
+  );
+  return feature;
 }
 
 function normalizeDepotFeature(feature, index = 0) {
-  const properties = feature?.properties || {};
-  return {
-    type: "Feature",
-    id: feature?.id,
-    geometry: feature?.geometry || null,
-    properties: {
-      ...properties,
-      _featureId: properties._featureId || feature?.id || properties._featureId,
-      _depotKey: depotFeatureKey(feature, index),
-    },
-  };
+  if (!feature || typeof feature !== "object") {
+    const depotKey = `depot-${index}`;
+    return { type: "Feature", id: depotKey, geometry: null, properties: { _featureId: depotKey, _depotKey: depotKey } };
+  }
+  if (!feature.properties || typeof feature.properties !== "object") {
+    feature.properties = {};
+  }
+  const properties = feature.properties;
+  feature.type = feature.type || "Feature";
+  feature.geometry = feature.geometry || null;
+  properties._featureId = properties._featureId || feature.id || properties._featureId;
+  properties._depotKey = properties._depotKey || depotFeatureKey(feature, index);
+  return feature;
 }
 
 function normalizeAdminDistrictCollection(collection) {
@@ -2277,13 +2328,18 @@ function districtFeatureName(feature) {
 function applyDisplayRangeFilter(options = {}) {
   const { updateSources = true, clearSelection: shouldClearSelection = false } = options;
   const context = activeDisplayRangeContext();
-  if (!context) {
+  const cacheKey = context ? `${realDataRenderToken}:${context.name}` : `${realDataRenderToken}:${DISPLAY_RANGE_ALL}`;
+  const cachedCollections = displayRangeFilterCache.get(cacheKey);
+  if (cachedCollections) {
+    realDataCollections = cachedCollections;
+  } else if (!context) {
     realDataCollections = {
       lines: realDataAllCollections.lines,
       stations: realDataAllCollections.stations,
       routeStops: realDataAllCollections.routeStops,
       depots: realDataAllCollections.depots,
     };
+    displayRangeFilterCache.set(cacheKey, realDataCollections);
   } else {
     const routeStopsInRange = featureCollectionFromFeatures((realDataAllCollections.routeStops?.features || []).filter((feature) => pointFeatureInRange(feature, context)));
     realDataCollections = {
@@ -2292,6 +2348,7 @@ function applyDisplayRangeFilter(options = {}) {
       routeStops: routeStopsInRange,
       depots: featureCollectionFromFeatures((realDataAllCollections.depots?.features || []).filter((feature) => pointFeatureInRange(feature, context))),
     };
+    displayRangeFilterCache.set(cacheKey, realDataCollections);
   }
   updateOverviewCollectionCounts(context);
   realDataCollectionsRevision.value += 1;
@@ -2304,6 +2361,11 @@ function applyDisplayRangeFilter(options = {}) {
   if (updateSources) {
     syncRealDataSourceData();
   }
+}
+
+function clearDisplayRangeFilterCache() {
+  displayRangeFilterCache = new Map();
+  routeStopIndexCache = { token: -1, collection: null, byRouteId: new Map() };
 }
 
 function activeDisplayRangeContext() {
@@ -2328,9 +2390,9 @@ function activeDisplayRangeContext() {
 function syncRealDataSourceData() {
   const map = MapRef.value?.map;
   if (!map) return;
-  map.getSource(SOURCE_LINES)?.setData?.(realDataCollections.lines);
-  map.getSource(SOURCE_STATIONS)?.setData?.(realDataCollections.stations);
-  map.getSource(SOURCE_DEPOTS)?.setData?.(realDataCollections.depots);
+  setGeoJsonSourceData(SOURCE_LINES, realDataCollections.lines);
+  setGeoJsonSourceData(SOURCE_STATIONS, realDataCollections.stations);
+  setGeoJsonSourceData(SOURCE_DEPOTS, realDataCollections.depots);
   updateStationSelectionLayers();
   if (selectedRoute.value) {
     updateSelectedLineLayer(selectedRoute.value.feature);
@@ -2975,14 +3037,16 @@ function physicalCountOrFallback(collection, keyFn, fallback = 0) {
 }
 
 function updateOverviewCollectionCounts(context = null) {
-  overviewStats.lineCount = countUniqueFeatures(realDataCollections.lines, physicalLineKey);
-  overviewStats.stationCount = countUniqueFeatures(realDataCollections.routeStops, physicalStationKey);
   if (!context) {
+    overviewStats.lineCount = overviewStatsBaseline.lineCount;
+    overviewStats.stationCount = overviewStatsBaseline.stationCount;
     overviewStats.networkScaleKm = overviewStatsBaseline.networkScaleKm;
     overviewStats.networkDensityKmPerKm2 = overviewStatsBaseline.networkDensityKmPerKm2;
     overviewStats.adminAreaKm2 = overviewStatsBaseline.adminAreaKm2;
     return;
   }
+  overviewStats.lineCount = countUniqueFeatures(realDataCollections.lines, physicalLineKey);
+  overviewStats.stationCount = countUniqueFeatures(realDataCollections.routeStops, physicalStationKey);
   const rawNetworkScaleKm = featureCollectionLineLengthMeters(realDataCollections.lines) / 1000;
   const networkScaleKm = roundNumber(rawNetworkScaleKm, 2);
   const adminAreaKm2 = roundNumber(context.areaKm2, 2);
@@ -3109,6 +3173,8 @@ function clearRealDataLayers() {
   if (map.getSource(SOURCE_STATIONS)) map.removeSource(SOURCE_STATIONS);
   if (map.getSource(SOURCE_SELECTED_LINE)) map.removeSource(SOURCE_SELECTED_LINE);
   if (map.getSource(SOURCE_LINES)) map.removeSource(SOURCE_LINES);
+  realDataSourceDataRefs = new Map();
+  clearDisplayRangeFilterCache();
   clearSelectionState();
   stationSearchIndex = [];
   lineSearchIndex = [];
@@ -4982,6 +5048,8 @@ function appendUploadOperations(datasetType, operations) {
       realDataAllCollections.stations = deriveStationsFromRouteStops(realDataAllCollections.routeStops);
     }
   }
+  clearDisplayRangeFilterCache();
+  invalidateRenderedRealDataSources();
   applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
   if (stationTouched) {
     syncSelectedStationWithCurrentData();
@@ -5295,6 +5363,8 @@ function applyLocalDelete(datasetType, target) {
   const collection = collectionForDataset(datasetType, "all");
   const targetId = featureTargetId(target);
   collection.features = collection.features.filter((feature) => featureTargetId(feature) !== targetId);
+  clearDisplayRangeFilterCache();
+  invalidateRenderedRealDataSources();
   applyDisplayRangeFilter({ updateSources: true, clearSelection: true });
   clearSelection();
 }
@@ -5321,6 +5391,8 @@ function addLocalFeature(datasetType, payload) {
     geometry: { type: "Point", coordinates: [Number(payload.lng), Number(payload.lat)] },
     properties,
   });
+  clearDisplayRangeFilterCache();
+  invalidateRenderedRealDataSources();
   applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
 }
 
@@ -5334,6 +5406,8 @@ function updateLocalFeature(datasetType, target, updater) {
   const feature = collection.features.find((item) => featureTargetId(item) === targetId);
   if (!feature) return;
   updater(feature);
+  clearDisplayRangeFilterCache();
+  invalidateRenderedRealDataSources();
   applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
 }
 
@@ -6087,18 +6161,41 @@ function parseRouteStationText(text) {
 }
 
 function routeStopFeaturesForRoute(properties = {}, route = selectedRoute.value) {
-  const routeStops = Array.isArray(realDataAllCollections.routeStops?.features) ? realDataAllCollections.routeStops.features : [];
-  if (!routeStops.length) return [];
   const routeId = routeDataId(properties);
-  return routeStops
-    .map((feature, index) => {
-      const stopProperties = feature.properties || {};
-      if (!isRouteStopMatch(stopProperties, routeId)) return null;
-      const sequence = routeStopSequence(stopProperties);
-      return { feature, sequence, sourceIndex: index };
-    })
-    .filter(Boolean)
-    .sort((left, right) => left.sequence - right.sequence || left.sourceIndex - right.sourceIndex);
+  if (!routeId) return [];
+  return routeStopIndexByRouteId().get(routeId) || [];
+}
+
+function routeStopIndexByRouteId() {
+  const collection = realDataAllCollections.routeStops;
+  if (
+    routeStopIndexCache.token === realDataRenderToken &&
+    routeStopIndexCache.collection === collection
+  ) {
+    return routeStopIndexCache.byRouteId;
+  }
+  const byRouteId = new Map();
+  const routeStops = Array.isArray(collection?.features) ? collection.features : [];
+  routeStops.forEach((feature, sourceIndex) => {
+    const stopProperties = feature?.properties || {};
+    const routeId = routeDataId(stopProperties);
+    if (!routeId) return;
+    if (!byRouteId.has(routeId)) byRouteId.set(routeId, []);
+    byRouteId.get(routeId).push({
+      feature,
+      sequence: routeStopSequence(stopProperties),
+      sourceIndex,
+    });
+  });
+  byRouteId.forEach((items) => {
+    items.sort((left, right) => left.sequence - right.sequence || left.sourceIndex - right.sourceIndex);
+  });
+  routeStopIndexCache = {
+    token: realDataRenderToken,
+    collection,
+    byRouteId,
+  };
+  return byRouteId;
 }
 
 function routeStopsForRoute(properties = {}, route = selectedRoute.value) {
