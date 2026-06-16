@@ -64,7 +64,7 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimPrecomputedCache {
 
-    public static final String VISUAL_CACHE_VERSION = "visual-v5";
+    public static final String VISUAL_CACHE_VERSION = "visual-v6";
     private static final int VISUAL_TILE_ZOOM = 12;
     private static final int MIN_VISUAL_TILE_ZOOM = 8;
     private static final int ROUTE_DETAIL_SHARD_COUNT = 32;

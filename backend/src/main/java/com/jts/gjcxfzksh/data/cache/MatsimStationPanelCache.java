@@ -32,7 +32,7 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimStationPanelCache {
 
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v2";
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v3";
 
     private static final String PANEL_FILE = "station-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";

@@ -1,5 +1,6 @@
 package com.jts.gjcxfzksh.data.cache;
 
+import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.MatsimData;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import org.matsim.core.api.experimental.events.VehicleArrivesAtFacilityEvent;
 import org.matsim.core.api.experimental.events.VehicleDepartsAtFacilityEvent;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.config.ConfigWriter;
+import org.matsim.core.population.routes.RouteUtils;
 import org.matsim.core.scenario.MutableScenario;
 import org.matsim.core.scenario.ScenarioUtils;
 import org.matsim.pt.transitSchedule.api.Departure;
@@ -28,10 +30,13 @@ import org.matsim.pt.transitSchedule.api.TransitSchedule;
 import org.matsim.pt.transitSchedule.api.TransitScheduleFactory;
 import org.matsim.pt.transitSchedule.api.TransitStopFacility;
 import org.matsim.vehicles.Vehicle;
+import org.matsim.vehicles.VehicleType;
+import org.matsim.vehicles.VehicleUtils;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -90,6 +95,43 @@ class MatsimAnalysisCacheLargeStreamTest {
         assertFalse(Files.exists(output.resolve(".gjcxfzksh-cache")));
     }
 
+    @Test
+    void largeModelCacheBuildUsesStreamedPassengerTracksForPanels() throws Exception {
+        System.setProperty("gjcxfzksh.events.workers", "2");
+        System.setProperty("gjcxfzksh.events.pigz.enabled", "false");
+        Path output = tempDir.resolve("model").resolve("output");
+        Path cache = tempDir.resolve("pt_cache").resolve("area").resolve("public").resolve("model");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeEvents(output.resolve("output_events.xml.gz"));
+
+        MatsimData data = new MatsimData("area/public/model", output.toString(), cache.toString(), true);
+        data.setArea(1);
+        data.setScenario(buildScenario());
+
+        invokeDatasourceLoadEvent(data);
+
+        assertEquals(2, data.getPersonTracks().size());
+
+        Map<String, Object> routePanel = MatsimRoutePanelCache.readRoutePanel(data);
+        Map<?, ?> routeSummary = (Map<?, ?>) routePanel.get("summary");
+        assertEquals(1L, ((Number) routeSummary.get("totalBoardings")).longValue());
+        assertEquals(1L, ((Number) routeSummary.get("totalAlightings")).longValue());
+        Map<?, ?> routes = (Map<?, ?>) routePanel.get("routes");
+        Map<?, ?> route1 = (Map<?, ?>) routes.get("route1");
+        Map<?, ?> routeMetrics = (Map<?, ?>) route1.get("metrics");
+        assertEquals(1L, ((Number) routeMetrics.get("passenger")).longValue());
+
+        Map<String, Object> stationPanel = MatsimStationPanelCache.readStationPanel(data);
+        Map<?, ?> stationSummary = (Map<?, ?>) stationPanel.get("summary");
+        assertEquals(1L, ((Number) stationSummary.get("totalBoardings")).longValue());
+        assertEquals(1L, ((Number) stationSummary.get("totalAlightings")).longValue());
+
+        Map<String, Object> info = MatsimPrecomputedCache.readInfo(data);
+        assertNotNull(info);
+        assertEquals(1, ((Number) info.get("rcxcs")).intValue());
+    }
+
     private void writeEvents(Path path) throws Exception {
         try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
             writer.write("<events version=\"1.0\">\n");
@@ -140,19 +182,35 @@ class MatsimAnalysisCacheLargeStreamTest {
 
         TransitRouteStop routeStop1 = factory.createTransitRouteStop(stop1, 0.0, 0.0);
         TransitRouteStop routeStop2 = factory.createTransitRouteStop(stop2, 60.0, 60.0);
+        Departure departure = factory.createDeparture(Id.create("dep1", Departure.class), 0.0);
+        departure.setVehicleId(Id.create("bus1", Vehicle.class));
         TransitRoute route = factory.createTransitRoute(
                 Id.create("route1", TransitRoute.class),
-                null,
+                RouteUtils.createLinkNetworkRouteImpl(Id.createLinkId("l1"), Id.createLinkId("l1")),
                 List.of(routeStop1, routeStop2),
                 "bus"
         );
-        Departure departure = factory.createDeparture(Id.create("dep1", Departure.class), 0.0);
-        departure.setVehicleId(Id.create("bus1", Vehicle.class));
         route.addDeparture(departure);
 
         TransitLine line = factory.createTransitLine(Id.create("line1", TransitLine.class));
         line.addRoute(route);
         schedule.addTransitLine(line);
+
+        VehicleType busType = VehicleUtils.createVehicleType(Id.create("bus", VehicleType.class));
+        busType.getCapacity().setSeats(40);
+        busType.getCapacity().setStandingRoom(30);
+        scenario.getTransitVehicles().addVehicleType(busType);
+        scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("bus1", Vehicle.class), busType));
+    }
+
+    private void invokeDatasourceLoadEvent(MatsimData data) throws Exception {
+        Method loadEvent = Datasource.class.getDeclaredMethod(
+                "loadEvent",
+                MatsimData.class,
+                MatsimAnalysisCache.BuildProgress.class
+        );
+        loadEvent.setAccessible(true);
+        loadEvent.invoke(null, data, null);
     }
 
     private void assertPassengerSeriesContainsBoarding(Map<String, Object> manifest) {

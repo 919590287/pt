@@ -42,7 +42,7 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimRoutePanelCache {
 
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v2";
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v3";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";

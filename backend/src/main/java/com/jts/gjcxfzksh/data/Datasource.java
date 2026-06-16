@@ -231,10 +231,18 @@ public class Datasource {
     private static void loadEvent(MatsimData data, MatsimAnalysisCache.BuildProgress progress) {
         try {
             MatsimAnalysisCache.prepareOnModelLoad(data);
+            if (data.isLargeModel()) {
+                MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
+                if (data.getPersonTracks() == null || data.getPersonTracks().isEmpty()) {
+                    MatsimAnalysisCache.prepareOnModelLoad(data);
+                }
+            }
             MatsimRoutePanelCache.prepareOnModelLoad(data);
             MatsimStationPanelCache.prepareOnModelLoad(data);
             MatsimPrecomputedCache.prepareOnModelLoad(data);
-            MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
+            if (!data.isLargeModel()) {
+                MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
+            }
         } catch (Exception e) {
             log.error("event加载失败: {}", e.getMessage());
             throw new RuntimeException(e);

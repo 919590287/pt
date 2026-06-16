@@ -122,13 +122,13 @@ public final class MatsimAnalysisCache {
 
     public static void prepareOnModelLoad(MatsimData data) {
         try {
-            if (data.isLargeModel()) {
-                log.info("模型[{}]为大模型，跳过内存型乘客上下车缓存加载，等待离线流式缓存任务", data.getName());
-                return;
-            }
             boolean personTracksReady = loadPersonTracksFromCache(data);
             if (personTracksReady) {
                 log.info("读取模型乘客上下车轻量缓存: model={}, personTracks={}", data.getName(), true);
+                return;
+            }
+            if (data.isLargeModel()) {
+                log.info("模型[{}]为大模型，乘客上下车轻量缓存尚未生成，等待离线流式缓存任务", data.getName());
                 return;
             }
 
@@ -190,7 +190,7 @@ public final class MatsimAnalysisCache {
 
     private static Map<String, Object> ensureLargeTrajectoryCache(MatsimData data, BuildProgress progress) throws Exception {
         Map<String, Object> manifest = readReadyTrajectoryManifest(data);
-        if (manifest != null) {
+        if (manifest != null && isPersonTracksCacheReady(data)) {
             return manifest;
         }
 
@@ -198,7 +198,7 @@ public final class MatsimAnalysisCache {
         Object lock = BUILD_LOCKS.computeIfAbsent(cacheKey, key -> new Object());
         synchronized (lock) {
             manifest = readReadyTrajectoryManifest(data);
-            if (manifest != null) {
+            if (manifest != null && isPersonTracksCacheReady(data)) {
                 return manifest;
             }
             ACTIVE_TRAJECTORY_BUILDS.incrementAndGet();
@@ -367,6 +367,22 @@ public final class MatsimAnalysisCache {
     }
 
     private static boolean loadPersonTracksFromCache(MatsimData data) {
+        if (!isPersonTracksCacheReady(data)) {
+            return false;
+        }
+        Path tracksPath = personTracksPath(data);
+        try {
+            Set<PTPersonTrack> tracks = readPersonTracks(tracksPath);
+            data.setPersonTracks(tracks);
+            log.info("读取乘客上下车轻量缓存: model={}, tracks={}", data.getName(), tracks.size());
+            return true;
+        } catch (Exception e) {
+            log.warn("乘客上下车缓存读取失败: {}", tracksPath, e);
+            return false;
+        }
+    }
+
+    private static boolean isPersonTracksCacheReady(MatsimData data) {
         Path manifestPath = personTrackManifestPath(data);
         Path tracksPath = personTracksPath(data);
         if (!Files.exists(manifestPath) || !Files.exists(tracksPath)) {
@@ -383,12 +399,9 @@ public final class MatsimAnalysisCache {
             if (!sameEvents(data, manifest)) {
                 return false;
             }
-            Set<PTPersonTrack> tracks = readPersonTracks(tracksPath);
-            data.setPersonTracks(tracks);
-            log.info("读取乘客上下车轻量缓存: model={}, tracks={}", data.getName(), tracks.size());
             return true;
         } catch (Exception e) {
-            log.warn("乘客上下车缓存读取失败: {}", tracksPath, e);
+            log.warn("乘客上下车缓存状态读取失败: {}", manifestPath, e);
             return false;
         }
     }

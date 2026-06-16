@@ -29,7 +29,7 @@ import java.util.concurrent.Executors;
 @Component
 public class ModelCacheManager {
 
-    private static final String MANAGER_CACHE_VERSION = "model-cache-v1";
+    private static final String MANAGER_CACHE_VERSION = "model-cache-v2";
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
