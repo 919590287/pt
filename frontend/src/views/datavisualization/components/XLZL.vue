@@ -107,8 +107,8 @@
     </div>
   </div>
 
-  <teleport to="#datavisualization_index_box2" defer>
-    <MCard2 v-if="currentSelectedRoute" class="SJZL_right_card" :open="true">
+  <teleport v-if="!runMonitorSimplifiedRight || !currentRoutePanel" to="#datavisualization_index_box2" defer>
+    <MCard2 v-if="!runMonitorSimplifiedRight && currentSelectedRoute" class="SJZL_right_card" :open="true">
       <template #title>
         <div class="ranking-title-container">
           <div class="header-actions-left">
@@ -529,10 +529,12 @@
             <span class="col-flow">日均客流量</span>
           </div>
           <div class="ranking-scroll-list">
-            <div 
+            <button 
               v-for="(item, index) in currentLeaderboard" 
               :key="index"
               class="ranking-row"
+              type="button"
+              @click="selectLeaderboardLine(item)"
             >
               <div class="col-rank">
                 <span :class="['rank-badge', index === 0 ? 'gold' : index === 1 ? 'silver' : index === 2 ? 'bronze' : '']">
@@ -547,7 +549,7 @@
                 <span class="flow-value">{{ item.passengerFlow.toLocaleString() }}</span>
                 <span class="flow-unit">人次</span>
               </div>
-            </div>
+            </button>
           </div>
         </div>
       </template>
@@ -556,7 +558,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance } from "vue";
+import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
 import { Search, Location, Timer, Connection, Download } from "@element-plus/icons-vue";
 import { getLineAll, getRouteDetail, getRoutePanel, getRouteTileBinary } from "@/api/route";
 import MCard from "./MCard.vue";
@@ -586,10 +588,18 @@ const selectedRouteDetail = ref(null);
 // 注入来自 index.vue 的全局线宽配置与 MapRef
 const LineWidthRef = inject("LineWidthRef", ref(100));
 const MapRef = inject("MapRef", ref(null));
+const BaseMapLineModeRef = inject("BaseMapLineModeRef", ref("bus-network"));
 
 // 注入右侧面板显示控制
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
+
+// 运行监测页：右侧改为简化卡片（单条线路日客流量+折线图）。
+// 此处禁用本组件向右侧面板的 teleport，并把选中线路数据上抛给 index.vue。
+// 客流分析页不提供这些注入，默认值保证其行为完全不变。
+const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
+const runMonitorSelectedLinePanel = inject("runMonitorSelectedLinePanel", null);
+const runMonitorSelectedLineName = inject("runMonitorSelectedLineName", null);
 
 // 统一的当前选中路线计算属性
 const currentSelectedRoute = computed(() => {
@@ -1209,6 +1219,24 @@ watch(activeDatavisualizationTab, (newTab) => {
   }
 });
 
+// 运行监测页：把当前选中线路的客流面板与名称上抛给 index.vue 的简化右侧卡片。
+// 客流分析页未提供这些注入（值为 null），此处为无操作，不影响其行为。
+watch(
+  [currentRoutePanel, currentSelectedRoute, selectedLineName],
+  () => {
+    if (!runMonitorSelectedLinePanel && !runMonitorSelectedLineName) return;
+    if (runMonitorSelectedLinePanel) {
+      runMonitorSelectedLinePanel.value = currentRoutePanel.value || null;
+    }
+    if (runMonitorSelectedLineName) {
+      const route = currentSelectedRoute.value || {};
+      runMonitorSelectedLineName.value =
+        route.lineName || route.routeName || selectedLineName.value || route.lineId || "";
+    }
+  },
+  { immediate: true },
+);
+
 function handleExportLeaderboard() {
   if (proxy?.$message) {
     proxy.$message.success({
@@ -1429,12 +1457,20 @@ injectSync("MapRef").then((map) => {
   map.value?.addLayer(_BgRouteLayer);
   map.value?.addLayer(_RouteLayer);
   _BgRouteLayer.setTileSource(props.model, { tileRequest: getRouteTileBinary });
+  if (BaseMapLineModeRef.value === "bus-network") {
+    _BgRouteLayer.hide();
+  }
 });
 
 // 监听线宽变化
 watch(LineWidthRef, (value) => {
   _BgRouteLayer.setLineWidth(value);
   _RouteLayer.setLineWidth(value * 1.8);
+});
+watch(BaseMapLineModeRef, () => {
+  if (!currentSelectedRoute.value) {
+    updateLayers(null);
+  }
 });
 
 // 计算所有唯一的线路名称，并转换为 el-select-v2 需要的 options 格式
@@ -1503,11 +1539,38 @@ function updateLayers(activeLinks = null) {
     _BgRouteLayer.hide();
     _RouteLayer.setData(activeLinks);
   } else {
-    _BgRouteLayer.show();
+    _BgRouteLayer.hide();
     _RouteLayer.setData([]);
     selectedRouteDetail.value = null;
     cleanUpSelectedRouteStops();
   }
+}
+
+function normalizeLineSearchName(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[（(].*?[）)]/g, "")
+    .toLowerCase();
+}
+
+async function selectLineByName(lineName) {
+  const target = normalizeLineSearchName(lineName);
+  if (!target) return false;
+  const line =
+    rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === target) ||
+    rawLines.value.find((item) => normalizeLineSearchName(item.lineName).includes(target) || target.includes(normalizeLineSearchName(item.lineName)));
+  if (!line?.lineName) return false;
+  searchMode.value = "line";
+  selectedStationName.value = "";
+  selectedLineName.value = line.lineName;
+  await nextTick();
+  await handleLineChange(line.lineName);
+  return true;
+}
+
+function selectLeaderboardLine(item) {
+  selectLineByName(item?.lineName);
 }
 
 function routeStopStations(route) {
@@ -1770,6 +1833,10 @@ onUnmounted(() => {
   _BgRouteLayer.dispose();
   _RouteLayer.dispose();
   cleanUpSelectedRouteStops();
+});
+
+defineExpose({
+  selectLineByName,
 });
 </script>
 
@@ -2996,11 +3063,17 @@ onUnmounted(() => {
 }
 
 .ranking-row {
+  width: 100%;
+  border: 0;
   display: flex;
   align-items: center;
+  text-align: left;
+  cursor: pointer;
   padding: 12px 16px;
   background: #ffffff;
   border-bottom: 1px dashed rgba(21, 105, 222, 0.12);
+  color: inherit;
+  font: inherit;
   transition: background-color 0.2s ease, border-color 0.2s ease;
 
   &:hover {

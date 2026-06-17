@@ -1,6 +1,6 @@
 <!-- 轨迹演示 -->
 <template>
-  <div class="GJYS" v-bind="$attrs">
+  <div class="GJYS" v-bind="$attrs" v-show="!runMonitorPanels">
     <MCard class="card" wrap-body-class="body">
       <template #title>
         <div class="title">轨迹演示控制</div>
@@ -96,6 +96,96 @@
     </MCard>
   </div>
 
+  <teleport to="#run-monitor-vehicle-controls" defer v-if="runMonitorPanels">
+    <div class="run-gjys-control-panel">
+      <div class="run-control-title">轨迹演示控制</div>
+      <div v-if="loading && !trajectoryData" class="loading-state">
+        <el-skeleton :rows="4" animated />
+      </div>
+      <el-empty v-else-if="loadError && !trajectoryData" :description="loadError" />
+      <div v-else-if="isGenerating" class="build-state">
+        <div class="build-title">{{ cacheMessage }}</div>
+        <el-progress :percentage="buildProgressPercent" :stroke-width="8" :show-text="false" />
+        <div class="build-metrics">
+          <span>车辆 {{ formatNumber(progressInfo.vehicleCount) }}</span>
+          <span>轨迹点 {{ formatNumber(progressInfo.pointCount) }}</span>
+        </div>
+      </div>
+      <template v-else>
+        <div class="control-row">
+          <span class="label">播放状态</span>
+          <div class="btn-group">
+            <el-button-group>
+              <el-button type="primary" :disabled="!canControl" @click="togglePlay">
+                <span>{{ isPlaying ? "暂停" : "播放" }}</span>
+              </el-button>
+              <el-button type="info" :disabled="!canControl" @click="resetPlayback">重置</el-button>
+            </el-button-group>
+          </div>
+        </div>
+
+        <div class="control-row mt-4 flex-col">
+          <span class="label">演示速度</span>
+          <el-radio-group v-model="playSpeed" size="small" :disabled="!canControl" @change="changeSpeed">
+            <el-radio-button :value="1">1x</el-radio-button>
+            <el-radio-button :value="5">5x</el-radio-button>
+            <el-radio-button :value="10">10x</el-radio-button>
+            <el-radio-button :value="50">50x</el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <div class="control-row mt-4 flex-col">
+          <div class="slider-header">
+            <span class="label">时间进度</span>
+            <span class="time-text">{{ formatTime(currentTime) }}</span>
+          </div>
+          <el-slider
+            v-model="currentTime"
+            :min="timeRange.min"
+            :max="timeRange.max"
+            :disabled="!canControl"
+            :format-tooltip="formatTime"
+            @input="handleSliderInput"
+            @change="handleSliderCommit"
+          />
+        </div>
+      </template>
+    </div>
+  </teleport>
+
+  <teleport to="#datavisualization_index_box2" defer v-if="runMonitorPanels && !vehiclePanelInfo">
+    <MCard2 class="GJYS_right_card vehicle-status-right-card" title="车辆与状态监控" :open="true">
+      <template #body>
+        <div class="stat-grid">
+          <div class="stat-item">
+            <div class="stat-label">运行中车辆</div>
+            <div class="stat-value text-primary">{{ activeVehicles }} <span class="unit">辆</span></div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">公交车</div>
+            <div class="stat-value mode-bus">{{ activeByMode.bus }} <span class="unit">辆</span></div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">地铁</div>
+            <div class="stat-value mode-subway">{{ activeByMode.subway }} <span class="unit">辆</span></div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">私家车</div>
+            <div class="stat-value mode-car">{{ activeByMode.car }} <span class="unit">辆</span></div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">累计乘车人数</div>
+            <div class="stat-value text-success">{{ cumulativePassengers }} <span class="unit">人次</span></div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-label">平均车速</div>
+            <div class="stat-value text-warning">{{ avgSpeed }} <span class="unit">km/h</span></div>
+          </div>
+        </div>
+      </template>
+    </MCard2>
+  </teleport>
+
   <teleport to="#datavisualization_index_box2" defer v-if="vehiclePanelInfo">
     <MCard2 class="GJYS_right_card" title="车辆信息" :open="true">
       <template #body>
@@ -187,6 +277,10 @@ import { VehicleTrajectoryLayer, VEHICLE_MODE_CONFIG, parseVehicleTrajectoryBina
 
 const props = defineProps({
   model: String,
+  runMonitorPanels: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 const MODE_KEYS = ["bus", "subway", "car"];
@@ -199,6 +293,10 @@ const VehicleVisibilityModeRef = inject("VehicleVisibilityModeRef", ref("all"));
 const DEFAULT_CHUNK_SECONDS = 300;
 const PREFETCH_WINDOW_SECONDS = 120;
 const MAX_CHUNK_CACHE = 7;
+// 分块缓存按字节预算淘汰，避免大 events 下 7 个大分块常驻导致 OOM。
+const MAX_CHUNK_CACHE_BYTES = 96 * 1024 * 1024;
+// 播放时滑块/时间文本的刷新节流（图层仍按 rAF 每帧驱动，UI 不必每帧重渲染）。
+const UI_SYNC_INTERVAL_MS = 120;
 const loading = ref(false);
 const chunkLoading = ref(false);
 const loadError = ref("");
@@ -220,6 +318,11 @@ const followedVehicle = ref(null);
 let trajectoryLayer = null;
 let playbackFrame = null;
 let lastPlaybackFrameAt = 0;
+// 播放时钟（普通变量，不走 Vue 响应式）：每帧直接驱动图层，currentTime ref 仅按节流回写给滑块。
+let playbackClock = 0;
+let lastUiSyncAt = 0;
+// 拖动进度条到未缓存分块时的防抖加载，避免每次 input 都发请求/清空车辆造成闪烁与长时间空白。
+let seekChunkTimer = null;
 let pollTimer = null;
 let loadSeq = 0;
 let chunkSeq = 0;
@@ -227,14 +330,16 @@ let currentChunkStart = null;
 let pendingChunkStart = null;
 let chunkCache = new Map();
 let prefetchingChunks = new Set();
+let chunkRequests = new Map();
 let passengerTimeIndex = emptyPassengerIndex();
 let passengerSeriesRows = [];
 
 const summary = computed(() => trajectoryData.value?.summary || {});
 const hasTrajectory = computed(() => cacheStatus.value === "ready" && Number(summary.value.totalVehicles || 0) > 0);
-watch([followedVehicle, activeDatavisualizationTab], () => {
-  if (activeDatavisualizationTab.value === "轨迹演示") {
-    rightPanelHasContent.value = !!followedVehicle.value;
+const isTrajectoryMonitorActive = computed(() => activeDatavisualizationTab.value === "轨迹演示" || activeDatavisualizationTab.value === "车辆运行监测");
+watch([followedVehicle, activeDatavisualizationTab, () => props.runMonitorPanels], () => {
+  if (isTrajectoryMonitorActive.value) {
+    rightPanelHasContent.value = props.runMonitorPanels || !!followedVehicle.value;
   }
 }, { immediate: true });
 
@@ -253,7 +358,7 @@ const activeByMode = computed(() => liveStats.value.activeByMode || emptyModeCou
 const avgSpeed = computed(() => (liveStats.value.avgSpeed || 0).toFixed(1));
 const vehiclePanelInfo = computed(() => {
   const vehicle = followedVehicle.value;
-  if (!vehicle || activeDatavisualizationTab.value !== "轨迹演示") return null;
+  if (!vehicle || !isTrajectoryMonitorActive.value) return null;
   const meta = vehicle.meta || {};
   const mode = normalizeMode(meta.mode || vehicle.mode);
   const route = vehicle.route || {};
@@ -467,12 +572,14 @@ function ensureTrajectoryLayer() {
 async function loadTrajectory() {
   stopPlayback();
   stopPolling();
+  cancelSeekChunkLoad();
   trajectoryData.value = null;
   currentChunkData.value = null;
   currentChunkStart = null;
   pendingChunkStart = null;
   chunkCache = new Map();
   prefetchingChunks = new Set();
+  chunkRequests = new Map();
   cacheStatus.value = "idle";
   cacheMessage.value = "";
   progressInfo.value = {};
@@ -585,7 +692,7 @@ async function loadChunkForTime(time, seq, force = false) {
   pendingChunkStart = start;
   chunkLoading.value = true;
   try {
-    const data = await requestTrajectoryChunk(start);
+    const data = await requestTrajectoryChunkOnce(start);
     if (seq !== loadSeq || myChunkSeq !== chunkSeq) return;
     if (data.status !== "ready") {
       await applyTrajectoryStatus(data, seq);
@@ -614,6 +721,7 @@ function applyChunkData(start, data) {
   trajectoryLayer?.setVehicleMeta(data?.meta || trajectoryData.value?.meta || {});
   trajectoryLayer?.setData(data);
   syncStats();
+  prefetchAdjacentChunks(start);
   prefetchAroundTime(currentTime.value);
 }
 
@@ -623,10 +731,30 @@ function rememberChunk(start, data) {
   trimChunkCache(start);
 }
 
+function chunkBytes(data) {
+  const segments = data?.segments;
+  if (segments && Number.isFinite(segments.byteLength)) return segments.byteLength;
+  const count = Number(data?.segmentCount) || 0;
+  const stride = Number(data?.stride) || 8;
+  return count * stride * 4;
+}
+
 function trimChunkCache(anchorStart) {
-  if (chunkCache.size <= MAX_CHUNK_CACHE) return;
-  const entries = [...chunkCache.keys()].sort((a, b) => Math.abs(a - anchorStart) - Math.abs(b - anchorStart));
-  const keep = new Set(entries.slice(0, MAX_CHUNK_CACHE));
+  // 同时受条数与字节预算约束，淘汰离当前时间最远的分块；至少保留一个。
+  const entries = [...chunkCache.keys()].sort(
+    (a, b) => Math.abs(a - anchorStart) - Math.abs(b - anchorStart),
+  );
+  const keep = new Set();
+  let totalBytes = 0;
+  for (const key of entries) {
+    const bytes = chunkBytes(chunkCache.get(key));
+    const withinCount = keep.size < MAX_CHUNK_CACHE;
+    const withinBytes = totalBytes + bytes <= MAX_CHUNK_CACHE_BYTES;
+    if (keep.size === 0 || (withinCount && withinBytes)) {
+      keep.add(key);
+      totalBytes += bytes;
+    }
+  }
   for (const key of chunkCache.keys()) {
     if (!keep.has(key)) {
       chunkCache.delete(key);
@@ -650,13 +778,19 @@ function prefetchAroundTime(time) {
   }
 }
 
+function prefetchAdjacentChunks(start) {
+  if (!hasTrajectory.value || !props.model) return;
+  prefetchChunk(start + chunkSeconds.value, loadSeq);
+  prefetchChunk(start - chunkSeconds.value, loadSeq);
+}
+
 async function prefetchChunk(start, seq) {
   if (!isChunkStartInRange(start) || chunkCache.has(start) || prefetchingChunks.has(start) || pendingChunkStart === start) {
     return;
   }
   prefetchingChunks.add(start);
   try {
-    const data = await requestTrajectoryChunk(start);
+    const data = await requestTrajectoryChunkOnce(start);
     if (seq === loadSeq && data?.status === "ready") {
       rememberChunk(start, data);
     }
@@ -665,6 +799,21 @@ async function prefetchChunk(start, seq) {
   } finally {
     prefetchingChunks.delete(start);
   }
+}
+
+async function requestTrajectoryChunkOnce(start) {
+  if (chunkRequests.has(start)) {
+    return chunkRequests.get(start);
+  }
+  const requestMap = chunkRequests;
+  const promise = requestTrajectoryChunk(start)
+    .finally(() => {
+      if (requestMap.get(start) === promise) {
+        requestMap.delete(start);
+      }
+    });
+  requestMap.set(start, promise);
+  return promise;
 }
 
 async function requestTrajectoryChunk(start) {
@@ -681,10 +830,10 @@ async function requestTrajectoryChunk(start) {
   return res.data || {};
 }
 
-function syncStats() {
-  const layerStats = trajectoryLayer?.setTime(currentTime.value) || emptyStats();
+function syncStatsAt(time) {
+  const layerStats = trajectoryLayer?.setTime(time) || emptyStats();
   liveStats.value = layerStats;
-  const passengerCounts = cumulativeAt(currentTime.value);
+  const passengerCounts = cumulativeAt(time);
   cumulativePassengers.value = passengerCounts.total || 0;
   cumulativeByMode.value = {
     bus: passengerCounts.bus || 0,
@@ -693,9 +842,73 @@ function syncStats() {
   };
 }
 
-function setPlaybackTime(value) {
+function syncPassengerStatsAt(time) {
+  const passengerCounts = cumulativeAt(time);
+  cumulativePassengers.value = passengerCounts.total || 0;
+  cumulativeByMode.value = {
+    bus: passengerCounts.bus || 0,
+    subway: passengerCounts.subway || 0,
+    car: passengerCounts.car || 0,
+  };
+}
+
+function syncStats() {
+  syncStatsAt(currentTime.value);
+}
+
+// 把任意时刻应用到图层：必要时切换分块（命中缓存即时切换，否则异步加载），再按该时刻采样。
+function driveLayerTime(time) {
+  const start = chunkStartOf(time);
+  if (start !== currentChunkStart) {
+    if (chunkCache.has(start)) {
+      applyChunkData(start, chunkCache.get(start));
+    } else {
+      ensureChunkForTime(time);
+      prefetchAdjacentChunks(start);
+      syncPassengerStatsAt(time);
+      return;
+    }
+  } else {
+    prefetchAroundTime(time);
+  }
+  syncStatsAt(time);
+}
+
+function nextTimeValue(value) {
   const rawTime = Number(value) || timeRange.value.min;
-  currentTime.value = rawTime > timeRange.value.max ? timeRange.value.min : clampTime(rawTime);
+  return rawTime > timeRange.value.max ? timeRange.value.min : clampTime(rawTime);
+}
+
+// 暂停状态下的拖动/跳转：命中缓存即时切换；未缓存则先在当前分块采样（保留车辆），并防抖加载目标分块。
+function seekToTime(time) {
+  const start = chunkStartOf(time);
+  if (start !== currentChunkStart) {
+    if (chunkCache.has(start)) {
+      applyChunkData(start, chunkCache.get(start));
+      return;
+    }
+    syncPassengerStatsAt(time);
+    prefetchAdjacentChunks(start);
+    scheduleSeekChunkLoad(time);
+    return;
+  }
+  prefetchAroundTime(time);
+  syncStatsAt(time);
+}
+
+function scheduleSeekChunkLoad(time) {
+  if (seekChunkTimer) window.clearTimeout(seekChunkTimer);
+  seekChunkTimer = window.setTimeout(() => {
+    seekChunkTimer = null;
+    ensureChunkForTime(time);
+  }, 160);
+}
+
+function cancelSeekChunkLoad() {
+  if (seekChunkTimer) {
+    window.clearTimeout(seekChunkTimer);
+    seekChunkTimer = null;
+  }
 }
 
 function togglePlay() {
@@ -705,33 +918,48 @@ function togglePlay() {
     startPlayback();
   } else {
     stopPlayback();
+    // 暂停后把滑块/时间对齐到内部时钟的精确位置（watch 因 isPlaying=false 会做一次落点采样）。
+    currentTime.value = clampTime(playbackClock);
   }
 }
 
 function resetPlayback() {
-  currentTime.value = initialTime();
   isPlaying.value = false;
   stopPlayback();
-  ensureChunkForTime(currentTime.value);
-  syncStats();
+  cancelSeekChunkLoad();
+  const time = initialTime();
+  playbackClock = clampTime(time);
+  currentTime.value = time;
+  ensureChunkForTime(time);
+  syncStatsAt(time);
 }
 
 function changeSpeed() {
   if (isPlaying.value) {
-    stopPlayback();
+    const resumeAt = playbackClock;
     startPlayback();
+    playbackClock = resumeAt;
   }
 }
 
 function startPlayback() {
   stopPlayback();
+  cancelSeekChunkLoad();
   lastPlaybackFrameAt = performance.now();
+  lastUiSyncAt = lastPlaybackFrameAt;
+  playbackClock = clampTime(currentTime.value);
   const tick = (now) => {
     if (!isPlaying.value) return;
     const deltaSeconds = Math.min(0.12, Math.max(0, (now - lastPlaybackFrameAt) / 1000));
     lastPlaybackFrameAt = now;
-    setPlaybackTime(currentTime.value + deltaSeconds * playSpeed.value);
-    prefetchAroundTime(currentTime.value);
+    playbackClock = nextTimeValue(playbackClock + deltaSeconds * playSpeed.value);
+    // 每帧直接驱动图层（采样在 Worker 中进行），实现秒级流畅。
+    driveLayerTime(playbackClock);
+    // 滑块/时间文本按节流回写，避免每帧触发 Vue 重渲染与重复 setTime。
+    if (now - lastUiSyncAt >= UI_SYNC_INTERVAL_MS && currentTime.value !== playbackClock) {
+      lastUiSyncAt = now;
+      currentTime.value = playbackClock;
+    }
     playbackFrame = window.requestAnimationFrame(tick);
   };
   playbackFrame = window.requestAnimationFrame(tick);
@@ -745,14 +973,17 @@ function stopPlayback() {
 }
 
 function handleSliderInput(value) {
-  currentTime.value = clampTime(value);
-  syncStats();
+  // v-model 已更新 currentTime（watch 负责采样与防抖加载）；此处仅让播放时钟跟随，便于继续播放。
+  playbackClock = clampTime(Number(value) || timeRange.value.min);
 }
 
 function handleSliderCommit(value) {
-  currentTime.value = clampTime(value);
-  ensureChunkForTime(currentTime.value);
-  syncStats();
+  cancelSeekChunkLoad();
+  const time = clampTime(Number(value) || timeRange.value.min);
+  playbackClock = time;
+  currentTime.value = time;
+  ensureChunkForTime(time);
+  seekToTime(time);
 }
 
 function formatTime(seconds) {
@@ -811,21 +1042,10 @@ watch(VehicleVisibilityModeRef, (mode) => {
 });
 watch(() => props.model, loadTrajectory, { immediate: true });
 watch(currentTime, (time) => {
-  let appliedCachedChunk = false;
-  if (chunkStartOf(time) !== currentChunkStart) {
-    const start = chunkStartOf(time);
-    if (chunkCache.has(start)) {
-      applyChunkData(start, chunkCache.get(start));
-      appliedCachedChunk = true;
-    } else {
-      ensureChunkForTime(time);
-    }
-  } else {
-    prefetchAroundTime(time);
-  }
-  if (!appliedCachedChunk) {
-    syncStats();
-  }
+  // 播放时由 rAF 的 driveLayerTime 直接驱动图层，跳过此 watch，避免每帧重复 setTime 与滑块重渲染。
+  if (isPlaying.value) return;
+  playbackClock = clampTime(time);
+  seekToTime(time);
 });
 
 onMounted(() => {
@@ -835,11 +1055,12 @@ onMounted(() => {
 onUnmounted(() => {
   stopPlayback();
   stopPolling();
+  cancelSeekChunkLoad();
   if (trajectoryLayer) {
     trajectoryLayer.dispose();
     trajectoryLayer = null;
   }
-  if (activeDatavisualizationTab.value === "轨迹演示") {
+  if (isTrajectoryMonitorActive.value) {
     rightPanelHasContent.value = false;
   }
 });
@@ -1092,6 +1313,210 @@ onUnmounted(() => {
       overflow: hidden;
       text-overflow: ellipsis;
     }
+  }
+}
+
+.run-gjys-control-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 10px 10px 10px 26px;
+  padding: 4px 0 4px 14px;
+  border-left: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--dm2-ink, #1c2024);
+
+  .run-control-title {
+    display: none;
+  }
+
+  .build-state {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 8px;
+    background: rgba(17, 32, 58, 0.03);
+  }
+
+  .build-title {
+    color: var(--dm2-ink, #1c2024);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .build-metrics {
+    display: flex;
+    justify-content: space-between;
+    color: var(--dm2-muted, #667085);
+    font-size: 11px;
+  }
+
+  .control-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+
+    &.flex-col {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 8px;
+    }
+  }
+
+  .label {
+    color: var(--dm2-muted, #667085);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+
+  .slider-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .time-text {
+    color: var(--dm2-accent, #0071e3);
+    font-family: var(--app-font-number, monospace);
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .btn-group {
+    flex: 1;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  :deep(.el-button-group) {
+    display: flex;
+    width: 100%;
+    max-width: 160px;
+    border: 1px solid rgba(17, 32, 58, 0.08);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  :deep(.el-button) {
+    flex: 1;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    font-size: 12px;
+    font-weight: 600;
+    transition: all 0.2s;
+  }
+
+  :deep(.el-button--primary) {
+    background-color: var(--dm2-accent, #0071e3) !important;
+    color: #ffffff !important;
+    &:hover {
+      background-color: var(--dm2-accent-strong, #005bb5) !important;
+    }
+  }
+
+  :deep(.el-button--info) {
+    background-color: rgba(17, 32, 58, 0.04) !important;
+    color: var(--dm2-ink, #1c2024) !important;
+    &:hover {
+      background-color: rgba(17, 32, 58, 0.08) !important;
+    }
+  }
+
+  :deep(.el-radio-group) {
+    display: flex;
+    width: 100%;
+    background: rgba(17, 32, 58, 0.04);
+    border-radius: 8px;
+    padding: 2px;
+    border: none;
+  }
+
+  :deep(.el-radio-button) {
+    flex: 1;
+    display: flex;
+  }
+
+  :deep(.el-radio-button__inner) {
+    width: 100%;
+    height: 26px;
+    line-height: 26px;
+    padding: 0;
+    border: none !important;
+    background: transparent !important;
+    color: var(--dm2-muted, #667085) !important;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    transition: all 0.2s;
+  }
+
+  :deep(.el-radio-button__orig-radio:checked + .el-radio-button__inner) {
+    background: #ffffff !important;
+    color: var(--dm2-accent-strong, #005bb5) !important;
+    box-shadow: 0 1px 3px rgba(13, 38, 76, 0.12) !important;
+  }
+
+  :deep(.el-slider) {
+    --el-slider-main-bg-color: var(--dm2-accent, #0071e3);
+    --el-slider-runway-bg-color: rgba(17, 32, 58, 0.08);
+    --el-slider-stop-bg-color: #ffffff;
+    --el-slider-button-size: 12px;
+    --el-slider-button-wrapper-size: 28px;
+    --el-slider-height: 4px;
+    height: 24px;
+  }
+}
+
+.vehicle-status-right-card {
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--dm2-space-3, 12px);
+  }
+
+  .stat-item {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: var(--dm2-space-3, 12px);
+    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+    border-radius: var(--dm2-radius, 13px);
+    background: rgba(244, 247, 251, 0.82);
+  }
+
+  .stat-label {
+    color: var(--dm2-muted, #667085);
+    font-size: 11px;
+    font-weight: 650;
+  }
+
+  .stat-value {
+    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+    font-size: 20px;
+    font-weight: 800;
+
+    &.text-primary { color: var(--dm2-accent, #0071e3); }
+    &.text-success { color: #1a8a3f; }
+    &.text-warning { color: #b06a00; }
+    &.mode-bus { color: #1a8a3f; }
+    &.mode-subway { color: #c4291c; }
+    &.mode-car { color: var(--dm2-accent-strong, #005bb5); }
+  }
+
+  .unit {
+    margin-left: 2px;
+    color: var(--dm2-muted, #667085);
+    font-size: 11px;
+    font-weight: 500;
   }
 }
 

@@ -57,6 +57,44 @@
 
   <template v-if="selectModel">
     <template v-if="isModelReady">
+      <div :class="['dm-sidebar', isRunMonitorLeftCollapsed ? 'is-collapsed' : '']">
+        <div class="sidebar-brand">
+          <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12h4l3-8 4 16 3-8h4"></path>
+          </svg>
+          <span class="brand-text">运行监测</span>
+        </div>
+
+        <nav class="sidebar-nav" aria-label="运行监测导航">
+          <div v-for="item in runMonitorMenuItems" :key="item.key" class="menu-group">
+            <button
+              type="button"
+              :class="['nav-item', activeTab === item.key ? 'active' : '']"
+              @click="handleSetActiveTab(item.key)"
+            >
+              <span class="nav-icon" v-html="item.icon"></span>
+              <span class="nav-label">{{ item.label }}</span>
+            </button>
+          </div>
+        </nav>
+
+        <div v-show="activeTab === '车辆运行监测'" id="run-monitor-vehicle-controls" class="rm-vehicle-controls"></div>
+        <div class="sidebar-footer"></div>
+      </div>
+
+      <button
+        type="button"
+        :class="['dm-panel-collapse-tab', 'dm-left-collapse-tab', isRunMonitorLeftCollapsed ? 'is-collapsed' : '']"
+        :title="isRunMonitorLeftCollapsed ? '展开运行监测面板' : '收起运行监测面板'"
+        :aria-label="isRunMonitorLeftCollapsed ? '展开运行监测面板' : '收起运行监测面板'"
+        :aria-pressed="isRunMonitorLeftCollapsed"
+        @click="isRunMonitorLeftCollapsed = !isRunMonitorLeftCollapsed"
+      >
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+      </button>
+
       <div id="left-analysis-panel" ref="box1" :class="['model_box', 'box1', isLeftCollapsed ? 'collapsed' : '']" :style="box1Style" v-show="showSidebar">
         <!-- Collapse Button -->
         <button
@@ -79,34 +117,130 @@
         </div>
         <el-scrollbar class="flex_column_scroll_box">
           <SJZL v-if="activeTab == '数据总览'" :key="`sjzl-${selectModel.name}`" :model="selectModel.name" />
-          <GJYS v-else-if="activeTab == '轨迹演示'" :key="`gjys-${selectModel.name}`" :model="selectModel.name" />
+          <XLZL v-else-if="activeTab == '线路客流监测'" ref="lineMonitorRef" :key="`xlzl-${selectModel.name}`" :model="selectModel.name" />
+          <ZDZL v-else-if="activeTab == '站点客流监测'" ref="stationMonitorRef" :key="`zdzl-${selectModel.name}`" :model="selectModel.name" />
+          <GJYS
+            v-else-if="activeTab == '轨迹演示' || activeTab == '车辆运行监测'"
+            :key="`gjys-${selectModel.name}`"
+            :model="selectModel.name"
+            :run-monitor-panels="activeTab == '车辆运行监测'"
+          />
           <CXZFX v-else-if="activeTab == '出行分析'" :key="`cxzfx-${selectModel.name}`" :model="selectModel.name" />
         </el-scrollbar>
       </div>
-      <div id="right-info-panel" :class="['box2', isRightCollapsed ? 'collapsed' : '']" v-show="isRightPanelVisible">
-        <!-- Collapse Button -->
-        <button
-          class="collapse-tab right-tab"
-          type="button"
-          @click="toggleRightPanel"
-          :aria-label="isRightCollapsed ? '展开右侧信息面板' : '折叠右侧信息面板'"
-          :aria-expanded="!isRightCollapsed"
-          aria-controls="right-info-panel"
-          :title="isRightCollapsed ? '展开面板' : '折叠面板'"
-        >
-          <svg class="chevron-icon" :class="{ 'rotated': isRightCollapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="9 18 15 12 9 6"></polyline>
-          </svg>
-        </button>
+      <button
+        v-show="isRightPanelVisible"
+        type="button"
+        :class="['dm-panel-collapse-tab', 'dm-right-collapse-tab', isRightCollapsed ? 'is-collapsed' : '']"
+        @click="toggleRightPanel"
+        :aria-label="isRightCollapsed ? '展开右侧信息面板' : '折叠右侧信息面板'"
+        :aria-expanded="!isRightCollapsed"
+        aria-controls="right-info-panel"
+        :title="isRightCollapsed ? '展开面板' : '折叠面板'"
+      >
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+      </button>
+
+      <div id="right-info-panel" :class="['dm-overview-panel', 'run-monitor-right-panel', isRightCollapsed ? 'is-collapsed' : '']" v-show="isRightPanelVisible">
         <el-scrollbar class="flex_column_scroll_box">
-          <div id="datavisualization_index_box2"></div>
+          <div id="datavisualization_index_box2">
+            <div v-if="activeTab === '总体客流变化'" class="rm-right-card overall-flow-card">
+              <div class="rm-right-card-title">
+                <div>
+                  <p class="rm-panel-kicker">总体客流</p>
+                  <h2>一天总客流变化</h2>
+                </div>
+                <el-tag v-if="overallFlowLoading" type="info">加载中</el-tag>
+                <el-tag v-else-if="overallFlowError" type="danger">加载失败</el-tag>
+              </div>
+              <div class="rm-overall-summary">
+                <div class="rm-summary-item">
+                  <span>总客流</span>
+                  <strong>{{ formatOverallFlow(overallFlowTotal) }}</strong>
+                </div>
+              </div>
+              <div v-if="overallFlowError" class="rm-panel-error">{{ overallFlowError }}</div>
+              <template v-else>
+                <div class="rm-overall-chart">
+                  <el-auto-resizer class="chart_box">
+                    <template #default="{ height, width }">
+                      <VChart
+                        v-if="width > 0 && height > 0"
+                        class="rm-chart"
+                        :option="overallFlowChartOption"
+                        autoresize
+                        :update-options="{ notMerge: true }"
+                      />
+                    </template>
+                  </el-auto-resizer>
+                </div>
+                <div class="hourly-ranking-panel ranking-panel">
+                  <div class="ranking-title-text">小时客流排行</div>
+                  <div class="ranking-header">
+                    <span class="col-rank">排序</span>
+                    <span class="col-name">小时</span>
+                    <span class="col-flow">客流量</span>
+                  </div>
+                  <div class="ranking-scroll-list">
+                    <div v-for="(item, index) in overallFlowRankingRows" :key="item.hour" class="ranking-row">
+                      <div class="col-rank">
+                        <span :class="['rank-badge', index === 0 ? 'gold' : index === 1 ? 'silver' : index === 2 ? 'bronze' : '']">
+                          {{ index + 1 }}
+                        </span>
+                      </div>
+                      <div class="col-name">
+                        <span class="route-name-text">{{ item.label }}</span>
+                      </div>
+                      <div class="col-flow">
+                        <span class="flow-value">{{ item.valueText }}</span>
+                        <span class="flow-unit">人次</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <div v-else-if="activeTab === '线路客流监测' && selectedLinePanel" class="rm-right-card line-flow-card">
+              <div class="rm-right-card-title">
+                <div>
+                  <p class="rm-panel-kicker">线路客流</p>
+                  <h2>{{ selectedLineName || '线路客流量' }}</h2>
+                </div>
+              </div>
+              <div class="rm-overall-summary">
+                <div class="rm-summary-item">
+                  <span>日客流量</span>
+                  <strong>{{ formatOverallFlow(lineFlowTotal) }}</strong>
+                </div>
+                <div class="rm-summary-item">
+                  <span>峰值小时</span>
+                  <strong>{{ lineFlowPeak.label }}</strong>
+                </div>
+              </div>
+              <div class="rm-overall-chart">
+                <el-auto-resizer class="chart_box">
+                  <template #default="{ height, width }">
+                    <VChart
+                      v-if="width > 0 && height > 0"
+                      class="rm-chart"
+                      :option="lineFlowChartOption"
+                      autoresize
+                      :update-options="{ notMerge: true }"
+                    />
+                  </template>
+                </el-auto-resizer>
+              </div>
+            </div>
+          </div>
         </el-scrollbar>
       </div>
 
       <!-- Floating Map Controls Toolbar -->
       <div 
         :class="['map-controls-toolbar', (isRightPanelVisible && !isRightCollapsed) ? 'with-panel' : 'without-panel']"
-        :style="{ '--right-panel-width': `${rightPanelWidth}px` }"
       >
         <!-- Block 1: Zoom & 3D & Compass -->
         <div class="control-block">
@@ -142,8 +276,8 @@
             :class="['control-btn', showLineWidthPopover ? 'active' : '']"
             type="button"
             @click="handleToggleLineWidthPopover"
-            :title="effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置'"
-            :aria-label="effectiveTab === '轨迹演示' ? '打开车辆模型设置' : '打开线形设置'"
+            :title="isVehicleMonitorTab ? '车辆模型设置' : '线形设置'"
+            :aria-label="isVehicleMonitorTab ? '打开车辆模型设置' : '打开线形设置'"
             :aria-expanded="showLineWidthPopover"
             aria-controls="line-width-popover"
             aria-haspopup="dialog"
@@ -162,9 +296,9 @@
         <!-- Floating Popover for Line Width -->
         <Transition name="popover-fade">
           <div v-if="showLineWidthPopover" id="line-width-popover" class="line-width-popover" role="dialog" aria-modal="false" @click.stop>
-            <div class="popover-title">{{ effectiveTab === '轨迹演示' ? '车辆模型设置' : '线形设置' }}</div>
+            <div class="popover-title">{{ isVehicleMonitorTab ? '车辆模型设置' : '线形设置' }}</div>
             <div class="popover-content">
-              <div class="slider-row" v-if="effectiveTab === '轨迹演示'">
+              <div class="slider-row" v-if="isVehicleMonitorTab">
                 <span class="label">
                   <span>车辆模型</span>
                   <span class="val-text">{{ `${vehicleSize}px` }}</span>
@@ -172,6 +306,25 @@
                 <el-slider v-model="vehicleSize" :min="minVehicleSize" :max="maxVehicleSize" :step="1" @input="handleVehicleSizeChange" />
               </div>
               <template v-else>
+                <div class="layer-mode-row">
+                  <span>显示图层</span>
+                  <div class="layer-mode-segment" role="group" aria-label="线网显示图层">
+                    <button
+                      type="button"
+                      :class="{ active: baseMapLineMode === 'bus-network' }"
+                      @click="handleBaseMapLineModeChange('bus-network')"
+                    >
+                      公交线网
+                    </button>
+                    <button
+                      type="button"
+                      :class="{ active: baseMapLineMode === 'road-network' }"
+                      @click="handleBaseMapLineModeChange('road-network')"
+                    >
+                      路网
+                    </button>
+                  </div>
+                </div>
                 <div class="slider-row">
                   <span class="label">
                     <span>线宽</span>
@@ -180,7 +333,7 @@
                   <el-slider v-model="lineWidth" :min="minLineWidth" :max="maxLineWidth" :step="1" @input="handleLineWidthChange" />
                 </div>
               </template>
-              <div class="vehicle-visibility-row" v-if="effectiveTab === '轨迹演示'">
+              <div class="vehicle-visibility-row" v-if="isVehicleMonitorTab">
                 <span>可视化范围</span>
                 <el-select v-model="vehicleVisibilityMode" size="small" @change="handleVehicleVisibilityModeChange">
                   <el-option
@@ -190,6 +343,13 @@
                     :value="item.value"
                   />
                 </el-select>
+              </div>
+              <div class="slider-row" v-else-if="baseMapLineMode === 'bus-network'">
+                <span class="label">
+                  <span>站点大小</span>
+                  <span class="val-text">{{ `${stationSize}px` }}</span>
+                </span>
+                <el-slider v-model="stationSize" :min="minStationSize" :max="maxStationSize" :step="1" @input="handleStationSizeChange" />
               </div>
               <div class="flow-control-row" v-else>
                 <span>按流量控制</span>
@@ -221,12 +381,18 @@
 </template>
 
 <script setup>
-import { defineAsyncComponent } from "vue";
+import { defineAsyncComponent, getCurrentInstance } from "vue";
 import { Close, Remove, SwitchButton, VideoPlay } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "@/plugins/element-plus";
 import { getSchemeList, getModelList, loadModel, unloadModel } from "@/api/scheme.js";
 import { dataCenter } from "@/api/data.js";
+import { getRoutePanel } from "@/api/route.js";
+import { getCachedRealData } from "@/utils/realDataCache.js";
 import { useModelSelectionStore } from "@/stores/modelSelection.js";
+import { NetworkLayer } from "./layers/NetworkLayer.js";
+import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
+import busStationHighlightIconUrl from "@/assets/images/datamanagement/bus-station_highlight.svg?url";
+import "../datamanagement/tokens.css";
 
 import SJZL from "./components/SJZL.vue";
 
@@ -234,6 +400,8 @@ import { useDraggable } from "@vueuse/core";
 
 const GJYS = defineAsyncComponent(() => import("./components/GJYS.vue"));
 const CXZFX = defineAsyncComponent(() => import("./components/CXZFX.vue"));
+const XLZL = defineAsyncComponent(() => import("./components/XLZL.vue"));
+const ZDZL = defineAsyncComponent(() => import("./components/ZDZL.vue"));
 
 const LEFT_PANEL_SCALE = 0.86;
 const LEFT_PANEL_EDGE_X = 0;
@@ -701,11 +869,36 @@ async function handleGetModelList(options = {}) {
   }
 }
 
-const activeTab = ref("数据总览");
+const runMonitorMenuItems = [
+  {
+    key: "总体客流变化",
+    label: "总体客流变化",
+    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"></path><path d="m7 15 4-4 3 3 5-7"></path></svg>`,
+  },
+  {
+    key: "线路客流监测",
+    label: "线路客流监测",
+    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17c4-5 8 5 16-1"></path><path d="M4 7c5 0 8 5 16 1"></path><circle cx="6" cy="17" r="2"></circle><circle cx="18" cy="8" r="2"></circle></svg>`,
+  },
+  {
+    key: "站点客流监测",
+    label: "站点客流监测",
+    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11Z"></path><circle cx="12" cy="10" r="2.5"></circle></svg>`,
+  },
+  {
+    key: "车辆运行监测",
+    label: "车辆运行监测",
+    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="12" rx="2"></rect><path d="M7 16v2"></path><path d="M17 16v2"></path><circle cx="8.5" cy="11" r="1"></circle><circle cx="15.5" cy="11" r="1"></circle><path d="M8 7h8"></path></svg>`,
+  },
+];
+
+const activeTab = ref("总体客流变化");
+const isRunMonitorLeftCollapsed = ref(false);
+const lineMonitorRef = ref(null);
+const stationMonitorRef = ref(null);
 
 const effectiveTab = computed(() => activeTab.value);
-
-const rightPanelWidth = 470;
+const isVehicleMonitorTab = computed(() => effectiveTab.value === "轨迹演示" || effectiveTab.value === "车辆运行监测");
 
 function handleSetActiveTab(tabName) {
   activeTab.value = tabName;
@@ -716,7 +909,14 @@ const rightPanelHasContent = ref(true);
 provide("rightPanelHasContent", rightPanelHasContent);
 
 function tabHasPersistentRightPanel(tab = effectiveTab.value) {
-  return tab === "数据总览" || tab === "出行分析";
+  return [
+    "数据总览",
+    "出行分析",
+    "总体客流变化",
+    "线路客流监测",
+    "站点客流监测",
+    "车辆运行监测",
+  ].includes(tab);
 }
 
 function syncPersistentRightPanel(tab = effectiveTab.value) {
@@ -729,6 +929,12 @@ function syncPersistentRightPanel(tab = effectiveTab.value) {
 watch(effectiveTab, (tab) => {
   rightPanelHasContent.value = tabHasPersistentRightPanel(tab);
   syncPersistentRightPanel(tab);
+  if (tab !== "线路客流监测") {
+    setSelectedBusLine(null);
+  }
+  if (tab !== "站点客流监测") {
+    setSelectedBusStation(null);
+  }
   lineWidth.value = 20;
   applyLineWidth();
   applyStationSize();
@@ -788,6 +994,634 @@ const stationSize = ref(22);
 const vehicleSize = ref(36);
 const referenceZoom = ref(10.74);
 let isZoomCaptured = false;
+const baseMapLineMode = ref("bus-network");
+provide("BaseMapLineModeRef", baseMapLineMode);
+
+const { proxy } = getCurrentInstance() || {};
+const overallFlowLoading = ref(false);
+const overallFlowError = ref("");
+const overallFlowHourly = ref(Array.from({ length: 24 }, () => 0));
+let overallFlowRequestSeq = 0;
+
+const overallFlowTotal = computed(() => overallFlowHourly.value.reduce((sum, value) => sum + (Number(value) || 0), 0));
+const overallFlowRankingRows = computed(() =>
+  overallFlowHourly.value
+    .map((value, hour) => {
+      const hourLabel = `${String(hour).padStart(2, "0")}:00`;
+      const nextHourLabel = hour === 23 ? "24:00" : `${String(hour + 1).padStart(2, "0")}:00`;
+      const number = Math.max(0, Number(value) || 0);
+      return {
+        hour,
+        label: `${hourLabel} - ${nextHourLabel}`,
+        value: number,
+        valueText: Math.round(number).toLocaleString("zh-CN"),
+      };
+    })
+    .sort((a, b) => b.value - a.value || a.hour - b.hour),
+);
+function buildHourlyFlowChartOption(hourly = []) {
+  const hours = hourly.map((_, index) => `${String(index).padStart(2, "0")}:00`);
+  const LinearGradient = proxy?.$echarts?.graphic?.LinearGradient;
+  const areaColor = LinearGradient
+    ? new LinearGradient(0, 0, 0, 1, [
+        { offset: 0, color: "rgba(0, 113, 227, 0.26)" },
+        { offset: 1, color: "rgba(0, 113, 227, 0.02)" },
+      ])
+    : "rgba(0, 113, 227, 0.1)";
+  return {
+    backgroundColor: "transparent",
+    tooltip: {
+      trigger: "axis",
+      appendToBody: true,
+      backgroundColor: "rgba(255, 255, 255, 0.98)",
+      borderColor: "rgba(17, 32, 58, 0.1)",
+      borderWidth: 1,
+      textStyle: { color: "#1c2024", fontSize: 12 },
+      formatter(params = []) {
+        const item = params[0];
+        if (!item) return "";
+        return `<strong>${item.name}</strong><br/>客流量：${Number(item.value || 0).toLocaleString("zh-CN")} 人次`;
+      },
+    },
+    grid: { top: 28, right: 18, bottom: 18, left: 14, containLabel: true },
+    xAxis: {
+      type: "category",
+      data: hours,
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: "rgba(17, 32, 58, 0.12)" } },
+      axisLabel: { color: "#667085", fontSize: 10, interval: 2 },
+    },
+    yAxis: {
+      type: "value",
+      name: "人次",
+      nameTextStyle: { color: "#98a2b3", fontSize: 10, padding: [0, 8, 0, 0] },
+      splitLine: { lineStyle: { color: "rgba(17, 32, 58, 0.07)", type: "dashed" } },
+      axisLabel: { color: "#667085", fontSize: 10 },
+    },
+    series: [
+      {
+        name: "客流",
+        type: "line",
+        smooth: 0.35,
+        showSymbol: false,
+        symbol: "circle",
+        symbolSize: 6,
+        data: hourly,
+        itemStyle: { color: "#0071e3" },
+        lineStyle: { width: 3, color: "#0071e3", shadowBlur: 8, shadowColor: "rgba(0, 113, 227, 0.28)" },
+        areaStyle: { color: areaColor },
+      },
+    ],
+  };
+}
+const overallFlowChartOption = computed(() => buildHourlyFlowChartOption(overallFlowHourly.value));
+
+// 线路客流监测：右侧简化卡片 —— 选中线路的日客流量 + 全天客流变化折线图（数据由 XLZL 上抛）
+const selectedLinePanel = ref(null);
+const selectedLineName = ref("");
+provide("runMonitorSelectedLinePanel", selectedLinePanel);
+provide("runMonitorSelectedLineName", selectedLineName);
+provide("runMonitorSimplifiedRight", true);
+
+const lineFlowHourly = computed(() => {
+  const flow = selectedLinePanel.value?.hourlyFlow;
+  const base = Array.from({ length: 24 }, () => 0);
+  if (Array.isArray(flow)) {
+    flow.forEach((value, index) => {
+      if (index < base.length) base[index] = Number(value) || 0;
+    });
+  }
+  return base;
+});
+const lineFlowTotal = computed(() => {
+  const metricTotal = Number(selectedLinePanel.value?.metrics?.passenger);
+  if (Number.isFinite(metricTotal) && metricTotal > 0) return metricTotal;
+  return lineFlowHourly.value.reduce((sum, value) => sum + value, 0);
+});
+const lineFlowPeak = computed(() => {
+  let peakIndex = 0;
+  let peakValue = -Infinity;
+  lineFlowHourly.value.forEach((value, index) => {
+    if (value > peakValue) {
+      peakValue = value;
+      peakIndex = index;
+    }
+  });
+  return {
+    label: `${String(peakIndex).padStart(2, "0")}:00`,
+    value: Math.max(0, peakValue),
+  };
+});
+const lineFlowChartOption = computed(() => buildHourlyFlowChartOption(lineFlowHourly.value));
+
+function formatOverallFlow(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${Math.round(number).toLocaleString("zh-CN")} 人次` : "暂无";
+}
+
+function routePanelToOverallHourly(panel = {}) {
+  const hourly = Array.from({ length: 24 }, () => 0);
+  const routes = panel?.routes && typeof panel.routes === "object" ? Object.values(panel.routes) : [];
+  routes.forEach((route) => {
+    const values = Array.isArray(route?.hourlyFlow) ? route.hourlyFlow : [];
+    values.forEach((value, index) => {
+      if (index < hourly.length) hourly[index] += Number(value) || 0;
+    });
+  });
+  return hourly;
+}
+
+async function loadOverallFlow() {
+  if (effectiveTab.value !== "总体客流变化" || !selectModel.value?.name || !isModelReady.value) return;
+  const seq = ++overallFlowRequestSeq;
+  overallFlowLoading.value = true;
+  overallFlowError.value = "";
+  try {
+    const res = await getRoutePanel({ datasource: selectModel.value.name }, { silentError: true });
+    if (seq !== overallFlowRequestSeq) return;
+    overallFlowHourly.value = routePanelToOverallHourly(res?.data || {});
+  } catch (error) {
+    if (seq !== overallFlowRequestSeq) return;
+    overallFlowHourly.value = Array.from({ length: 24 }, () => 0);
+    overallFlowError.value = error?.message || "总体客流变化加载失败";
+  } finally {
+    if (seq === overallFlowRequestSeq) {
+      overallFlowLoading.value = false;
+    }
+  }
+}
+
+watch(
+  [effectiveTab, () => selectModel.value?.name, isModelReady],
+  loadOverallFlow,
+  { immediate: true },
+);
+
+const REAL_DATA_AREA_NAME = "广州市";
+const RM_SOURCE_LINES = "rm-bus-network-lines-source";
+const RM_SOURCE_STATIONS = "rm-bus-network-stations-source";
+const RM_SOURCE_SELECTED_LINE = "rm-bus-network-selected-line-source";
+const RM_SOURCE_SELECTED_STATION = "rm-bus-network-selected-station-source";
+const RM_LAYER_LINES = "rm-bus-network-lines";
+const RM_LAYER_LINE_SELECTED = "rm-bus-network-line-selected";
+const RM_LAYER_LINE_SELECTED_GLOW = "rm-bus-network-line-selected-glow";
+const RM_LAYER_STATIONS = "rm-bus-network-stations";
+const RM_LAYER_STATION_SELECTED = "rm-bus-network-station-selected";
+const RM_STATION_ICON_ID = "rm-bus-network-station-icon";
+const RM_STATION_HIGHLIGHT_ICON_ID = "rm-bus-network-station-highlight-icon";
+const RM_STATION_ICON_SIZE = 96;
+const busNetworkLoading = ref(false);
+const busNetworkError = ref("");
+let busNetworkRequestSeq = 0;
+let busNetworkClickListenerId = null;
+let monitorRoadLayer = null;
+let busNetworkSourceRefs = new Map();
+let busNetworkCollections = {
+  lines: emptyFeatureCollection(),
+  stations: emptyFeatureCollection(),
+};
+
+const busNetworkLineWidth = computed(() => Math.max(0.8, Math.min(5.6, lineWidth.value / 11)));
+const busNetworkStationIconScale = computed(() => {
+  const highZoomScale = Math.max(0.12, Math.min(0.5, stationSize.value / RM_STATION_ICON_SIZE));
+  return [
+    "interpolate",
+    ["exponential", 1.25],
+    ["zoom"],
+    8,
+    0.026,
+    10,
+    highZoomScale * 0.14,
+    12,
+    highZoomScale * 0.34,
+    14,
+    highZoomScale * 0.72,
+    16,
+    highZoomScale * 1.08,
+  ];
+});
+
+function emptyFeatureCollection() {
+  return { type: "FeatureCollection", features: [] };
+}
+
+function normalizeLineFeatureCollection(collection) {
+  const features = Array.isArray(collection?.features) ? collection.features : [];
+  return {
+    type: "FeatureCollection",
+    features: features
+      .map((feature, index) => normalizeBusFeature(feature, index, "line"))
+      .filter((feature) => feature.geometry),
+  };
+}
+
+function normalizeStationFeatureCollection(collection) {
+  const features = Array.isArray(collection?.features) ? collection.features : [];
+  return {
+    type: "FeatureCollection",
+    features: features
+      .map((feature, index) => normalizeBusFeature(feature, index, "station"))
+      .filter((feature) => feature.geometry),
+  };
+}
+
+function normalizeBusFeature(feature, index, type) {
+  const properties = { ...(feature?.properties || {}) };
+  const id = String(
+    properties._featureId ||
+      properties._lineKey ||
+      properties._stationKey ||
+      feature?.id ||
+      [properties.line_id, properties.dir, properties.route_id, properties.stop_id, index].filter(Boolean).join("-") ||
+      `${type}-${index}`,
+  );
+  if (type === "line") {
+    properties._lineKey = properties._lineKey || id;
+  } else {
+    properties._stationKey = properties._stationKey || id;
+  }
+  return {
+    type: "Feature",
+    id,
+    geometry: feature?.geometry || null,
+    properties,
+  };
+}
+
+function setGeoJsonSourceData(sourceId, data, map = MapRef.value?.map) {
+  const source = map?.getSource(sourceId);
+  if (!source?.setData) return false;
+  if (busNetworkSourceRefs.get(sourceId) === data) return false;
+  source.setData(data);
+  busNetworkSourceRefs.set(sourceId, data);
+  return true;
+}
+
+function ensureBusNetworkSource(map, sourceId, data) {
+  if (map.getSource(sourceId)) {
+    setGeoJsonSourceData(sourceId, data, map);
+    return;
+  }
+  map.addSource(sourceId, { type: "geojson", data });
+  busNetworkSourceRefs.set(sourceId, data);
+}
+
+function addBusLayerBelowBuildings(map, layer) {
+  const beforeId = MapRef.value?.buildingLayerId;
+  if (beforeId && map.getLayer?.(beforeId)) {
+    map.addLayer(layer, beforeId);
+    return;
+  }
+  map.addLayer(layer);
+}
+
+async function ensureBusStationIcons(map) {
+  await Promise.all([
+    addMapImageOnce(map, RM_STATION_ICON_ID, busStationIconUrl, RM_STATION_ICON_SIZE),
+    addMapImageOnce(map, RM_STATION_HIGHLIGHT_ICON_ID, busStationHighlightIconUrl, RM_STATION_ICON_SIZE),
+  ]);
+}
+
+async function addMapImageOnce(map, imageId, imageUrl, size) {
+  if (map.hasImage?.(imageId)) return;
+  const image = await loadIconImageData(imageUrl, size);
+  if (!map.hasImage?.(imageId)) {
+    map.addImage(imageId, image);
+  }
+}
+
+async function loadIconImageData(url, size) {
+  const image = await loadImage(url);
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, size, size);
+  context.drawImage(image, 0, 0, size, size);
+  return context.getImageData(0, 0, size, size);
+}
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = url;
+  });
+}
+
+function busStationIconLayout(iconId = RM_STATION_ICON_ID, iconScale = busNetworkStationIconScale.value) {
+  return {
+    "icon-image": iconId,
+    "icon-size": iconScale,
+    "icon-anchor": "center",
+    "icon-allow-overlap": true,
+    "icon-ignore-placement": true,
+    "icon-padding": 2,
+  };
+}
+
+function ensureBusNetworkLayers(map) {
+  ensureBusNetworkSource(map, RM_SOURCE_LINES, busNetworkCollections.lines);
+  ensureBusNetworkSource(map, RM_SOURCE_STATIONS, busNetworkCollections.stations);
+  ensureBusNetworkSource(map, RM_SOURCE_SELECTED_LINE, emptyFeatureCollection());
+  ensureBusNetworkSource(map, RM_SOURCE_SELECTED_STATION, emptyFeatureCollection());
+
+  if (!map.getLayer(RM_LAYER_LINES)) {
+    addBusLayerBelowBuildings(map, {
+      id: RM_LAYER_LINES,
+      type: "line",
+      source: RM_SOURCE_LINES,
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": "#2f6f73",
+        "line-opacity": 0.72,
+        "line-width": busNetworkLineWidth.value,
+      },
+    });
+  }
+  if (!map.getLayer(RM_LAYER_LINE_SELECTED_GLOW)) {
+    addBusLayerBelowBuildings(map, {
+      id: RM_LAYER_LINE_SELECTED_GLOW,
+      type: "line",
+      source: RM_SOURCE_SELECTED_LINE,
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": "#facc15",
+        "line-opacity": 0.42,
+        "line-width": Math.max(6, busNetworkLineWidth.value * 3.2),
+      },
+    });
+  }
+  if (!map.getLayer(RM_LAYER_LINE_SELECTED)) {
+    addBusLayerBelowBuildings(map, {
+      id: RM_LAYER_LINE_SELECTED,
+      type: "line",
+      source: RM_SOURCE_SELECTED_LINE,
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": "#f97316",
+        "line-opacity": 0.96,
+        "line-width": Math.max(3.5, busNetworkLineWidth.value + 2.4),
+      },
+    });
+  }
+  if (!map.getLayer(RM_LAYER_STATIONS)) {
+    map.addLayer({
+      id: RM_LAYER_STATIONS,
+      type: "symbol",
+      source: RM_SOURCE_STATIONS,
+      layout: busStationIconLayout(),
+      paint: { "icon-opacity": 0.96 },
+    });
+  }
+  if (!map.getLayer(RM_LAYER_STATION_SELECTED)) {
+    map.addLayer({
+      id: RM_LAYER_STATION_SELECTED,
+      type: "symbol",
+      source: RM_SOURCE_SELECTED_STATION,
+      layout: busStationIconLayout(RM_STATION_HIGHLIGHT_ICON_ID, [
+        "interpolate",
+        ["linear"],
+        ["zoom"],
+        8,
+        0.04,
+        10,
+        0.09,
+        12,
+        0.18,
+        14,
+        0.34,
+        16,
+        0.5,
+      ]),
+      paint: { "icon-opacity": 1 },
+    });
+  }
+  applyBusNetworkPaint();
+  syncBaseMapLayerVisibility();
+}
+
+function setBusLayerVisibility(map, layerId, visible) {
+  if (map?.getLayer?.(layerId)) {
+    map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+  }
+}
+
+function applyBusNetworkPaint() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  if (map.getLayer(RM_LAYER_LINES)) {
+    map.setPaintProperty(RM_LAYER_LINES, "line-width", busNetworkLineWidth.value);
+  }
+  if (map.getLayer(RM_LAYER_LINE_SELECTED)) {
+    map.setPaintProperty(RM_LAYER_LINE_SELECTED, "line-width", Math.max(3.5, busNetworkLineWidth.value + 2.4));
+  }
+  if (map.getLayer(RM_LAYER_LINE_SELECTED_GLOW)) {
+    map.setPaintProperty(RM_LAYER_LINE_SELECTED_GLOW, "line-width", Math.max(6, busNetworkLineWidth.value * 3.2));
+  }
+  if (map.getLayer(RM_LAYER_STATIONS)) {
+    map.setLayoutProperty(RM_LAYER_STATIONS, "icon-size", busNetworkStationIconScale.value);
+  }
+}
+
+function syncBaseMapLayerVisibility() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  const showBusNetwork = baseMapLineMode.value === "bus-network";
+  [RM_LAYER_LINES, RM_LAYER_LINE_SELECTED, RM_LAYER_LINE_SELECTED_GLOW, RM_LAYER_STATIONS, RM_LAYER_STATION_SELECTED].forEach((layerId) => {
+    setBusLayerVisibility(map, layerId, showBusNetwork);
+  });
+  if (monitorRoadLayer) {
+    showBusNetwork ? monitorRoadLayer.hide() : monitorRoadLayer.show();
+  }
+}
+
+async function loadBusNetwork(options = {}) {
+  const { force = false } = options;
+  if (!MapRef.value?.map || !isModelReady.value) return;
+  const seq = ++busNetworkRequestSeq;
+  busNetworkLoading.value = true;
+  busNetworkError.value = "";
+  try {
+    const data = await getCachedRealData(REAL_DATA_AREA_NAME, { force });
+    if (seq !== busNetworkRequestSeq) return;
+    busNetworkCollections = {
+      lines: normalizeLineFeatureCollection(data?.lines),
+      stations: normalizeStationFeatureCollection(data?.stations || data?.routeStops),
+    };
+    const map = MapRef.value?.map;
+    if (!map) return;
+    ensureBusNetworkSource(map, RM_SOURCE_LINES, busNetworkCollections.lines);
+    ensureBusNetworkSource(map, RM_SOURCE_STATIONS, busNetworkCollections.stations);
+    await ensureBusStationIcons(map);
+    ensureBusNetworkLayers(map);
+  } catch (error) {
+    if (seq !== busNetworkRequestSeq) return;
+    busNetworkError.value = error?.message || "公交线网加载失败";
+  } finally {
+    if (seq === busNetworkRequestSeq) {
+      busNetworkLoading.value = false;
+    }
+  }
+}
+
+function ensureMonitorRoadLayer() {
+  if (!MapRef.value || monitorRoadLayer || !selectModel.value?.name) return;
+  monitorRoadLayer = new NetworkLayer({
+    zIndex: 997,
+    lineWidth: computedLineWidth.value,
+    flowWidthStep: computedFlowWidthStep.value,
+    flowControl: flowControl.value,
+  });
+  MapRef.value.addLayer(monitorRoadLayer);
+  monitorRoadLayer.setTileSource(selectModel.value.name);
+  syncBaseMapLayerVisibility();
+}
+
+function handleBaseMapLineModeChange(mode) {
+  baseMapLineMode.value = mode;
+  if (mode === "road-network") {
+    ensureMonitorRoadLayer();
+  }
+  syncBaseMapLayerVisibility();
+}
+
+function queryBoxAround(point, radius = 8) {
+  return [
+    [point[0] - radius, point[1] - radius],
+    [point[0] + radius, point[1] + radius],
+  ];
+}
+
+function busLineName(properties = {}) {
+  return String(
+    properties.lineName ||
+      properties.line_name ||
+      properties.routeName ||
+      properties.route_name ||
+      properties.name ||
+      properties.line_id ||
+      properties.route_id ||
+      "",
+  ).trim();
+}
+
+function busStationName(properties = {}) {
+  return String(
+    properties.stop_name ||
+      properties.station_name ||
+      properties.facilityName ||
+      properties.name ||
+      properties.stop_id ||
+      "",
+  ).trim();
+}
+
+function plainBusFeature(feature) {
+  return {
+    type: "Feature",
+    id: feature?.id,
+    geometry: feature?.geometry ? JSON.parse(JSON.stringify(feature.geometry)) : null,
+    properties: { ...(feature?.properties || {}) },
+  };
+}
+
+function setSelectedBusLine(feature) {
+  const source = MapRef.value?.map?.getSource(RM_SOURCE_SELECTED_LINE);
+  if (!source?.setData) return;
+  source.setData(feature?.geometry ? { type: "FeatureCollection", features: [plainBusFeature(feature)] } : emptyFeatureCollection());
+}
+
+function setSelectedBusStation(feature) {
+  const source = MapRef.value?.map?.getSource(RM_SOURCE_SELECTED_STATION);
+  if (!source?.setData) return;
+  source.setData(feature?.geometry ? { type: "FeatureCollection", features: [plainBusFeature(feature)] } : emptyFeatureCollection());
+}
+
+function firstRenderedBusFeature(point, layers, radius = 8) {
+  const map = MapRef.value?.map;
+  if (!map || !Array.isArray(point)) return null;
+  const existingLayers = layers.filter((layerId) => map.getLayer?.(layerId));
+  if (!existingLayers.length) return null;
+  return map.queryRenderedFeatures(queryBoxAround(point, radius), { layers: existingLayers })?.[0] || null;
+}
+
+async function selectLineFromBusNetwork(feature) {
+  setSelectedBusLine(feature);
+  setSelectedBusStation(null);
+  const name = busLineName(feature?.properties || {});
+  if (!name) return;
+  await nextTick();
+  lineMonitorRef.value?.selectLineByName?.(name);
+}
+
+async function selectStationFromBusNetwork(feature) {
+  setSelectedBusStation(feature);
+  setSelectedBusLine(null);
+  const name = busStationName(feature?.properties || {});
+  if (!name) return;
+  await nextTick();
+  stationMonitorRef.value?.selectStationByName?.(name);
+}
+
+function handleBusNetworkMapClick(event) {
+  if (baseMapLineMode.value !== "bus-network") return;
+  if (effectiveTab.value !== "线路客流监测" && effectiveTab.value !== "站点客流监测") return;
+  const point = event?.data?.point;
+  if (!Array.isArray(point)) return;
+  if (effectiveTab.value === "站点客流监测") {
+    const stationFeature = firstRenderedBusFeature(point, [RM_LAYER_STATION_SELECTED, RM_LAYER_STATIONS], 10);
+    if (stationFeature) {
+      selectStationFromBusNetwork(stationFeature);
+    }
+    return;
+  }
+  const lineFeature = firstRenderedBusFeature(point, [RM_LAYER_LINE_SELECTED, RM_LAYER_LINES], 7);
+  if (lineFeature) {
+    selectLineFromBusNetwork(lineFeature);
+  }
+}
+
+function bindBusNetworkClickListener() {
+  const mapInstance = MapRef.value;
+  if (!mapInstance || busNetworkClickListenerId) return;
+  busNetworkClickListenerId = mapInstance.addEventListener("handle:click", handleBusNetworkMapClick);
+}
+
+function unbindBusNetworkClickListener() {
+  if (MapRef.value && busNetworkClickListenerId) {
+    MapRef.value.removeEventListener("handle:click", busNetworkClickListenerId);
+  }
+  busNetworkClickListenerId = null;
+}
+
+function clearBusNetworkLayers() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  [
+    RM_LAYER_STATION_SELECTED,
+    RM_LAYER_STATIONS,
+    RM_LAYER_LINE_SELECTED,
+    RM_LAYER_LINE_SELECTED_GLOW,
+    RM_LAYER_LINES,
+  ].forEach((layerId) => {
+    if (map.getLayer?.(layerId)) map.removeLayer(layerId);
+  });
+  [
+    RM_SOURCE_SELECTED_STATION,
+    RM_SOURCE_STATIONS,
+    RM_SOURCE_SELECTED_LINE,
+    RM_SOURCE_LINES,
+  ].forEach((sourceId) => {
+    if (map.getSource?.(sourceId)) map.removeSource(sourceId);
+  });
+  busNetworkSourceRefs = new Map();
+  busNetworkCollections = {
+    lines: emptyFeatureCollection(),
+    stations: emptyFeatureCollection(),
+  };
+}
 
 const minLineWidth = computed(() => 3);
 const maxLineWidth = computed(() => 40);
@@ -970,6 +1804,8 @@ function applyLineWidth() {
       }
     });
   }
+  monitorRoadLayer?.setLineWidth(computedLineWidth.value);
+  applyBusNetworkPaint();
 }
 
 function applyFlowWidthStep() {
@@ -980,6 +1816,7 @@ function applyFlowWidthStep() {
       }
     });
   }
+  monitorRoadLayer?.setFlowWidthStep(computedFlowWidthStep.value);
 }
 
 function applyStationSize() {
@@ -990,6 +1827,7 @@ function applyStationSize() {
       }
     });
   }
+  applyBusNetworkPaint();
 }
 
 function applyVehicleSize() {
@@ -1021,6 +1859,7 @@ function syncAllLayerSettings() {
   applyStationSize();
   applyVehicleSize();
   applyVehicleVisibilityMode();
+  syncBaseMapLayerVisibility();
 }
 
 function scheduleLayerSyncBurst(remaining = 6) {
@@ -1068,6 +1907,7 @@ function applyFlowControl() {
       }
     });
   }
+  monitorRoadLayer?.setFlowControl(flowControl.value);
 }
 
 function handleFlowControlChange(val) {
@@ -1079,6 +1919,8 @@ watch(MapRef, (mapInstance) => {
   setMapCenter();
   
   if (mapInstance) {
+    bindBusNetworkClickListener();
+    loadBusNetwork();
     scheduleMapResize();
     scheduleMapResize(450);
 
@@ -1124,17 +1966,38 @@ watch(MapRef, (mapInstance) => {
     });
 
     scheduleLayerSyncBurst(5);
+    syncBaseMapLayerVisibility();
   }
 });
 
+watch(baseMapLineMode, (mode) => {
+  if (mode === "road-network") {
+    ensureMonitorRoadLayer();
+  }
+  syncBaseMapLayerVisibility();
+});
+
+watch(
+  [() => selectModel.value?.name, isModelReady],
+  ([modelName]) => {
+    if (!isModelReady.value || !modelName) return;
+    loadBusNetwork();
+    if (monitorRoadLayer) {
+      monitorRoadLayer.setTileSource(modelName);
+    } else if (baseMapLineMode.value === "road-network") {
+      ensureMonitorRoadLayer();
+    }
+  },
+);
+
 watch(isRightPanelVisible, (visible) => {
-  if (visible && (effectiveTab.value === "数据总览" || effectiveTab.value === "轨迹演示")) {
+  if (visible && (effectiveTab.value === "数据总览" || isVehicleMonitorTab.value)) {
     isRightCollapsed.value = false;
   }
 });
 
 watch(rightPanelHasContent, (hasContent) => {
-  if (hasContent && effectiveTab.value === "轨迹演示") {
+  if (hasContent && isVehicleMonitorTab.value) {
     showRightPanel.value = true;
     isRightCollapsed.value = false;
   }
@@ -1194,6 +2057,10 @@ onUnmounted(() => {
   modelLoadSeq++;
   backgroundTaskSeq++;
   stopPerfProbe();
+  unbindBusNetworkClickListener();
+  clearBusNetworkLayers();
+  monitorRoadLayer?.dispose();
+  monitorRoadLayer = null;
   leftPanelResizeObserver?.disconnect();
   leftPanelResizeObserver = null;
   window.removeEventListener("resize", centerLeftPanel);
@@ -1225,9 +2092,7 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 .datebase_box,
-.box1,
-.box2,
-.map-controls-toolbar {
+.box1 {
   scale: var(--app-panel-scale);
 }
 
@@ -1532,168 +2397,6 @@ onUnmounted(() => {
   }
 }
 
-.box2 {
-  position: fixed;
-  z-index: var(--z-panel);
-  right: var(--app-edge);
-  top: calc(var(--app-header-height) + var(--space-md));
-  max-height: calc((100vh - var(--app-header-height) - 40px) / var(--app-panel-scale));
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  transform-origin: top right;
-  transition: transform var(--app-motion-slow) var(--app-ease-out);
-  
-  &.collapsed {
-    transform: translateX(calc(100% + var(--app-edge) + var(--space-xs))) !important;
-    pointer-events: none;
-
-    .collapse-tab {
-      pointer-events: auto;
-    }
-  }
-  
-  #datavisualization_index_box2 {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: var(--space-sm);
-  }
-}
-
-.map-controls-toolbar {
-  position: fixed;
-  top: calc(var(--app-header-height) + var(--space-sm));
-  transition: right var(--app-motion-slow) var(--app-ease-out);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-sm);
-  z-index: calc(var(--z-header) + 5);
-  transform-origin: top right;
-
-  &.with-panel {
-    right: calc(var(--app-edge) + var(--right-panel-width) * var(--app-panel-scale) + 12px);
-  }
-
-  &.without-panel {
-    right: var(--app-edge);
-  }
-
-  .control-block {
-    display: flex;
-    flex-direction: column;
-    background-color: var(--app-card-bg);
-    border-radius: var(--app-card-radius);
-    border: 1px solid rgba(21, 105, 222, 0.11);
-    box-shadow: var(--app-shadow-sm);
-    overflow: hidden;
-    width: 44px;
-
-    .control-btn {
-      width: 44px;
-      height: 44px;
-      padding: 0;
-      border: none;
-      background: transparent;
-      color: var(--app-ink);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition:
-        background-color var(--app-motion-normal) var(--app-ease-out),
-        color var(--app-motion-normal) var(--app-ease-out),
-        transform var(--app-motion-fast) var(--app-ease-press);
-      outline: none;
-
-      &:not(:last-child) {
-        border-bottom: 1px solid rgba(21, 105, 222, 0.08);
-      }
-
-      &:hover {
-        background-color: var(--app-cyan-soft);
-        color: var(--app-cyan-strong);
-      }
-
-      &:active {
-        transform: translateY(1px);
-      }
-
-      svg,
-      .pitch-arrows {
-        transition: transform var(--app-motion-normal) var(--app-ease-out);
-      }
-
-      &:hover svg,
-      &:hover .pitch-arrows {
-        transform: translateY(-1px);
-      }
-
-      &.td-btn {
-        font-size: 11px;
-        font-weight: bold;
-        font-family: var(--app-font-number);
-        color: var(--app-ink);
-
-        &.active {
-          color: var(--app-cyan-strong);
-          background-color: var(--app-cyan-soft);
-        }
-      }
-
-      &.active {
-        color: var(--app-cyan-strong);
-      }
-
-      .pitch-arrows {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 1px;
-        color: var(--app-ink);
-
-        .caret-up {
-          color: var(--app-ink);
-        }
-        .caret-down {
-          color: var(--app-muted-soft);
-        }
-      }
-    }
-
-    &.info-block {
-      background-color: var(--app-cyan);
-      border: 1px solid rgba(11, 145, 183, 0.72);
-      transition: background-color 0.2s ease, border-color 0.2s ease;
-
-      &.inactive-block {
-        background-color: color-mix(in oklch, var(--app-muted-soft) 70%, white) !important;
-        border-color: color-mix(in oklch, var(--app-muted-soft) 76%, white) !important;
-        
-        .info-btn {
-          color: rgba(247, 251, 255, 0.78) !important;
-          
-          &:hover {
-            background-color: rgba(0, 0, 0, 0.05) !important;
-          }
-        }
-      }
-
-      .info-btn {
-        color: #f7fbff;
-
-        &:hover {
-          background-color: var(--app-cyan-strong);
-        }
-
-        &.active {
-          background-color: rgba(255, 255, 255, 0.15);
-        }
-      }
-    }
-  }
-}
-
 .line-width-popover {
   position: absolute;
   right: 48px;
@@ -1824,16 +2527,6 @@ onUnmounted(() => {
   }
 }
 
-.right-tab {
-  left: -44px;
-  border-radius: 8px 0 0 8px;
-  border-right: none;
-
-  &:hover {
-    --tab-shift-x: -2px;
-  }
-}
-
 .segment-info-popover {
   position: fixed;
   width: 240px;
@@ -1910,6 +2603,387 @@ onUnmounted(() => {
   }
 }
 
+.rm-vehicle-controls {
+  min-height: 0;
+}
+
+#left-analysis-panel {
+  z-index: calc(var(--z-panel) + 5);
+}
+
+.run-monitor-right-panel {
+  .flex_column_scroll_box {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  :deep(.el-scrollbar__wrap),
+  :deep(.el-scrollbar__view) {
+    height: 100%;
+  }
+
+  #datavisualization_index_box2 {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--dm2-space-3);
+  }
+
+  :deep(.MCard2) {
+    width: 100%;
+    border-color: var(--dm2-line);
+    border-radius: var(--dm2-radius-lg);
+    background: rgba(255, 255, 255, 0.68);
+    box-shadow: var(--dm2-shadow-card);
+  }
+
+  :deep(.MCard2_title_box) {
+    background: rgba(0, 113, 227, 0.07);
+    color: var(--dm2-accent-strong);
+  }
+}
+
+.rm-right-card {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.rm-right-card-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dm2-space-3);
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--dm2-line-faint);
+  background: transparent;
+
+  h2 {
+    margin: 4px 0 0;
+    color: var(--dm2-ink);
+    font-size: 19px;
+    line-height: 1.25;
+    font-weight: 780;
+  }
+}
+
+.rm-panel-kicker {
+  margin: 0;
+  color: var(--dm2-accent-strong);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.rm-overall-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dm2-space-3);
+  padding: 14px 0 0;
+}
+
+.overall-flow-card .rm-overall-summary {
+  grid-template-columns: 1fr;
+}
+
+.rm-summary-item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 13px 14px;
+  border: 1px solid rgba(0, 113, 227, 0.12);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(238, 246, 255, 0.82)),
+    var(--dm2-surface-sunken);
+  box-shadow: 0 8px 22px -18px rgba(13, 38, 76, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.84);
+
+  span {
+    color: var(--dm2-muted);
+    font-size: 11px;
+    font-weight: 650;
+  }
+
+  strong {
+    color: var(--dm2-ink);
+    font-family: var(--dm2-font-num);
+    font-size: 21px;
+    font-weight: 820;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.rm-overall-chart {
+  flex: 0 0 226px;
+  min-height: 226px;
+  margin-top: 12px;
+  padding: 8px 4px 2px;
+  box-sizing: border-box;
+  border: 1px solid rgba(17, 32, 58, 0.08);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 254, 0.78)),
+    var(--dm2-surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.rm-chart,
+.chart_box {
+  width: 100%;
+  height: 100%;
+}
+
+.rm-panel-error {
+  margin: var(--dm2-space-4);
+  color: var(--dm2-delete);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.hourly-ranking-panel {
+  flex: 1;
+  min-height: 0;
+  margin-top: 14px;
+}
+
+.ranking-title-text {
+  margin: 0 0 10px;
+  color: #1569de;
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 800;
+}
+
+.ranking-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 0 2px;
+}
+
+.ranking-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  margin-bottom: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: #1569de;
+  color: #ffffff;
+
+  span {
+    color: #ffffff;
+    font-size: 13px;
+    line-height: 1.2;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
+}
+
+.ranking-scroll-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(21, 105, 222, 0.2) transparent;
+
+  &::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: rgba(21, 105, 222, 0.2);
+    border-radius: 3px;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background: rgba(21, 105, 222, 0.4);
+  }
+}
+
+.ranking-row {
+  width: 100%;
+  border: 0;
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px dashed rgba(21, 105, 222, 0.12);
+  border-radius: 0;
+  background: #ffffff;
+  box-shadow: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  cursor: default;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+
+  &:hover {
+    background: rgba(21, 105, 222, 0.03);
+    border-bottom-color: rgba(21, 105, 222, 0.3);
+  }
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.col-rank {
+  width: 50px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.col-name {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 12px;
+}
+
+.col-flow {
+  width: 110px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
+.rank-badge {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: #60758e;
+  background: rgba(113, 128, 150, 0.08);
+  border: 0;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+
+  &.gold {
+    color: #ffffff;
+    background: #d97706;
+    font-size: 13px;
+  }
+
+  &.silver {
+    color: #ffffff;
+    background: #94a3b8;
+    font-size: 13px;
+  }
+
+  &.bronze {
+    color: #ffffff;
+    background: #ea580c;
+    font-size: 13px;
+  }
+}
+
+.route-name-text {
+  min-width: 0;
+  color: #2d3748;
+  font-size: 14px;
+  line-height: 1.25;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-desc-text {
+  min-width: 0;
+  color: #a0aec0;
+  font-size: 11px;
+  line-height: 1.25;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-value {
+  color: #0f9f6e;
+  font-size: 16px;
+  line-height: 1.2;
+  font-weight: 800;
+  font-family: var(--dm2-font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+.ranking-row:nth-child(-n + 3) .flow-value {
+  color: #d97706;
+}
+
+.flow-unit {
+  color: #60758e;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.layer-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.layer-mode-segment {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid rgba(21, 105, 222, 0.12);
+  border-radius: 8px;
+  background: rgba(21, 105, 222, 0.05);
+
+  button {
+    min-width: 70px;
+    height: 26px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--app-muted);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+
+    &.active {
+      background: #ffffff;
+      color: var(--app-blue);
+      box-shadow: 0 1px 4px rgba(21, 105, 222, 0.12);
+    }
+  }
+}
+
 @media (max-width: 1024px) {
   .datebase_box {
     right: calc(var(--app-edge) + 36px);
@@ -1927,9 +3001,6 @@ onUnmounted(() => {
     min-width: min(400px, calc((100vw - 48px) / var(--app-panel-scale)));
   }
 
-  .map-controls-toolbar.with-panel {
-    right: calc(var(--app-edge) + var(--right-panel-width) * var(--app-panel-scale) + 12px);
-  }
 }
 
 @media (max-width: 960px) {
@@ -1949,9 +3020,6 @@ onUnmounted(() => {
     min-width: 0;
   }
 
-  .map-controls-toolbar.with-panel {
-    right: var(--app-edge);
-  }
 }
 
 @media (max-width: 640px) {

@@ -348,10 +348,12 @@
             <span class="col-flow">日均客流量</span>
           </div>
           <div class="ranking-scroll-list">
-            <div 
+            <button 
               v-for="(item, index) in currentLeaderboard" 
               :key="index"
               class="ranking-row"
+              type="button"
+              @click="selectLeaderboardStation(item)"
             >
               <div class="col-rank">
                 <span :class="['rank-badge', index === 0 ? 'gold' : index === 1 ? 'silver' : index === 2 ? 'bronze' : '']">
@@ -366,7 +368,7 @@
                 <span class="flow-value">{{ item.passengerFlow.toLocaleString() }}</span>
                 <span class="flow-unit">人次</span>
               </div>
-            </div>
+            </button>
           </div>
         </div>
       </template>
@@ -375,7 +377,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance } from "vue";
+import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
 import { Location, Download } from "@element-plus/icons-vue";
 import { getLineAll } from "@/api/route";
 import { getStationPanel } from "@/api/facility";
@@ -397,6 +399,7 @@ const matchedRoutes = ref([]);
 
 const StationSizeRef = inject("StationSizeRef", ref(40));
 const MapRef = inject("MapRef", ref(null));
+const BaseMapLineModeRef = inject("BaseMapLineModeRef", ref("bus-network"));
 
 // 注入右侧面板显示控制
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
@@ -585,6 +588,9 @@ injectSync("MapRef").then((map) => {
 watch(StationSizeRef, (value) => {
   _StationLayer.setMarkerSize(value);
 });
+watch(BaseMapLineModeRef, () => {
+  _StationLayer.hide();
+}, { immediate: true });
 
 // 计算所有唯一的站点名称，并转换为 el-select-v2 需要的 options 格式
 const stationOptions = computed(() => {
@@ -697,6 +703,33 @@ function cleanUpSelectedStationRing() {
   if (map.getSource(SELECTED_STATION_RING_SOURCE_ID)) map.removeSource(SELECTED_STATION_RING_SOURCE_ID);
 }
 
+function normalizeStationSearchName(value = "") {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+async function selectStationByName(stationName) {
+  const target = normalizeStationSearchName(stationName);
+  if (!target) return false;
+  const option =
+    stationOptions.value.find((item) => normalizeStationSearchName(item.value) === target) ||
+    stationOptions.value.find((item) => {
+      const name = normalizeStationSearchName(item.value);
+      return name.includes(target) || target.includes(name);
+    });
+  if (!option?.value) return false;
+  selectedStationName.value = option.value;
+  await nextTick();
+  handleStationChange(option.value);
+  return true;
+}
+
+function selectLeaderboardStation(item) {
+  selectStationByName(item?.stationName);
+}
+
 // 切换站点时
 function handleStationChange(stationName) {
   if (!stationName) {
@@ -790,6 +823,9 @@ function loadAllData() {
       });
 
       _StationLayer.setData(stationsList);
+      if (BaseMapLineModeRef.value === "bus-network") {
+        _StationLayer.hide();
+      }
     })
     .finally(() => {
       loading.value = false;
@@ -1183,6 +1219,10 @@ onUnmounted(() => {
   _StationLayer.dispose();
   cleanUpSelectedStationRing();
   rightPanelHasContent.value = false;
+});
+
+defineExpose({
+  selectStationByName,
 });
 </script>
 
@@ -1663,11 +1703,17 @@ onUnmounted(() => {
 }
 
 .ranking-row {
+  width: 100%;
+  border: 0;
   display: flex;
   align-items: center;
+  text-align: left;
+  cursor: pointer;
   padding: 12px 16px;
   background: #ffffff;
   border-bottom: 1px dashed rgba(21, 105, 222, 0.12);
+  color: inherit;
+  font: inherit;
   transition: background-color 0.2s ease, border-color 0.2s ease;
 
   &:hover {

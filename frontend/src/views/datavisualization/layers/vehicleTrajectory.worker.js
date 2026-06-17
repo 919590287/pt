@@ -3,6 +3,8 @@ const BINARY_STRIDE = 8;
 const MODE_KEYS = ["bus", "subway", "car"];
 const MODE_CODE_TO_KEY = ["bus", "subway", "car"];
 const VEHICLE_VISIBILITY_MODES = ["all", "public", "private"];
+const MIN_FRAME_CAPACITY = 1024;
+const MAX_POOLED_FRAME_BYTES = 96 * 1024 * 1024;
 const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
   map[mode] = index;
   return map;
@@ -11,6 +13,57 @@ const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
 let dataVersion = 0;
 let currentData = null;
 let currentVisibilityMode = "all";
+let pooledFrameBytes = 0;
+const frameBufferPool = new Map();
+
+function nextFrameCapacity(count) {
+  let capacity = MIN_FRAME_CAPACITY;
+  while (capacity < count) {
+    capacity *= 2;
+  }
+  return capacity;
+}
+
+function takeBuffer(byteLength) {
+  const bytes = Math.max(0, Number(byteLength) || 0);
+  if (bytes <= 0) return new ArrayBuffer(0);
+  const pool = frameBufferPool.get(bytes);
+  if (pool?.length) {
+    pooledFrameBytes -= bytes;
+    return pool.pop();
+  }
+  return new ArrayBuffer(bytes);
+}
+
+function releaseBuffers(buffers = []) {
+  for (const buffer of buffers) {
+    if (!(buffer instanceof ArrayBuffer) || buffer.byteLength <= 0) continue;
+    if (pooledFrameBytes + buffer.byteLength > MAX_POOLED_FRAME_BYTES) continue;
+    const bytes = buffer.byteLength;
+    if (!frameBufferPool.has(bytes)) {
+      frameBufferPool.set(bytes, []);
+    }
+    frameBufferPool.get(bytes).push(buffer);
+    pooledFrameBytes += bytes;
+  }
+}
+
+function clearBufferPool() {
+  frameBufferPool.clear();
+  pooledFrameBytes = 0;
+}
+
+function createFrameBuffers(count) {
+  const capacity = nextFrameCapacity(Math.max(0, Number(count) || 0));
+  return {
+    xs: new Float64Array(takeBuffer(capacity * Float64Array.BYTES_PER_ELEMENT)),
+    ys: new Float64Array(takeBuffer(capacity * Float64Array.BYTES_PER_ELEMENT)),
+    angles: new Float32Array(takeBuffer(capacity * Float32Array.BYTES_PER_ELEMENT)),
+    speeds: new Float32Array(takeBuffer(capacity * Float32Array.BYTES_PER_ELEMENT)),
+    modes: new Uint8Array(takeBuffer(capacity * Uint8Array.BYTES_PER_ELEMENT)),
+    ids: new Int32Array(takeBuffer(capacity * Int32Array.BYTES_PER_ELEMENT)),
+  };
+}
 
 function webMercatorToLngLat(x, y) {
   const lng = (Number(x) / EARTH_RADIUS) * (180 / Math.PI);
@@ -164,12 +217,7 @@ function activeFromBinary(time, data) {
   let speedTotal = 0;
   let speedCount = 0;
   const capacity = offsets.length;
-  const xs = new Float64Array(capacity);
-  const ys = new Float64Array(capacity);
-  const angles = new Float32Array(capacity);
-  const speeds = new Float32Array(capacity);
-  const modes = new Uint8Array(capacity);
-  const ids = new Int32Array(capacity);
+  const { xs, ys, angles, speeds, modes, ids } = createFrameBuffers(capacity);
   let count = 0;
 
   for (const offset of offsets) {
@@ -226,12 +274,7 @@ function activeFromJson(time, data) {
   const routeActive = {};
   const candidates = jsonSegmentsForTime(time, vehicles, data.index);
   const capacity = candidates.length;
-  const xs = new Float64Array(capacity);
-  const ys = new Float64Array(capacity);
-  const angles = new Float32Array(capacity);
-  const speeds = new Float32Array(capacity);
-  const modes = new Uint8Array(capacity);
-  const ids = new Int32Array(capacity);
+  const { xs, ys, angles, speeds, modes, ids } = createFrameBuffers(capacity);
   const keys = [];
   let count = 0;
   let speedTotal = 0;
@@ -372,14 +415,33 @@ self.onmessage = (event) => {
   const message = event.data || {};
   const { id, type } = message;
   try {
+    if (type === "releaseFrame") {
+      releaseBuffers(message.buffers || []);
+      return;
+    }
+
     if (type === "setData") {
-      respond(id, { version: setData(message.data || null) });
+      const version = setData(message.data || null);
+      const seconds = Number(message.seconds);
+      if (Number.isFinite(seconds)) {
+        const result = activeAt(Math.max(0, seconds), message.visibilityMode);
+        const transfer = result.transfer || [];
+        delete result.transfer;
+        respond(id, {
+          version,
+          seconds: Math.max(0, seconds),
+          ...result,
+        }, transfer);
+      } else {
+        respond(id, { version });
+      }
       return;
     }
 
     if (type === "clear") {
       dataVersion += 1;
       currentData = null;
+      clearBufferPool();
       respond(id, { version: dataVersion });
       return;
     }

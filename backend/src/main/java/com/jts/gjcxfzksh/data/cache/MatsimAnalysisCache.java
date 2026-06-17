@@ -64,6 +64,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -104,6 +105,7 @@ public final class MatsimAnalysisCache {
     private static final int TRAJECTORY_BINARY_STRIDE = 8;
     private static final int TRAJECTORY_IO_BUFFER_BYTES = 4 * 1024 * 1024;
     private static final int TRAJECTORY_QUEUE_DEFAULT_SIZE = 65_536;
+    private static final int TRAJECTORY_MAX_OPEN_CHUNKS_DEFAULT = 48;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final ConcurrentMap<String, Object> BUILD_LOCKS = new ConcurrentHashMap<>();
@@ -1367,6 +1369,14 @@ public final class MatsimAnalysisCache {
         );
     }
 
+    private static int trajectoryMaxOpenChunksPerWorker() {
+        return positiveIntSetting(
+                "gjcxfzksh.events.worker.max-open-chunks",
+                "GJCXFZKSH_EVENTS_WORKER_MAX_OPEN_CHUNKS",
+                TRAJECTORY_MAX_OPEN_CHUNKS_DEFAULT
+        );
+    }
+
     private static int positiveIntSetting(String property, String env, int fallback) {
         String value = System.getProperty(property);
         if (value == null || value.isBlank()) {
@@ -1936,6 +1946,7 @@ public final class MatsimAnalysisCache {
         private long passengerBoardings = 0;
         private long trackCount = 0;
         private long pointCount = 0;
+        private int chunkPruneCounter = 0;
         private int minTime = Integer.MAX_VALUE;
         private int maxTime = Integer.MIN_VALUE;
 
@@ -2066,6 +2077,7 @@ public final class MatsimAnalysisCache {
             for (int chunkStart = firstChunk; chunkStart <= lastChunk; chunkStart += TRAJECTORY_CHUNK_SECONDS) {
                 chunk(chunkStart).add(segment, modeCode(mode), vehicleIndex);
             }
+            pruneOpenChunks();
             progress.markPoint(segment.endTime, seenVehicleModes.size());
         }
 
@@ -2121,6 +2133,32 @@ public final class MatsimAnalysisCache {
                     throw new RuntimeException("创建轨迹分块缓存失败", e);
                 }
             });
+        }
+
+        private void pruneOpenChunks() {
+            if ((++chunkPruneCounter & 0x3F) != 0) {
+                return;
+            }
+            int maxOpen = trajectoryMaxOpenChunksPerWorker();
+            int openCount = 0;
+            for (ChunkAccumulator chunk : chunks.values()) {
+                if (chunk.isOpen()) {
+                    openCount++;
+                }
+            }
+            while (openCount > maxOpen) {
+                ChunkAccumulator oldest = null;
+                for (ChunkAccumulator chunk : chunks.values()) {
+                    if (chunk.isOpen() && (oldest == null || chunk.lastUsedAt < oldest.lastUsedAt)) {
+                        oldest = chunk;
+                    }
+                }
+                if (oldest == null) {
+                    return;
+                }
+                oldest.closeQuietly();
+                openCount--;
+            }
         }
 
         private String vehicleMode(String vehicleId, String networkMode) {
@@ -2212,6 +2250,7 @@ public final class MatsimAnalysisCache {
         private long passengerBoardings = 0;
         private long trackCount = 0;
         private long pointCount = 0;
+        private int chunkPruneCounter = 0;
         private int minTime = Integer.MAX_VALUE;
         private int maxTime = Integer.MIN_VALUE;
 
@@ -2355,6 +2394,7 @@ public final class MatsimAnalysisCache {
             for (int chunkStart = firstChunk; chunkStart <= lastChunk; chunkStart += TRAJECTORY_CHUNK_SECONDS) {
                 chunk(chunkStart).add(segment, modeCode(mode), vehicleIndex);
             }
+            pruneOpenChunks();
             if (progress != null) {
                 progress.markPoint(segment.endTime, seenVehicles.size());
             }
@@ -2412,6 +2452,32 @@ public final class MatsimAnalysisCache {
                     throw new RuntimeException("创建轨迹分块缓存失败", e);
                 }
             });
+        }
+
+        private void pruneOpenChunks() {
+            if ((++chunkPruneCounter & 0x3F) != 0) {
+                return;
+            }
+            int maxOpen = trajectoryMaxOpenChunksPerWorker();
+            int openCount = 0;
+            for (ChunkAccumulator chunk : chunks.values()) {
+                if (chunk.isOpen()) {
+                    openCount++;
+                }
+            }
+            while (openCount > maxOpen) {
+                ChunkAccumulator oldest = null;
+                for (ChunkAccumulator chunk : chunks.values()) {
+                    if (chunk.isOpen() && (oldest == null || chunk.lastUsedAt < oldest.lastUsedAt)) {
+                        oldest = chunk;
+                    }
+                }
+                if (oldest == null) {
+                    return;
+                }
+                oldest.closeQuietly();
+                openCount--;
+            }
         }
 
         private String vehicleMode(String vehicleId, String networkMode) {
@@ -2559,10 +2625,11 @@ public final class MatsimAnalysisCache {
         private final int start;
         private final int end;
         private final Path rawPath;
-        private final OutputStream rawOut;
         private final byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
         private final ByteBuffer rowBuffer = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
         private final IntOpenHashSet vehicles = new IntOpenHashSet();
+        private OutputStream rawOut;
+        private long lastUsedAt = 0L;
         private int segmentCount = 0;
         private int pointCount = 0;
         private double minX = Double.POSITIVE_INFINITY;
@@ -2579,11 +2646,11 @@ public final class MatsimAnalysisCache {
             this.end = this.start + TRAJECTORY_CHUNK_SECONDS - 1;
             Files.createDirectories(dir);
             this.rawPath = dir.resolve(String.format(Locale.ROOT, "chunk-%06d%s.raw.tmp", this.start, suffix));
-            this.rawOut = new BufferedOutputStream(Files.newOutputStream(rawPath), TRAJECTORY_IO_BUFFER_BYTES);
         }
 
         private void add(VehicleSegment segment, int modeCode, int vehicleIndex) {
             try {
+                ensureOpen();
                 rowBuffer.clear();
                 rowBuffer.putFloat((float) segment.startTime);
                 rowBuffer.putFloat((float) segment.endTime);
@@ -2594,6 +2661,7 @@ public final class MatsimAnalysisCache {
                 rowBuffer.putFloat((float) modeCode);
                 rowBuffer.putFloat((float) vehicleIndex);
                 rawOut.write(row);
+                lastUsedAt = System.nanoTime();
             } catch (IOException e) {
                 throw new RuntimeException("写入轨迹原始分块失败", e);
             }
@@ -2606,11 +2674,41 @@ public final class MatsimAnalysisCache {
             maxY = Math.max(maxY, Math.max(segment.fromY, segment.toY));
         }
 
+        private void ensureOpen() throws IOException {
+            if (rawOut != null) {
+                return;
+            }
+            rawOut = new BufferedOutputStream(
+                    Files.newOutputStream(
+                            rawPath,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.APPEND
+                    ),
+                    TRAJECTORY_IO_BUFFER_BYTES
+            );
+        }
+
+        private boolean isOpen() {
+            return rawOut != null;
+        }
+
         private void close() throws IOException {
+            if (rawOut == null) {
+                return;
+            }
             rawOut.close();
+            rawOut = null;
+        }
+
+        private void closeQuietly() {
+            try {
+                close();
+            } catch (Exception ignored) {
+            }
         }
 
         private Map<String, Object> finish(MatsimData data) throws Exception {
+            close();
             Map<String, Object> chunk = chunkInfo(start, vehicles.size(), pointCount);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("status", "ready");

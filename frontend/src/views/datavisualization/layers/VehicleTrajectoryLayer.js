@@ -246,6 +246,8 @@ export class VehicleTrajectoryLayer extends Layer {
     this.activeFrame = null;
     this.frameBuffers = null;
     this.reusableFrame = null;
+    this.releaseWorkerFrameQueue = [];
+    this.releaseWorkerFrameScheduled = false;
     this.worker = null;
     this.workerRequestId = 0;
     this.workerCallbacks = new Map();
@@ -391,6 +393,74 @@ export class VehicleTrajectoryLayer extends Layer {
     });
   }
 
+  releaseWorkerFrame(frame) {
+    if (!this.worker || this.worker === false || frame?.kind !== "vehicle-frame") return;
+    const buffers = [
+      frame.xs?.buffer,
+      frame.ys?.buffer,
+      frame.angles?.buffer,
+      frame.speeds?.buffer,
+      frame.modes?.buffer,
+      frame.ids?.buffer,
+    ].filter((buffer) => buffer instanceof ArrayBuffer && buffer.byteLength > 0);
+    if (!buffers.length) return;
+    this.releaseWorkerFrameQueue.push(...buffers);
+    if (this.releaseWorkerFrameScheduled) return;
+    this.releaseWorkerFrameScheduled = true;
+    const schedule = typeof queueMicrotask === "function"
+      ? queueMicrotask
+      : (callback) => setTimeout(callback, 0);
+    schedule(() => {
+      this.releaseWorkerFrameScheduled = false;
+      if (!this.worker || this.worker === false || !this.releaseWorkerFrameQueue.length) {
+        this.releaseWorkerFrameQueue = [];
+        return;
+      }
+      const queued = this.releaseWorkerFrameQueue;
+      this.releaseWorkerFrameQueue = [];
+      try {
+        this.worker.postMessage({ type: "releaseFrame", buffers: queued }, queued);
+      } catch {
+        // Returning buffers is an optimization; dropping them keeps playback correct.
+      }
+    });
+  }
+
+  applyWorkerFrame(frame) {
+    if (frame?.kind !== "vehicle-frame") {
+      this.activeFrame = null;
+      this.activeVehicles = [];
+      return;
+    }
+    const count = Math.max(0, Number(frame.count) || 0);
+    const buffers = this.ensureFrameBuffers(count);
+    buffers.keys.length = 0;
+    if (count > 0) {
+      buffers.xs.set(frame.xs.subarray(0, count));
+      buffers.ys.set(frame.ys.subarray(0, count));
+      buffers.angles.set(frame.angles.subarray(0, count));
+      buffers.speeds.set(frame.speeds.subarray(0, count));
+      buffers.modes.set(frame.modes.subarray(0, count));
+      buffers.ids.set(frame.ids.subarray(0, count));
+      if (Array.isArray(frame.keys)) {
+        for (let i = 0; i < count; i++) {
+          buffers.keys[i] = frame.keys[i];
+        }
+      }
+    }
+    this.activeVehicles = [];
+    this.activeFrame = this.setReusableFrameCount(count);
+    this.releaseWorkerFrame(frame);
+  }
+
+  applyWorkerResult(result) {
+    this.applyWorkerFrame(result?.frame || null);
+    this.stats = result?.stats || this.emptyStats();
+    this.renderVehicleLayer();
+    this.statsCallback?.(this.getCurrentStats());
+    this.applyFollowCamera();
+  }
+
   setData(data) {
     this.workerDataVersion++;
     if (data?.meta) {
@@ -400,18 +470,18 @@ export class VehicleTrajectoryLayer extends Layer {
     this.binarySecondIndex = null;
     this.jsonSecondIndex = null;
     this.vehicles = [];
-    this.activeVehicles = [];
-    this.activeFrame = null;
     this.followedVehicleIndex = null;
     this.deckLayerCleared = false;
-    this.stats = {
-      activeTotal: 0,
-      activeByMode: emptyModeCount(),
-      avgSpeed: 0,
-      routeActive: {},
-    };
 
     if (!data) {
+      this.activeVehicles = [];
+      this.activeFrame = null;
+      this.stats = {
+        activeTotal: 0,
+        activeByMode: emptyModeCount(),
+        avgSpeed: 0,
+        routeActive: {},
+      };
       this.followedVehicleKey = "";
       this.followCallback?.(null);
       if (this.worker && this.worker !== false) {
@@ -422,19 +492,26 @@ export class VehicleTrajectoryLayer extends Layer {
       return;
     }
 
-    if (data?.binary) {
-      this.setDataOnMainThread(data);
-      this.setTime(this.currentTime);
-      return;
-    }
-
+    // 二进制分块同样走 Worker：把分段索引构建与逐帧采样移出主线程，
+    // 这是初次加载/秒级播放卡顿与主线程内存抖动的最大来源。Worker 不可用时回退到主线程。
     if (this.ensureWorker()) {
       const version = this.workerDataVersion;
       const { payload, transfer } = trajectoryWorkerPayload(data);
-      this.postWorker("setData", { data: payload }, transfer)
+      this.postWorker("setData", {
+        data: payload,
+        seconds: this.currentTime,
+        visibilityMode: this.vehicleVisibilityMode,
+      }, transfer)
         .then((result) => {
-          if (this.isDisposed || version !== this.workerDataVersion) return;
-          this.requestWorkerTime(this.currentTime);
+          if (this.isDisposed || version !== this.workerDataVersion) {
+            this.releaseWorkerFrame(result?.frame);
+            return;
+          }
+          if (result?.frame) {
+            this.applyWorkerResult(result);
+          } else {
+            this.requestWorkerTime(this.currentTime);
+          }
         })
         .catch((error) => {
           console.warn("[VehicleTrajectoryLayer] worker data setup failed", error);
@@ -533,14 +610,11 @@ export class VehicleTrajectoryLayer extends Layer {
     const version = this.workerDataVersion;
     this.postWorker("setTime", { seconds, visibilityMode: this.vehicleVisibilityMode })
       .then((result) => {
-        if (this.isDisposed || seq !== this.workerTimeSeq || version !== this.workerDataVersion) return;
-        if (this.pendingWorkerTime != null && Math.abs(Number(result.seconds) - this.pendingWorkerTime) > 0.001) return;
-        this.activeFrame = result.frame || null;
-        this.activeVehicles = result.active || [];
-        this.stats = result.stats || this.emptyStats();
-        this.renderVehicleLayer();
-        this.statsCallback?.(this.getCurrentStats());
-        this.applyFollowCamera();
+        if (this.isDisposed || seq !== this.workerTimeSeq || version !== this.workerDataVersion) {
+          this.releaseWorkerFrame(result?.frame);
+          return;
+        }
+        this.applyWorkerResult(result);
       })
       .catch((error) => {
         if (!this.isDisposed) {
