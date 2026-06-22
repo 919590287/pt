@@ -150,7 +150,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
     @Override
     public Map<String, Object> trajectory(DatasourceParam param) {
         MatsimData data = matsim_data(param);
-        Map<String, Object> manifest = MatsimAnalysisCache.readReadyTrajectoryManifest(data);
+        Map<String, Object> manifest = MatsimAnalysisCache.readReadyTrajectoryLightManifest(data);
         if (manifest != null) {
             return manifest;
         }
@@ -182,7 +182,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             trajectoryExecutor.submit(() -> {
                 try {
                     Map<String, Object> readyManifest = MatsimAnalysisCache.ensureTrajectoryCache(data, buildState::markPoint);
-                    buildState.ready(readyManifest);
+                    buildState.ready(MatsimAnalysisCache.lightweightTrajectoryManifest(readyManifest));
                     trajectoryStates.remove(cacheKey, buildState);
                 } catch (Throwable e) {
                     buildState.fail(e);
@@ -214,6 +214,20 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             trajectory(param);
         }
         return chunk;
+    }
+
+    @Override
+    public Path trajectoryChunkBinaryPath(DatasourceParam param, int start) {
+        MatsimData data = matsim_data(param);
+        return MatsimAnalysisCache.trajectoryBinaryChunkPath(data, start);
+    }
+
+    @Override
+    public String trajectoryChunkTag(DatasourceParam param, int start) {
+        // 仅基于 events 身份与分块起点生成强校验 ETag，不读分块文件（廉价）；
+        // events 变化→cacheKey 变化→ETag 变化→浏览器缓存自动失效。
+        MatsimData data = matsim_data(param);
+        return MatsimAnalysisCache.trajectoryChunkETag(data, start);
     }
 
     private static Map<String, Long> emptyLongModeMap() {

@@ -6,14 +6,22 @@ import com.jts.gjcxfzksh.api.service.PTDataService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 @RestController
 @RequestMapping("/pt/data")
@@ -59,6 +67,72 @@ public class PTDataController {
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
                 .body(chunk);
+    }
+
+    @Operation(summary = "轨迹演示二进制分块数据(GET 可缓存)")
+    @GetMapping(value = "/trajectory/chunk.bin", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<?> trajectoryChunkBinaryGet(
+            @RequestParam("datasource") String datasource,
+            @RequestParam(value = "start", defaultValue = "0") int start,
+            @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
+        DatasourceParam param = new DatasourceParam();
+        param.setDatasource(datasource);
+
+        // 分块内容对固定 events 永不改变：强校验 ETag + immutable 长缓存，
+        // 让浏览器/SW 在 max-age 内直接命中本地、不再回源；命中 If-None-Match 时回 304 空体。
+        String etag = service.trajectoryChunkTag(param, start);
+        CacheControl immutableCache = CacheControl.maxAge(365, TimeUnit.DAYS).cachePublic().immutable();
+        if (etagMatches(etag, ifNoneMatch)) {
+            return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
+                    .eTag(etag)
+                    .cacheControl(immutableCache)
+                    .build();
+        }
+
+        Path chunkPath = service.trajectoryChunkBinaryPath(param, start);
+        if (chunkPath != null) {
+            ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .cacheControl(immutableCache);
+            if (etag != null) {
+                builder = builder.eTag(etag);
+            }
+            try {
+                builder = builder.contentLength(Files.size(chunkPath));
+            } catch (Exception ignored) {
+                // Content-Length is an optimization; streaming still works without it.
+            }
+            return builder.body(new FileSystemResource(chunkPath));
+        }
+
+        byte[] chunk = service.trajectoryChunkBinary(param, start);
+        if (chunk == null) {
+            // 缓存尚未就绪：202 触发后台构建，且不缓存，让前端稍后重试。
+            return ResponseEntity.status(HttpStatus.ACCEPTED)
+                    .cacheControl(CacheControl.noStore())
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(new byte[0]);
+        }
+        ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .cacheControl(immutableCache);
+        if (etag != null) {
+            builder = builder.eTag(etag);
+        }
+        return builder.body(chunk);
+    }
+
+    private static boolean etagMatches(String etag, String ifNoneMatch) {
+        if (etag == null || ifNoneMatch == null || ifNoneMatch.isBlank()) {
+            return false;
+        }
+        for (String token : ifNoneMatch.split(",")) {
+            String candidate = token.trim();
+            if ("*".equals(candidate) || etag.equals(candidate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
 }

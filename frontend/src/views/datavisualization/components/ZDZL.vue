@@ -313,66 +313,61 @@
       </template>
     </MCard2>
 
-    <MCard2 v-else class="SJZL_right_card ranking-card" :open="true">
-      <template #title>
-        <div class="ranking-title-container">
-          <span class="MCard2_title">{{ activeTransitType === 'bus' ? '公交' : '地铁' }}站点客流排行</span>
-          <div class="header-actions">
-            <div class="transit-type-selector">
-              <div 
-                v-for="type in ['bus', 'subway']" 
-                :key="type"
-                :class="['type-pill', activeTransitType === type ? 'active' : '']"
-                @click.stop="activeTransitType = type"
-              >
-                {{ type === 'bus' ? '公交' : '地铁' }}
-              </div>
-            </div>
-            <el-button 
-              type="primary" 
-              size="small" 
-              class="export-btn"
-              @click.stop="handleExportLeaderboard"
-            >
-              <el-icon style="margin-right: 4px;"><Download /></el-icon>
-              导出排行
-            </el-button>
-          </div>
+    <div v-else class="rm-right-card rm-ranking-card">
+      <div class="rm-right-card-title">
+        <div class="rm-title-head">
+          <p class="rm-panel-kicker">站点客流</p>
+          <h2>{{ activeTransitType === 'bus' ? '公交' : '地铁' }}站点客流排行</h2>
         </div>
-      </template>
-      <template #body>
-        <div class="ranking-panel">
-          <div class="ranking-header">
-            <span class="col-rank">排序</span>
-            <span class="col-name">站点名称</span>
-            <span class="col-flow">日均客流量</span>
-          </div>
-          <div class="ranking-scroll-list">
-            <button 
-              v-for="(item, index) in currentLeaderboard" 
-              :key="index"
-              class="ranking-row"
+        <div class="rm-ranking-tools">
+          <div class="rm-seg" role="group" aria-label="客流类型">
+            <button
+              v-for="type in ['bus', 'subway']"
+              :key="type"
               type="button"
-              @click="selectLeaderboardStation(item)"
+              :class="['rm-seg-btn', activeTransitType === type ? 'active' : '']"
+              @click.stop="activeTransitType = type"
             >
-              <div class="col-rank">
-                <span :class="['rank-badge', index === 0 ? 'gold' : index === 1 ? 'silver' : index === 2 ? 'bronze' : '']">
-                  {{ index + 1 }}
-                </span>
-              </div>
-              <div class="col-name">
-                <span class="route-name-text">{{ item.stationName }}</span>
-                <span class="route-desc-text">{{ item.desc }}</span>
-              </div>
-              <div class="col-flow">
-                <span class="flow-value">{{ item.passengerFlow.toLocaleString() }}</span>
-                <span class="flow-unit">人次</span>
-              </div>
+              {{ type === 'bus' ? '公交' : '地铁' }}
             </button>
           </div>
+          <button type="button" class="rm-export-btn" @click.stop="handleExportLeaderboard">
+            <el-icon><Download /></el-icon>
+            <span>导出</span>
+          </button>
         </div>
-      </template>
-    </MCard2>
+      </div>
+      <div class="ranking-panel">
+        <div class="ranking-header">
+          <span class="col-rank">排序</span>
+          <span class="col-name">站点名称</span>
+          <span class="col-flow">日均客流量</span>
+        </div>
+        <div class="ranking-scroll-list">
+          <button
+            v-for="(item, index) in currentLeaderboard"
+            :key="index"
+            class="ranking-row"
+            type="button"
+            @click="selectLeaderboardStation(item)"
+          >
+            <div class="col-rank">
+              <span :class="['rank-badge', index === 0 ? 'gold' : index === 1 ? 'silver' : index === 2 ? 'bronze' : '']">
+                {{ index + 1 }}
+              </span>
+            </div>
+            <div class="col-name">
+              <span class="route-name-text">{{ item.stationName }}</span>
+              <span class="route-desc-text">{{ item.desc }}</span>
+            </div>
+            <div class="col-flow">
+              <span class="flow-value">{{ item.passengerFlow.toLocaleString() }}</span>
+              <span class="flow-unit">人次</span>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
   </teleport>
 </template>
 
@@ -1595,8 +1590,125 @@ defineExpose({
 }
 
 /* Ranking Table / Leaderboard Styling */
-.ranking-card {
-  --theme-color: #1569de;
+/* 客流排行卡片：与数据管理右侧面板一致的「贴合玻璃」整体感（去掉嵌套白卡 + 蓝标题条） */
+.rm-ranking-card {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+
+  .ranking-panel {
+    margin-top: 12px;
+  }
+}
+
+.rm-right-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm2-space-3, 12px);
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+  background: transparent;
+
+  .rm-title-head {
+    min-width: 0;
+  }
+
+  h2 {
+    margin: 4px 0 0;
+    color: var(--dm2-ink, #1c2024);
+    font-size: 19px;
+    line-height: 1.25;
+    font-weight: 780;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+.rm-panel-kicker {
+  margin: 0;
+  color: var(--dm2-accent-strong, #005bb5);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+}
+
+.rm-ranking-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rm-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: 8px;
+  background: var(--dm2-field, #f1f4f9);
+}
+
+.rm-seg-btn {
+  min-width: 38px;
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dm2-ink-soft, #3b4452);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease),
+    color var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease),
+    box-shadow var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease);
+
+  &:hover {
+    color: var(--dm2-accent, #0071e3);
+  }
+
+  &.active {
+    background: #ffffff;
+    color: var(--dm2-accent-strong, #005bb5);
+    box-shadow: 0 1px 3px rgba(13, 38, 76, 0.14), inset 0 0 0 1px rgba(0, 113, 227, 0.18);
+  }
+}
+
+.rm-export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dm2-accent-grad, linear-gradient(135deg, #0a84ff 0%, #0071e3 52%, #0a63cc 100%));
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--dm2-accent-glow, 0 6px 18px -6px rgba(0, 113, 227, 0.45));
+  transition: filter var(--dm2-dur, 240ms) var(--dm2-ease, ease);
+
+  &:hover {
+    filter: brightness(1.06);
+  }
+
+  .el-icon {
+    font-size: 13px;
+  }
 }
 
 .ranking-title-container {
@@ -1666,39 +1778,52 @@ defineExpose({
 }
 
 .ranking-panel {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 8px 4px;
+  min-height: 0;
+  padding: 0;
 }
 
 .ranking-header {
   display: flex;
-  background: #1569de;
-  border-radius: 6px;
+  align-items: center;
   padding: 10px 16px;
-  color: #ffffff;
-  font-size: 13px;
-  font-weight: bold;
   margin-bottom: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--dm2-accent, #0071e3);
+  color: #ffffff;
+
+  span {
+    color: #ffffff;
+    font-size: 12.5px;
+    line-height: 1.2;
+    font-weight: 800;
+    letter-spacing: 0;
+  }
 }
 
 .ranking-scroll-list {
-  max-height: calc(100vh - 280px);
-  overflow-y: auto;
-  padding-right: 6px;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 113, 227, 0.2) transparent;
 
   &::-webkit-scrollbar {
     width: 6px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(21, 105, 222, 0.2);
+    background: rgba(0, 113, 227, 0.2);
     border-radius: 3px;
   }
   &::-webkit-scrollbar-thumb:hover {
-    background: rgba(21, 105, 222, 0.4);
+    background: rgba(0, 113, 227, 0.4);
   }
 }
 
@@ -1709,16 +1834,19 @@ defineExpose({
   align-items: center;
   text-align: left;
   cursor: pointer;
-  padding: 12px 16px;
-  background: #ffffff;
-  border-bottom: 1px dashed rgba(21, 105, 222, 0.12);
+  padding: 12px 14px;
+  border-bottom: 1px dashed var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: var(--dm2-radius-sm, 10px);
+  background: transparent;
   color: inherit;
   font: inherit;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  transition:
+    background-color var(--dm2-dur, 240ms) var(--dm2-ease, ease),
+    border-color var(--dm2-dur, 240ms) var(--dm2-ease, ease);
 
   &:hover {
-    background: rgba(21, 105, 222, 0.03);
-    border-bottom-color: rgba(21, 105, 222, 0.3);
+    background: var(--dm2-accent-weak, rgba(0, 113, 227, 0.1));
+    border-bottom-color: transparent;
   }
 
   &:last-child {
@@ -1727,7 +1855,7 @@ defineExpose({
 }
 
 .col-rank {
-  width: 50px;
+  width: 46px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -1744,7 +1872,7 @@ defineExpose({
 }
 
 .col-flow {
-  width: 110px;
+  width: 108px;
   flex-shrink: 0;
   display: flex;
   align-items: baseline;
@@ -1761,8 +1889,9 @@ defineExpose({
   border-radius: 50%;
   font-size: 12px;
   font-weight: 800;
-  color: #60758e;
-  background: rgba(113, 128, 150, 0.08);
+  font-variant-numeric: tabular-nums;
+  color: var(--dm2-muted, #667085);
+  background: rgba(113, 128, 150, 0.1);
 
   &.gold {
     background: #d97706;
@@ -1785,8 +1914,8 @@ defineExpose({
 
 .route-name-text {
   font-size: 14px;
-  font-weight: bold;
-  color: #2d3748;
+  font-weight: 800;
+  color: var(--dm2-ink, #1c2024);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1794,7 +1923,7 @@ defineExpose({
 
 .route-desc-text {
   font-size: 11px;
-  color: #a0aec0;
+  color: var(--dm2-muted-soft, #98a2b3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1802,10 +1931,11 @@ defineExpose({
 
 .flow-value {
   font-size: 16px;
-  font-weight: bold;
-  color: #0f9f6e;
-  font-family: var(--app-font-number);
-  
+  font-weight: 800;
+  color: var(--dm2-add, #1a8a3f);
+  font-family: var(--dm2-font-num, var(--app-font-number));
+  font-variant-numeric: tabular-nums;
+
   .ranking-row:nth-child(-n+3) & {
     color: #d97706;
   }
@@ -1813,7 +1943,7 @@ defineExpose({
 
 .flow-unit {
   font-size: 11px;
-  color: #60758e;
+  color: var(--dm2-muted, #667085);
   font-weight: 600;
 }
 

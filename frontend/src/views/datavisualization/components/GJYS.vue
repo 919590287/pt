@@ -112,7 +112,7 @@
         </div>
       </div>
       <template v-else>
-        <div class="control-row">
+        <div class="control-row flex-col">
           <span class="label">播放状态</span>
           <div class="btn-group">
             <el-button-group>
@@ -124,7 +124,7 @@
           </div>
         </div>
 
-        <div class="control-row mt-4 flex-col">
+        <div class="control-row flex-col">
           <span class="label">演示速度</span>
           <el-radio-group v-model="playSpeed" size="small" :disabled="!canControl" @change="changeSpeed">
             <el-radio-button :value="1">1x</el-radio-button>
@@ -134,7 +134,7 @@
           </el-radio-group>
         </div>
 
-        <div class="control-row mt-4 flex-col">
+        <div class="control-row flex-col">
           <div class="slider-header">
             <span class="label">时间进度</span>
             <span class="time-text">{{ formatTime(currentTime) }}</span>
@@ -274,6 +274,7 @@ import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import { dataTrajectory, dataTrajectoryChunk, dataTrajectoryChunkBinary } from "@/api/trajectory.js";
 import { VehicleTrajectoryLayer, VEHICLE_MODE_CONFIG, parseVehicleTrajectoryBinaryChunk } from "../layers/VehicleTrajectoryLayer.js";
+import { getCachedChunk, putCachedChunk, pruneChunkCache } from "@/utils/trajectoryChunkCache.js";
 
 const props = defineProps({
   model: String,
@@ -297,6 +298,7 @@ const MAX_CHUNK_CACHE = 7;
 const MAX_CHUNK_CACHE_BYTES = 96 * 1024 * 1024;
 // 播放时滑块/时间文本的刷新节流（图层仍按 rAF 每帧驱动，UI 不必每帧重渲染）。
 const UI_SYNC_INTERVAL_MS = 120;
+const SEEK_CHUNK_LOAD_DELAY_MS = 48;
 const loading = ref(false);
 const chunkLoading = ref(false);
 const loadError = ref("");
@@ -317,10 +319,15 @@ const followedVehicle = ref(null);
 
 let trajectoryLayer = null;
 let playbackFrame = null;
-let lastPlaybackFrameAt = 0;
 // 播放时钟（普通变量，不走 Vue 响应式）：每帧直接驱动图层，currentTime ref 仅按节流回写给滑块。
+// 改为"实时锚点"驱动：simTime = anchorSim + (now-anchorReal)*speed。不再累加封顶增量，
+// 卡顿掉帧也不会丢仿真时间，从根上消除"车辆正常运行→突然大幅降速→又正常"的抖动。
 let playbackClock = 0;
+let playbackAnchorReal = 0;
+let playbackAnchorSim = 0;
 let lastUiSyncAt = 0;
+let lastStatsUiSyncAt = 0;
+let lastPassengerUiSyncAt = 0;
 // 拖动进度条到未缓存分块时的防抖加载，避免每次 input 都发请求/清空车辆造成闪烁与长时间空白。
 let seekChunkTimer = null;
 let pollTimer = null;
@@ -389,7 +396,7 @@ const vehiclePanelInfo = computed(() => {
     personCount: `${personCount} 人`,
     origin: formatLocation(meta.origin),
     destination: formatLocation(meta.destination),
-    purpose: meta.purpose || "--",
+    purpose: formatPurpose(meta.purpose ?? meta.destination?.type),
   };
 });
 
@@ -557,7 +564,7 @@ function ensureTrajectoryLayer() {
   trajectoryLayer.setVehicleMeta(trajectoryData.value?.meta || {});
   trajectoryLayer.setVehicleVisibilityMode(VehicleVisibilityModeRef.value);
   trajectoryLayer.setStatsCallback((stats) => {
-    liveStats.value = stats || emptyStats();
+    publishLiveStats(stats);
   });
   trajectoryLayer.setFollowCallback((vehicle) => {
     followedVehicle.value = vehicle;
@@ -570,6 +577,7 @@ function ensureTrajectoryLayer() {
 }
 
 async function loadTrajectory() {
+  const seq = ++loadSeq;
   stopPlayback();
   stopPolling();
   cancelSeekChunkLoad();
@@ -594,7 +602,6 @@ async function loadTrajectory() {
   }
   if (!props.model) return;
 
-  const seq = ++loadSeq;
   loading.value = true;
   loadError.value = "";
   chunkError.value = "";
@@ -638,6 +645,8 @@ async function applyTrajectoryStatus(data, seq) {
   trajectoryLayer?.setVehicleVisibilityMode(VehicleVisibilityModeRef.value);
 
   if (cacheStatus.value === "ready") {
+    // events 已确定：清理本模型其它版本的过期分块缓存（不阻塞首块加载）。
+    pruneChunkCache(props.model, eventsTag());
     await loadChunkForTime(currentTime.value, seq, true);
   } else if (cacheStatus.value === "generating") {
     schedulePolling(seq);
@@ -793,6 +802,8 @@ async function prefetchChunk(start, seq) {
     const data = await requestTrajectoryChunkOnce(start);
     if (seq === loadSeq && data?.status === "ready") {
       rememberChunk(start, data);
+      // 预取的相邻分块同时推给 Worker 预建每秒索引并常驻，播放越过边界时即可秒切不卡（双缓冲）。
+      trajectoryLayer?.preindexChunk(data);
     }
   } catch (error) {
     // Prefetch is opportunistic; the foreground loader will surface errors.
@@ -816,11 +827,40 @@ async function requestTrajectoryChunkOnce(start) {
   return promise;
 }
 
+// 分块的本地缓存版本标识：events 变化（mod/size/cacheVersion 任一变化）即失效。
+function eventsTag() {
+  const manifest = trajectoryData.value || {};
+  return `${manifest.cacheVersion || ""}:${manifest.eventsModified || ""}:${manifest.eventsSize || ""}`;
+}
+
+function chunkCacheKey(start) {
+  if (!props.model) return "";
+  return `${props.model}::${eventsTag()}::${start}`;
+}
+
 async function requestTrajectoryChunk(start) {
+  const cacheKey = chunkCacheKey(start);
+  // 1) 先查本地持久缓存（IndexedDB）：命中即零网络、跨会话直读。
+  if (cacheKey) {
+    try {
+      const cached = await getCachedChunk(cacheKey);
+      if (cached && cached.byteLength) {
+        return parseVehicleTrajectoryBinaryChunk(cached, trajectoryData.value || {});
+      }
+    } catch (error) {
+      // 本地缓存损坏则回退网络。
+    }
+  }
+
+  // 2) 走可缓存的 GET 二进制端点；成功后把原始字节写入 IndexedDB（结构化克隆，不影响已解析视图）。
   try {
     const res = await dataTrajectoryChunkBinary({ datasource: props.model }, start);
-    if (res?.status === 200) {
-      return parseVehicleTrajectoryBinaryChunk(res.data, trajectoryData.value || {});
+    if (res?.status === 200 && res.data?.byteLength) {
+      const parsed = parseVehicleTrajectoryBinaryChunk(res.data, trajectoryData.value || {});
+      if (cacheKey) {
+        putCachedChunk(cacheKey, res.data, { ds: props.model, ver: eventsTag() }).catch(() => {});
+      }
+      return parsed;
     }
   } catch (error) {
     // JSON keeps the feature usable when an old cache or browser rejects the binary path.
@@ -830,19 +870,23 @@ async function requestTrajectoryChunk(start) {
   return res.data || {};
 }
 
-function syncStatsAt(time) {
-  const layerStats = trajectoryLayer?.setTime(time) || emptyStats();
-  liveStats.value = layerStats;
-  const passengerCounts = cumulativeAt(time);
-  cumulativePassengers.value = passengerCounts.total || 0;
-  cumulativeByMode.value = {
-    bus: passengerCounts.bus || 0,
-    subway: passengerCounts.subway || 0,
-    car: passengerCounts.car || 0,
-  };
+function publishLiveStats(stats, force = false) {
+  const now = performance.now();
+  if (!force && isPlaying.value && now - lastStatsUiSyncAt < UI_SYNC_INTERVAL_MS) return;
+  lastStatsUiSyncAt = now;
+  liveStats.value = stats || emptyStats();
 }
 
-function syncPassengerStatsAt(time) {
+function syncStatsAt(time, force = !isPlaying.value) {
+  const layerStats = trajectoryLayer?.setTime(time) || emptyStats();
+  publishLiveStats(layerStats, force);
+  syncPassengerStatsAt(time, force);
+}
+
+function syncPassengerStatsAt(time, force = !isPlaying.value) {
+  const now = performance.now();
+  if (!force && isPlaying.value && now - lastPassengerUiSyncAt < UI_SYNC_INTERVAL_MS) return;
+  lastPassengerUiSyncAt = now;
   const passengerCounts = cumulativeAt(time);
   cumulativePassengers.value = passengerCounts.total || 0;
   cumulativeByMode.value = {
@@ -853,7 +897,7 @@ function syncPassengerStatsAt(time) {
 }
 
 function syncStats() {
-  syncStatsAt(currentTime.value);
+  syncStatsAt(currentTime.value, true);
 }
 
 // 把任意时刻应用到图层：必要时切换分块（命中缓存即时切换，否则异步加载），再按该时刻采样。
@@ -872,11 +916,6 @@ function driveLayerTime(time) {
     prefetchAroundTime(time);
   }
   syncStatsAt(time);
-}
-
-function nextTimeValue(value) {
-  const rawTime = Number(value) || timeRange.value.min;
-  return rawTime > timeRange.value.max ? timeRange.value.min : clampTime(rawTime);
 }
 
 // 暂停状态下的拖动/跳转：命中缓存即时切换；未缓存则先在当前分块采样（保留车辆），并防抖加载目标分块。
@@ -901,7 +940,7 @@ function scheduleSeekChunkLoad(time) {
   seekChunkTimer = window.setTimeout(() => {
     seekChunkTimer = null;
     ensureChunkForTime(time);
-  }, 160);
+  }, SEEK_CHUNK_LOAD_DELAY_MS);
 }
 
 function cancelSeekChunkLoad() {
@@ -928,31 +967,42 @@ function resetPlayback() {
   stopPlayback();
   cancelSeekChunkLoad();
   const time = initialTime();
-  playbackClock = clampTime(time);
+  anchorPlayback(time);
   currentTime.value = time;
   ensureChunkForTime(time);
   syncStatsAt(time);
 }
 
 function changeSpeed() {
+  // 变速时以当前时刻重锚，避免把新倍速错误地应用到已过去的真实时长上（否则会瞬跳）。
   if (isPlaying.value) {
-    const resumeAt = playbackClock;
-    startPlayback();
-    playbackClock = resumeAt;
+    anchorPlayback(playbackClock);
   }
+}
+
+// 用当前真实时刻把仿真时钟重新锚定到 simTime，之后每帧由 (now-anchorReal)*speed 推算，不累加误差。
+function anchorPlayback(simTime, now = performance.now()) {
+  playbackAnchorSim = clampTime(simTime);
+  playbackAnchorReal = now;
+  playbackClock = playbackAnchorSim;
 }
 
 function startPlayback() {
   stopPlayback();
   cancelSeekChunkLoad();
-  lastPlaybackFrameAt = performance.now();
-  lastUiSyncAt = lastPlaybackFrameAt;
-  playbackClock = clampTime(currentTime.value);
+  const startedAt = performance.now();
+  lastUiSyncAt = startedAt;
+  anchorPlayback(currentTime.value, startedAt);
   const tick = (now) => {
     if (!isPlaying.value) return;
-    const deltaSeconds = Math.min(0.12, Math.max(0, (now - lastPlaybackFrameAt) / 1000));
-    lastPlaybackFrameAt = now;
-    playbackClock = nextTimeValue(playbackClock + deltaSeconds * playSpeed.value);
+    // 仿真时刻只由真实经过时间推算；某帧卡顿后下一帧直接落到正确时刻，不会"慢一截再追"。
+    const target = playbackAnchorSim + Math.max(0, (now - playbackAnchorReal) / 1000) * playSpeed.value;
+    if (target > timeRange.value.max) {
+      // 播放到末尾：回到起点并重锚，保持匀速循环。
+      anchorPlayback(timeRange.value.min, now);
+    } else {
+      playbackClock = target;
+    }
     // 每帧直接驱动图层（采样在 Worker 中进行），实现秒级流畅。
     driveLayerTime(playbackClock);
     // 滑块/时间文本按节流回写，避免每帧触发 Vue 重渲染与重复 setTime。
@@ -973,14 +1023,23 @@ function stopPlayback() {
 }
 
 function handleSliderInput(value) {
-  // v-model 已更新 currentTime（watch 负责采样与防抖加载）；此处仅让播放时钟跟随，便于继续播放。
-  playbackClock = clampTime(Number(value) || timeRange.value.min);
+  // v-model 已更新 currentTime（watch 负责采样与防抖加载）；此处让播放时钟跟随，便于继续播放。
+  const time = clampTime(Number(value) || timeRange.value.min);
+  if (isPlaying.value) {
+    anchorPlayback(time);
+  } else {
+    playbackClock = time;
+  }
 }
 
 function handleSliderCommit(value) {
   cancelSeekChunkLoad();
   const time = clampTime(Number(value) || timeRange.value.min);
-  playbackClock = time;
+  if (isPlaying.value) {
+    anchorPlayback(time);
+  } else {
+    playbackClock = time;
+  }
   currentTime.value = time;
   ensureChunkForTime(time);
   seekToTime(time);
@@ -1006,13 +1065,48 @@ function formatSchedule(firstTime, lastTime) {
 function formatLocation(location = {}) {
   if (!location || typeof location !== "object") return "--";
   if (location.label) return location.label;
-  if (location.type) return location.type;
+  if (location.type) return formatPurpose(location.type);
   const x = Number(location.x);
   const y = Number(location.y);
   if (Number.isFinite(x) && Number.isFinite(y)) {
     return `${Math.round(x)}, ${Math.round(y)}`;
   }
   return "--";
+}
+
+// MATSim 活动类型（出行目的）→ 中文标签。兼容 home_3600 / work-8h 等带时长后缀写法。
+const PURPOSE_LABELS = {
+  home: "回家",
+  work: "上班",
+  business: "公务",
+  education: "上学",
+  school: "上学",
+  university: "上学",
+  kindergarten: "上学",
+  shopping: "购物",
+  shop: "购物",
+  errands: "办事",
+  leisure: "休闲",
+  recreation: "休闲",
+  sport: "运动",
+  dining: "餐饮",
+  eat: "餐饮",
+  medical: "就医",
+  health: "就医",
+  escort: "接送",
+  pickup: "接送",
+  visiting: "探访",
+  social: "社交",
+  other: "其他",
+};
+
+function formatPurpose(raw) {
+  if (raw == null) return "--";
+  const text = String(raw).trim();
+  if (!text || text === "--") return "--";
+  // 去掉时长/编号后缀（home_3600、work-8h、shopping 1 等），并归一化大小写后查表
+  const key = text.toLowerCase().replace(/[\s_\-.].*$/, "");
+  return PURPOSE_LABELS[key] || text;
 }
 
 function formatNumber(value) {
@@ -1319,17 +1413,40 @@ onUnmounted(() => {
 .run-gjys-control-panel {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  margin: 10px 10px 10px 26px;
-  padding: 4px 0 4px 14px;
-  border-left: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
+  gap: 15px;
+  margin: 6px 8px 10px;
+  padding: 14px 14px 16px;
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: var(--dm2-radius, 13px);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 254, 0.8)),
+    var(--dm2-surface, #ffffff);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), 0 8px 22px -16px rgba(13, 38, 76, 0.28);
   color: var(--dm2-ink, #1c2024);
 
+  // 标题作为小节标签，呼应左侧导航的层级感
   .run-control-title {
-    display: none;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0 0 1px;
+    color: var(--dm2-accent-strong, #005bb5);
+    font-size: 11px;
+    font-weight: 760;
+    letter-spacing: 0.06em;
+
+    &::before {
+      content: "";
+      width: 4px;
+      height: 13px;
+      border-radius: 2px;
+      background: var(--dm2-accent-grad, linear-gradient(135deg, #0a84ff, #0071e3));
+    }
+  }
+
+  // mt-4 的额外外边距交给父级 gap 统一控制，避免双倍间距
+  .mt-4 {
+    margin-top: 0;
   }
 
   .build-state {
@@ -1337,7 +1454,7 @@ onUnmounted(() => {
     flex-direction: column;
     gap: 8px;
     padding: 10px;
-    border-radius: 8px;
+    border-radius: var(--dm2-radius-sm, 10px);
     background: rgba(17, 32, 58, 0.03);
   }
 
@@ -1363,15 +1480,15 @@ onUnmounted(() => {
     &.flex-col {
       align-items: stretch;
       flex-direction: column;
-      gap: 8px;
+      gap: 9px;
     }
   }
 
   .label {
     color: var(--dm2-muted, #667085);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
   }
 
   .slider-header {
@@ -1381,61 +1498,79 @@ onUnmounted(() => {
   }
 
   .time-text {
-    color: var(--dm2-accent, #0071e3);
-    font-family: var(--app-font-number, monospace);
-    font-size: 14px;
-    font-weight: 700;
+    color: var(--dm2-accent-strong, #005bb5);
+    font-family: var(--dm2-font-num, "SF Pro Display", monospace);
+    font-size: 15px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
   }
 
   .btn-group {
-    flex: 1;
     display: flex;
-    justify-content: flex-end;
+    width: 100%;
   }
 
+  // 播放 / 重置：填充式按钮组，主操作用强调渐变
   :deep(.el-button-group) {
     display: flex;
     width: 100%;
-    max-width: 160px;
-    border: 1px solid rgba(17, 32, 58, 0.08);
-    border-radius: 8px;
+    border: 0;
+    border-radius: 10px;
     overflow: hidden;
+    box-shadow: var(--dm2-shadow-card, 0 1px 2px rgba(13, 38, 76, 0.05), 0 4px 12px -4px rgba(13, 38, 76, 0.08));
   }
 
   :deep(.el-button) {
     flex: 1;
-    height: 30px;
+    height: 34px;
     padding: 0;
     border: 0;
     border-radius: 0;
-    font-size: 12px;
-    font-weight: 600;
-    transition: all 0.2s;
+    font-size: 12.5px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    transition:
+      background-color var(--dm2-dur, 240ms) var(--dm2-ease, ease),
+      color var(--dm2-dur, 240ms) var(--dm2-ease, ease);
+  }
+
+  :deep(.el-button + .el-button) {
+    border-left: 1px solid rgba(255, 255, 255, 0.35);
   }
 
   :deep(.el-button--primary) {
-    background-color: var(--dm2-accent, #0071e3) !important;
+    background: var(--dm2-accent-grad, linear-gradient(135deg, #0a84ff 0%, #0071e3 52%, #0a63cc 100%)) !important;
     color: #ffffff !important;
+
     &:hover {
-      background-color: var(--dm2-accent-strong, #005bb5) !important;
+      filter: brightness(1.05);
     }
   }
 
   :deep(.el-button--info) {
-    background-color: rgba(17, 32, 58, 0.04) !important;
-    color: var(--dm2-ink, #1c2024) !important;
+    background-color: var(--dm2-field, #f1f4f9) !important;
+    color: var(--dm2-ink-soft, #3b4452) !important;
+
     &:hover {
       background-color: rgba(17, 32, 58, 0.08) !important;
+      color: var(--dm2-ink, #1c2024) !important;
     }
   }
 
+  :deep(.el-button.is-disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  // 演示速度：分段控件，选中态清晰高亮（修复旧选择器类名错误导致的"不亮起"）
   :deep(.el-radio-group) {
     display: flex;
     width: 100%;
-    background: rgba(17, 32, 58, 0.04);
-    border-radius: 8px;
-    padding: 2px;
-    border: none;
+    gap: 3px;
+    padding: 3px;
+    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+    border-radius: 10px;
+    background: var(--dm2-field, #f1f4f9);
   }
 
   :deep(.el-radio-button) {
@@ -1445,33 +1580,52 @@ onUnmounted(() => {
 
   :deep(.el-radio-button__inner) {
     width: 100%;
-    height: 26px;
-    line-height: 26px;
+    height: 28px;
+    line-height: 28px;
     padding: 0;
-    border: none !important;
+    border: 0 !important;
     background: transparent !important;
-    color: var(--dm2-muted, #667085) !important;
-    font-size: 11px;
-    font-weight: 600;
-    border-radius: 6px !important;
+    color: var(--dm2-ink-soft, #3b4452) !important;
+    font-size: 12px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    border-radius: 7px !important;
     box-shadow: none !important;
-    transition: all 0.2s;
+    transition:
+      background-color var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease),
+      color var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease),
+      box-shadow var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease);
   }
 
+  :deep(.el-radio-button:not(.is-active):hover .el-radio-button__inner) {
+    background: rgba(255, 255, 255, 0.6) !important;
+    color: var(--dm2-accent, #0071e3) !important;
+  }
+
+  // 同时匹配 is-active（最稳）与正确的原生 input 类名，确保任意 Element Plus 版本都高亮
+  :deep(.el-radio-button.is-active .el-radio-button__inner),
+  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner),
   :deep(.el-radio-button__orig-radio:checked + .el-radio-button__inner) {
     background: #ffffff !important;
     color: var(--dm2-accent-strong, #005bb5) !important;
-    box-shadow: 0 1px 3px rgba(13, 38, 76, 0.12) !important;
+    box-shadow:
+      0 1px 4px rgba(13, 38, 76, 0.16),
+      inset 0 0 0 1px rgba(0, 113, 227, 0.22) !important;
   }
 
   :deep(.el-slider) {
     --el-slider-main-bg-color: var(--dm2-accent, #0071e3);
-    --el-slider-runway-bg-color: rgba(17, 32, 58, 0.08);
+    --el-slider-runway-bg-color: rgba(17, 32, 58, 0.1);
     --el-slider-stop-bg-color: #ffffff;
-    --el-slider-button-size: 12px;
-    --el-slider-button-wrapper-size: 28px;
-    --el-slider-height: 4px;
-    height: 24px;
+    --el-slider-button-size: 14px;
+    --el-slider-button-wrapper-size: 30px;
+    --el-slider-height: 5px;
+    height: 26px;
+  }
+
+  :deep(.el-slider__button) {
+    border: 2px solid var(--dm2-accent, #0071e3);
+    box-shadow: 0 1px 4px rgba(13, 38, 76, 0.22);
   }
 }
 

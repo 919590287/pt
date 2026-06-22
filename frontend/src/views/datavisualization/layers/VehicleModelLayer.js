@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 
 const EARTH_RADIUS = 6378137.0;
 const WEB_MERCATOR_HALF_WORLD = Math.PI * EARTH_RADIUS;
@@ -15,6 +15,8 @@ const ORIGIN_REBASE_DEFAULT_METERS = 50000;
 const SMOOTH_MIN_ZOOM = 15.3;
 const SMOOTH_SNAP_METERS = 900;
 const MODE_INDEX_TO_KEY = ["bus", "subway", "car"];
+const DEG_TO_RAD = Math.PI / 180;
+const INSTANCE_Z_METERS = 0.18;
 
 function vehicleModelUrl(fileName) {
   const baseUrl =
@@ -79,6 +81,26 @@ function lerpAngleDegrees(from, to, alpha) {
   return normalizeAngleDegrees(from + delta * alpha);
 }
 
+function writeInstanceTransform(target, offset, x, y, angleRad) {
+  target[offset] = x;
+  target[offset + 1] = y;
+  target[offset + 2] = Math.cos(angleRad);
+  target[offset + 3] = Math.sin(angleRad);
+}
+
+function writeInstanceSegment(xyTarget, infoTarget, index, sx, sy, ex, ey, startTime, endTime, angleRad) {
+  const xyOffset = index * 4;
+  xyTarget[xyOffset] = sx;
+  xyTarget[xyOffset + 1] = sy;
+  xyTarget[xyOffset + 2] = ex;
+  xyTarget[xyOffset + 3] = ey;
+  const infoOffset = index * 4;
+  infoTarget[infoOffset] = startTime;
+  infoTarget[infoOffset + 1] = endTime;
+  infoTarget[infoOffset + 2] = Math.cos(angleRad);
+  infoTarget[infoOffset + 3] = Math.sin(angleRad);
+}
+
 function loadGltf(url) {
   const loader = new GLTFLoader();
   return new Promise((resolve, reject) => {
@@ -97,6 +119,86 @@ function computePartsBox(parts) {
     }
   }
   return hasGeometry ? box : null;
+}
+
+function optimizeStaticGeometry(geometry) {
+  try {
+    const optimized = mergeVertices(geometry, 1e-5);
+    if (optimized && optimized !== geometry) {
+      geometry.dispose?.();
+      optimized.computeBoundingBox();
+      optimized.computeBoundingSphere();
+      if (!optimized.getAttribute("normal")) {
+        optimized.computeVertexNormals();
+      }
+      return optimized;
+    }
+  } catch {
+    // Keep the original geometry if an exotic GLB attribute cannot be welded safely.
+  }
+  return geometry;
+}
+
+function canBakeMaterialColor(material) {
+  if (!material || Array.isArray(material)) return false;
+  if (material.map || material.alphaMap || material.normalMap || material.roughnessMap || material.metalnessMap) return false;
+  const opacity = Number.isFinite(material.opacity) ? material.opacity : 1;
+  return !material.transparent && opacity >= 0.999;
+}
+
+function applyVertexColor(geometry, material) {
+  const position = geometry.getAttribute("position");
+  if (!position?.count) return false;
+  const color = material?.color || new THREE.Color(1, 1, 1);
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i++) {
+    const offset = i * 3;
+    colors[offset] = color.r;
+    colors[offset + 1] = color.g;
+    colors[offset + 2] = color.b;
+  }
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return true;
+}
+
+function mergeVertexColoredParts(parts, materialSet, mode) {
+  const colored = [];
+  const passthrough = [];
+  for (const part of parts) {
+    if (!canBakeMaterialColor(part.material) || !applyVertexColor(part.geometry, part.material)) {
+      passthrough.push(part);
+      continue;
+    }
+    colored.push(part);
+  }
+  if (colored.length <= 1) {
+    return parts;
+  }
+  try {
+    let geometry = mergeGeometries(colored.map((part) => part.geometry), false);
+    if (!geometry) return parts;
+    geometry = optimizeStaticGeometry(geometry);
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    colored.forEach((part) => part.geometry.dispose?.());
+    const material = new THREE.MeshBasicMaterial({
+      name: `${mode}-baked-vertex-color`,
+      color: 0xffffff,
+      vertexColors: true,
+    });
+    materialSet.add(material);
+    return [
+      ...passthrough,
+      {
+        geometry,
+        material,
+        name: colored.map((part) => part.name).join("+"),
+      },
+    ];
+  } catch (error) {
+    console.warn("[VehicleModelLayer] merge vertex-colored GLB parts failed, rendering original parts:", error);
+    return parts;
+  }
 }
 
 function collectMaterials(material, target) {
@@ -118,6 +220,184 @@ function disposeMaterial(material) {
     }
     item.dispose?.();
   }
+}
+
+function disposeMaterialInstance(material) {
+  const materials = Array.isArray(material) ? material : [material];
+  for (const item of materials) {
+    item?.dispose?.();
+  }
+}
+
+const VEHICLE_LIGHTING = {
+  hemiSky: new THREE.Color(0xffffff).multiplyScalar(0.86),
+  hemiGround: new THREE.Color(0x8b95a5).multiplyScalar(0.34),
+  keyDir: new THREE.Vector3(120, -80, 180).normalize(),
+  keyColor: new THREE.Color(0xffffff).multiplyScalar(0.72),
+  fillDir: new THREE.Vector3(-160, 90, 120).normalize(),
+  fillColor: new THREE.Color(0xffffff).multiplyScalar(0.26),
+};
+
+function createFastInstancedMaterial(material) {
+  if (Array.isArray(material)) {
+    return material.map((item) => createFastInstancedMaterial(item));
+  }
+  const color = material?.color?.clone?.() || new THREE.Color(1, 1, 1);
+  const opacity = Number.isFinite(material?.opacity) ? material.opacity : 1;
+  const map = material?.map || null;
+  const vertexColors = Boolean(material?.vertexColors);
+  const next = new THREE.ShaderMaterial({
+    name: `${material?.name || "vehicle"}-fast-instanced`,
+    defines: {
+      ...(map ? { USE_VEHICLE_MAP: "" } : {}),
+      ...(vertexColors ? { USE_VEHICLE_COLOR: "" } : {}),
+    },
+    uniforms: {
+      diffuse: { value: color },
+      opacity: { value: opacity },
+      map: { value: map },
+      vehicleScale: { value: DEFAULT_MODEL_WORLD_SCALE },
+      vehicleZ: { value: INSTANCE_Z_METERS },
+      vehicleTime: { value: 0 },
+      useGpuTrajectory: { value: 0 },
+      hemiSkyColor: { value: VEHICLE_LIGHTING.hemiSky },
+      hemiGroundColor: { value: VEHICLE_LIGHTING.hemiGround },
+      keyLightDirection: { value: VEHICLE_LIGHTING.keyDir },
+      keyLightColor: { value: VEHICLE_LIGHTING.keyColor },
+      fillLightDirection: { value: VEHICLE_LIGHTING.fillDir },
+      fillLightColor: { value: VEHICLE_LIGHTING.fillColor },
+    },
+    vertexShader: `
+      attribute vec4 instanceTransform;
+      attribute vec4 instanceSegmentXY;
+      attribute vec4 instanceSegmentInfo;
+      uniform float vehicleScale;
+      uniform float vehicleZ;
+      uniform float vehicleTime;
+      uniform float useGpuTrajectory;
+      uniform vec3 hemiSkyColor;
+      uniform vec3 hemiGroundColor;
+      uniform vec3 keyLightDirection;
+      uniform vec3 keyLightColor;
+      uniform vec3 fillLightDirection;
+      uniform vec3 fillLightColor;
+      varying vec3 vVehicleLight;
+      varying float vVehicleActive;
+      #ifdef USE_VEHICLE_MAP
+        varying vec2 vVehicleUv;
+      #endif
+      #ifdef USE_VEHICLE_COLOR
+        attribute vec3 color;
+        varying vec3 vVehicleColor;
+      #endif
+      vec2 gjRotate2D(vec2 value, float c, float s) {
+        return vec2(value.x * c - value.y * s, value.x * s + value.y * c);
+      }
+      void main() {
+        vec2 instanceXY = instanceTransform.xy;
+        float c = instanceTransform.z;
+        float s = instanceTransform.w;
+        vVehicleActive = 1.0;
+        if (useGpuTrajectory > 0.5) {
+          float startTime = instanceSegmentInfo.x;
+          float endTime = instanceSegmentInfo.y;
+          float duration = max(endTime - startTime, 0.001);
+          float ratio = clamp((vehicleTime - startTime) / duration, 0.0, 1.0);
+          instanceXY = mix(instanceSegmentXY.xy, instanceSegmentXY.zw, ratio);
+          c = instanceSegmentInfo.z;
+          s = instanceSegmentInfo.w;
+          vVehicleActive = step(startTime, vehicleTime) * (1.0 - step(endTime, vehicleTime));
+        }
+        vec3 localPosition = position;
+        vec2 xy = gjRotate2D(localPosition.xy, c, s) * vehicleScale + instanceXY;
+        vec3 transformed = vec3(xy, localPosition.z * vehicleScale + vehicleZ);
+        vec3 localNormal = normal;
+        vec3 vehicleNormal = normalize(vec3(gjRotate2D(localNormal.xy, c, s), localNormal.z));
+        float hemi = vehicleNormal.z * 0.5 + 0.5;
+        vec3 light = mix(hemiGroundColor, hemiSkyColor, hemi);
+        light += keyLightColor * max(dot(vehicleNormal, keyLightDirection), 0.0);
+        light += fillLightColor * max(dot(vehicleNormal, fillLightDirection), 0.0);
+        vVehicleLight = clamp(light, vec3(0.24), vec3(1.72));
+        #ifdef USE_VEHICLE_MAP
+          vVehicleUv = uv;
+        #endif
+        #ifdef USE_VEHICLE_COLOR
+          vVehicleColor = color;
+        #endif
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 diffuse;
+      uniform float opacity;
+      #ifdef USE_VEHICLE_MAP
+        uniform sampler2D map;
+        varying vec2 vVehicleUv;
+      #endif
+      #ifdef USE_VEHICLE_COLOR
+        varying vec3 vVehicleColor;
+      #endif
+      varying vec3 vVehicleLight;
+      varying float vVehicleActive;
+      void main() {
+        if (vVehicleActive < 0.5) discard;
+        vec4 base = vec4(diffuse, opacity);
+        #ifdef USE_VEHICLE_MAP
+          base *= texture2D(map, vVehicleUv);
+        #endif
+        #ifdef USE_VEHICLE_COLOR
+          base.rgb *= vVehicleColor;
+        #endif
+        if (base.a < 0.02) discard;
+        vec3 color = base.rgb * vVehicleLight;
+        gl_FragColor = vec4(color, base.a);
+        #include <colorspace_fragment>
+      }
+    `,
+    transparent: Boolean(material?.transparent) || opacity < 0.999,
+    depthTest: material?.depthTest !== false,
+    depthWrite: material?.transparent ? false : material?.depthWrite !== false,
+    side: material?.side ?? THREE.FrontSide,
+    alphaTest: Math.max(0, Number(material?.alphaTest) || 0),
+  });
+  next.userData.vehicleUniformValues = {
+    scale: DEFAULT_MODEL_WORLD_SCALE,
+    z: INSTANCE_Z_METERS,
+    time: 0,
+    useGpuTrajectory: 0,
+  };
+  next.userData.vehicleUniforms = next.uniforms;
+  return next;
+}
+
+function setFastMaterialUniforms(material, scale, options = {}) {
+  const materials = Array.isArray(material) ? material : [material];
+  const time = Number(options.time);
+  const useGpuTrajectory = options.useGpuTrajectory ? 1 : 0;
+  for (const item of materials) {
+    if (!item) continue;
+    if (item.userData?.vehicleUniformValues) {
+      item.userData.vehicleUniformValues.scale = scale;
+      item.userData.vehicleUniformValues.z = INSTANCE_Z_METERS;
+      if (Number.isFinite(time)) item.userData.vehicleUniformValues.time = time;
+      item.userData.vehicleUniformValues.useGpuTrajectory = useGpuTrajectory;
+    }
+    const uniforms = item.userData?.vehicleUniforms;
+    if (uniforms?.vehicleScale) uniforms.vehicleScale.value = scale;
+    if (uniforms?.vehicleZ) uniforms.vehicleZ.value = INSTANCE_Z_METERS;
+    if (uniforms?.vehicleTime && Number.isFinite(time)) uniforms.vehicleTime.value = time;
+    if (uniforms?.useGpuTrajectory) uniforms.useGpuTrajectory.value = useGpuTrajectory;
+  }
+}
+
+function createInstancedGeometry(sourceGeometry, instanceTransform, instanceSegmentXY, instanceSegmentInfo) {
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.copy(sourceGeometry);
+  geometry.setAttribute("instanceTransform", instanceTransform);
+  geometry.setAttribute("instanceSegmentXY", instanceSegmentXY);
+  geometry.setAttribute("instanceSegmentInfo", instanceSegmentInfo);
+  geometry.instanceCount = 0;
+  return geometry;
 }
 
 function materialKey(material) {
@@ -157,8 +437,9 @@ function mergeTemplateParts(parts) {
       continue;
     }
     try {
-      const geometry = mergeGeometries(group.geometries, false);
+      let geometry = mergeGeometries(group.geometries, false);
       if (geometry) {
+        geometry = optimizeStaticGeometry(geometry);
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
         group.geometries.forEach((sourceGeometry) => sourceGeometry.dispose?.());
@@ -207,11 +488,15 @@ function createVehicleTemplate(mode, gltf, materialSet) {
     if (Number.isFinite(config.bakeYaw) && Math.abs(config.bakeYaw) > 0.0001) {
       geometry.rotateZ(config.bakeYaw);
     }
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
+    if (!geometry.getAttribute("normal")) {
+      geometry.computeVertexNormals();
+    }
+    const optimizedGeometry = optimizeStaticGeometry(geometry);
+    optimizedGeometry.computeBoundingBox();
+    optimizedGeometry.computeBoundingSphere();
     collectMaterials(object.material, materialSet);
     parts.push({
-      geometry,
+      geometry: optimizedGeometry,
       material: object.material,
       name: object.name || `${mode}-mesh-${parts.length}`,
     });
@@ -246,6 +531,7 @@ function createVehicleTemplate(mode, gltf, materialSet) {
     part.geometry.computeBoundingBox();
     part.geometry.computeBoundingSphere();
   }
+  parts = mergeVertexColoredParts(parts, materialSet, mode);
   parts = mergeTemplateParts(parts);
 
   return {
@@ -281,6 +567,7 @@ export class VehicleModelLayer {
     this.origin = [0, 0];
     this.originReady = false;
     this.vehicleScale = DEFAULT_MODEL_WORLD_SCALE;
+    this.trajectoryTime = 0;
     this.vehicles = [];
     this.vehicleFrame = null;
     this.templates = new Map();
@@ -293,6 +580,7 @@ export class VehicleModelLayer {
     this.lastVisibleFirst = null;
     this.lastModeCounts = {};
     this.lastDebugPublishAt = 0;
+    this.lastRenderDebugAt = 0;
     this.displayState = new Map();
     this.displayStateSeen = new Set();
     this.lastInstanceUpdateAt = 0;
@@ -333,6 +621,7 @@ export class VehicleModelLayer {
 
   render(gl, options) {
     if (!this.visible || !this.ready) return;
+    const renderStartedAt = typeof performance !== "undefined" ? performance.now() : 0;
     const matrix = options?.defaultProjectionData?.mainMatrix || options?.modelViewProjectionMatrix || options;
     if (!matrix) return;
     this.camera.projectionMatrix.copy(this.mapMatrix.fromArray(matrix)).multiply(this.modelMatrix);
@@ -343,6 +632,13 @@ export class VehicleModelLayer {
     this.renderer.resetState();
     gl.clear(gl.DEPTH_BUFFER_BIT);
     this.renderer.render(this.scene, this.camera);
+    if (renderStartedAt && typeof document !== "undefined") {
+      const now = performance.now();
+      if (now - this.lastRenderDebugAt > DEBUG_PUBLISH_INTERVAL_MS) {
+        this.lastRenderDebugAt = now;
+        document.documentElement.dataset.gjVehicleRenderMs = String(Math.round((now - renderStartedAt) * 100) / 100);
+      }
+    }
   }
 
   async ensureModels() {
@@ -391,8 +687,24 @@ export class VehicleModelLayer {
     this.updateInstances();
   }
 
+  setTrajectoryTime(seconds) {
+    const nextTime = Math.max(0, Number(seconds) || 0);
+    if (Math.abs(nextTime - this.trajectoryTime) < 0.0001) return;
+    this.trajectoryTime = nextTime;
+    for (const group of this.meshGroups.values()) {
+      const useGpuTrajectory = group.userData?.mode === "segments";
+      for (const mesh of group.meshes) {
+        setFastMaterialUniforms(mesh.material, this.vehicleScale, {
+          time: this.trajectoryTime,
+          useGpuTrajectory,
+        });
+      }
+    }
+    this.map?.triggerRepaint?.();
+  }
+
   setVehicles(vehicles = []) {
-    if (vehicles?.kind === "vehicle-frame") {
+    if (vehicles?.kind === "vehicle-frame" || vehicles?.kind === "vehicle-segment-frame") {
       this.vehicleFrame = vehicles;
       this.vehicles = [];
     } else {
@@ -408,7 +720,7 @@ export class VehicleModelLayer {
   }
 
   activeTotal() {
-    if (this.vehicleFrame?.kind === "vehicle-frame") {
+    if (this.vehicleFrame?.kind === "vehicle-frame" || this.vehicleFrame?.kind === "vehicle-segment-frame") {
       return Math.max(0, Number(this.vehicleFrame.count) || 0);
     }
     return this.vehicles.length;
@@ -423,6 +735,13 @@ export class VehicleModelLayer {
       counts[mode] = 0;
     }
     if (this.vehicleFrame?.kind === "vehicle-frame") {
+      const count = this.activeTotal();
+      const modes = this.vehicleFrame.modes || [];
+      for (let i = 0; i < count; i++) {
+        const mode = MODE_INDEX_TO_KEY[Math.round(Number(modes[i]) || 0)] || "car";
+        counts[mode] = (counts[mode] || 0) + 1;
+      }
+    } else if (this.vehicleFrame?.kind === "vehicle-segment-frame") {
       const count = this.activeTotal();
       const modes = this.vehicleFrame.modes || [];
       for (let i = 0; i < count; i++) {
@@ -464,6 +783,14 @@ export class VehicleModelLayer {
     const frame = this.vehicleFrame;
     if (frame?.kind === "vehicle-frame" && this.activeTotal() > 0) {
       return [Number(frame.xs?.[0]), Number(frame.ys?.[0])];
+    }
+    if (frame?.kind === "vehicle-segment-frame" && this.activeTotal() > 0) {
+      const [originX = 0, originY = 0] = frame.origin || [];
+      const startX = Number(frame.startXs?.[0]);
+      const startY = Number(frame.startYs?.[0]);
+      if (Number.isFinite(startX) && Number.isFinite(startY)) {
+        return [Number(originX) + startX, Number(originY) + startY];
+      }
     }
     return this.vehicles[0]?.position || null;
   }
@@ -604,7 +931,6 @@ export class VehicleModelLayer {
   vehicleBuckets() {
     const buckets = new Map(this.modes.map((mode) => [mode, []]));
     const counts = new Map(this.modes.map((mode) => [mode, 0]));
-    const bounds = this.visibleBounds();
     let total = 0;
     let visible = 0;
     this.lastVisibleFirst = null;
@@ -617,7 +943,6 @@ export class VehicleModelLayer {
         if (!buckets.has(mode)) continue;
         counts.set(mode, (counts.get(mode) || 0) + 1);
         total += 1;
-        if (!this.isFrameIndexInVisibleBounds(frame, index, bounds)) continue;
         buckets.get(mode).push(index);
         if (!this.lastVisibleFirst) {
           this.lastVisibleFirst = {
@@ -641,7 +966,6 @@ export class VehicleModelLayer {
       if (!buckets.has(mode) || !vehicle.webMercator?.length) continue;
       counts.set(mode, (counts.get(mode) || 0) + 1);
       total += 1;
-      if (!this.isInVisibleBounds(vehicle, bounds)) continue;
       buckets.get(mode).push(vehicle);
       if (!this.lastVisibleFirst) {
         const screen = vehicle.position ? this.map?.project?.(vehicle.position) : null;
@@ -725,31 +1049,45 @@ export class VehicleModelLayer {
     this.displayStateSeen.clear();
   }
 
+  disposeMeshGroup(group) {
+    if (!group) return;
+    for (const mesh of group.meshes || []) {
+      mesh.removeFromParent();
+      mesh.geometry?.dispose?.();
+      disposeMaterialInstance(mesh.material);
+    }
+  }
+
   ensureMeshGroup(mode, count) {
     const current = this.meshGroups.get(mode);
     if (current && current.userData.capacity >= count) {
-      if (!current.matrixBuffer || current.matrixBuffer.length < current.userData.capacity * 16) {
-        current.matrixBuffer = new Float32Array(current.userData.capacity * 16);
-      }
       return current;
     }
     if (current) {
-      for (const mesh of current.meshes) {
-        mesh.removeFromParent();
-      }
+      this.disposeMeshGroup(current);
     }
 
     const template = this.templates.get(mode);
     if (!template?.parts?.length) return null;
 
     const capacity = nextCapacity(count);
+    const transformBuffer = new Float32Array(capacity * 4);
+    const instanceTransform = new THREE.InstancedBufferAttribute(transformBuffer, 4);
+    instanceTransform.setUsage(THREE.StreamDrawUsage || THREE.DynamicDrawUsage);
+    const segmentXYBuffer = new Float32Array(capacity * 4);
+    const segmentInfoBuffer = new Float32Array(capacity * 4);
+    const instanceSegmentXY = new THREE.InstancedBufferAttribute(segmentXYBuffer, 4);
+    const instanceSegmentInfo = new THREE.InstancedBufferAttribute(segmentInfoBuffer, 4);
+    instanceSegmentXY.setUsage(THREE.StreamDrawUsage || THREE.DynamicDrawUsage);
+    instanceSegmentInfo.setUsage(THREE.StreamDrawUsage || THREE.DynamicDrawUsage);
     const meshes = template.parts.map((part, index) => {
-      const mesh = new THREE.InstancedMesh(part.geometry, part.material, capacity);
+      const geometry = createInstancedGeometry(part.geometry, instanceTransform, instanceSegmentXY, instanceSegmentInfo);
+      const material = createFastInstancedMaterial(part.material);
+      setFastMaterialUniforms(material, this.vehicleScale, { time: this.trajectoryTime });
+      const mesh = new THREE.Mesh(geometry, material);
       mesh.name = `${this.id}-${mode}-${index}-${part.name}`;
       mesh.frustumCulled = false;
       mesh.matrixAutoUpdate = false;
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-      mesh.count = 0;
       mesh.visible = this.visible;
       this.scene.add(mesh);
       return mesh;
@@ -757,11 +1095,144 @@ export class VehicleModelLayer {
     const group = {
       mode,
       meshes,
-      matrixBuffer: new Float32Array(capacity * 16),
-      userData: { capacity },
+      instanceTransform,
+      transformBuffer,
+      instanceSegmentXY,
+      instanceSegmentInfo,
+      segmentXYBuffer,
+      segmentInfoBuffer,
+      userData: { capacity, mode: "transforms" },
     };
     this.meshGroups.set(mode, group);
     return group;
+  }
+
+  updateSegmentInstances(frame) {
+    this.publishDebug();
+    if (!this.ready) return;
+    this.chooseOrigin();
+    if (!this.originReady) return;
+
+    const frameCount = this.activeTotal();
+    const frameModes = frame?.modes || [];
+    const modeCounts = Object.fromEntries(this.modes.map((mode) => [mode, 0]));
+    const [frameOriginX = 0, frameOriginY = 0] = frame.origin || [];
+    this.lastVisibleFirst = null;
+    let total = 0;
+
+    for (let index = 0; index < frameCount; index++) {
+      const mode = MODE_INDEX_TO_KEY[Math.round(Number(frameModes[index]) || 0)] || "car";
+      const startX = Number(frame.startXs?.[index]);
+      const startY = Number(frame.startYs?.[index]);
+      const endX = Number(frame.endXs?.[index]);
+      const endY = Number(frame.endYs?.[index]);
+      const startTime = Number(frame.startTimes?.[index]);
+      const endTime = Number(frame.endTimes?.[index]);
+      if (
+        !(mode in modeCounts) ||
+        ![startX, startY, endX, endY, startTime, endTime].every(Number.isFinite) ||
+        endTime <= startTime
+      ) {
+        continue;
+      }
+      modeCounts[mode] += 1;
+      total += 1;
+      if (!this.lastVisibleFirst) {
+        const duration = Math.max(endTime - startTime, 0.001);
+        const ratio = clamp((this.trajectoryTime - startTime) / duration, 0, 1);
+        this.lastVisibleFirst = {
+          mode,
+          webMercator: [
+            Number(frameOriginX) + startX + (endX - startX) * ratio,
+            Number(frameOriginY) + startY + (endY - startY) * ratio,
+          ],
+          position: null,
+          screen: null,
+          angle: Math.atan2(endY - startY, endX - startX) / DEG_TO_RAD,
+        };
+      }
+    }
+
+    this.lastTotalCount = total;
+    this.lastVisibleCount = total;
+    this.lastModeCounts = { ...modeCounts };
+
+    const groups = new Map();
+    const writeOffsets = Object.fromEntries(this.modes.map((mode) => [mode, 0]));
+    for (const mode of this.modes) {
+      const count = modeCounts[mode] || 0;
+      const existing = this.meshGroups.get(mode);
+      const group = count > 0 ? this.ensureMeshGroup(mode, count) : existing;
+      if (!group) continue;
+      group.userData.mode = "segments";
+      groups.set(mode, group);
+      for (const mesh of group.meshes) {
+        mesh.geometry.instanceCount = count;
+        setFastMaterialUniforms(mesh.material, this.vehicleScale, {
+          time: this.trajectoryTime,
+          useGpuTrajectory: true,
+        });
+      }
+    }
+
+    for (let index = 0; index < frameCount; index++) {
+      const mode = MODE_INDEX_TO_KEY[Math.round(Number(frameModes[index]) || 0)] || "car";
+      const group = groups.get(mode);
+      if (!group) continue;
+      const startX = Number(frame.startXs?.[index]);
+      const startY = Number(frame.startYs?.[index]);
+      const endX = Number(frame.endXs?.[index]);
+      const endY = Number(frame.endYs?.[index]);
+      const startTime = Number(frame.startTimes?.[index]);
+      const endTime = Number(frame.endTimes?.[index]);
+      if (
+        ![startX, startY, endX, endY, startTime, endTime].every(Number.isFinite) ||
+        endTime <= startTime
+      ) {
+        continue;
+      }
+      const writeIndex = writeOffsets[mode] || 0;
+      const yawOffset = this.templates.get(mode)?.yawOffset || 0;
+      writeInstanceSegment(
+        group.segmentXYBuffer,
+        group.segmentInfoBuffer,
+        writeIndex,
+        Number(frameOriginX) + startX - this.origin[0],
+        Number(frameOriginY) + startY - this.origin[1],
+        Number(frameOriginX) + endX - this.origin[0],
+        Number(frameOriginY) + endY - this.origin[1],
+        startTime,
+        endTime,
+        Math.atan2(endY - startY, endX - startX) + yawOffset,
+      );
+      writeOffsets[mode] = writeIndex + 1;
+    }
+
+    for (const mode of this.modes) {
+      const group = groups.get(mode);
+      if (!group) continue;
+      const count = writeOffsets[mode] || 0;
+      for (const mesh of group.meshes) {
+        mesh.geometry.instanceCount = count;
+      }
+      if (count <= 0) continue;
+      const updateCount = count * 4;
+      for (const attribute of [group.instanceSegmentXY, group.instanceSegmentInfo]) {
+        if (typeof attribute.clearUpdateRanges === "function") {
+          attribute.clearUpdateRanges();
+        }
+        if (typeof attribute.addUpdateRange === "function") {
+          attribute.addUpdateRange(0, updateCount);
+        } else if (attribute.updateRange) {
+          attribute.updateRange.offset = 0;
+          attribute.updateRange.count = updateCount;
+        }
+        attribute.needsUpdate = true;
+      }
+    }
+
+    this.map?.triggerRepaint?.();
+    this.publishDebug(true);
   }
 
   updateInstances() {
@@ -770,64 +1241,169 @@ export class VehicleModelLayer {
     this.chooseOrigin();
     if (!this.originReady) return;
 
-    const { buckets } = this.vehicleBuckets();
+    const segmentFrame = this.vehicleFrame?.kind === "vehicle-segment-frame" ? this.vehicleFrame : null;
+    if (segmentFrame) {
+      this.updateSegmentInstances(segmentFrame);
+      return;
+    }
+
     const frame = this.vehicleFrame?.kind === "vehicle-frame" ? this.vehicleFrame : null;
-    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const dt = this.lastInstanceUpdateAt ? now - this.lastInstanceUpdateAt : 16;
-    this.lastInstanceUpdateAt = now;
-    this.displayStateSeen.clear();
-    for (const mode of this.modes) {
-      const vehicles = buckets.get(mode) || [];
-      const group = this.ensureMeshGroup(mode, vehicles.length);
-      if (!group) continue;
-      const template = this.templates.get(mode);
-      const yawOffset = template?.yawOffset || 0;
+    const frameCount = frame ? this.activeTotal() : 0;
+    const frameModes = frame?.modes || [];
+    const modeCounts = Object.fromEntries(this.modes.map((mode) => [mode, 0]));
+    this.lastVisibleFirst = null;
+    let total = 0;
 
-      for (const mesh of group.meshes) {
-        mesh.count = vehicles.length;
-      }
-
-      for (let i = 0, count = vehicles.length; i < count; i++) {
-        const vehicle = frame ? null : vehicles[i];
-        const frameIndex = frame ? vehicles[i] : -1;
-        const webX = frame ? frame.xs[frameIndex] : vehicle.webMercator[0];
-        const webY = frame ? frame.ys[frameIndex] : vehicle.webMercator[1];
-        const rawAngle = frame ? frame.angles?.[frameIndex] : vehicle.angle;
-        const key = this.displayKeyForVehicle(mode, frame, frameIndex, vehicle);
-        const display = this.smoothVehicleState(key, webX, webY, rawAngle, now, dt);
-        const x = display.x - this.origin[0];
-        const y = display.y - this.origin[1];
-        const angle = THREE.MathUtils.degToRad(display.angle) + yawOffset;
-        this.tmpPosition.set(x, y, 0.18);
-        this.tmpQuaternion.setFromAxisAngle(this.zAxis, angle);
-        this.tmpScale.setScalar(this.vehicleScale);
-        this.tmpMatrix.compose(this.tmpPosition, this.tmpQuaternion, this.tmpScale);
-        this.tmpMatrix.toArray(group.matrixBuffer, i * 16);
-      }
-
-      const matrixRange = group.matrixBuffer.subarray(0, vehicles.length * 16);
-      for (const mesh of group.meshes) {
-        if (matrixRange.length) {
-          mesh.instanceMatrix.array.set(matrixRange);
+    if (frame) {
+      for (let index = 0; index < frameCount; index++) {
+        const webX = Number(frame.xs?.[index]);
+        const webY = Number(frame.ys?.[index]);
+        if (!Number.isFinite(webX) || !Number.isFinite(webY)) continue;
+        const mode = MODE_INDEX_TO_KEY[Math.round(Number(frameModes[index]) || 0)] || "car";
+        if (!(mode in modeCounts)) continue;
+        modeCounts[mode] += 1;
+        total += 1;
+        if (!this.lastVisibleFirst) {
+          this.lastVisibleFirst = {
+            mode,
+            webMercator: [webX, webY],
+            position: null,
+            screen: null,
+            angle: Number(frame.angles?.[index]) || 0,
+          };
         }
-        if (mesh.instanceMatrix.updateRange) {
-          mesh.instanceMatrix.updateRange.offset = 0;
-          mesh.instanceMatrix.updateRange.count = matrixRange.length;
+      }
+    } else {
+      for (const vehicle of this.vehicles) {
+        const mode = vehicle?.mode;
+        const webX = Number(vehicle?.webMercator?.[0]);
+        const webY = Number(vehicle?.webMercator?.[1]);
+        if (!(mode in modeCounts) || !Number.isFinite(webX) || !Number.isFinite(webY)) continue;
+        modeCounts[mode] += 1;
+        total += 1;
+        if (!this.lastVisibleFirst) {
+          const screen = vehicle.position ? this.map?.project?.(vehicle.position) : null;
+          this.lastVisibleFirst = {
+            mode,
+            webMercator: vehicle.webMercator,
+            position: vehicle.position,
+            screen: screen ? [screen.x, screen.y] : null,
+            angle: vehicle.angle,
+          };
         }
-        mesh.instanceMatrix.needsUpdate = true;
       }
     }
 
-    this.pruneDisplayState();
+    this.lastTotalCount = total;
+    this.lastVisibleCount = total;
+    this.lastModeCounts = { ...modeCounts };
+
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const dt = this.lastInstanceUpdateAt ? now - this.lastInstanceUpdateAt : 16;
+    this.lastInstanceUpdateAt = now;
+    const zoom = Number(this.mapWrapper?.zoom);
+    const useSmoothing = Number.isFinite(zoom) && zoom >= SMOOTH_MIN_ZOOM;
+    if (useSmoothing) {
+      this.displayStateSeen.clear();
+    } else if (this.displayState.size) {
+      this.displayState.clear();
+      this.displayStateSeen.clear();
+    }
+
+    const groups = new Map();
+    const writeOffsets = Object.fromEntries(this.modes.map((mode) => [mode, 0]));
+    for (const mode of this.modes) {
+      const count = modeCounts[mode] || 0;
+      const existing = this.meshGroups.get(mode);
+      const group = count > 0 ? this.ensureMeshGroup(mode, count) : existing;
+      if (!group) continue;
+      group.userData.mode = "transforms";
+      groups.set(mode, group);
+      for (const mesh of group.meshes) {
+        mesh.geometry.instanceCount = count;
+        setFastMaterialUniforms(mesh.material, this.vehicleScale, {
+          time: this.trajectoryTime,
+          useGpuTrajectory: false,
+        });
+      }
+    }
+
+    const writeVehicle = (mode, frameIndex, vehicle) => {
+      const group = groups.get(mode);
+      if (!group) return;
+      const writeIndex = writeOffsets[mode] || 0;
+      const webX = frame ? Number(frame.xs[frameIndex]) : Number(vehicle.webMercator[0]);
+      const webY = frame ? Number(frame.ys[frameIndex]) : Number(vehicle.webMercator[1]);
+      if (!Number.isFinite(webX) || !Number.isFinite(webY)) return;
+
+      const rawAngle = frame ? frame.angles?.[frameIndex] : vehicle.angle;
+      let displayX = webX;
+      let displayY = webY;
+      let displayAngle = Number(rawAngle) || 0;
+      if (useSmoothing) {
+        const key = this.displayKeyForVehicle(mode, frame, frameIndex, vehicle);
+        const display = this.smoothVehicleState(key, webX, webY, rawAngle, now, dt);
+        displayX = display.x;
+        displayY = display.y;
+        displayAngle = display.angle;
+      }
+
+      const yawOffset = this.templates.get(mode)?.yawOffset || 0;
+      writeInstanceTransform(
+        group.transformBuffer,
+        writeIndex * 4,
+        displayX - this.origin[0],
+        displayY - this.origin[1],
+        displayAngle * DEG_TO_RAD + yawOffset,
+      );
+      writeOffsets[mode] = writeIndex + 1;
+    };
+
+    if (frame) {
+      for (let index = 0; index < frameCount; index++) {
+        const mode = MODE_INDEX_TO_KEY[Math.round(Number(frameModes[index]) || 0)] || "car";
+        if (!(mode in modeCounts)) continue;
+        writeVehicle(mode, index, null);
+      }
+    } else {
+      for (const vehicle of this.vehicles) {
+        const mode = vehicle?.mode;
+        if (!(mode in modeCounts) || !vehicle.webMercator?.length) continue;
+        writeVehicle(mode, -1, vehicle);
+      }
+    }
+
+    for (const mode of this.modes) {
+      const group = groups.get(mode);
+      if (!group) continue;
+      const count = writeOffsets[mode] || 0;
+      for (const mesh of group.meshes) {
+        mesh.geometry.instanceCount = count;
+      }
+      if (count <= 0) continue;
+      const updateCount = count * 4;
+      if (typeof group.instanceTransform.clearUpdateRanges === "function") {
+        group.instanceTransform.clearUpdateRanges();
+      }
+      if (typeof group.instanceTransform.addUpdateRange === "function") {
+        group.instanceTransform.addUpdateRange(0, updateCount);
+      } else if (group.instanceTransform.updateRange) {
+        group.instanceTransform.updateRange.offset = 0;
+        group.instanceTransform.updateRange.count = updateCount;
+      }
+      group.instanceTransform.needsUpdate = true;
+    }
+
+    if (useSmoothing) {
+      this.pruneDisplayState();
+    }
     this.map?.triggerRepaint?.();
     this.publishDebug(true);
   }
 
   dispose() {
     for (const group of this.meshGroups.values()) {
-      for (const mesh of group.meshes) {
-        mesh.removeFromParent();
-      }
+      this.disposeMeshGroup(group);
     }
     for (const template of this.templates.values()) {
       for (const part of template.parts || []) {

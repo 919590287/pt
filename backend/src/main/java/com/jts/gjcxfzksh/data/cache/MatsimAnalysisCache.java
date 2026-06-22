@@ -1,5 +1,7 @@
 package com.jts.gjcxfzksh.data.cache;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jts.gjcxfzksh.data.MatsimData;
@@ -106,6 +108,8 @@ public final class MatsimAnalysisCache {
     private static final int TRAJECTORY_IO_BUFFER_BYTES = 4 * 1024 * 1024;
     private static final int TRAJECTORY_QUEUE_DEFAULT_SIZE = 65_536;
     private static final int TRAJECTORY_MAX_OPEN_CHUNKS_DEFAULT = 48;
+    private static final String TRAJECTORY_LIGHT_MANIFEST_FILE = "manifest-lite.json";
+    private static final int TRAJECTORY_LIGHT_MANIFEST_VERSION = 2;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final ConcurrentMap<String, Object> BUILD_LOCKS = new ConcurrentHashMap<>();
@@ -245,6 +249,139 @@ public final class MatsimAnalysisCache {
         }
     }
 
+    public static Map<String, Object> readReadyTrajectoryLightManifest(MatsimData data) {
+        Path lightPath = trajectoryLightManifestPath(data);
+        if (Files.exists(lightPath)) {
+            try {
+                Map<String, Object> manifest = JSON.readValue(lightPath.toFile(), MAP_TYPE);
+                if (isReadyTrajectoryManifest(data, manifest) && isCompatibleLightManifest(manifest)) {
+                    return manifest;
+                }
+            } catch (Exception e) {
+                log.warn("轻量轨迹缓存状态读取失败: {}", lightPath, e);
+            }
+        }
+
+        Map<String, Object> manifest = readTrajectoryLightManifestFromFull(data);
+        if (manifest == null) {
+            return null;
+        }
+        try {
+            writeJsonAtomic(lightPath, manifest);
+        } catch (Exception e) {
+            log.warn("轻量轨迹缓存状态写入失败: {}", lightPath, e);
+        }
+        return manifest;
+    }
+
+    public static Map<String, Object> lightweightTrajectoryManifest(Map<String, Object> manifest) {
+        if (manifest == null) {
+            return null;
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : manifest.entrySet()) {
+            if ("meta".equals(entry.getKey())) {
+                result.put("meta", lightweightTrajectoryMeta(entry.getValue()));
+            } else {
+                result.put(entry.getKey(), entry.getValue());
+            }
+        }
+        result.put("vehicles", List.of());
+        result.put("lightweight", true);
+        result.put("lightManifestVersion", TRAJECTORY_LIGHT_MANIFEST_VERSION);
+        return result;
+    }
+
+    private static boolean isReadyTrajectoryManifest(MatsimData data, Map<String, Object> manifest) {
+        return manifest != null
+                && "ready".equals(manifest.get("status"))
+                && TRAJECTORY_CACHE_VERSION.equals(manifest.get("cacheVersion"))
+                && sameEvents(data, manifest);
+    }
+
+    private static Map<String, Object> readTrajectoryLightManifestFromFull(MatsimData data) {
+        Path manifestPath = trajectoryManifestPath(data);
+        if (!Files.exists(manifestPath)) {
+            return null;
+        }
+        try (InputStream in = Files.newInputStream(manifestPath);
+             JsonParser parser = JSON.getFactory().createParser(in)) {
+            if (parser.nextToken() != JsonToken.START_OBJECT) {
+                return null;
+            }
+            Map<String, Object> manifest = new LinkedHashMap<>();
+            while (parser.nextToken() != JsonToken.END_OBJECT) {
+                String fieldName = parser.currentName();
+                JsonToken token = parser.nextToken();
+                if ("meta".equals(fieldName) && token == JsonToken.START_OBJECT) {
+                    manifest.put("meta", readLightTrajectoryMeta(parser));
+                } else {
+                    manifest.put(fieldName, JSON.readValue(parser, Object.class));
+                }
+            }
+            manifest = lightweightTrajectoryManifest(manifest);
+            return isReadyTrajectoryManifest(data, manifest) ? manifest : null;
+        } catch (Exception e) {
+            log.warn("轨迹缓存轻量状态读取失败: {}", manifestPath, e);
+            return null;
+        }
+    }
+
+    private static Map<String, Object> readLightTrajectoryMeta(JsonParser parser) throws IOException {
+        Map<String, Object> meta = new LinkedHashMap<>();
+        while (parser.nextToken() != JsonToken.END_OBJECT) {
+            String fieldName = parser.currentName();
+            JsonToken token = parser.nextToken();
+                if ("vehicles".equals(fieldName)) {
+                parser.skipChildren();
+                meta.put("vehicles", List.of());
+                meta.put("vehicleDetailsDeferred", true);
+            } else if ("routes".equals(fieldName)) {
+                parser.skipChildren();
+                meta.put("routes", Map.of());
+                meta.put("routeDetailsDeferred", true);
+            } else {
+                meta.put(fieldName, JSON.readValue(parser, Object.class));
+            }
+        }
+        meta.putIfAbsent("vehicles", List.of());
+        meta.putIfAbsent("routes", Map.of());
+        meta.put("vehicleDetailsDeferred", true);
+        meta.put("routeDetailsDeferred", true);
+        return meta;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> lightweightTrajectoryMeta(Object metaObject) {
+        Map<String, Object> meta = new LinkedHashMap<>();
+        if (metaObject instanceof Map<?, ?> input) {
+            for (Map.Entry<?, ?> entry : input.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                if (!"vehicles".equals(key) && !"routes".equals(key)) {
+                    meta.put(key, entry.getValue());
+                }
+            }
+        }
+        meta.put("vehicles", List.of());
+        meta.put("routes", Map.of());
+        meta.put("vehicleDetailsDeferred", true);
+        meta.put("routeDetailsDeferred", true);
+        return meta;
+    }
+
+    private static boolean isCompatibleLightManifest(Map<String, Object> manifest) {
+        Object version = manifest.get("lightManifestVersion");
+        if (!(version instanceof Number number) || number.intValue() != TRAJECTORY_LIGHT_MANIFEST_VERSION) {
+            return false;
+        }
+        Object metaObject = manifest.get("meta");
+        if (!(metaObject instanceof Map<?, ?> meta)) {
+            return false;
+        }
+        return Boolean.TRUE.equals(meta.get("vehicleDetailsDeferred"))
+                && Boolean.TRUE.equals(meta.get("routeDetailsDeferred"));
+    }
+
     private static Map<String, Object> deferredTrajectoryManifest(MatsimData data, String message) {
         Map<String, Object> timeRange = new LinkedHashMap<>();
         timeRange.put("min", 0);
@@ -272,7 +409,7 @@ public final class MatsimAnalysisCache {
     }
 
     public static Map<String, Object> readTrajectoryChunk(MatsimData data, int start) {
-        Map<String, Object> manifest = readReadyTrajectoryManifest(data);
+        Map<String, Object> manifest = readReadyTrajectoryLightManifest(data);
         if (manifest == null) {
             return null;
         }
@@ -312,7 +449,7 @@ public final class MatsimAnalysisCache {
     }
 
     public static byte[] readTrajectoryBinaryChunk(MatsimData data, int start) {
-        Map<String, Object> manifest = readReadyTrajectoryManifest(data);
+        Map<String, Object> manifest = readReadyTrajectoryLightManifest(data);
         if (manifest == null) {
             return null;
         }
@@ -348,6 +485,21 @@ public final class MatsimAnalysisCache {
         }
     }
 
+    public static Path trajectoryBinaryChunkPath(MatsimData data, int start) {
+        Map<String, Object> manifest = readReadyTrajectoryLightManifest(data);
+        if (manifest == null) {
+            return null;
+        }
+
+        int chunkStart = normalizeChunkStart(start);
+        if (!manifestHasChunk(manifest, chunkStart)) {
+            return null;
+        }
+
+        Path chunkPath = trajectoryCacheDir(data).resolve(chunkBinaryFileName(chunkStart));
+        return Files.exists(chunkPath) ? chunkPath : null;
+    }
+
     public static Map<String, Object> chunkInfo(int start, int vehicleCount, int pointCount) {
         Map<String, Object> chunk = new LinkedHashMap<>();
         chunk.put("start", normalizeChunkStart(start));
@@ -366,6 +518,21 @@ public final class MatsimAnalysisCache {
     public static String trajectoryCacheKey(MatsimData data) {
         String events = data.getOutfile().getEvents();
         return data.getName() + "::" + events + "::" + lastModified(events) + "::" + fileSize(events) + "::" + TRAJECTORY_CACHE_VERSION;
+    }
+
+    /**
+     * 轨迹二进制分块的强校验 ETag（已带引号）。仅依赖 events 身份与分块起点，不读分块文件。
+     * events 变化时 cacheKey 变化 → ETag 变化 → 浏览器/SW 缓存自动失效。
+     */
+    public static String trajectoryChunkETag(MatsimData data, int start) {
+        String events = data.getOutfile().getEvents();
+        String cacheKey = trajectoryCacheKey(data);
+        return "\"traj-"
+                + Integer.toHexString(cacheKey.hashCode())
+                + "-" + Long.toHexString(lastModified(events))
+                + "-" + Long.toHexString(fileSize(events))
+                + "-" + normalizeChunkStart(start)
+                + "\"";
     }
 
     private static boolean loadPersonTracksFromCache(MatsimData data) {
@@ -549,7 +716,7 @@ public final class MatsimAnalysisCache {
         manifest.put("passengerSeries", passengerSeries);
         manifest.put("meta", buildTrajectoryMetaPayload(data, traceList, trajectoryMeta));
         manifest.put("vehicles", List.of());
-        writeJsonAtomic(trajectoryManifestPath(data), manifest);
+        writeTrajectoryManifest(data, manifest);
         return manifest;
     }
 
@@ -1187,13 +1354,22 @@ public final class MatsimAnalysisCache {
 
     private static void writeJsonAtomic(Path path, Map<String, Object> payload) throws Exception {
         Files.createDirectories(path.getParent());
-        Path tmpPath = path.resolveSibling(path.getFileName() + ".tmp");
-        JSON.writeValue(tmpPath.toFile(), payload);
+        Path tmpPath = Files.createTempFile(path.getParent(), path.getFileName().toString() + ".", ".tmp");
         try {
-            Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception e) {
-            Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING);
+            JSON.writeValue(tmpPath.toFile(), payload);
+            try {
+                Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (Exception e) {
+                Files.move(tmpPath, path, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(tmpPath);
         }
+    }
+
+    private static void writeTrajectoryManifest(MatsimData data, Map<String, Object> manifest) throws Exception {
+        writeJsonAtomic(trajectoryManifestPath(data), manifest);
+        writeJsonAtomic(trajectoryLightManifestPath(data), lightweightTrajectoryManifest(manifest));
     }
 
     private static boolean sameEvents(MatsimData data, Map<String, Object> manifest) {
@@ -1242,6 +1418,10 @@ public final class MatsimAnalysisCache {
 
     private static Path trajectoryManifestPath(MatsimData data) {
         return trajectoryCacheDir(data).resolve("manifest.json");
+    }
+
+    private static Path trajectoryLightManifestPath(MatsimData data) {
+        return trajectoryCacheDir(data).resolve(TRAJECTORY_LIGHT_MANIFEST_FILE);
     }
 
     private static String chunkFileName(int start) {
@@ -1722,6 +1902,19 @@ public final class MatsimAnalysisCache {
                 for (Map<String, Object> item : worker.vehicleMetaPayloads) {
                     Object index = item.get("index");
                     if (index instanceof Number number && globalTransitVehicleMeta.add(number.intValue())) {
+                        // 该车上下车事件与其 meta 同属一个 worker（事件按 vehicleId 分区），直接附加按时刻的占用增量。
+                        java.util.TreeMap<Integer, Integer> occupancy = worker.passengerEventsByVehicle.get(number.intValue());
+                        if (occupancy != null && !occupancy.isEmpty()) {
+                            List<List<Object>> rows = new ArrayList<>(occupancy.size());
+                            occupancy.forEach((eventTime, delta) -> {
+                                if (delta != 0) {
+                                    rows.add(List.of(eventTime, delta));
+                                }
+                            });
+                            if (!rows.isEmpty()) {
+                                item.put("passengerEvents", rows);
+                            }
+                        }
                         vehicleMetaPayloads.add(item);
                     }
                 }
@@ -1778,7 +1971,7 @@ public final class MatsimAnalysisCache {
             manifest.put("passengerSeries", passengerSeriesPayload(passengerBins));
             manifest.put("meta", metaPayload);
             manifest.put("vehicles", List.of());
-            writeJsonAtomic(trajectoryManifestPath(data), manifest);
+            writeTrajectoryManifest(data, manifest);
             return manifest;
         }
 
@@ -1936,6 +2129,9 @@ public final class MatsimAnalysisCache {
         private final Map<String, String> currentFacilityByVehicle = new HashMap<>();
         private final Map<Integer, ChunkAccumulator> chunks = new LinkedHashMap<>();
         private final Map<Integer, long[]> passengerBins = new TreeMap<>();
+        // 每辆公共交通车的上下车事件（按车辆索引聚合），用于右侧面板按时刻还原车内人数/满载率。
+        // 事件按 vehicleId 分区，同一辆车的所有上下车都落在同一 worker，无需跨 worker 合并。
+        private final Map<Integer, java.util.TreeMap<Integer, Integer>> passengerEventsByVehicle = new HashMap<>();
         private final Map<String, Integer> routeBoardings = new HashMap<>();
         private final Map<String, Double> distanceByMode = emptyDoubleModeMap();
         private final Map<Integer, String> seenVehicleModes = new HashMap<>();
@@ -2088,6 +2284,10 @@ public final class MatsimAnalysisCache {
                 return;
             }
             int time = roundTime(rawTime);
+            // 累计该车的车内人数增量（上车 +1 / 下车 -1），供前端按时刻还原占用与满载率。
+            passengerEventsByVehicle
+                    .computeIfAbsent(vehicleIndex(vehicleId), ignored -> new java.util.TreeMap<>())
+                    .merge(time, enter ? 1 : -1, Integer::sum);
             try {
                 personTrackWriter.write(String.valueOf(rawTime));
                 personTrackWriter.write('\t');
@@ -2561,7 +2761,7 @@ public final class MatsimAnalysisCache {
             manifest.put("passengerSeries", passengerSeriesPayload());
             manifest.put("meta", metaPayload);
             manifest.put("vehicles", List.of());
-            writeJsonAtomic(trajectoryManifestPath(data), manifest);
+            writeTrajectoryManifest(data, manifest);
             return manifest;
         }
 

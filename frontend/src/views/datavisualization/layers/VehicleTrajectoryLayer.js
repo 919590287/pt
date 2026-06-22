@@ -244,6 +244,9 @@ export class VehicleTrajectoryLayer extends Layer {
     this.jsonSecondIndex = null;
     this.activeVehicles = [];
     this.activeFrame = null;
+    this.activeSegmentFrame = null;
+    this.segmentFrameCache = new Map();
+    this.segmentFrameRequests = new Set();
     this.frameBuffers = null;
     this.reusableFrame = null;
     this.releaseWorkerFrameQueue = [];
@@ -252,6 +255,9 @@ export class VehicleTrajectoryLayer extends Layer {
     this.workerRequestId = 0;
     this.workerCallbacks = new Map();
     this.workerDataVersion = 0;
+    this.workerActiveSeq = 0;
+    // Worker 已常驻（建好每秒索引）的分块键集合：用于切块时走 activateChunk 秒切而非重建索引。
+    this.workerChunkKeys = new Set();
     this.workerTimeSeq = 0;
     this.workerTimeInFlight = false;
     this.pendingWorkerTime = null;
@@ -393,8 +399,9 @@ export class VehicleTrajectoryLayer extends Layer {
     });
   }
 
-  releaseWorkerFrame(frame) {
+  releaseWorkerFrame(frame, force = false) {
     if (!this.worker || this.worker === false || frame?.kind !== "vehicle-frame") return;
+    if (!force && frame.__fromWorker !== true) return;
     const buffers = [
       frame.xs?.buffer,
       frame.ys?.buffer,
@@ -426,43 +433,82 @@ export class VehicleTrajectoryLayer extends Layer {
     });
   }
 
+  replaceActiveFrame(frame, fromWorker = false) {
+    const previous = this.activeFrame;
+    if (frame && fromWorker) {
+      frame.__fromWorker = true;
+    }
+    this.activeFrame = frame || null;
+    if (previous && previous !== this.activeFrame) {
+      this.releaseWorkerFrame(previous);
+    }
+  }
+
   applyWorkerFrame(frame) {
     if (frame?.kind !== "vehicle-frame") {
-      this.activeFrame = null;
+      this.replaceActiveFrame(null);
       this.activeVehicles = [];
       return;
     }
     const count = Math.max(0, Number(frame.count) || 0);
-    const buffers = this.ensureFrameBuffers(count);
-    buffers.keys.length = 0;
-    if (count > 0) {
-      buffers.xs.set(frame.xs.subarray(0, count));
-      buffers.ys.set(frame.ys.subarray(0, count));
-      buffers.angles.set(frame.angles.subarray(0, count));
-      buffers.speeds.set(frame.speeds.subarray(0, count));
-      buffers.modes.set(frame.modes.subarray(0, count));
-      buffers.ids.set(frame.ids.subarray(0, count));
-      if (Array.isArray(frame.keys)) {
-        for (let i = 0; i < count; i++) {
-          buffers.keys[i] = frame.keys[i];
-        }
-      }
-    }
     this.activeVehicles = [];
-    this.activeFrame = this.setReusableFrameCount(count);
-    this.releaseWorkerFrame(frame);
+    frame.count = count;
+    this.replaceActiveFrame(frame, true);
+    this.activeSegmentFrame = null;
+  }
+
+  segmentFrameKey(seconds, visibilityMode = this.vehicleVisibilityMode) {
+    return `${normalizeVisibilityMode(visibilityMode)}:${Math.floor(Math.max(0, Number(seconds) || 0))}`;
+  }
+
+  cacheSegmentFrame(frame, visibilityMode = this.vehicleVisibilityMode) {
+    if (frame?.kind !== "vehicle-segment-frame") return null;
+    const key = this.segmentFrameKey(frame.bucketSecond, visibilityMode);
+    frame.__visibilityMode = normalizeVisibilityMode(visibilityMode);
+    this.segmentFrameCache.set(key, frame);
+    while (this.segmentFrameCache.size > 4) {
+      const firstKey = this.segmentFrameCache.keys().next().value;
+      if (firstKey == null) break;
+      if (firstKey === key && this.segmentFrameCache.size === 1) break;
+      this.segmentFrameCache.delete(firstKey);
+    }
+    return key;
+  }
+
+  activateSegmentFrame(frame) {
+    if (frame?.kind !== "vehicle-segment-frame") return false;
+    this.releaseWorkerFrame(this.activeFrame);
+    this.activeFrame = null;
+    this.activeVehicles = [];
+    this.activeSegmentFrame = frame;
+    this.modelLayer?.setTrajectoryTime(this.currentTime);
+    this.renderVehicleLayer();
+    return true;
+  }
+
+  applyWorkerSegmentFrame(frame, visibilityMode = this.vehicleVisibilityMode) {
+    if (frame?.kind !== "vehicle-segment-frame") {
+      this.activeSegmentFrame = null;
+      return false;
+    }
+    this.cacheSegmentFrame(frame, visibilityMode);
+    return this.activateSegmentFrame(frame);
   }
 
   applyWorkerResult(result) {
-    this.applyWorkerFrame(result?.frame || null);
+    if (result?.segmentFrame?.kind === "vehicle-segment-frame") {
+      this.applyWorkerSegmentFrame(result.segmentFrame);
+    } else {
+      this.activeSegmentFrame = null;
+      this.applyWorkerFrame(result?.frame || null);
+      this.renderVehicleLayer();
+    }
     this.stats = result?.stats || this.emptyStats();
-    this.renderVehicleLayer();
     this.statsCallback?.(this.getCurrentStats());
     this.applyFollowCamera();
   }
 
   setData(data) {
-    this.workerDataVersion++;
     if (data?.meta) {
       this.setVehicleMeta(data.meta);
     }
@@ -474,8 +520,16 @@ export class VehicleTrajectoryLayer extends Layer {
     this.deckLayerCleared = false;
 
     if (!data) {
+      // 数据集清空（切换模型/卸载）：递增版本并清空 Worker 多块缓存与已知键集合。
+      this.workerDataVersion++;
+      this.workerActiveSeq++;
+      this.workerTimeSeq++;
+      this.workerChunkKeys.clear();
+      this.segmentFrameCache.clear();
+      this.segmentFrameRequests.clear();
       this.activeVehicles = [];
-      this.activeFrame = null;
+      this.activeSegmentFrame = null;
+      this.replaceActiveFrame(null);
       this.stats = {
         activeTotal: 0,
         activeByMode: emptyModeCount(),
@@ -492,38 +546,100 @@ export class VehicleTrajectoryLayer extends Layer {
       return;
     }
 
-    // 二进制分块同样走 Worker：把分段索引构建与逐帧采样移出主线程，
-    // 这是初次加载/秒级播放卡顿与主线程内存抖动的最大来源。Worker 不可用时回退到主线程。
+    // 分块走 Worker：分段索引构建与逐帧采样在 Worker 中完成。切到已常驻分块仅 activateChunk
+    // （零重建，根治分块边界周期性卡顿）；否则下发整块建一次索引并常驻。Worker 不可用时回退主线程。
     if (this.ensureWorker()) {
-      const version = this.workerDataVersion;
-      const { payload, transfer } = trajectoryWorkerPayload(data);
-      this.postWorker("setData", {
-        data: payload,
-        seconds: this.currentTime,
-        visibilityMode: this.vehicleVisibilityMode,
-      }, transfer)
-        .then((result) => {
-          if (this.isDisposed || version !== this.workerDataVersion) {
-            this.releaseWorkerFrame(result?.frame);
-            return;
-          }
-          if (result?.frame) {
-            this.applyWorkerResult(result);
-          } else {
-            this.requestWorkerTime(this.currentTime);
-          }
-        })
-        .catch((error) => {
-          console.warn("[VehicleTrajectoryLayer] worker data setup failed", error);
-          if (this.isDisposed || version !== this.workerDataVersion) return;
-          this.setDataOnMainThread(data);
-          this.setTime(this.currentTime);
-        });
+      this.activateOrAddChunkInWorker(data, true);
       return;
     }
 
     this.setDataOnMainThread(data);
     this.setTime(this.currentTime);
+  }
+
+  chunkKeyOf(data) {
+    const start = Number(data?.chunk?.start);
+    if (!Number.isFinite(start)) return null;
+    return data?.binary ? `bin:${start}` : `json:${start}`;
+  }
+
+  // 供预取调用：把相邻分块提前推给 Worker 建好索引并常驻，切块时即可秒切（双缓冲）。
+  preindexChunk(data) {
+    if (!data || !this.ensureWorker()) return;
+    this.activateOrAddChunkInWorker(data, false);
+  }
+
+  activateOrAddChunkInWorker(data, activate) {
+    const key = this.chunkKeyOf(data);
+    const version = this.workerDataVersion;
+    const activeSeq = activate ? ++this.workerActiveSeq : this.workerActiveSeq;
+    if (activate) {
+      this.workerTimeSeq++;
+    }
+    if (key != null && this.workerChunkKeys.has(key)) {
+      if (!activate) return; // 已常驻，无需重复预建
+      this.postWorker("activateChunk", {
+        key,
+        seconds: this.currentTime,
+        visibilityMode: this.vehicleVisibilityMode,
+        gpuSegments: true,
+      })
+        .then((result) => {
+          if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) {
+            this.releaseWorkerFrame(result?.frame, true);
+            return;
+          }
+          if (result?.miss) {
+            // Worker 端已被 LRU 淘汰：重新下发整块。
+            this.workerChunkKeys.delete(key);
+            this.sendChunkToWorker(data, true, version, activeSeq);
+            return;
+          }
+          if (result?.frame || result?.segmentFrame) {
+            this.applyWorkerResult(result);
+          } else {
+            this.requestWorkerTime(this.currentTime);
+          }
+        })
+        .catch(() => {
+          if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) return;
+          this.workerChunkKeys.delete(key);
+          this.sendChunkToWorker(data, true, version, activeSeq);
+        });
+      return;
+    }
+    this.sendChunkToWorker(data, activate, version, activeSeq);
+  }
+
+  sendChunkToWorker(data, activate, version, activeSeq = this.workerActiveSeq) {
+    const key = this.chunkKeyOf(data);
+    // 乐观登记，避免并发预取重复下发；失败时回滚。
+    if (key != null) this.workerChunkKeys.add(key);
+    const { payload, transfer } = trajectoryWorkerPayload(data);
+    const message = { data: payload, key, visibilityMode: this.vehicleVisibilityMode, gpuSegments: true };
+    if (activate) message.seconds = this.currentTime;
+    this.postWorker(activate ? "setData" : "addChunk", message, transfer)
+      .then((result) => {
+        if (this.isDisposed || version !== this.workerDataVersion || (activate && activeSeq !== this.workerActiveSeq)) {
+          this.releaseWorkerFrame(result?.frame, true);
+          return;
+        }
+        if (!activate) return;
+        if (result?.frame || result?.segmentFrame) {
+          this.applyWorkerResult(result);
+        } else {
+          this.requestWorkerTime(this.currentTime);
+        }
+      })
+      .catch((error) => {
+        if (key != null) this.workerChunkKeys.delete(key);
+        if (this.isDisposed || version !== this.workerDataVersion || (activate && activeSeq !== this.workerActiveSeq)) return;
+        if (activate) {
+          console.warn("[VehicleTrajectoryLayer] worker data setup failed", error);
+          this.setDataOnMainThread(data);
+          this.setTime(this.currentTime);
+        }
+      });
   }
 
   setDataOnMainThread(data) {
@@ -580,7 +696,24 @@ export class VehicleTrajectoryLayer extends Layer {
   setTime(seconds) {
     this.currentTime = Math.max(0, Number(seconds) || 0);
     if (!this.binaryChunk && !this.vehicles.length && this.ensureWorker()) {
-      this.requestWorkerTime(this.currentTime);
+      this.modelLayer?.setTrajectoryTime(this.currentTime);
+      const key = this.segmentFrameKey(this.currentTime);
+      const activeKey = this.activeSegmentFrame?.kind === "vehicle-segment-frame"
+        ? this.segmentFrameKey(this.activeSegmentFrame.bucketSecond, this.activeSegmentFrame.__visibilityMode)
+        : "";
+      if (activeKey === key) {
+        this.prefetchWorkerSegmentFrame(Math.floor(this.currentTime) + 1);
+        this.modelLayer?.setTrajectoryTime(this.currentTime);
+        this.applyFollowCamera();
+        return this.getCurrentStats();
+      }
+      const cached = this.segmentFrameCache.get(key);
+      if (cached) {
+        this.activateSegmentFrame(cached);
+        this.prefetchWorkerSegmentFrame(Math.floor(this.currentTime) + 1);
+      } else {
+        this.requestWorkerTime(this.currentTime);
+      }
       return this.getCurrentStats();
     }
     if (this.binaryChunk) {
@@ -601,6 +734,28 @@ export class VehicleTrajectoryLayer extends Layer {
     this.flushWorkerTime();
   }
 
+  prefetchWorkerSegmentFrame(seconds) {
+    if (!this.ensureWorker()) return;
+    const key = this.segmentFrameKey(seconds);
+    if (this.segmentFrameCache.has(key) || this.segmentFrameRequests.has(key)) return;
+    this.segmentFrameRequests.add(key);
+    const version = this.workerDataVersion;
+    this.postWorker("setSegmentTime", {
+      seconds: Math.max(0, Number(seconds) || 0),
+      visibilityMode: this.vehicleVisibilityMode,
+    })
+      .then((result) => {
+        if (this.isDisposed || version !== this.workerDataVersion) return;
+        if (result?.segmentFrame?.kind === "vehicle-segment-frame") {
+          this.cacheSegmentFrame(result.segmentFrame);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.segmentFrameRequests.delete(key);
+      });
+  }
+
   flushWorkerTime() {
     if (!this.ensureWorker() || this.pendingWorkerTime == null) return;
     const seconds = this.pendingWorkerTime;
@@ -608,10 +763,10 @@ export class VehicleTrajectoryLayer extends Layer {
     this.workerTimeInFlight = true;
     const seq = ++this.workerTimeSeq;
     const version = this.workerDataVersion;
-    this.postWorker("setTime", { seconds, visibilityMode: this.vehicleVisibilityMode })
+    this.postWorker("setSegmentTime", { seconds, visibilityMode: this.vehicleVisibilityMode })
       .then((result) => {
         if (this.isDisposed || seq !== this.workerTimeSeq || version !== this.workerDataVersion) {
-          this.releaseWorkerFrame(result?.frame);
+          this.releaseWorkerFrame(result?.frame, true);
           return;
         }
         this.applyWorkerResult(result);
@@ -658,7 +813,7 @@ export class VehicleTrajectoryLayer extends Layer {
     const values = this.binaryChunk?.segments;
     if (!values?.length) {
       this.activeVehicles = [];
-      this.activeFrame = null;
+      this.replaceActiveFrame(null);
       this.stats = this.emptyStats();
       return;
     }
@@ -710,7 +865,7 @@ export class VehicleTrajectoryLayer extends Layer {
     }
 
     this.activeVehicles = [];
-    this.activeFrame = this.setReusableFrameCount(count);
+    this.replaceActiveFrame(this.setReusableFrameCount(count));
     this.stats = {
       activeTotal: count,
       activeByMode,
@@ -764,7 +919,7 @@ export class VehicleTrajectoryLayer extends Layer {
     }
 
     this.activeVehicles = [];
-    this.activeFrame = this.setReusableFrameCount(count);
+    this.replaceActiveFrame(this.setReusableFrameCount(count));
     this.stats = {
       activeTotal: count,
       activeByMode,
@@ -783,7 +938,7 @@ export class VehicleTrajectoryLayer extends Layer {
       const segmentStart = values[offset];
       const segmentEnd = values[offset + 1];
       if (!Number.isFinite(segmentStart) || !Number.isFinite(segmentEnd) || segmentEnd <= segmentStart) continue;
-      const firstSecond = Math.max(start, Math.ceil(segmentStart));
+      const firstSecond = Math.max(start, Math.floor(segmentStart));
       const lastExclusive = Math.min(start + chunkSeconds, Math.ceil(segmentEnd));
       for (let second = firstSecond; second < lastExclusive; second++) {
         const index = second - start;
@@ -858,7 +1013,12 @@ export class VehicleTrajectoryLayer extends Layer {
     }
     this.modelLayer?.setVisible(true);
     this.modelLayer?.setVehicleScale(this.vehicleSize / DEFAULT_VEHICLE_MODEL_SIZE);
-    this.modelLayer?.setVehicles(this.activeFrame || this.activeVehicles);
+    if (this.activeSegmentFrame?.kind === "vehicle-segment-frame") {
+      this.modelLayer?.setTrajectoryTime(this.currentTime);
+      this.modelLayer?.setVehicles(this.activeSegmentFrame);
+    } else {
+      this.modelLayer?.setVehicles(this.activeFrame || this.activeVehicles);
+    }
   }
 
   clearDeckLayerOnce() {
@@ -916,17 +1076,20 @@ export class VehicleTrajectoryLayer extends Layer {
     const vehicle = currentVehicle || this.findFollowedVehicle();
     if (!vehicle?.position) return;
     this.followCallback?.(this.enrichVehicle(vehicle));
-    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-    if (now - this.lastFollowCameraAt < 14) return;
-    this.lastFollowCameraAt = now;
     if (this.is3DView()) {
       this.applyFollowCamera3D(vehicle);
       return;
     }
-    const currentCenter = this.map.map.getCenter();
-    const currentPoint = this.map.map.project([currentCenter.lng, currentCenter.lat]);
-    const vehiclePoint = this.map.map.project(vehicle.position);
-    if (Math.hypot(currentPoint.x - vehiclePoint.x, currentPoint.y - vehiclePoint.y) < 0.45) return;
+    // 顶视跟随：每帧都把地图中心精确锁定到车辆当前插值位置。
+    // 不做时间节流/像素死区——相机一旦滞后于「每帧驱动」的模型渲染，车辆就会相对屏幕中心前后抖动。
+    // 仅当车辆静止（中心已对齐）时跳过，避免无意义的重复 jumpTo。
+    const center = this.map.map.getCenter();
+    if (
+      Math.abs(center.lng - vehicle.position[0]) < 1e-9 &&
+      Math.abs(center.lat - vehicle.position[1]) < 1e-9
+    ) {
+      return;
+    }
     this.map.map.jumpTo({ center: vehicle.position, duration: 0 });
   }
 
@@ -935,9 +1098,10 @@ export class VehicleTrajectoryLayer extends Layer {
     const bearing = normalizeBearing(vehicleBearing + this.follow3DOrbitYaw);
     const pitch = Math.max(5, Math.min(85, Number(this.map.pitch) || 45));
     const currentCenter = this.map.map.getCenter();
-    const currentPoint = this.map.map.project([currentCenter.lng, currentCenter.lat]);
-    const vehiclePoint = this.map.map.project(vehicle.position);
-    const needsMove = Math.hypot(currentPoint.x - vehiclePoint.x, currentPoint.y - vehiclePoint.y) >= 0.35;
+    // 与 2D 一致：位置每帧精确跟随，避免死区导致的前后抖动；仅相机角度保留小阈值，防止无谓重算。
+    const needsMove =
+      Math.abs(currentCenter.lng - vehicle.position[0]) >= 1e-9 ||
+      Math.abs(currentCenter.lat - vehicle.position[1]) >= 1e-9;
     const needsCamera = Math.abs(normalizeBearing(this.map.rotation - bearing)) >= 0.05
       || Math.abs((Number(this.map.pitch) || 90) - pitch) >= 0.05;
     if (!needsMove && !needsCamera) return;
@@ -978,6 +1142,9 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   activeCount() {
+    if (this.activeSegmentFrame?.kind === "vehicle-segment-frame") {
+      return Math.max(0, Number(this.activeSegmentFrame.count) || 0);
+    }
     if (this.activeFrame?.kind === "vehicle-frame") {
       return Math.max(0, Number(this.activeFrame.count) || 0);
     }
@@ -985,6 +1152,38 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   vehicleAt(index) {
+    const segmentFrame = this.activeSegmentFrame;
+    if (segmentFrame?.kind === "vehicle-segment-frame") {
+      if (index < 0 || index >= this.activeCount()) return null;
+      const startTime = Number(segmentFrame.startTimes?.[index]);
+      const endTime = Number(segmentFrame.endTimes?.[index]);
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || this.currentTime < startTime || this.currentTime >= endTime) {
+        return null;
+      }
+      const duration = Math.max(endTime - startTime, 0.001);
+      const ratio = Math.min(1, Math.max(0, (this.currentTime - startTime) / duration));
+      const [originX = 0, originY = 0] = segmentFrame.origin || [];
+      const sx = Number(segmentFrame.startXs?.[index]);
+      const sy = Number(segmentFrame.startYs?.[index]);
+      const ex = Number(segmentFrame.endXs?.[index]);
+      const ey = Number(segmentFrame.endYs?.[index]);
+      if (![sx, sy, ex, ey].every(Number.isFinite)) return null;
+      const x = Number(originX) + sx + (ex - sx) * ratio;
+      const y = Number(originY) + sy + (ey - sy) * ratio;
+      const mode = modeKeyFromCode(segmentFrame.modes?.[index]);
+      const vehicleIndex = Math.round(Number(segmentFrame.ids?.[index]) || index);
+      const angle = Math.atan2(ey - sy, ex - sx) * 180 / Math.PI;
+      const speed = (Math.hypot(ex - sx, ey - sy) / duration) * 3.6;
+      return {
+        key: `binary:${vehicleIndex}`,
+        vehicleIndex,
+        mode,
+        position: webMercatorToLngLat(x, y),
+        webMercator: [x, y],
+        angle,
+        speed,
+      };
+    }
     const frame = this.activeFrame;
     if (frame?.kind !== "vehicle-frame") {
       return this.activeVehicles[index] || null;
@@ -1026,6 +1225,22 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   findFollowedVehicle() {
+    if (this.activeSegmentFrame?.kind === "vehicle-segment-frame") {
+      const count = this.activeCount();
+      const ids = this.activeSegmentFrame.ids || [];
+      for (let i = 0; i < count; i++) {
+        const vehicle = this.vehicleAt(i);
+        if (vehicle?.key === this.followedVehicleKey) return vehicle;
+      }
+      if (this.followedVehicleIndex != null) {
+        for (let i = 0; i < count; i++) {
+          if (Number(ids[i]) === this.followedVehicleIndex) {
+            return this.vehicleAt(i);
+          }
+        }
+      }
+      return null;
+    }
     if (this.activeFrame?.kind === "vehicle-frame") {
       const count = this.activeCount();
       const ids = this.activeFrame.ids || [];
@@ -1077,6 +1292,7 @@ export class VehicleTrajectoryLayer extends Layer {
 
   dispose() {
     removeSharedDeckLayer(this.map, this.layerId);
+    this.replaceActiveFrame(null);
     if (this.modelLayer) {
       if (this.map?.map?.getLayer(this.modelLayer.id)) {
         this.map.map.removeLayer(this.modelLayer.id);

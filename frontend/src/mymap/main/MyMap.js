@@ -190,6 +190,13 @@ export class MyMap extends EventListener {
       attributionControl: false,
       interactive: !noControls,
       antialias: true,
+      canvasContextAttributes: {
+        antialias: true,
+        powerPreference: "high-performance",
+        preserveDrawingBuffer: false,
+        failIfMajorPerformanceCaveat: false,
+        desynchronized: true,
+      },
       pixelRatio: runtimeMapPixelRatio(),
       preserveDrawingBuffer: false,
       minZoom: MAP_ZOOM_RANGE.MIN,

@@ -88,7 +88,24 @@ class MatsimAnalysisCacheLargeStreamTest {
         assertEquals(1, ((Number) routeBoardings.get("route1")).intValue());
         assertPassengerSeriesContainsBoarding(manifest);
         assertPersonTracksContain(cache, "passenger&1");
-        assertTrue(Files.exists(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION).resolve("manifest.json")));
+        Path trajectoryCache = cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION);
+        Path fullManifest = trajectoryCache.resolve("manifest.json");
+        Path lightManifest = trajectoryCache.resolve("manifest-lite.json");
+        assertTrue(Files.exists(fullManifest));
+        assertTrue(Files.exists(lightManifest));
+        assertTrue(Files.size(lightManifest) < Files.size(fullManifest));
+        Map<String, Object> light = MatsimAnalysisCache.readReadyTrajectoryLightManifest(data);
+        assertEquals("ready", light.get("status"));
+        assertEquals(2, ((Number) light.get("lightManifestVersion")).intValue());
+        assertTrue((Boolean) light.get("lightweight"));
+        assertEquals(List.of(), light.get("vehicles"));
+        Map<?, ?> lightSummary = (Map<?, ?>) light.get("summary");
+        assertEquals(3, ((Number) lightSummary.get("totalVehicles")).intValue());
+        Map<?, ?> lightMeta = (Map<?, ?>) light.get("meta");
+        assertTrue((Boolean) lightMeta.get("vehicleDetailsDeferred"));
+        assertTrue((Boolean) lightMeta.get("routeDetailsDeferred"));
+        assertEquals(List.of(), lightMeta.get("vehicles"));
+        assertEquals(Map.of(), lightMeta.get("routes"));
         try (Stream<Path> paths = Files.list(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION))) {
             assertFalse(paths.anyMatch(path -> path.getFileName().toString().endsWith(".tmp")));
         }

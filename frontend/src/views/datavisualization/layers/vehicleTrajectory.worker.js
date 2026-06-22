@@ -5,16 +5,27 @@ const MODE_CODE_TO_KEY = ["bus", "subway", "car"];
 const VEHICLE_VISIBILITY_MODES = ["all", "public", "private"];
 const MIN_FRAME_CAPACITY = 1024;
 const MAX_POOLED_FRAME_BYTES = 96 * 1024 * 1024;
+const COMPACT_SECOND_INDEX_MAX_REFS = 8_000_000;
+const CHUNK_STORE_MEMORY_GB = Math.max(4, Math.min(8, Number(self.navigator?.deviceMemory) || 6));
+const MAX_CHUNK_STORE_BYTES = Math.round(CHUNK_STORE_MEMORY_GB * 48 * 1024 * 1024);
+const MAX_CHUNK_STORE_COUNT = 6;
 const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
   map[mode] = index;
   return map;
 }, {});
 
-let dataVersion = 0;
-let currentData = null;
 let currentVisibilityMode = "all";
 let pooledFrameBytes = 0;
 const frameBufferPool = new Map();
+
+// 多块缓存（双缓冲 / 预取）：每个分块只建一次每秒索引并常驻，切块时仅切换 activeKey，
+// 不再重建索引——这正是"播放经过 300s 分块边界时周期性卡顿"的根因。
+// 按 LRU + 字节预算淘汰，且永不淘汰当前活动块。
+let datasetVersion = 0;
+const chunkStore = new Map(); // key -> { kind, ..., index, bytes, lastUsedAt }
+let activeKey = null;
+let chunkStoreBytes = 0;
+let chunkUseCounter = 0;
 
 function nextFrameCapacity(count) {
   let capacity = MIN_FRAME_CAPACITY;
@@ -133,26 +144,104 @@ function normalizeVehicles(vehicles = []) {
     .filter((vehicle) => vehicle.segments.length > 0);
 }
 
-function buildBinarySecondIndex(data) {
+function binarySegmentSecondRange(values, offset, start, seconds) {
+  const segmentStart = values[offset];
+  const segmentEnd = values[offset + 1];
+  if (!Number.isFinite(segmentStart) || !Number.isFinite(segmentEnd) || segmentEnd <= segmentStart) {
+    return null;
+  }
+  const firstSecond = Math.max(start, Math.floor(segmentStart));
+  const lastExclusive = Math.min(start + seconds, Math.ceil(segmentEnd));
+  if (lastExclusive <= firstSecond) return null;
+  return [firstSecond - start, lastExclusive - start];
+}
+
+function buildCompactBinarySecondIndex(data, start, seconds, totalRefs) {
   const values = data?.segments;
-  if (!values?.length) return null;
-  const start = Math.max(0, Math.floor(Number(data.chunk?.start) || 0));
-  const chunkSeconds = Math.max(1, Math.ceil(Number(data.chunkSeconds || data.chunk?.end - start + 1 || 300)));
-  const buckets = Array.from({ length: chunkSeconds + 1 }, () => []);
+  const bucketCounts = new Int32Array(seconds);
+  for (let offset = 0; offset < values.length; offset += BINARY_STRIDE) {
+    const range = binarySegmentSecondRange(values, offset, start, seconds);
+    if (!range) continue;
+    for (let index = range[0]; index < range[1]; index++) {
+      bucketCounts[index] += 1;
+    }
+  }
+
+  const bucketStarts = new Int32Array(seconds + 1);
+  for (let index = 0; index < seconds; index++) {
+    bucketStarts[index + 1] = bucketStarts[index] + bucketCounts[index];
+  }
+  const offsets = new Int32Array(totalRefs);
+  const writePositions = new Int32Array(bucketStarts);
+  for (let offset = 0; offset < values.length; offset += BINARY_STRIDE) {
+    const range = binarySegmentSecondRange(values, offset, start, seconds);
+    if (!range) continue;
+    for (let index = range[0]; index < range[1]; index++) {
+      offsets[writePositions[index]++] = offset;
+    }
+  }
+
+  return {
+    kind: "second",
+    start,
+    seconds,
+    bucketStarts,
+    offsets,
+    bytes: bucketStarts.byteLength + offsets.byteLength,
+  };
+}
+
+function buildVehicleCursorIndex(data) {
+  const values = data?.segments;
+  const byVehicle = new Map();
   for (let offset = 0; offset < values.length; offset += BINARY_STRIDE) {
     const segmentStart = values[offset];
     const segmentEnd = values[offset + 1];
     if (!Number.isFinite(segmentStart) || !Number.isFinite(segmentEnd) || segmentEnd <= segmentStart) continue;
-    const firstSecond = Math.max(start, Math.ceil(segmentStart));
-    const lastExclusive = Math.min(start + chunkSeconds, Math.ceil(segmentEnd));
-    for (let second = firstSecond; second < lastExclusive; second++) {
-      const index = second - start;
-      if (index >= 0 && index < buckets.length) {
-        buckets[index].push(offset);
-      }
+    const vehicleIndex = Math.round(Number(values[offset + 7]) || 0);
+    let offsets = byVehicle.get(vehicleIndex);
+    if (!offsets) {
+      offsets = [];
+      byVehicle.set(vehicleIndex, offsets);
+    }
+    offsets.push(offset);
+  }
+
+  let bytes = 0;
+  const entries = [];
+  for (const [vehicleIndex, offsets] of byVehicle) {
+    offsets.sort((a, b) => values[a] - values[b]);
+    const typedOffsets = Int32Array.from(offsets);
+    bytes += typedOffsets.byteLength;
+    entries.push({
+      vehicleIndex,
+      offsets: typedOffsets,
+      cursor: 0,
+    });
+  }
+
+  return {
+    kind: "vehicle",
+    entries,
+    bytes,
+  };
+}
+
+function buildBinarySecondIndex(data) {
+  const values = data?.segments;
+  if (!values?.length) return null;
+  const start = Math.max(0, Math.floor(Number(data.chunk?.start) || 0));
+  const seconds = Math.max(1, Math.ceil(Number(data.chunkSeconds || data.chunk?.end - start + 1 || 300)));
+  let totalRefs = 0;
+  for (let offset = 0; offset < values.length; offset += BINARY_STRIDE) {
+    const range = binarySegmentSecondRange(values, offset, start, seconds);
+    if (!range) continue;
+    totalRefs += range[1] - range[0];
+    if (totalRefs > COMPACT_SECOND_INDEX_MAX_REFS) {
+      return buildVehicleCursorIndex(data);
     }
   }
-  return { start, buckets };
+  return buildCompactBinarySecondIndex(data, start, seconds, totalRefs);
 }
 
 function buildJsonSecondIndex(vehicles, data = {}) {
@@ -188,10 +277,58 @@ function binaryOffsetsForTime(time, values, index) {
     return offsets;
   }
   const bucketIndex = Math.floor(time) - index.start;
-  if (bucketIndex < 0 || bucketIndex >= index.buckets.length) {
+  if (index.kind === "second") {
+    if (bucketIndex < 0 || bucketIndex >= index.seconds) {
+      return new Int32Array(0);
+    }
+    return index.offsets.subarray(index.bucketStarts[bucketIndex], index.bucketStarts[bucketIndex + 1]);
+  }
+  if (bucketIndex < 0 || bucketIndex >= index.buckets?.length) {
     return [];
   }
   return index.buckets[bucketIndex];
+}
+
+function vehicleOffsetAtTime(entry, time, values) {
+  const offsets = entry?.offsets;
+  if (!offsets?.length) return -1;
+
+  let cursor = Math.max(0, Math.min(offsets.length - 1, Number(entry.cursor) || 0));
+  let offset = offsets[cursor];
+  if (time >= values[offset] && time < values[offset + 1]) {
+    return offset;
+  }
+
+  if (time >= values[offset + 1]) {
+    while (cursor + 1 < offsets.length && time >= values[offsets[cursor] + 1]) {
+      cursor += 1;
+    }
+    offset = offsets[cursor];
+    if (time >= values[offset] && time < values[offset + 1]) {
+      entry.cursor = cursor;
+      return offset;
+    }
+  }
+
+  let left = 0;
+  let right = offsets.length - 1;
+  let best = -1;
+  while (left <= right) {
+    const mid = (left + right) >> 1;
+    if (values[offsets[mid]] <= time) {
+      best = mid;
+      left = mid + 1;
+    } else {
+      right = mid - 1;
+    }
+  }
+  if (best < 0) {
+    entry.cursor = 0;
+    return -1;
+  }
+  offset = offsets[best];
+  entry.cursor = best;
+  return time < values[offset + 1] ? offset : -1;
 }
 
 function jsonSegmentsForTime(time, vehicles, index) {
@@ -212,6 +349,9 @@ function activeFromBinary(time, data) {
   }
 
   const [originX = 0, originY = 0] = data.origin || [];
+  if (data.index?.kind === "vehicle") {
+    return activeFromBinaryVehicleIndex(time, data, originX, originY);
+  }
   const offsets = binaryOffsetsForTime(time, values, data.index);
   const activeByMode = emptyModeCount();
   let speedTotal = 0;
@@ -265,6 +405,232 @@ function activeFromBinary(time, data) {
       routeActive: {},
     },
     transfer: frameTransfer(frame),
+  };
+}
+
+function activeFromBinaryVehicleIndex(time, data, originX, originY) {
+  const values = data?.segments;
+  const entries = data.index?.entries || [];
+  const activeByMode = emptyModeCount();
+  let speedTotal = 0;
+  let speedCount = 0;
+  const { xs, ys, angles, speeds, modes, ids } = createFrameBuffers(entries.length);
+  let count = 0;
+
+  for (const entry of entries) {
+    const offset = vehicleOffsetAtTime(entry, time, values);
+    if (offset < 0) continue;
+
+    const startTime = values[offset];
+    const endTime = values[offset + 1];
+    if (time < startTime || time >= endTime) continue;
+
+    const mode = modeKeyFromCode(values[offset + 6]);
+    if (!isModeVisible(mode)) continue;
+    const sx = values[offset + 2];
+    const sy = values[offset + 3];
+    const ex = values[offset + 4];
+    const ey = values[offset + 5];
+    const duration = Math.max(endTime - startTime, 0.001);
+    const ratio = Math.min(1, Math.max(0, (time - startTime) / duration));
+    const x = sx + (ex - sx) * ratio;
+    const y = sy + (ey - sy) * ratio;
+    const dx = ex - sx;
+    const dy = ey - sy;
+    const speed = (Math.sqrt(dx * dx + dy * dy) / duration) * 3.6;
+
+    xs[count] = originX + x;
+    ys[count] = originY + y;
+    angles[count] = Math.atan2(dy, dx) * 180 / Math.PI;
+    speeds[count] = speed;
+    modes[count] = MODE_KEY_TO_CODE[mode] ?? 2;
+    ids[count] = Math.round(Number(values[offset + 7]) || entry.vehicleIndex || 0);
+    count += 1;
+    activeByMode[mode] += 1;
+    if (Number.isFinite(speed) && speed > 0 && speed < 180) {
+      speedTotal += speed;
+      speedCount += 1;
+    }
+  }
+
+  const frame = createFrame({ count, xs, ys, angles, speeds, modes, ids });
+  return {
+    frame,
+    stats: {
+      activeTotal: count,
+      activeByMode,
+      avgSpeed: speedCount ? Math.round((speedTotal / speedCount) * 10) / 10 : 0,
+      routeActive: {},
+    },
+    transfer: frameTransfer(frame),
+  };
+}
+
+function binaryOffsetsForSecondWindow(second, values, index) {
+  const windowStart = Math.floor(Number(second) || 0);
+  const windowEnd = windowStart + 1;
+  if (!index) {
+    const offsets = [];
+    for (let offset = 0; offset < values.length; offset += BINARY_STRIDE) {
+      if (values[offset] < windowEnd && values[offset + 1] > windowStart) {
+        offsets.push(offset);
+      }
+    }
+    return offsets;
+  }
+  if (index.kind === "second") {
+    const bucketIndex = windowStart - index.start;
+    if (bucketIndex < 0 || bucketIndex >= index.seconds) {
+      return new Int32Array(0);
+    }
+    return index.offsets.subarray(index.bucketStarts[bucketIndex], index.bucketStarts[bucketIndex + 1]);
+  }
+  if (index.kind === "vehicle") {
+    const offsets = [];
+    for (const entry of index.entries || []) {
+      const list = entry.offsets || [];
+      if (!list.length) continue;
+      let cursor = Math.max(0, Math.min(list.length - 1, Number(entry.cursor) || 0));
+      while (cursor > 0 && values[list[cursor]] >= windowStart) cursor -= 1;
+      while (cursor < list.length && values[list[cursor] + 1] <= windowStart) cursor += 1;
+      for (let i = cursor; i < list.length; i++) {
+        const offset = list[i];
+        if (values[offset] >= windowEnd) break;
+        if (values[offset + 1] > windowStart) {
+          offsets.push(offset);
+        }
+      }
+    }
+    return offsets;
+  }
+  return [];
+}
+
+function segmentFrameTransfer(frame) {
+  return [
+    frame.startXs.buffer,
+    frame.startYs.buffer,
+    frame.endXs.buffer,
+    frame.endYs.buffer,
+    frame.startTimes.buffer,
+    frame.endTimes.buffer,
+    frame.modes.buffer,
+    frame.ids.buffer,
+  ];
+}
+
+function createSegmentFrame({ bucketSecond, origin, count, startXs, startYs, endXs, endYs, startTimes, endTimes, modes, ids }) {
+  return {
+    kind: "vehicle-segment-frame",
+    bucketSecond,
+    origin,
+    count,
+    startXs,
+    startYs,
+    endXs,
+    endYs,
+    startTimes,
+    endTimes,
+    modes,
+    ids,
+  };
+}
+
+function segmentFrameFromBinary(time, data) {
+  const values = data?.segments;
+  if (!values?.length) {
+    const frame = createSegmentFrame({
+      bucketSecond: Math.floor(Number(time) || 0),
+      origin: data?.origin || [0, 0],
+      count: 0,
+      startXs: new Float32Array(0),
+      startYs: new Float32Array(0),
+      endXs: new Float32Array(0),
+      endYs: new Float32Array(0),
+      startTimes: new Float32Array(0),
+      endTimes: new Float32Array(0),
+      modes: new Uint8Array(0),
+      ids: new Int32Array(0),
+    });
+    return { segmentFrame: frame, stats: emptyStats(), transfer: segmentFrameTransfer(frame) };
+  }
+
+  const seconds = Math.max(0, Number(time) || 0);
+  const bucketSecond = Math.floor(seconds);
+  const offsets = binaryOffsetsForSecondWindow(bucketSecond, values, data.index);
+  const capacity = offsets.length;
+  const startXs = new Float32Array(capacity);
+  const startYs = new Float32Array(capacity);
+  const endXs = new Float32Array(capacity);
+  const endYs = new Float32Array(capacity);
+  const startTimes = new Float32Array(capacity);
+  const endTimes = new Float32Array(capacity);
+  const modes = new Uint8Array(capacity);
+  const ids = new Int32Array(capacity);
+  const activeByMode = emptyModeCount();
+  let speedTotal = 0;
+  let speedCount = 0;
+  let activeTotal = 0;
+  let count = 0;
+
+  for (const offset of offsets) {
+    const startTime = values[offset];
+    const endTime = values[offset + 1];
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) continue;
+
+    const mode = modeKeyFromCode(values[offset + 6]);
+    if (!isModeVisible(mode)) continue;
+    const sx = values[offset + 2];
+    const sy = values[offset + 3];
+    const ex = values[offset + 4];
+    const ey = values[offset + 5];
+    const dx = ex - sx;
+    const dy = ey - sy;
+    const duration = Math.max(endTime - startTime, 0.001);
+    const speed = (Math.sqrt(dx * dx + dy * dy) / duration) * 3.6;
+
+    startXs[count] = sx;
+    startYs[count] = sy;
+    endXs[count] = ex;
+    endYs[count] = ey;
+    startTimes[count] = startTime;
+    endTimes[count] = endTime;
+    modes[count] = MODE_KEY_TO_CODE[mode] ?? 2;
+    ids[count] = Math.round(Number(values[offset + 7]) || 0);
+    count += 1;
+
+    if (seconds >= startTime && seconds < endTime) {
+      activeTotal += 1;
+      activeByMode[mode] += 1;
+      if (Number.isFinite(speed) && speed > 0 && speed < 180) {
+        speedTotal += speed;
+        speedCount += 1;
+      }
+    }
+  }
+
+  const frame = createSegmentFrame({
+    bucketSecond,
+    origin: data.origin || [0, 0],
+    count,
+    startXs,
+    startYs,
+    endXs,
+    endYs,
+    startTimes,
+    endTimes,
+    modes,
+    ids,
+  });
+  return {
+    segmentFrame: frame,
+    stats: {
+      activeTotal,
+      activeByMode,
+      avgSpeed: speedCount ? Math.round((speedTotal / speedCount) * 10) / 10 : 0,
+      routeActive: {},
+    },
+    transfer: segmentFrameTransfer(frame),
   };
 }
 
@@ -363,40 +729,113 @@ function frameTransfer(frame) {
   ];
 }
 
-function setData(data) {
-  dataVersion += 1;
+function chunkBytesOf(indexed) {
+  if (indexed?.kind === "binary") {
+    return (indexed.segments?.byteLength || 0) + (indexed.index?.bytes || 0);
+  }
+  if (indexed?.kind === "json") return (indexed.vehicles?.length || 0) * 64 + (indexed.index?.bytes || 0);
+  return 0;
+}
+
+function buildIndexedChunk(data) {
   if (data?.binary) {
     const segments = data.segments instanceof Float32Array
       ? data.segments
       : new Float32Array(data.segments || []);
-    currentData = {
+    const indexed = {
       kind: "binary",
       origin: data.origin || [0, 0],
       chunk: data.chunk || {},
       chunkSeconds: data.chunkSeconds,
       segments,
     };
-    currentData.index = buildBinarySecondIndex(currentData);
-  } else {
-    const vehicles = normalizeVehicles(data?.vehicles || []);
-    currentData = {
-      kind: "json",
-      chunk: data?.chunk || {},
-      vehicles,
-    };
-    currentData.index = buildJsonSecondIndex(vehicles, data || {});
+    indexed.index = buildBinarySecondIndex(indexed);
+    indexed.bytes = chunkBytesOf(indexed);
+    return indexed;
   }
-  return dataVersion;
+  const vehicles = normalizeVehicles(data?.vehicles || []);
+  const indexed = {
+    kind: "json",
+    chunk: data?.chunk || {},
+    vehicles,
+  };
+  indexed.index = buildJsonSecondIndex(vehicles, data || {});
+  indexed.bytes = chunkBytesOf(indexed);
+  return indexed;
 }
 
-function activeAt(seconds, visibilityMode = currentVisibilityMode) {
-  currentVisibilityMode = normalizeVisibilityMode(visibilityMode);
-  if (!currentData) {
-    return { active: [], stats: emptyStats() };
+function storeChunk(key, indexed) {
+  const existing = chunkStore.get(key);
+  if (existing) chunkStoreBytes -= existing.bytes || 0;
+  indexed.lastUsedAt = ++chunkUseCounter;
+  chunkStore.set(key, indexed);
+  chunkStoreBytes += indexed.bytes || 0;
+  evictChunks();
+}
+
+function touchChunk(key) {
+  const indexed = chunkStore.get(key);
+  if (indexed) indexed.lastUsedAt = ++chunkUseCounter;
+  return indexed;
+}
+
+function evictChunks() {
+  while (chunkStore.size > MAX_CHUNK_STORE_COUNT || chunkStoreBytes > MAX_CHUNK_STORE_BYTES) {
+    let victimKey = null;
+    let victimUsed = Infinity;
+    for (const [key, indexed] of chunkStore) {
+      if (key === activeKey) continue;
+      const used = indexed.lastUsedAt || 0;
+      if (used < victimUsed) {
+        victimUsed = used;
+        victimKey = key;
+      }
+    }
+    if (victimKey === null) break;
+    const victim = chunkStore.get(victimKey);
+    chunkStore.delete(victimKey);
+    chunkStoreBytes -= victim?.bytes || 0;
   }
-  return currentData.kind === "binary"
-    ? activeFromBinary(seconds, currentData)
-    : activeFromJson(seconds, currentData);
+}
+
+function clearChunkStore() {
+  chunkStore.clear();
+  chunkStoreBytes = 0;
+  activeKey = null;
+}
+
+function activeAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode) {
+  currentVisibilityMode = normalizeVisibilityMode(visibilityMode);
+  if (!indexed) {
+    return { frame: emptyFrame(), stats: emptyStats(), transfer: [] };
+  }
+  return indexed.kind === "binary"
+    ? activeFromBinary(seconds, indexed)
+    : activeFromJson(seconds, indexed);
+}
+
+function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode) {
+  currentVisibilityMode = normalizeVisibilityMode(visibilityMode);
+  if (!indexed) {
+    const frame = createSegmentFrame({
+      bucketSecond: Math.floor(Number(seconds) || 0),
+      origin: [0, 0],
+      count: 0,
+      startXs: new Float32Array(0),
+      startYs: new Float32Array(0),
+      endXs: new Float32Array(0),
+      endYs: new Float32Array(0),
+      startTimes: new Float32Array(0),
+      endTimes: new Float32Array(0),
+      modes: new Uint8Array(0),
+      ids: new Int32Array(0),
+    });
+    return { segmentFrame: frame, stats: emptyStats(), transfer: segmentFrameTransfer(frame) };
+  }
+  if (indexed.kind === "binary") {
+    return segmentFrameFromBinary(seconds, indexed);
+  }
+  return activeFromJson(seconds, indexed);
 }
 
 function respond(id, result, transfer = []) {
@@ -421,38 +860,94 @@ self.onmessage = (event) => {
     }
 
     if (type === "setData") {
-      const version = setData(message.data || null);
+      // 建索引并常驻，切为活动块，按 seconds 采样一帧返回。
+      const key = message.key != null ? message.key : "__single__";
+      const indexed = buildIndexedChunk(message.data || null);
+      activeKey = key;
+      storeChunk(key, indexed);
       const seconds = Number(message.seconds);
       if (Number.isFinite(seconds)) {
-        const result = activeAt(Math.max(0, seconds), message.visibilityMode);
+        const result = message.gpuSegments
+          ? segmentFrameAtChunk(indexed, Math.max(0, seconds), message.visibilityMode)
+          : activeAtChunk(indexed, Math.max(0, seconds), message.visibilityMode);
         const transfer = result.transfer || [];
         delete result.transfer;
         respond(id, {
-          version,
+          version: datasetVersion,
           seconds: Math.max(0, seconds),
           ...result,
         }, transfer);
       } else {
-        respond(id, { version });
+        respond(id, { version: datasetVersion });
       }
       return;
     }
 
+    if (type === "addChunk") {
+      // 预取/预建索引：只建好并常驻，不切换活动块、不采样（双缓冲的关键）。
+      const key = message.key != null ? message.key : "__single__";
+      if (!chunkStore.has(key)) {
+        storeChunk(key, buildIndexedChunk(message.data || null));
+      } else {
+        touchChunk(key);
+      }
+      respond(id, { version: datasetVersion, stored: true, key });
+      return;
+    }
+
+    if (type === "activateChunk") {
+      // 切到已常驻分块：仅切 activeKey + 采样，零重建。未命中回报 miss，由主线程改走 setData。
+      const key = message.key != null ? message.key : "__single__";
+      const indexed = touchChunk(key);
+      if (!indexed) {
+        respond(id, { version: datasetVersion, miss: true, key });
+        return;
+      }
+      activeKey = key;
+      const seconds = Math.max(0, Number(message.seconds) || 0);
+      const result = message.gpuSegments
+        ? segmentFrameAtChunk(indexed, seconds, message.visibilityMode)
+        : activeAtChunk(indexed, seconds, message.visibilityMode);
+      const transfer = result.transfer || [];
+      delete result.transfer;
+      respond(id, {
+        version: datasetVersion,
+        seconds,
+        ...result,
+      }, transfer);
+      return;
+    }
+
     if (type === "clear") {
-      dataVersion += 1;
-      currentData = null;
+      datasetVersion += 1;
+      clearChunkStore();
       clearBufferPool();
-      respond(id, { version: dataVersion });
+      respond(id, { version: datasetVersion });
+      return;
+    }
+
+    if (type === "setSegmentTime") {
+      const indexed = activeKey != null ? chunkStore.get(activeKey) : null;
+      const seconds = Math.max(0, Number(message.seconds) || 0);
+      const result = segmentFrameAtChunk(indexed, seconds, message.visibilityMode);
+      const transfer = result.transfer || [];
+      delete result.transfer;
+      respond(id, {
+        version: datasetVersion,
+        seconds,
+        ...result,
+      }, transfer);
       return;
     }
 
     if (type === "setTime") {
+      const indexed = activeKey != null ? chunkStore.get(activeKey) : null;
       const seconds = Math.max(0, Number(message.seconds) || 0);
-      const result = activeAt(seconds, message.visibilityMode);
+      const result = activeAtChunk(indexed, seconds, message.visibilityMode);
       const transfer = result.transfer || [];
       delete result.transfer;
       respond(id, {
-        version: dataVersion,
+        version: datasetVersion,
         seconds,
         ...result,
       }, transfer);

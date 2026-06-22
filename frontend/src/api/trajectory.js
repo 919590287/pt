@@ -22,13 +22,13 @@ export function dataTrajectoryChunk(data, start) {
 }
 
 // 轨迹演示二进制分块数据
-// POST /pt/data/trajectory/chunk.bin?start=28800
+// GET /pt/data/trajectory/chunk.bin?datasource=xxx&start=28800
+// 用 GET + 后端 immutable 缓存，使浏览器/Service Worker 可命中本地，重复访问零回源。
 export function dataTrajectoryChunkBinary(data, start) {
   return request({
     url: `/pt/data/trajectory/chunk.bin`,
-    method: "POST",
-    params: { start },
-    data,
+    method: "GET",
+    params: { datasource: data?.datasource, start },
     responseType: "arraybuffer",
   });
 }

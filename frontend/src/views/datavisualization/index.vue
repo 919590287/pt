@@ -1429,8 +1429,15 @@ function syncBaseMapLayerVisibility() {
   const map = MapRef.value?.map;
   if (!map) return;
   const showBusNetwork = baseMapLineMode.value === "bus-network";
-  [RM_LAYER_LINES, RM_LAYER_LINE_SELECTED, RM_LAYER_LINE_SELECTED_GLOW, RM_LAYER_STATIONS, RM_LAYER_STATION_SELECTED].forEach((layerId) => {
-    setBusLayerVisibility(map, layerId, showBusNetwork);
+  // 线路客流监测：地图只显示线路；站点客流监测：只显示站点；其余标签两者皆显示。
+  const tab = effectiveTab.value;
+  const showLines = showBusNetwork && tab !== "站点客流监测";
+  const showStations = showBusNetwork && tab !== "线路客流监测";
+  [RM_LAYER_LINES, RM_LAYER_LINE_SELECTED, RM_LAYER_LINE_SELECTED_GLOW].forEach((layerId) => {
+    setBusLayerVisibility(map, layerId, showLines);
+  });
+  [RM_LAYER_STATIONS, RM_LAYER_STATION_SELECTED].forEach((layerId) => {
+    setBusLayerVisibility(map, layerId, showStations);
   });
   if (monitorRoadLayer) {
     showBusNetwork ? monitorRoadLayer.hide() : monitorRoadLayer.show();
