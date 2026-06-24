@@ -378,6 +378,8 @@ export class NetworkLayer extends Layer {
   constructor(opt = {}) {
     super(opt);
     this.lineWidth = opt.lineWidth || 20;
+    this.fixedPixelWidth = opt.fixedPixelWidth === true;
+    this.workerEnabled = opt.workerEnabled !== false;
     this.flowControl = opt.flowControl ?? false;
     this.flowMinWidth = opt.flowMinWidth || 1;
     this.flowMaxWidth = opt.flowMaxWidth || 40;
@@ -430,6 +432,7 @@ export class NetworkLayer extends Layer {
   }
 
   ensureWorker() {
+    if (!this.workerEnabled) return null;
     if (this.worker || this.worker === false) return this.worker || null;
     try {
       this.worker = createNetworkDataWorker();
@@ -797,6 +800,7 @@ export class NetworkLayer extends Layer {
     const baseWidth = lineWidthToPixels(this.lineWidth);
     const zoom = Number(this.map?.zoom);
     const minPixels = this.flowControl ? Math.min(networkLineMinPixels(), 0.55) : networkLineMinPixels();
+    if (this.fixedPixelWidth) return Math.max(0.1, Number(this.lineWidth) / 10 || 0.1);
     if (!Number.isFinite(zoom)) return Math.max(minPixels, baseWidth);
     return Math.max(minPixels, interpolate(zoom, [
       [7, Math.max(0.28, baseWidth * 0.16)],
@@ -942,7 +946,7 @@ export class NetworkLayer extends Layer {
     }
 
     const lineColor = colorToRgba(this.color, visualOpacity);
-    const softEdgePixels = this.flowControl || Number(this.map?.zoom) < 11.5 ? 0 : networkLineSoftEdgePixels();
+    const softEdgePixels = this.fixedPixelWidth || this.flowControl || Number(this.map?.zoom) < 11.5 ? 0 : networkLineSoftEdgePixels();
     const widthMaxPixels = this.flowControl ? 18 : 22;
     const commonProps = {
       coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
@@ -988,11 +992,13 @@ export class NetworkLayer extends Layer {
       },
       getColor: lineColor,
       getWidth,
-      widthMinPixels: this.flowControl ? Math.min(networkLineMinPixels(), 0.55) : networkLineMinPixels(),
+      widthMinPixels: this.fixedPixelWidth
+        ? 0.1
+        : this.flowControl ? Math.min(networkLineMinPixels(), 0.55) : networkLineMinPixels(),
       widthMaxPixels,
     });
     layers.push(layer);
-    setSharedDeckLayer(this.map, this.layerId, layers);
+    setSharedDeckLayer(this.map, this.layerId, layers, this.zIndex);
   }
 
   setLineWidth(lineWidth) {

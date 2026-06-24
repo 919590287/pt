@@ -63,7 +63,7 @@
                 :class="['direction-pill', activeRouteId === route.routeId ? 'active' : '']"
                 @click="handleSelectRoute(route)"
               >
-                {{ getDirectionLabel(index) }}
+                {{ getRouteEndpointLabel(route, index) }}
               </div>
             </div>
           </template>
@@ -107,7 +107,7 @@
     </div>
   </div>
 
-  <teleport v-if="!runMonitorSimplifiedRight || !currentRoutePanel" to="#datavisualization_index_box2" defer>
+  <teleport v-if="!runMonitorSimplifiedRight" to="#datavisualization_index_box2" defer>
     <MCard2 v-if="!runMonitorSimplifiedRight && currentSelectedRoute" class="SJZL_right_card" :open="true">
       <template #title>
         <div class="ranking-title-container">
@@ -555,7 +555,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
 import { Search, Location, Timer, Connection, Download } from "@element-plus/icons-vue";
-import { getLineAll, getRouteDetail, getRoutePanel, getRouteTileBinary } from "@/api/route";
+import { getLineAll, getRouteDetail, getRoutePanel, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import { RouteLayer } from "../layers/RouteLayer.js";
@@ -571,7 +571,11 @@ const searchMode = ref("line"); // "line" | "station"
 const rawLines = ref([]);
 const allLinks = ref([]);
 const routeDetailCache = new Map();
+const routePanelDetailCache = new Map();
+const routePanelDetailPromises = new Map();
 const routePanelData = ref(null);
+const selectedRoutePanel = ref(null);
+let routePanelPromise = null;
 
 const selectedLineName = ref("");
 const selectedStationName = ref("");
@@ -595,16 +599,17 @@ const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""))
 const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
 const runMonitorSelectedLinePanel = inject("runMonitorSelectedLinePanel", null);
 const runMonitorSelectedLineName = inject("runMonitorSelectedLineName", null);
+const runMonitorSelectedRouteDetail = inject("runMonitorSelectedRouteDetail", null);
 
 // 统一的当前选中路线计算属性
 const currentSelectedRoute = computed(() => {
   const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
   if (!targetId) return null;
-  if (selectedRouteDetail.value?.routeId === targetId) return selectedRouteDetail.value;
-  if (routeDetailCache.has(targetId)) return routeDetailCache.get(targetId);
+  if (String(selectedRouteDetail.value?.routeId || "") === String(targetId)) return selectedRouteDetail.value;
+  if (routeDetailCache.has(String(targetId))) return routeDetailCache.get(String(targetId));
   for (const line of rawLines.value) {
     if (line.routes) {
-      const match = line.routes.find(r => r.routeId === targetId);
+      const match = line.routes.find(r => String(r.routeId) === String(targetId));
       if (match) return match;
     }
   }
@@ -613,7 +618,11 @@ const currentSelectedRoute = computed(() => {
 
 const currentRoutePanel = computed(() => {
   const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
-  return targetId ? routePanelData.value?.routes?.[targetId] || null : null;
+  if (!targetId) return null;
+  if (String(selectedRoutePanel.value?.routeId || "") === String(targetId)) {
+    return selectedRoutePanel.value;
+  }
+  return routePanelData.value?.routes?.[targetId] || null;
 });
 
 function toFiniteNumber(value, fallback = 0) {
@@ -1225,12 +1234,23 @@ watch(
     }
     if (runMonitorSelectedLineName) {
       const route = currentSelectedRoute.value || {};
-      runMonitorSelectedLineName.value =
-        route.lineName || route.routeName || selectedLineName.value || route.lineId || "";
+      const baseName = selectedLineName.value || route.lineName || route.routeName || route.lineId || "";
+      const facilities = Array.isArray(route.facilities) ? route.facilities : [];
+      const startName = facilities[0]?.facilityName || "";
+      const endName = facilities[facilities.length - 1]?.facilityName || "";
+      runMonitorSelectedLineName.value = baseName && startName && endName
+        ? `${baseName}（${startName} - ${endName}）`
+        : baseName;
     }
   },
   { immediate: true },
 );
+
+watch(selectedRouteDetail, (detail) => {
+  if (runMonitorSelectedRouteDetail) {
+    runMonitorSelectedRouteDetail.value = detail || null;
+  }
+});
 
 function handleExportLeaderboard() {
   if (proxy?.$message) {
@@ -1426,20 +1446,21 @@ const segmentChartOption = computed(() => {
   };
 });
 
-// 背景图层（深紫色常规线条效果）
+// 模型公交线网背景，与数据管理使用同一组青灰色和淡化透明度。
 const _BgRouteLayer = new RouteLayer({
   zIndex: 998,
   lineWidth: LineWidthRef.value,
   flowControl: false,
-  color: 0x1569de
+  color: 0x2f6f73,
+  opacity: 0.72,
 });
 
-// 选中/激活路线图层（维持紫色高亮）
+// 选中/激活路线图层（与数据管理一致的橙色高亮）
 const _RouteLayer = new RouteLayer({
   zIndex: 999,
   lineWidth: LineWidthRef.value * 1.8,
   flowControl: false,
-  color: 0x1569de,
+  color: 0xf97316,
   opacity: 1
 });
 
@@ -1449,11 +1470,13 @@ const ROUTE_STROKE_COLOR = "#1569de";
 
 // 将图层添加到地图
 injectSync("MapRef").then((map) => {
-  map.value?.addLayer(_BgRouteLayer);
-  map.value?.addLayer(_RouteLayer);
-  _BgRouteLayer.setTileSource(props.model, { tileRequest: getRouteTileBinary });
-  if (BaseMapLineModeRef.value === "bus-network") {
-    _BgRouteLayer.hide();
+  if (!runMonitorSimplifiedRight) {
+    map.value?.addLayer(_BgRouteLayer);
+    map.value?.addLayer(_RouteLayer);
+    _BgRouteLayer.setTileSource(props.model, { tileRequest: getRouteTileBinary });
+    if (BaseMapLineModeRef.value === "bus-network") {
+      _BgRouteLayer.hide();
+    }
   }
 });
 
@@ -1462,7 +1485,8 @@ watch(LineWidthRef, (value) => {
   _BgRouteLayer.setLineWidth(value);
   _RouteLayer.setLineWidth(value * 1.8);
 });
-watch(BaseMapLineModeRef, () => {
+watch(BaseMapLineModeRef, (mode) => {
+  if (runMonitorSimplifiedRight) return;
   if (!currentSelectedRoute.value) {
     updateLayers(null);
   }
@@ -1495,6 +1519,17 @@ const stationOptions = computed(() => {
   return uniqueNames.map(name => ({ value: name, label: name }));
 });
 
+// 将线路候选项上抛给 index.vue 的右上角搜索框
+const runMonitorLineOptions = inject("runMonitorLineOptions", null);
+if (runMonitorLineOptions) {
+  watch(lineOptions, (options) => {
+    runMonitorLineOptions.value = options || [];
+  }, { immediate: true });
+  onUnmounted(() => {
+    runMonitorLineOptions.value = [];
+  });
+}
+
 // 获取选定线路的所有行车方向/子线路
 const selectedLineRoutes = computed(() => {
   if (!selectedLineName.value) return [];
@@ -1514,10 +1549,12 @@ const activeRoute = computed(() => {
   return null;
 });
 
-function getDirectionLabel(index) {
-  if (index === 0) return '正向';
-  if (index === 1) return '反向';
-  return '支线';
+function getRouteEndpointLabel(route, index) {
+  const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
+  const startName = facilities[0]?.facilityName || "";
+  const endName = facilities[facilities.length - 1]?.facilityName || "";
+  if (startName && endName) return `${startName} - ${endName}`;
+  return route?.routeName || `线路 ${index + 1}`;
 }
 
 // 格式化秒数为 HH:mm
@@ -1530,6 +1567,14 @@ function formatSecondsToTime(seconds) {
 
 // 更新图层状态
 function updateLayers(activeLinks = null) {
+  if (runMonitorSimplifiedRight) {
+    _RouteLayer.setData([]);
+    if (!activeLinks?.length) {
+      selectedRouteDetail.value = null;
+      cleanUpSelectedRouteStops();
+    }
+    return;
+  }
   if (activeLinks?.length) {
     _BgRouteLayer.hide();
     _RouteLayer.setData(activeLinks);
@@ -1568,6 +1613,35 @@ function selectLeaderboardLine(item) {
   selectLineByName(item?.lineName);
 }
 
+// 运行监测页：按地图上被点中的线路要素精确选中（含方向）。
+// 先按线路名定位线路，再用要素属性里的方向线索（route_id / dir）在多条方向中精确选中对应方向。
+async function selectLineByFeature(props = {}) {
+  const name = props.lineName || props.line_name || props.routeName || props.route_name || props.name || "";
+  const targetName = normalizeLineSearchName(name);
+  if (!targetName) return false;
+  const line =
+    rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === targetName) ||
+    rawLines.value.find((item) => normalizeLineSearchName(item.lineName).includes(targetName) || targetName.includes(normalizeLineSearchName(item.lineName)));
+  if (!line) return false;
+  searchMode.value = "line";
+  selectedStationName.value = "";
+  selectedLineName.value = line.lineName;
+  await nextTick();
+  const routes = line.routes || [];
+  let target = null;
+  const routeIdHint = props.routeId ?? props.route_id;
+  if (routeIdHint != null && routeIdHint !== "") {
+    target = routes.find((item) => String(item.routeId) === String(routeIdHint)) || null;
+  }
+  if (!target) {
+    const dir = Number(props.dir ?? props.direction);
+    if (Number.isInteger(dir) && routes[dir]) target = routes[dir];
+  }
+  target ||= routes[0] || null;
+  if (target) await handleSelectRoute(target);
+  return true;
+}
+
 function routeStopStations(route) {
   const seen = new Set();
   return (route?.facilities || []).map((fac) => {
@@ -1589,6 +1663,10 @@ function routeStopStations(route) {
 }
 
 function updateSelectedRouteStops(route) {
+  if (runMonitorSimplifiedRight) {
+    cleanUpSelectedRouteStops();
+    return;
+  }
   const map = MapRef.value?.map;
   if (!map) return;
   const stations = routeStopStations(route);
@@ -1673,24 +1751,26 @@ function centerOnRoute(links) {
 }
 
 // 切换线路时
-function handleLineChange(lineName) {
+async function handleLineChange(lineName) {
   if (!lineName) {
     activeRouteId.value = "";
     selectedRouteDetail.value = null;
+    selectedRoutePanel.value = null;
     updateLayers(null);
     return;
   }
   const routes = selectedLineRoutes.value;
   if (routes && routes.length > 0) {
-    handleSelectRoute(routes[0]);
+    await handleSelectRoute(routes[0]);
   }
 }
 
 // 选择某条线路的某个方向
 async function loadRouteDetail(route) {
   if (!route?.routeId) return route;
-  if (routeDetailCache.has(route.routeId)) {
-    return routeDetailCache.get(route.routeId);
+  const routeId = String(route.routeId);
+  if (routeDetailCache.has(routeId)) {
+    return routeDetailCache.get(routeId);
   }
   const res = await getRouteDetail({
     datasource: props.model,
@@ -1702,14 +1782,61 @@ async function loadRouteDetail(route) {
     facilities: res.data?.facilities || route.facilities || [],
     info: res.data?.info || route.info || {},
   };
-  routeDetailCache.set(route.routeId, detail);
+  routeDetailCache.set(routeId, detail);
   return detail;
 }
 
+async function loadRoutePanelDetail(routeId) {
+  const key = String(routeId || "");
+  if (!key) return null;
+  if (routePanelDetailCache.has(key)) return routePanelDetailCache.get(key);
+  if (routePanelDetailPromises.has(key)) return routePanelDetailPromises.get(key);
+  const model = props.model;
+  const promise = getRoutePanelDetail({ datasource: model, routeId: key }, { silentError: true })
+    .then((res) => {
+      const panel = res?.data && typeof res.data === "object" ? res.data : null;
+      if (props.model === model && panel && Object.keys(panel).length) {
+        routePanelDetailCache.set(key, panel);
+        return panel;
+      }
+      return null;
+    })
+    .catch(() => null)
+    .finally(() => {
+      routePanelDetailPromises.delete(key);
+    });
+  routePanelDetailPromises.set(key, promise);
+  return promise;
+}
+
+function ensureRoutePanelData() {
+  if (routePanelData.value) return Promise.resolve(routePanelData.value);
+  if (routePanelPromise) return routePanelPromise;
+  const model = props.model;
+  routePanelPromise = getRoutePanel({ datasource: model }, { silentError: true })
+    .then((res) => {
+      if (props.model === model) routePanelData.value = res.data || null;
+      return routePanelData.value;
+    })
+    .catch(() => null)
+    .finally(() => {
+      routePanelPromise = null;
+    });
+  return routePanelPromise;
+}
+
 async function handleSelectRoute(route) {
-  activeRouteId.value = route.routeId;
-  const detail = await loadRouteDetail(route);
+  const routeId = String(route?.routeId || "");
+  if (!routeId) return;
+  activeRouteId.value = routeId;
+  selectedRoutePanel.value = routePanelDetailCache.get(routeId) || null;
+  const [detail, panel] = await Promise.all([
+    loadRouteDetail(route),
+    runMonitorSimplifiedRight ? loadRoutePanelDetail(routeId) : Promise.resolve(null),
+  ]);
+  if (String(activeRouteId.value) !== routeId) return;
   selectedRouteDetail.value = detail;
+  if (runMonitorSimplifiedRight) selectedRoutePanel.value = panel;
   if (detail?.links && detail.links.length > 0) {
     updateLayers(detail.links);
     centerOnRoute(detail.links);
@@ -1723,6 +1850,7 @@ function handleStationChange(stationName) {
     matchedRoutes.value = [];
     activeMatchedRouteId.value = "";
     selectedRouteDetail.value = null;
+    selectedRoutePanel.value = null;
     updateLayers(null);
     return;
   }
@@ -1754,14 +1882,23 @@ function handleStationChange(stationName) {
   matchedRoutes.value = matches;
   activeMatchedRouteId.value = "";
   selectedRouteDetail.value = null;
+  selectedRoutePanel.value = null;
   updateLayers(null); // 不要自动选中第一条线路
 }
 
 // 选择途径该站点的某条线路
 async function handleSelectMatchedRoute(item) {
-  activeMatchedRouteId.value = item.routeId;
-  const detail = await loadRouteDetail(item);
+  const routeId = String(item?.routeId || "");
+  if (!routeId) return;
+  activeMatchedRouteId.value = routeId;
+  selectedRoutePanel.value = routePanelDetailCache.get(routeId) || null;
+  const [detail, panel] = await Promise.all([
+    loadRouteDetail(item),
+    runMonitorSimplifiedRight ? loadRoutePanelDetail(routeId) : Promise.resolve(null),
+  ]);
+  if (String(activeMatchedRouteId.value) !== routeId) return;
   selectedRouteDetail.value = detail;
+  if (runMonitorSimplifiedRight) selectedRoutePanel.value = panel;
   if (detail?.links) {
     updateLayers(detail.links);
     centerOnRoute(detail.links);
@@ -1777,28 +1914,37 @@ watch(searchMode, () => {
   activeMatchedRouteId.value = "";
   matchedRoutes.value = [];
   selectedRouteDetail.value = null;
+  selectedRoutePanel.value = null;
   updateLayers(null);
 });
 
-// 加载所有路线并提取链接
-function loadAllLines() {
+// 线路摘要先到先用；体积较大的客流面板异步补齐，不能再阻塞地图和搜索。
+async function loadAllLines() {
+  const model = props.model;
   loading.value = true;
   routePanelData.value = null;
-  Promise.all([
-    getLineAll({ datasource: props.model }),
-    getRoutePanel({ datasource: props.model }).catch(() => ({ data: null }))
-  ])
-    .then(([lineRes, panelRes]) => {
-      const data = lineRes.data || [];
+  selectedRoutePanel.value = null;
+  if (!runMonitorSimplifiedRight) ensureRoutePanelData();
+  try {
+    const lineRes = await getLineAll({ datasource: model });
+    if (props.model !== model) return;
+      const data = (lineRes.data || []).map((line) => ({
+        ...line,
+        lineName: line?.lineName || line?.lineId || "未命名线路",
+      }));
       rawLines.value = data;
-      routePanelData.value = panelRes.data || null;
       allLinks.value = [];
-      _BgRouteLayer.setTileSource(props.model, { tileRequest: getRouteTileBinary });
+      if (!runMonitorSimplifiedRight) {
+        _BgRouteLayer.setTileSource(model, { tileRequest: getRouteTileBinary });
+      }
       updateLayers(null);
-    })
-    .finally(() => {
+  } catch {
+    if (props.model === model) rawLines.value = [];
+  } finally {
+    if (props.model === model) {
       loading.value = false;
-    });
+    }
+  }
 }
 
 onMounted(() => {
@@ -1813,7 +1959,10 @@ onMounted(() => {
 watch(() => props.model, (newModel) => {
   if (newModel) {
     routeDetailCache.clear();
+    routePanelDetailCache.clear();
+    routePanelDetailPromises.clear();
     routePanelData.value = null;
+    selectedRoutePanel.value = null;
     selectedLineName.value = "";
     selectedStationName.value = "";
     activeRouteId.value = "";
@@ -1825,13 +1974,29 @@ watch(() => props.model, (newModel) => {
 });
 
 onUnmounted(() => {
+  if (runMonitorSelectedRouteDetail) runMonitorSelectedRouteDetail.value = null;
   _BgRouteLayer.dispose();
   _RouteLayer.dispose();
   cleanUpSelectedRouteStops();
 });
 
+// 取消选中：清空选中线路与地图高亮（供 index.vue 点击空白处调用）
+function clearSelection() {
+  selectedLineName.value = "";
+  selectedStationName.value = "";
+  activeRouteId.value = "";
+  activeMatchedRouteId.value = "";
+  matchedRoutes.value = [];
+  selectedRouteDetail.value = null;
+  selectedRoutePanel.value = null;
+  updateLayers(null);
+  cleanUpSelectedRouteStops();
+}
+
 defineExpose({
   selectLineByName,
+  selectLineByFeature,
+  clearSelection,
 });
 </script>
 

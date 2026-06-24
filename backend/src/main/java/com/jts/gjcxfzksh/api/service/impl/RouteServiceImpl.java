@@ -5,6 +5,7 @@ import com.jts.gjcxfzksh.api.common.DatasourceService;
 import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.model.params.RouteChartParam;
 import com.jts.gjcxfzksh.api.model.params.RouteInfoParam;
+import com.jts.gjcxfzksh.api.model.params.RoutePickParam;
 import com.jts.gjcxfzksh.api.model.params.RouteListParam;
 import com.jts.gjcxfzksh.api.model.params.TileNetworkParam;
 import com.jts.gjcxfzksh.api.model.pt.PTLink;
@@ -12,10 +13,12 @@ import com.jts.gjcxfzksh.api.model.vo.FacilityFlowVO;
 import com.jts.gjcxfzksh.api.model.vo.LineVO;
 import com.jts.gjcxfzksh.api.model.vo.RouteDetailVO;
 import com.jts.gjcxfzksh.api.model.vo.RouteVO;
+import com.jts.gjcxfzksh.api.model.vo.RoutePickVO;
 import com.jts.gjcxfzksh.api.service.RouteService;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
+import com.jts.gjcxfzksh.data.cache.MatsimRouteSpatialIndex;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.*;
 import com.jts.gjcxfzksh.exception.BusinessException;
@@ -165,6 +168,22 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public Map<String, Object> routePanel(DatasourceParam param) {
         return MatsimRoutePanelCache.readRoutePanel(matsim_data(param));
+    }
+
+    @Override
+    public Map<String, Object> routePanelDetail(RouteInfoParam param) {
+        return MatsimRoutePanelCache.readRoutePanelDetail(matsim_data(param), param.getRouteId());
+    }
+
+    @Override
+    public List<RoutePickVO> routeCandidates(RoutePickParam param) {
+        return MatsimRouteSpatialIndex.query(
+                matsim_data(param),
+                param.getX(),
+                param.getY(),
+                param.getRadiusMeters(),
+                param.getLimit()
+        );
     }
 
     @Override

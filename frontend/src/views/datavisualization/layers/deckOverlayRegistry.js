@@ -27,20 +27,29 @@ function ensureState(mapWrapper) {
   state = {
     overlay,
     layers: new Map(),
+    nextSequence: 0,
   };
   overlayRegistry.set(mapWrapper, state);
   return state;
 }
 
-export function setSharedDeckLayer(mapWrapper, key, layer) {
+export function setSharedDeckLayer(mapWrapper, key, layer, order = 0) {
   const state = ensureState(mapWrapper);
   if (!state) return false;
   if (layer) {
-    state.layers.set(key, layer);
+    const previous = state.layers.get(key);
+    state.layers.set(key, {
+      layer,
+      order: Number.isFinite(Number(order)) ? Number(order) : 0,
+      sequence: previous?.sequence ?? state.nextSequence++,
+    });
   } else {
     state.layers.delete(key);
   }
-  state.overlay.setProps({ layers: normalizeLayerList([...state.layers.values()]) });
+  const orderedLayers = [...state.layers.values()]
+    .sort((left, right) => left.order - right.order || left.sequence - right.sequence)
+    .map((item) => item.layer);
+  state.overlay.setProps({ layers: normalizeLayerList(orderedLayers) });
   return true;
 }
 

@@ -4,6 +4,7 @@ import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
+import com.jts.gjcxfzksh.data.cache.MatsimRouteSpatialIndex;
 import com.jts.gjcxfzksh.data.cache.MatsimStationPanelCache;
 import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.MatsimOutFile;
@@ -179,6 +180,9 @@ public class Datasource {
             data.setArea(scheme.getDesc().getArea());
             // 加载
             loadConfig(data);
+            // 基础模型就绪时即建立真实公交路网命中索引，并预热已存在的线路面板缓存。
+            MatsimRouteSpatialIndex.prepareOnModelLoad(data);
+            MatsimRoutePanelCache.preloadIfReady(data);
             if (cancelable && isStaleLoad(name, expectedVersion)) {
                 log.info("模型加载完成但请求已取消，不写入内存: model={}", name);
                 return;
@@ -240,6 +244,7 @@ public class Datasource {
             MatsimRoutePanelCache.prepareOnModelLoad(data);
             MatsimStationPanelCache.prepareOnModelLoad(data);
             MatsimPrecomputedCache.prepareOnModelLoad(data);
+            MatsimRouteSpatialIndex.prepareOnModelLoad(data);
             if (!data.isLargeModel()) {
                 MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
             }

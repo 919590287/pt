@@ -5,6 +5,7 @@ import com.jts.gjcxfzksh.api.common.TileBinaryEncoder;
 import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.model.params.RouteChartParam;
 import com.jts.gjcxfzksh.api.model.params.RouteInfoParam;
+import com.jts.gjcxfzksh.api.model.params.RoutePickParam;
 import com.jts.gjcxfzksh.api.model.params.RouteListParam;
 import com.jts.gjcxfzksh.api.model.params.TileNetworkParam;
 import com.jts.gjcxfzksh.api.service.RouteService;
@@ -41,6 +42,18 @@ public class RouteController {
     @PostMapping("/routePanel")
     public AjaxResult routePanel(@RequestBody DatasourceParam param) {
         return AjaxResult.ok(routeService.routePanel(param));
+    }
+
+    @Operation(summary = "单条线路客流监测面板缓存")
+    @PostMapping("/routePanelDetail")
+    public AjaxResult routePanelDetail(@RequestBody RouteInfoParam param) {
+        return AjaxResult.ok(routeService.routePanelDetail(param));
+    }
+
+    @Operation(summary = "按模型路段坐标匹配经过线路")
+    @PostMapping("/routeCandidates")
+    public AjaxResult routeCandidates(@RequestBody RoutePickParam param) {
+        return AjaxResult.ok(routeService.routeCandidates(param));
     }
 
     @Operation(summary = "线路瓦片, zoom level12")

@@ -12,10 +12,11 @@ export function getFacilityAll(data) {
   })
 }
 
-export function getStationPanel(data) {
+export function getStationPanel(data, config = {}) {
   return request({
     url: `/pt/facility/stationPanel`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
   })
 }

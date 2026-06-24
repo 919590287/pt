@@ -29,7 +29,7 @@
     </div>
   </div>
 
-  <teleport to="#datavisualization_index_box2" defer>
+  <teleport v-if="!runMonitorSimplifiedRight" to="#datavisualization_index_box2" defer>
     <MCard2 v-if="selectedStationName" class="SJZL_right_card" :open="true">
       <template #title>
         <div class="ranking-title-container">
@@ -388,8 +388,10 @@ const props = defineProps({
 const loading = ref(true);
 const rawLines = ref([]);
 const stationPanelData = ref(null);
+let stationPanelPromise = null;
 
 const selectedStationName = ref("");
+const selectedStationFacilityId = ref("");
 const matchedRoutes = ref([]);
 
 const StationSizeRef = inject("StationSizeRef", ref(40));
@@ -399,6 +401,8 @@ const BaseMapLineModeRef = inject("BaseMapLineModeRef", ref("bus-network"));
 // 注入右侧面板显示控制
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
+// 运行监测页改为由 index.vue 渲染「总体客流变化」样式的站点卡片，禁用本组件的右侧 teleport，避免重复。
+const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
 
 // 监听当前选中的站点，控制右侧面板内容状态
 watch(selectedStationName, (newStation) => {
@@ -577,7 +581,10 @@ const _StationLayer = new StationLayer({
 
 // 将图层添加到地图
 injectSync("MapRef").then((map) => {
-  map.value?.addLayer(_StationLayer);
+  // 运行监测由 index.vue 统一绘制模型站点和数据管理同款选中图标。
+  if (!runMonitorSimplifiedRight) {
+    map.value?.addLayer(_StationLayer);
+  }
 });
 
 watch(StationSizeRef, (value) => {
@@ -607,6 +614,35 @@ const stationOptions = computed(() => {
   return uniqueNames.map(name => ({ value: name, label: name }));
 });
 
+// 将站点候选项上抛给 index.vue 的右上角搜索框
+const runMonitorStationOptions = inject("runMonitorStationOptions", null);
+if (runMonitorStationOptions) {
+  watch(stationOptions, (options) => {
+    runMonitorStationOptions.value = options || [];
+  }, { immediate: true });
+  onUnmounted(() => {
+    runMonitorStationOptions.value = [];
+  });
+}
+
+// 运行监测页：把当前选中站点的客流面板与名称上抛给 index.vue 的右侧卡片。
+const runMonitorSelectedStationPanel = inject("runMonitorSelectedStationPanel", null);
+const runMonitorSelectedStationName = inject("runMonitorSelectedStationName", null);
+if (runMonitorSelectedStationPanel || runMonitorSelectedStationName) {
+  watch([currentStationPanel, selectedStationName], () => {
+    if (runMonitorSelectedStationPanel) {
+      runMonitorSelectedStationPanel.value = currentStationPanel.value || null;
+    }
+    if (runMonitorSelectedStationName) {
+      runMonitorSelectedStationName.value = selectedStationName.value || "";
+    }
+  }, { immediate: true });
+  onUnmounted(() => {
+    if (runMonitorSelectedStationPanel) runMonitorSelectedStationPanel.value = null;
+    if (runMonitorSelectedStationName) runMonitorSelectedStationName.value = "";
+  });
+}
+
 // 格式化秒数为 HH:mm
 function formatSecondsToTime(seconds) {
   if (seconds === undefined || seconds === null) return "--:--";
@@ -629,6 +665,10 @@ const SELECTED_STATION_RING_SOURCE_ID = "selected-station-ring-source";
 const SELECTED_STATION_RING_LAYER_ID = "selected-station-ring-layer";
 
 function updateSelectedStationRing(coord) {
+  if (runMonitorSimplifiedRight) {
+    cleanUpSelectedStationRing();
+    return;
+  }
   if (!MapRef.value || !MapRef.value.map) return;
   const map = MapRef.value.map;
   
@@ -715,9 +755,21 @@ async function selectStationByName(stationName) {
       return name.includes(target) || target.includes(name);
     });
   if (!option?.value) return false;
+  selectedStationFacilityId.value = "";
   selectedStationName.value = option.value;
   await nextTick();
   handleStationChange(option.value);
+  return true;
+}
+
+async function selectStationByFeature(props = {}) {
+  const stationName = props.facilityName || props.stop_name || props.station_name || props.name || "";
+  if (!stationName) return false;
+  const facilityId = String(props.facilityId || props.stop_id || props._stationKey || "");
+  selectedStationFacilityId.value = facilityId;
+  selectedStationName.value = stationName;
+  await nextTick();
+  handleStationChange(stationName, facilityId);
   return true;
 }
 
@@ -726,12 +778,15 @@ function selectLeaderboardStation(item) {
 }
 
 // 切换站点时
-function handleStationChange(stationName) {
+function handleStationChange(stationName, facilityId = "") {
   if (!stationName) {
+    selectedStationFacilityId.value = "";
     matchedRoutes.value = [];
     cleanUpSelectedStationRing();
     return;
   }
+
+  selectedStationFacilityId.value = String(facilityId || "");
 
   const matches = [];
   let stationCoord = null;
@@ -740,7 +795,12 @@ function handleStationChange(stationName) {
     if (line.routes) {
       line.routes.forEach(route => {
         if (route.facilities) {
-          const matchedFac = route.facilities.find(fac => fac.facilityName === stationName);
+          const matchedFac = route.facilities.find((fac) => {
+            if (selectedStationFacilityId.value) {
+              return String(fac.facilityId || "") === selectedStationFacilityId.value;
+            }
+            return fac.facilityName === stationName;
+          });
           if (matchedFac) {
             if (!stationCoord && matchedFac.coord) {
               stationCoord = matchedFac.coord;
@@ -762,27 +822,45 @@ function handleStationChange(stationName) {
   });
 
   matchedRoutes.value = matches;
+  if (runMonitorSimplifiedRight && !stationPanelData.value) {
+    ensureStationPanelData();
+  }
 
   // 居中并适当放大z轴，用黄色厚圆圈圈住选中站点
-  if (stationCoord && MapRef.value) {
+  if (!runMonitorSimplifiedRight && stationCoord && MapRef.value) {
     MapRef.value.setCenter([stationCoord.x, stationCoord.y]);
     MapRef.value.setZoom(15.5);
     updateSelectedStationRing(stationCoord);
   }
 }
 
-// 加载所有路线并提取链接 & 站点
-function loadAllData() {
+function ensureStationPanelData() {
+  if (stationPanelData.value) return Promise.resolve(stationPanelData.value);
+  if (stationPanelPromise) return stationPanelPromise;
+  const model = props.model;
+  stationPanelPromise = getStationPanel({ datasource: model }, { silentError: true })
+    .then((res) => {
+      if (props.model === model) stationPanelData.value = res.data || null;
+      return stationPanelData.value;
+    })
+    .catch(() => null)
+    .finally(() => {
+      stationPanelPromise = null;
+    });
+  return stationPanelPromise;
+}
+
+// 线路/站点摘要先到先用；大体积站点客流面板异步补齐。
+async function loadAllData() {
+  const model = props.model;
   loading.value = true;
   stationPanelData.value = null;
-  Promise.all([
-    getLineAll({ datasource: props.model }),
-    getStationPanel({ datasource: props.model }).catch(() => ({ data: null }))
-  ])
-    .then(([lineRes, panelRes]) => {
+  if (!runMonitorSimplifiedRight) ensureStationPanelData();
+  try {
+      const lineRes = await getLineAll({ datasource: model });
+      if (props.model !== model) return;
       const data = lineRes.data || [];
       rawLines.value = data;
-      stationPanelData.value = panelRes.data || null;
 
       // 提取唯一的站点用于地图打点渲染 (按坐标去重)
       const stationsList = [];
@@ -817,14 +895,19 @@ function loadAllData() {
         }
       });
 
-      _StationLayer.setData(stationsList);
-      if (BaseMapLineModeRef.value === "bus-network") {
-        _StationLayer.hide();
+      if (!runMonitorSimplifiedRight) {
+        _StationLayer.setData(stationsList);
+        if (BaseMapLineModeRef.value === "bus-network") {
+          _StationLayer.hide();
+        }
       }
-    })
-    .finally(() => {
+  } catch {
+    if (props.model === model) rawLines.value = [];
+  } finally {
+    if (props.model === model) {
       loading.value = false;
-    });
+    }
+  }
 }
 
 const activeTransitType = ref("bus");
@@ -1204,6 +1287,7 @@ watch(() => props.model, (newModel) => {
   if (newModel) {
     stationPanelData.value = null;
     selectedStationName.value = "";
+    selectedStationFacilityId.value = "";
     matchedRoutes.value = [];
     cleanUpSelectedStationRing();
     loadAllData();
@@ -1216,8 +1300,18 @@ onUnmounted(() => {
   rightPanelHasContent.value = false;
 });
 
+// 取消选中：清空选中站点与地图高亮圈（供 index.vue 点击空白处调用）
+function clearSelection() {
+  selectedStationName.value = "";
+  selectedStationFacilityId.value = "";
+  matchedRoutes.value = [];
+  cleanUpSelectedStationRing();
+}
+
 defineExpose({
   selectStationByName,
+  selectStationByFeature,
+  clearSelection,
 });
 </script>
 

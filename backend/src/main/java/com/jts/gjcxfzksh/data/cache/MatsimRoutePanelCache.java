@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -52,12 +53,32 @@ public final class MatsimRoutePanelCache {
     private static final int TRANSFER_LIMIT = 12;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
+    private static final Map<String, Map<String, Object>> MEMORY_CACHE = Collections.synchronizedMap(
+            new LinkedHashMap<>(4, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
+                    return size() > 2;
+                }
+            }
+    );
 
     private MatsimRoutePanelCache() {
     }
 
     public static void prepareOnModelLoad(MatsimData data) {
         ensureRoutePanelCache(data);
+        loadPanel(data);
+    }
+
+    /** Load an existing panel into memory while the model starts, without generating an incomplete cache. */
+    public static void preloadIfReady(MatsimData data) {
+        if (isReady(data)) {
+            try {
+                loadPanel(data);
+            } catch (RuntimeException e) {
+                log.warn("预热线路客流面板缓存失败，将在首次请求时重试: model={}", data.getName(), e);
+            }
+        }
     }
 
     public static Map<String, Object> readRoutePanel(MatsimData data) {
@@ -69,10 +90,39 @@ public final class MatsimRoutePanelCache {
             );
         }
         try {
-            return readGzipJson(panelPath(data));
+            return loadPanel(data);
         } catch (Exception e) {
             log.warn("读取线路客流面板缓存失败: model={}, path={}", data.getName(), panelPath(data), e);
             return Map.of();
+        }
+    }
+
+    public static Map<String, Object> readRoutePanelDetail(MatsimData data, String routeId) {
+        if (routeId == null || routeId.isBlank()) return Map.of();
+        Map<String, Object> panel = readRoutePanel(data);
+        Object routesValue = panel.get("routes");
+        if (!(routesValue instanceof Map<?, ?> routes)) return Map.of();
+        Object routeValue = routes.get(routeId);
+        if (!(routeValue instanceof Map<?, ?> route)) return Map.of();
+        Map<String, Object> result = new LinkedHashMap<>();
+        route.forEach((key, value) -> result.put(String.valueOf(key), value));
+        return result;
+    }
+
+    private static Map<String, Object> loadPanel(MatsimData data) {
+        String cacheKey = panelPath(data).toAbsolutePath().normalize().toString();
+        Map<String, Object> cached = MEMORY_CACHE.get(cacheKey);
+        if (cached != null) return cached;
+        synchronized (MEMORY_CACHE) {
+            cached = MEMORY_CACHE.get(cacheKey);
+            if (cached != null) return cached;
+            try {
+                cached = readGzipJson(panelPath(data));
+                MEMORY_CACHE.put(cacheKey, cached);
+                return cached;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 

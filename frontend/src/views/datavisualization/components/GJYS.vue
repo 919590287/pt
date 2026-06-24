@@ -156,30 +156,35 @@
   <teleport to="#datavisualization_index_box2" defer v-if="runMonitorPanels && !vehiclePanelInfo">
     <MCard2 class="GJYS_right_card vehicle-status-right-card" title="车辆与状态监控" :open="true">
       <template #body>
-        <div class="stat-grid">
-          <div class="stat-item">
-            <div class="stat-label">运行中车辆</div>
-            <div class="stat-value text-primary">{{ activeVehicles }} <span class="unit">辆</span></div>
+        <div class="rm-veh-hero">
+          <div class="rm-veh-hero-head">
+            <span class="rm-veh-hero-label">实时运行车辆</span>
+            <span class="rm-veh-live"><span class="rm-veh-live-dot"></span>实时</span>
           </div>
-          <div class="stat-item">
-            <div class="stat-label">公交车</div>
-            <div class="stat-value mode-bus">{{ activeByMode.bus }} <span class="unit">辆</span></div>
+          <div class="rm-veh-hero-value">{{ activeVehicles }}<span class="rm-veh-hero-unit">辆</span></div>
+          <div class="rm-veh-modes">
+            <div class="rm-veh-mode bus">
+              <span class="rm-veh-mode-name">公交车</span>
+              <span class="rm-veh-mode-val">{{ activeByMode.bus }}</span>
+            </div>
+            <div class="rm-veh-mode subway">
+              <span class="rm-veh-mode-name">地铁</span>
+              <span class="rm-veh-mode-val">{{ activeByMode.subway }}</span>
+            </div>
+            <div class="rm-veh-mode car">
+              <span class="rm-veh-mode-name">私家车</span>
+              <span class="rm-veh-mode-val">{{ activeByMode.car }}</span>
+            </div>
           </div>
-          <div class="stat-item">
-            <div class="stat-label">地铁</div>
-            <div class="stat-value mode-subway">{{ activeByMode.subway }} <span class="unit">辆</span></div>
+        </div>
+        <div class="rm-veh-stats">
+          <div class="rm-veh-stat">
+            <div class="rm-veh-stat-label">累计乘车人数</div>
+            <div class="rm-veh-stat-value success">{{ cumulativePassengers }}<span class="unit">人次</span></div>
           </div>
-          <div class="stat-item">
-            <div class="stat-label">私家车</div>
-            <div class="stat-value mode-car">{{ activeByMode.car }} <span class="unit">辆</span></div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">累计乘车人数</div>
-            <div class="stat-value text-success">{{ cumulativePassengers }} <span class="unit">人次</span></div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-label">平均车速</div>
-            <div class="stat-value text-warning">{{ avgSpeed }} <span class="unit">km/h</span></div>
+          <div class="rm-veh-stat">
+            <div class="rm-veh-stat-label">平均车速</div>
+            <div class="rm-veh-stat-value warning">{{ avgSpeed }}<span class="unit">km/h</span></div>
           </div>
         </div>
       </template>
@@ -1630,47 +1635,165 @@ onUnmounted(() => {
 }
 
 .vehicle-status-right-card {
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--dm2-space-3, 12px);
+  /* 主指标卡：实时运行车辆 */
+  .rm-veh-hero {
+    position: relative;
+    overflow: hidden;
+    padding: 16px 18px 14px;
+    border: 1px solid rgba(0, 113, 227, 0.16);
+    border-radius: var(--dm2-radius-lg, 16px);
+    background:
+      radial-gradient(120% 140% at 100% 0%, rgba(0, 113, 227, 0.12), transparent 60%),
+      linear-gradient(180deg, rgba(247, 250, 254, 0.9), rgba(240, 245, 251, 0.78));
+    box-shadow:
+      0 14px 30px -20px rgba(13, 38, 76, 0.34),
+      inset 0 1px 0 rgba(255, 255, 255, 0.7);
   }
 
-  .stat-item {
-    min-width: 0;
+  .rm-veh-hero-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .rm-veh-hero-label {
+    color: var(--dm2-muted, #667085);
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+  }
+
+  .rm-veh-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--dm2-accent-strong, #005bb5);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .rm-veh-live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #1a8a3f;
+    box-shadow: 0 0 0 0 rgba(26, 138, 63, 0.5);
+    animation: rmVehPulse 1.8s var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1)) infinite;
+  }
+
+  .rm-veh-hero-value {
+    margin-top: 2px;
+    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+    font-size: 38px;
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    color: var(--dm2-ink, #1c2024);
+  }
+
+  .rm-veh-hero-unit {
+    margin-left: 4px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--dm2-muted, #667085);
+  }
+
+  .rm-veh-modes {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .rm-veh-mode {
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    padding: var(--dm2-space-3, 12px);
-    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
-    border-radius: var(--dm2-radius, 13px);
-    background: rgba(244, 247, 251, 0.82);
+    gap: 3px;
+    padding: 8px 10px;
+    border-radius: var(--dm2-radius-sm, 10px);
+    background: rgba(255, 255, 255, 0.66);
+    border: 1px solid rgba(17, 32, 58, 0.06);
   }
 
-  .stat-label {
+  .rm-veh-mode-name {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--dm2-muted, #667085);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .rm-veh-mode-name::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: currentColor;
+  }
+
+  .rm-veh-mode-val {
+    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+    font-size: 19px;
+    font-weight: 800;
+    color: var(--dm2-ink, #1c2024);
+  }
+
+  .rm-veh-mode.bus .rm-veh-mode-name { color: #1a8a3f; }
+  .rm-veh-mode.subway .rm-veh-mode-name { color: #c4291c; }
+  .rm-veh-mode.car .rm-veh-mode-name { color: var(--dm2-accent, #0071e3); }
+
+  /* 次级指标 */
+  .rm-veh-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+
+  .rm-veh-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 14px;
+    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+    border-radius: var(--dm2-radius, 13px);
+    background: rgba(244, 247, 251, 0.7);
+  }
+
+  .rm-veh-stat-label {
     color: var(--dm2-muted, #667085);
     font-size: 11px;
     font-weight: 650;
   }
 
-  .stat-value {
+  .rm-veh-stat-value {
     font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
-    font-size: 20px;
+    font-size: 22px;
     font-weight: 800;
+    color: var(--dm2-ink, #1c2024);
 
-    &.text-primary { color: var(--dm2-accent, #0071e3); }
-    &.text-success { color: #1a8a3f; }
-    &.text-warning { color: #b06a00; }
-    &.mode-bus { color: #1a8a3f; }
-    &.mode-subway { color: #c4291c; }
-    &.mode-car { color: var(--dm2-accent-strong, #005bb5); }
+    &.success { color: #1a8a3f; }
+    &.warning { color: #b06a00; }
+
+    .unit {
+      margin-left: 3px;
+      color: var(--dm2-muted, #667085);
+      font-size: 11px;
+      font-weight: 500;
+    }
   }
+}
 
-  .unit {
-    margin-left: 2px;
-    color: var(--dm2-muted, #667085);
-    font-size: 11px;
-    font-weight: 500;
+@keyframes rmVehPulse {
+  0% { box-shadow: 0 0 0 0 rgba(26, 138, 63, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(26, 138, 63, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(26, 138, 63, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vehicle-status-right-card .rm-veh-live-dot {
+    animation: none;
   }
 }
 

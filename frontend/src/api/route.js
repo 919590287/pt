@@ -47,11 +47,30 @@ export function getLineAll(data) {
   })
 }
 
-export function getRoutePanel(data) {
+export function getRoutePanel(data, config = {}) {
   return request({
     url: `/pt/route/routePanel`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
+  })
+}
+
+export function getRoutePanelDetail(data, config = {}) {
+  return request({
+    url: `/pt/route/routePanelDetail`,
+    method: 'POST',
+    data: data,
+    ...config
+  })
+}
+
+export function getRouteCandidates(data, config = {}) {
+  return request({
+    url: `/pt/route/routeCandidates`,
+    method: 'POST',
+    data: data,
+    ...config
   })
 }
 
