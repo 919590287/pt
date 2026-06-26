@@ -43,7 +43,9 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimRoutePanelCache {
 
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v3";
+    // v4: 运营效益指标(班次/车辆/单班次/车日均) + 客流画像新增 购物/休闲/其他 类型，需重算缓存
+    // v5: 客流画像按维度互斥单选(出行者属性: 老人/学生; 出行目的: 通勤/购物/休闲/其他)，各维度合计≤100%，需重算缓存
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v5";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
@@ -578,6 +580,8 @@ public final class MatsimRoutePanelCache {
         private double capacityTotal = 0.0;
         private long totalBoardings = 0;
         private long totalAlightings = 0;
+        private int departureCount = 0;
+        private final Set<String> vehicleIds = new LinkedHashSet<>();
         private Map<String, Object> demographics = Map.of("commuter", 0, "student", 0, "elderly", 0);
 
         private RoutePanelAccumulator(
@@ -680,13 +684,16 @@ public final class MatsimRoutePanelCache {
 
         private void buildDemographics(Population population) {
             if (population == null || riderIds.isEmpty()) {
-                demographics = demographicsPayload(0, 0, 0, 0);
+                demographics = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
                 return;
             }
             int total = 0;
             int commuter = 0;
             int student = 0;
             int elderly = 0;
+            int shopping = 0;
+            int leisure = 0;
+            int other = 0;
             for (String riderId : riderIds) {
                 Person person = population.getPersons().get(Id.create(riderId, Person.class));
                 if (person == null) {
@@ -696,28 +703,47 @@ public final class MatsimRoutePanelCache {
                 Set<String> activities = activityTypes(person);
                 String attributes = allAttributeText(person);
                 Integer personAge = age(person);
-                if (hasActivity(activities, "home") && hasActivity(activities, "work")
-                        || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作")) {
-                    commuter++;
-                }
-                if (hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
-                        || hasToken(attributes, "student", "school", "university", "学生")) {
+                boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
+                        || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
+                boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
+                        || hasToken(attributes, "student", "school", "university", "学生");
+                boolean isElderly = personAge != null && personAge >= 60
+                        || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
+                boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
+                        || hasToken(attributes, "shopping", "购物");
+                boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
+                        || hasToken(attributes, "leisure", "休闲", "娱乐");
+                // 客流画像分两个维度，各维度内互斥单选，保证每个维度的占比合计 ≤ 100%（前端用“其他”补足到 100%）。
+                // —— 维度一·出行者属性：老人 > 学生 > 成年(其他)。老人/学生互斥，剩余成年人由前端归入“其他”。
+                if (isElderly) {
+                    elderly++;
+                } else if (isStudent) {
                     student++;
                 }
-                if (personAge != null && personAge >= 60
-                        || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休")) {
-                    elderly++;
+                // —— 维度二·出行目的（取主要目的）：通勤 > 购物 > 休闲 > 其他。四类互斥，合计恰为 100%。
+                if (isCommuter) {
+                    commuter++;
+                } else if (isShopping) {
+                    shopping++;
+                } else if (isLeisure) {
+                    leisure++;
+                } else {
+                    other++;
                 }
             }
-            demographics = demographicsPayload(total, commuter, student, elderly);
+            demographics = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
         }
 
-        private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly) {
+        private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
+                int shopping, int leisure, int other) {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("riderCount", total);
-            payload.put("commuter", total == 0 ? 0.0 : round2(commuter * 100.0 / total));
-            payload.put("student", total == 0 ? 0.0 : round2(student * 100.0 / total));
-            payload.put("elderly", total == 0 ? 0.0 : round2(elderly * 100.0 / total));
+            payload.put("commuter", percent(commuter, total));
+            payload.put("student", percent(student, total));
+            payload.put("elderly", percent(elderly, total));
+            payload.put("shopping", percent(shopping, total));
+            payload.put("leisure", percent(leisure, total));
+            payload.put("other", percent(other, total));
             payload.put("source", "population-attributes-and-activities");
             return payload;
         }
@@ -750,6 +776,11 @@ public final class MatsimRoutePanelCache {
             metrics.put("passenger", totalBoardings);
             metrics.put("loadRate", percent(totalBoardings, capacityTotal));
             metrics.put("passengerStrength", routeDistance <= 0 ? 0.0 : round2(totalBoardings / (routeDistance / 1000.0)));
+            int vehicles = vehicleIds.size();
+            metrics.put("departures", departureCount);
+            metrics.put("vehicles", vehicles);
+            metrics.put("perTripFlow", departureCount > 0 ? round2(totalBoardings / (double) departureCount) : 0.0);
+            metrics.put("perVehicleFlow", vehicles > 0 ? round2(totalBoardings / (double) vehicles) : 0.0);
             payload.put("metrics", metrics);
             return payload;
         }
@@ -765,6 +796,10 @@ public final class MatsimRoutePanelCache {
 
         private void indexDepartures(MatsimData data, Collection<Departure> departures) {
             for (Departure departure : departures) {
+                departureCount++;
+                if (departure.getVehicleId() != null) {
+                    vehicleIds.add(departure.getVehicleId().toString());
+                }
                 int capacity = vehicleCapacity(data, departure.getVehicleId());
                 capacityTotal += capacity;
                 capacityByHour[hourOf(departure.getDepartureTime())] += capacity;

@@ -2,6 +2,7 @@ import { COORDINATE_SYSTEM } from "@deck.gl/core";
 import { LineLayer } from "@deck.gl/layers";
 import { Layer, MAP_EVENT, webMercatorToLngLat } from "@/mymap/index.js";
 import { getTileNetwork, getTileNetworkBinary, getFullNetworkBinary } from "@/api/network.js";
+import { clipSegmentToDistrictContext } from "@/utils/adminDistrictRange.js";
 import { colorToCss, lineWidthToPixels } from "./maplibreLayerUtils.js";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "./deckOverlayRegistry.js";
 
@@ -314,6 +315,48 @@ function combineBinaryTiles(keys, tileCache, version = 0) {
   }, version);
 }
 
+function clipRenderableBinaryData(data, context, version = data?.version || 0) {
+  if (!context || !data?.count) return data || emptyBinaryData(version);
+  const sourceValues = [];
+  const targetValues = [];
+  const hashValues = [];
+  const hash2Values = [];
+  const flowValues = [];
+  const lengthValues = [];
+  const laneValues = [];
+
+  for (let i = 0; i < data.count; i += 1) {
+    const source = [data.source[i * 2], data.source[i * 2 + 1]];
+    const target = [data.target[i * 2], data.target[i * 2 + 1]];
+    const clippedSegments = clipSegmentToDistrictContext(source, target, context);
+    clippedSegments.forEach(([from, to], segmentIndex) => {
+      const [hashA, hashB] = hashString(`${data.hash?.[i] || 0}:${data.hash2?.[i] || 0}:${segmentIndex}:${from.join(",")}:${to.join(",")}`);
+      hashValues.push(hashA);
+      hash2Values.push(hashB);
+      sourceValues.push(from[0], from[1]);
+      targetValues.push(to[0], to[1]);
+      flowValues.push(Number(data.flow?.[i]) || 0);
+      lengthValues.push(Number(data.length?.[i]) || 0);
+      laneValues.push(Number(data.lanes?.[i]) || 1);
+    });
+  }
+
+  const count = hashValues.length;
+  if (!count) return emptyBinaryData(version);
+  return attachStats({
+    binary: true,
+    count,
+    origin: [0, 0],
+    hash: Uint32Array.from(hashValues),
+    hash2: Uint32Array.from(hash2Values),
+    source: Float64Array.from(sourceValues),
+    target: Float64Array.from(targetValues),
+    flow: Float32Array.from(flowValues),
+    length: Float32Array.from(lengthValues),
+    lanes: Float32Array.from(laneValues),
+  }, version);
+}
+
 function colorToRgba(color, opacity = 1) {
   const css = colorToCss(color);
   const alpha = Math.max(0, Math.min(255, Math.round((Number(opacity) || 0) * 255)));
@@ -336,11 +379,6 @@ function colorToRgba(color, opacity = 1) {
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0));
-}
-
-function flowStyleForRatio(ratio) {
-  const value = clamp01(ratio);
-  return FLOW_STYLE_STOPS.find((stop) => value < stop.limit) || FLOW_STYLE_STOPS[FLOW_STYLE_STOPS.length - 1];
 }
 
 function interpolate(value, stops) {
@@ -384,6 +422,10 @@ export class NetworkLayer extends Layer {
     this.flowMinWidth = opt.flowMinWidth || 1;
     this.flowMaxWidth = opt.flowMaxWidth || 40;
     this.flowWidthStep = opt.flowWidthStep || 20;
+    this.widthMaxPixels = Number.isFinite(Number(opt.widthMaxPixels)) ? Number(opt.widthMaxPixels) : null;
+    this.flowStyleStops = Array.isArray(opt.flowStyleStops) && opt.flowStyleStops.length
+      ? opt.flowStyleStops
+      : FLOW_STYLE_STOPS;
     this.color = colorToCss(opt.color ?? 0x1f78b4);
     this.opacity = opt.opacity ?? 1;
     this.layerId = `network-line-${this.id}`;
@@ -395,6 +437,7 @@ export class NetworkLayer extends Layer {
     this.jsonFallbackRequest = opt.jsonFallbackRequest || getTileNetwork;
     this.datasource = opt.datasource || "";
     this.tileExtraParams = opt.tileExtraParams || {};
+    this.lineClipContext = opt.lineClipContext || null;
     this.tileCache = new Map();
     this.loadingTiles = new Set();
     this.visibleTileKeys = [];
@@ -752,19 +795,39 @@ export class NetworkLayer extends Layer {
   async combineVisibleTileData(displayKeys, version, token) {
     const seq = ++this.combineSeq;
     if (!this.ensureWorker()) {
-      this.deckData = combineBinaryTiles(displayKeys, this.tileCache, version);
+      this.deckData = this.applyLineClipContext(combineBinaryTiles(displayKeys, this.tileCache, version), version);
       this.queueDeckUpdate();
       return;
     }
     try {
       const deckData = await this.postWorker("combine", { keys: displayKeys, version });
       if (this.isDisposed || token !== this.tileLoadToken || seq !== this.combineSeq) return;
-      this.deckData = deckData;
+      this.deckData = this.applyLineClipContext(deckData, version);
       this.queueDeckUpdate();
     } catch (error) {
       if (this.isDisposed || token !== this.tileLoadToken || seq !== this.combineSeq) return;
       console.warn(`[${this.name}] worker tile combine failed`, error);
-      this.deckData = combineBinaryTiles(displayKeys, this.tileCache, version);
+      this.deckData = this.applyLineClipContext(combineBinaryTiles(displayKeys, this.tileCache, version), version);
+      this.queueDeckUpdate();
+    }
+  }
+
+  applyLineClipContext(data, version = data?.version || 0) {
+    return clipRenderableBinaryData(data, this.lineClipContext, version);
+  }
+
+  setLineClipContext(context = null) {
+    const nextContext = context || null;
+    if (this.lineClipContext === nextContext) return;
+    this.lineClipContext = nextContext;
+    this.flowWidthCache = null;
+    this.combinedCacheKey = "";
+    if (this.tileMode) {
+      this.refreshVisibleTileData();
+      if (!this.visibleTileKeys.length) {
+        this.scheduleTileLoad(true);
+      }
+    } else {
       this.queueDeckUpdate();
     }
   }
@@ -853,7 +916,8 @@ export class NetworkLayer extends Layer {
     }
 
     if (data.maxFlow <= data.minFlow) {
-      const style = flowStyleForRatio(data.maxFlow > 0 ? 1 : 0);
+      const value = Number(data.maxFlow) || 0;
+      const style = this.flowStyleForValue(value, value > 0 ? 1 : 0);
       widths.fill(baseWidth + stepWidth * style.widthStep);
       for (let i = 0; i < data.count; i++) {
         const offset = i * 4;
@@ -867,7 +931,7 @@ export class NetworkLayer extends Layer {
       for (let i = 0; i < data.count; i++) {
         const value = Math.max(data.minFlow, Number(data.flow[i]) || 0);
         const ratio = (value - data.minFlow) / span;
-        const style = flowStyleForRatio(ratio);
+        const style = this.flowStyleForValue(value, ratio);
         const offset = i * 4;
         widths[i] = baseWidth + stepWidth * style.widthStep;
         colors[offset] = style.color[0];
@@ -880,6 +944,26 @@ export class NetworkLayer extends Layer {
     const attributes = { widths, colors };
     this.flowWidthCache = { key: cacheKey, attributes };
     return attributes;
+  }
+
+  flowStyleForValue(value, ratio) {
+    const stops = Array.isArray(this.flowStyleStops) && this.flowStyleStops.length
+      ? this.flowStyleStops
+      : FLOW_STYLE_STOPS;
+    const hasAbsoluteStops = stops.some((stop) => Number.isFinite(Number(stop.maxValue)));
+    if (hasAbsoluteStops) {
+      const numericValue = Number(value) || 0;
+      return stops.find((stop) => numericValue <= Number(stop.maxValue)) || stops[stops.length - 1];
+    }
+    return this.flowStyleForRatio(ratio);
+  }
+
+  flowStyleForRatio(ratio) {
+    const value = clamp01(ratio);
+    const stops = Array.isArray(this.flowStyleStops) && this.flowStyleStops.length
+      ? this.flowStyleStops
+      : FLOW_STYLE_STOPS;
+    return stops.find((stop) => value < stop.limit) || stops[stops.length - 1];
   }
 
   queueDeckUpdate() {
@@ -947,7 +1031,15 @@ export class NetworkLayer extends Layer {
 
     const lineColor = colorToRgba(this.color, visualOpacity);
     const softEdgePixels = this.fixedPixelWidth || this.flowControl || Number(this.map?.zoom) < 11.5 ? 0 : networkLineSoftEdgePixels();
-    const widthMaxPixels = this.flowControl ? 18 : 22;
+    const widthMaxPixels = this.widthMaxPixels || (this.flowControl ? 24 : 22);
+    const flowColorAccessor = (object, info = {}) => {
+      const colors = attributes.getColor?.value;
+      const index = Number.isFinite(Number(info.index)) ? Number(info.index) : 0;
+      const offset = index * 4;
+      return colors && colors.length >= offset + 4
+        ? [colors[offset], colors[offset + 1], colors[offset + 2], colors[offset + 3]]
+        : lineColor;
+    };
     const commonProps = {
       coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
       beforeId: this.map?.buildingLayerId,
@@ -977,7 +1069,7 @@ export class NetworkLayer extends Layer {
         widthScale: this.flowControl
           ? widthScale * (1 + softEdgePixels / Math.max(1, zoomWidth))
           : widthScale,
-        getColor: lineColor,
+        getColor: this.flowControl ? flowColorAccessor : lineColor,
         getWidth: this.flowControl ? getWidth : getWidth + softEdgePixels,
         widthMinPixels: networkLineMinPixels() + softEdgePixels,
         widthMaxPixels: widthMaxPixels + softEdgePixels,
@@ -990,7 +1082,7 @@ export class NetworkLayer extends Layer {
         length: data.count,
         attributes,
       },
-      getColor: lineColor,
+      getColor: this.flowControl ? flowColorAccessor : lineColor,
       getWidth,
       widthMinPixels: this.fixedPixelWidth
         ? 0.1
@@ -1014,6 +1106,29 @@ export class NetworkLayer extends Layer {
     const nextFlowControl = !!flowControl;
     if (nextFlowControl === this.flowControl) return;
     this.flowControl = nextFlowControl;
+    this.flowWidthCache = null;
+    this.queueDeckUpdate();
+  }
+
+  setColor(color) {
+    const nextColor = colorToCss(color ?? this.color);
+    if (nextColor === this.color) return;
+    this.color = nextColor;
+    this.queueDeckUpdate();
+  }
+
+  setOpacity(opacity) {
+    const nextOpacity = Math.max(0, Math.min(1, Number(opacity)));
+    if (!Number.isFinite(nextOpacity)) return;
+    if (Math.abs(nextOpacity - this.opacity) < 0.001) return;
+    this.opacity = nextOpacity;
+    this.flowWidthCache = null;
+    this.queueDeckUpdate();
+  }
+
+  setFlowStyleStops(stops) {
+    if (!Array.isArray(stops) || !stops.length) return;
+    this.flowStyleStops = stops;
     this.flowWidthCache = null;
     this.queueDeckUpdate();
   }

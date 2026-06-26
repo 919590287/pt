@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jts.gjcxfzksh.config.MatsimConfig;
 import com.jts.gjcxfzksh.data.Datasource;
+import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.entry.Scheme;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -237,9 +238,30 @@ public class ModelCacheManager {
             Map<String, Object> manifest = JSON.readValue(manifestPath.toFile(), MAP_TYPE);
             return "ready".equals(manifest.get("status"))
                     && MANAGER_CACHE_VERSION.equals(manifest.get("cacheVersion"))
-                    && sameSourceFingerprint(sourceFingerprint(scheme), manifest.get("sources"));
+                    && sameSourceFingerprint(sourceFingerprint(scheme), manifest.get("sources"))
+                    && componentCachesReady(scheme);
         } catch (Exception e) {
             log.warn("模型缓存 manifest 读取失败: {}", manifestPath, e);
+            return false;
+        }
+    }
+
+    private boolean componentCachesReady(Scheme scheme) {
+        try {
+            MatsimData data = new MatsimData(
+                    scheme.getName(),
+                    scheme.getOutput(),
+                    scheme.getCache(),
+                    scheme.isLargeModel()
+            );
+            if (scheme.getDesc() != null) {
+                data.setArea(scheme.getDesc().getArea());
+            }
+            return MatsimPrecomputedCache.isVisualCacheReady(data)
+                    && MatsimRoutePanelCache.isReady(data)
+                    && MatsimStationPanelCache.isReady(data);
+        } catch (Exception e) {
+            log.warn("模型组件缓存状态读取失败: model={}", scheme == null ? "" : scheme.getName(), e);
             return false;
         }
     }

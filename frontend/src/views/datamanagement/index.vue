@@ -2387,6 +2387,23 @@ function activeDisplayRangeContext() {
   };
 }
 
+function displayRangeFitBounds() {
+  return activeDisplayRangeContext()?.bounds
+    || featureCollectionBounds(adminDistrictCollection)
+    || featureCollectionBounds({
+      type: "FeatureCollection",
+      features: [
+        ...(realDataCollections.lines?.features || []),
+        ...(realDataCollections.stations?.features || []),
+        ...(realDataCollections.depots?.features || []),
+      ],
+    });
+}
+
+function fitDisplayRangeBounds() {
+  fitBounds(displayRangeFitBounds());
+}
+
 function syncRealDataSourceData() {
   const map = MapRef.value?.map;
   if (!map) return;
@@ -6959,6 +6976,7 @@ watch(selectedArea, async (nextArea, previousArea) => {
 watch(selectedDisplayRange, () => {
   closeTransientSurfaces();
   applyDisplayRangeFilter({ updateSources: true, clearSelection: true });
+  nextTick(fitDisplayRangeBounds);
 });
 watch(activeKey, (key, previousKey) => {
   closeTransientSurfaces();

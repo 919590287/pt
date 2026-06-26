@@ -13,11 +13,22 @@
   </Transition>
 
   <div class="datebase_box" role="search" aria-label="方案与模型选择">
+    <div class="data-source-segment" role="group" aria-label="数据源类型">
+      <button
+        v-for="item in DATA_SOURCE_OPTIONS"
+        :key="item.value"
+        type="button"
+        :class="{ active: dataSourceMode === item.value }"
+        @click="dataSourceMode = item.value"
+      >
+        {{ item.label }}
+      </button>
+    </div>
     <label class="handle" for="scheme-selector">当前方案</label>
-    <el-select id="scheme-selector" v-model="datebase.scheme" clearable filterable :loading="isLoadingSchemes" aria-label="当前方案">
+    <el-select id="scheme-selector" v-model="datebase.scheme" clearable filterable :loading="isLoadingSchemes" :disabled="!isSimulationMode" aria-label="当前方案">
       <el-option v-for="item in schemeList" :key="item" :label="item" :value="item"> </el-option>
     </el-select>
-    <el-select class="model-select" v-model="modelPickerValue" :disabled="!datebase.scheme || isLoadingModels" clearable filterable :loading="isLoadingModels" aria-label="选择模型" @change="handleModelPick">
+    <el-select class="model-select" v-model="modelPickerValue" :disabled="!isSimulationMode || !datebase.scheme || isLoadingModels" clearable filterable :loading="isLoadingModels" aria-label="选择模型" @change="handleModelPick">
       <el-option v-for="item in modelList" :key="item.name" :label="getModelLabel(item)" :value="item.name">
         <div class="model-option">
           <div class="model-option-main">
@@ -62,19 +73,40 @@
           <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M3 12h4l3-8 4 16 3-8h4"></path>
           </svg>
-          <span class="brand-text">运行监测</span>
+          <span class="brand-text">{{ props.mode === 'pfa' ? '客流分析' : '运行监测' }}</span>
         </div>
 
-        <nav class="sidebar-nav" aria-label="运行监测导航">
-          <div v-for="item in runMonitorMenuItems" :key="item.key" class="menu-group">
+        <nav class="sidebar-nav" :aria-label="props.mode === 'pfa' ? '客流分析导航' : '运行监测导航'">
+          <div v-for="item in displayMenuItems" :key="item.key" class="menu-group">
             <button
               type="button"
-              :class="['nav-item', activeTab === item.key ? 'active' : '']"
-              @click="handleSetActiveTab(item.key)"
+              :class="['nav-item', isNavItemActive(item) ? 'active' : '']"
+              :aria-expanded="item.children ? pfaIsExpanded(item.key) : undefined"
+              @click="handleNavItemClick(item)"
             >
               <span class="nav-icon" v-html="item.icon"></span>
               <span class="nav-label">{{ item.label }}</span>
+              <span v-if="item.children" class="chevron-icon" :class="{ expanded: pfaIsExpanded(item.key) }">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </span>
             </button>
+
+            <transition name="slide-fade">
+              <div v-if="item.children && pfaIsExpanded(item.key)" class="sub-nav-list">
+                <button
+                  v-for="sub in item.children"
+                  :key="sub.key"
+                  type="button"
+                  :class="['sub-nav-item', isPfaSubActive(item.key, sub.key) ? 'active' : '']"
+                  @click.stop="handleNavSubClick(item, sub)"
+                >
+                  <span class="sub-dot"></span>
+                  <span class="nav-label">{{ sub.label }}</span>
+                </button>
+              </div>
+            </transition>
           </div>
         </nav>
 
@@ -85,8 +117,8 @@
       <button
         type="button"
         :class="['dm-panel-collapse-tab', 'dm-left-collapse-tab', isRunMonitorLeftCollapsed ? 'is-collapsed' : '']"
-        :title="isRunMonitorLeftCollapsed ? '展开运行监测面板' : '收起运行监测面板'"
-        :aria-label="isRunMonitorLeftCollapsed ? '展开运行监测面板' : '收起运行监测面板'"
+        :title="(isRunMonitorLeftCollapsed ? '展开' : '收起') + (props.mode === 'pfa' ? '客流分析面板' : '运行监测面板')"
+        :aria-label="(isRunMonitorLeftCollapsed ? '展开' : '收起') + (props.mode === 'pfa' ? '客流分析面板' : '运行监测面板')"
         :aria-pressed="isRunMonitorLeftCollapsed"
         @click="isRunMonitorLeftCollapsed = !isRunMonitorLeftCollapsed"
       >
@@ -223,11 +255,10 @@
       <div id="right-info-panel" :class="['dm-overview-panel', 'run-monitor-right-panel', isRightCollapsed ? 'is-collapsed' : '']" v-show="isRightPanelVisible">
         <el-scrollbar class="flex_column_scroll_box">
           <div id="datavisualization_index_box2">
-            <div v-if="activeTab === '总体客流变化'" class="rm-right-card overall-flow-card">
+            <div v-if="activeTab === '总体客流变化'" class="rm-right-card overall-flow-card rm-compact-flow-card">
               <div class="rm-right-card-title">
                 <div>
-                  <p class="rm-panel-kicker">总体客流</p>
-                  <h2>一天总客流变化</h2>
+                  <h2>总体客流变化</h2>
                 </div>
                 <el-tag v-if="overallFlowLoading" type="info">加载中</el-tag>
                 <el-tag v-else-if="overallFlowError" type="danger">加载失败</el-tag>
@@ -236,6 +267,14 @@
                 <div class="rm-summary-item">
                   <span>总客流</span>
                   <strong>{{ formatOverallFlow(overallFlowTotal) }}</strong>
+                </div>
+                <div class="rm-summary-item">
+                  <span>公交客流</span>
+                  <strong>{{ formatOverallFlow(overallFlowBusTotal) }}</strong>
+                </div>
+                <div class="rm-summary-item">
+                  <span>地铁客流</span>
+                  <strong>{{ formatOverallFlow(overallFlowMetroTotal) }}</strong>
                 </div>
               </div>
               <div v-if="overallFlowError" class="rm-panel-error">{{ overallFlowError }}</div>
@@ -280,12 +319,12 @@
               </template>
             </div>
 
-            <div v-else-if="activeTab === '线路客流监测'" class="rm-right-card line-flow-card">
-              <template v-if="selectedLinePanel">
+            <div v-else-if="activeTab === '线路客流监测' && !(props.mode === 'pfa' && selectedLineName)" class="rm-right-card line-flow-card">
+              <template v-if="selectedLinePanel && props.mode !== 'pfa'">
                 <div class="rm-right-card-title">
                   <div>
-                    <p class="rm-panel-kicker">线路客流</p>
-                    <h2>{{ selectedLineName || '线路客流量' }}</h2>
+                    <h2>线路客流监测</h2>
+                    <p v-if="selectedLineName" class="rm-right-card-subtitle">{{ selectedLineName }}</p>
                   </div>
                 </div>
                 <div class="rm-overall-summary">
@@ -349,13 +388,14 @@
               </div>
             </div>
 
-            <div v-else-if="activeTab === '站点客流监测'" class="rm-right-card station-flow-card">
-              <template v-if="selectedStationPanel">
+            <div v-else-if="activeTab === '站点客流监测' && !(props.mode === 'pfa' && selectedStationName)" class="rm-right-card station-flow-card">
+              <template v-if="selectedStationName && props.mode !== 'pfa'">
                 <div class="rm-right-card-title">
                   <div>
-                    <p class="rm-panel-kicker">站点客流</p>
-                    <h2>{{ selectedStationName || '站点客流量' }}</h2>
+                    <h2>站点客流监测</h2>
+                    <p v-if="selectedStationName" class="rm-right-card-subtitle">{{ selectedStationName }}</p>
                   </div>
+                  <el-tag v-if="!selectedStationPanel" type="info">暂无客流数据</el-tag>
                 </div>
                 <div class="rm-overall-summary">
                   <div class="rm-summary-item">
@@ -447,6 +487,25 @@
           </button>
         </div>
 
+        <div v-if="showDisplayRangeControl" class="control-block">
+          <button
+            :class="['control-btn', selectedDisplayRange !== DISPLAY_RANGE_ALL || showRangePopover ? 'active' : '']"
+            type="button"
+            @click="toggleRangePopover"
+            :title="displayRangeButtonTitle"
+            :aria-label="displayRangeButtonAriaLabel"
+            :aria-expanded="showRangePopover"
+            aria-controls="rm-range-popover"
+            aria-haspopup="dialog"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6.5 8 4l8 2.5 5-2.5v13.5L16 20l-8-2.5-5 2.5V6.5Z"></path>
+              <path d="M8 4v13.5"></path>
+              <path d="M16 6.5V20"></path>
+            </svg>
+          </button>
+        </div>
+
         <!-- Block 2: Line Settings Toggle & Floating Popover -->
         <div class="control-block settings-block">
           <button
@@ -482,6 +541,69 @@
                 </span>
                 <el-slider v-model="vehicleSize" :min="minVehicleSize" :max="maxVehicleSize" :step="1" @input="handleVehicleSizeChange" />
               </div>
+              <template v-else-if="props.mode === 'pfa'">
+                <div class="slider-row">
+                  <span class="label">
+                    <span>线宽</span>
+                    <span class="val-text">{{ `${lineWidth}px` }}</span>
+                  </span>
+                  <el-slider v-model="lineWidth" :min="minLineWidth" :max="maxLineWidth" :step="0.1" @input="handleLineWidthChange" />
+                </div>
+                <div class="segment-style-panel">
+                  <div class="segment-style-head">
+                    <span>断面颜色</span>
+                    <span>客流阈值</span>
+                  </div>
+                  <div
+                    v-for="item in pfaSegmentStyleSettings"
+                    :key="item.key"
+                    class="segment-style-row"
+                  >
+                    <button
+                      type="button"
+                      :class="['segment-style-color', activePfaSegmentColorKey === item.key ? 'active' : '']"
+                      @click="activePfaSegmentColorKey = item.key"
+                    >
+                      <span class="segment-color-swatch" :style="{ backgroundColor: item.color }"></span>
+                      <span>{{ item.label }}</span>
+                    </button>
+                    <el-input-number
+                      v-if="item.key !== 'high'"
+                      v-model="item.max"
+                      :min="0"
+                      :step="1"
+                      :controls="false"
+                      size="small"
+                      @update:model-value="applyPfaSegmentFlowStyle"
+                      @change="applyPfaSegmentFlowStyle"
+                    />
+                    <span v-else class="segment-style-tail">大于 {{ normalizedPfaSegmentThresholds.mid }}</span>
+                  </div>
+                  <div class="segment-palette-box">
+                    <div class="segment-palette-meta">
+                      <span>调色盘</span>
+                      <strong>{{ activePfaSegmentLabel }}</strong>
+                    </div>
+                    <div
+                      class="segment-color-wheel"
+                      role="slider"
+                      tabindex="0"
+                      :aria-label="`调整${activePfaSegmentLabel}颜色`"
+                      @pointerdown="handlePfaSegmentPalettePointer"
+                      @pointermove="handlePfaSegmentPalettePointer"
+                    >
+                      <span class="segment-color-crosshair" :style="pfaSegmentPaletteCrosshairStyle"></span>
+                    </div>
+                  </div>
+                </div>
+                <div class="slider-row">
+                  <span class="label">
+                    <span>透明度</span>
+                    <span class="val-text">{{ `${pfaSegmentOpacity}%` }}</span>
+                  </span>
+                  <el-slider v-model="pfaSegmentOpacity" :min="0" :max="100" :step="1" @input="handlePfaSegmentOpacityChange" />
+                </div>
+              </template>
               <template v-else>
                 <div class="layer-mode-row">
                   <span>显示图层</span>
@@ -521,18 +643,43 @@
                   />
                 </el-select>
               </div>
-              <div class="slider-row" v-else-if="baseMapLineMode === 'bus-network'">
+              <div class="slider-row" v-else-if="props.mode !== 'pfa' && baseMapLineMode === 'bus-network'">
                 <span class="label">
                   <span>站点大小</span>
                   <span class="val-text">{{ `${stationSize}px` }}</span>
                 </span>
                 <el-slider v-model="stationSize" :min="minStationSize" :max="maxStationSize" :step="1" @input="handleStationSizeChange" />
               </div>
-              <div class="flow-control-row" v-else>
+              <div class="flow-control-row" v-else-if="props.mode !== 'pfa'">
                 <span>按流量控制</span>
                 <el-switch v-model="flowControl" @change="handleFlowControlChange" />
               </div>
             </div>
+          </div>
+        </Transition>
+
+        <Transition name="popover-fade">
+          <div v-if="showRangePopover" id="rm-range-popover" class="range-popover rm-range-popover" role="dialog" aria-modal="false" @click.stop @keydown.esc.stop.prevent="closeRangePopover">
+            <div class="popover-title">选择行政区</div>
+            <div v-if="isLoadingDisplayRanges" class="range-state">行政区加载中</div>
+            <div v-else-if="displayRangeOptions.length" class="range-list" role="listbox" aria-label="行政区显示范围">
+              <button
+                v-for="item in displayRangeOptions"
+                :key="item"
+                :class="['range-option', selectedDisplayRange === item ? 'active' : '']"
+                type="button"
+                role="option"
+                :aria-selected="selectedDisplayRange === item"
+                @click="selectDisplayRange(item)"
+              >
+                <span class="range-option-name">{{ item }}</span>
+                <svg v-if="selectedDisplayRange === item" class="range-option-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+              </button>
+            </div>
+            <p v-else class="range-state">暂无行政区范围</p>
+            <p v-if="displayRangeError" class="range-error">{{ displayRangeError }}</p>
           </div>
         </Transition>
       </div>
@@ -553,7 +700,7 @@
     </div>
   </template>
   <div v-else ref="box1" class="model_box box1" :style="box1Style">
-    <el-empty description="请选择模型" />
+    <el-empty :description="isSimulationMode ? '请选择模型' : '真实数据暂未接入'" />
   </div>
 </template>
 
@@ -563,10 +710,20 @@ import { Close, Remove, SwitchButton, VideoPlay } from "@element-plus/icons-vue"
 import { ElMessage, ElMessageBox } from "@/plugins/element-plus";
 import { getSchemeList, getModelList, loadModel, unloadModel } from "@/api/scheme.js";
 import { dataCenter } from "@/api/data.js";
-import { getLineAll, getRouteCandidates, getRoutePanel, getRouteTileBinary } from "@/api/route.js";
+import { getLineAll, getRouteCandidates, getRouteDetail, getRoutePanel, getRouteTileBinary } from "@/api/route.js";
 import { getFacilityAll } from "@/api/facility.js";
 import { useModelSelectionStore } from "@/stores/modelSelection.js";
-import { webMercatorToLngLat } from "@/mymap/index.js";
+import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
+import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
+import {
+  activeDistrictContext,
+  clipLineStringToDistrictContext,
+  districtNamesFromCollection,
+  emptyFeatureCollection as emptyDistrictFeatureCollection,
+  normalizeAdminDistrictCollection,
+  pointInDistrictContext,
+  segmentIntersectsDistrictContext,
+} from "@/utils/adminDistrictRange.js";
 import { NetworkLayer } from "./layers/NetworkLayer.js";
 import { RouteLayer } from "./layers/RouteLayer.js";
 import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
@@ -574,6 +731,13 @@ import busStationHighlightIconUrl from "@/assets/images/datamanagement/bus-stati
 import "../datamanagement/tokens.css";
 
 import { useDraggable } from "@vueuse/core";
+
+// mode: "monitor" = 运行监测（默认）；"pfa" = 客流分析（复用本视图）
+const props = defineProps({
+  mode: { type: String, default: "monitor" },
+});
+// 客流分析模式下，让 XLZL/ZDZL 把完整 MCard2 面板 teleport 到右侧（运行监测仍用简化卡片）
+provide("pfaRightPanel", computed(() => props.mode === "pfa"));
 
 const GJYS = defineAsyncComponent(() => import("./components/GJYS.vue"));
 const XLZL = defineAsyncComponent(() => import("./components/XLZL.vue"));
@@ -618,9 +782,15 @@ function observeLeftPanelSize() {
 }
 
 const MODEL_SELECTION_KEY = "datavisualization";
+const DATA_SOURCE_OPTIONS = [
+  { value: "simulation", label: "仿真" },
+  { value: "real", label: "真实" },
+];
 const modelSelectionStore = useModelSelectionStore();
 const restoredSelection = modelSelectionStore.getSelection(MODEL_SELECTION_KEY);
 let isRestoringSelection = Boolean(restoredSelection.scheme);
+const dataSourceMode = ref(restoredSelection.sourceMode || "simulation");
+const isSimulationMode = computed(() => dataSourceMode.value === "simulation");
 const datebase = ref({
   scheme: restoredSelection.scheme,
   model: restoredSelection.model,
@@ -642,6 +812,7 @@ let centerRequestSeq = 0;
 let modelLoadSeq = 0;
 let backgroundTaskSeq = 0;
 const selectModel = computed(() => {
+  if (!isSimulationMode.value) return null;
   const item = modelList.value?.find((item) => item.name === datebase.value.model);
 
   return item;
@@ -650,12 +821,14 @@ const backgroundTaskModel = computed(() => modelList.value?.find((item) => item.
 const isModelReadyForView = (item) => Boolean(item?.loadStatus && item?.cacheStatus === "ready");
 const isModelReady = computed(() => isModelReadyForView(selectModel.value));
 const backgroundTaskVisible = computed(() => Boolean(
-  backgroundTaskModel.value
+  isSimulationMode.value
+  && backgroundTaskModel.value
   && backgroundTaskModel.value.name !== datebase.value.model
   && !isModelReadyForView(backgroundTaskModel.value),
 ));
 const fullScreenLoadingVisible = computed(() => (
-  !isModelReady.value
+  isSimulationMode.value
+  && !isModelReady.value
   && (initialModelBootstrap.value || isLoadingSchemes.value || isLoadingModels.value || Boolean(selectModel.value))
 ));
 const modelLoadingDialogVisible = computed(() => fullScreenLoadingVisible.value && !modelLoadingDismissed.value);
@@ -663,7 +836,7 @@ const modelLoadingNotice = computed(() => {
   if (!selectModel.value) return "模型状态正在检查，请稍后。";
   return `“${getModelLabel(selectModel.value)}”开始后台加载，请稍后。`;
 });
-const modelLoadingKey = computed(() => `${datebase.value.scheme || ""}:${selectModel.value?.name || ""}:${selectModel.value?.loadStage || ""}:${selectModel.value?.cacheStatus || ""}`);
+const modelLoadingKey = computed(() => `${dataSourceMode.value}:${datebase.value.scheme || ""}:${selectModel.value?.name || ""}:${selectModel.value?.loadStage || ""}:${selectModel.value?.cacheStatus || ""}`);
 const cacheProgressPercent = computed(() => modelProgressPercent(selectModel.value));
 const backgroundTaskTitle = computed(() => {
   const item = backgroundTaskModel.value;
@@ -882,6 +1055,7 @@ async function handleUnloadModel(item) {
 watch(
   () => datebase.value.scheme,
   async (scheme) => {
+    if (!isSimulationMode.value) return;
     const restoringModel = isRestoringSelection && scheme === restoredSelection.scheme ? restoredSelection.model : "";
     setActiveModel("");
     clearBackgroundTask();
@@ -933,9 +1107,10 @@ watch(
   ensureSelectedModelReady,
 );
 watch(
-  [() => datebase.value.scheme, () => datebase.value.model],
+  [dataSourceMode, () => datebase.value.scheme, () => datebase.value.model],
   () => {
     modelSelectionStore.setSelection(MODEL_SELECTION_KEY, {
+      sourceMode: dataSourceMode.value,
       scheme: datebase.value.scheme,
       model: datebase.value.model,
     });
@@ -945,7 +1120,27 @@ watch(modelLoadingKey, () => {
   modelLoadingDismissed.value = false;
 });
 
+watch(dataSourceMode, async (mode) => {
+  closeLineRoutePicker();
+  clearLineSelection();
+  clearStationSelection();
+  runMonitorSearchKeyword.value = "";
+  if (mode !== "simulation") {
+    loadError.value = "";
+    modelLoadingDismissed.value = true;
+    return;
+  }
+  modelLoadingDismissed.value = false;
+  if (!schemeList.value.length) {
+    await handleGetSchemeList({ autoSelect: true });
+  } else if (datebase.value.scheme && !modelList.value.length) {
+    await handleGetModelList();
+  }
+  await ensureSelectedModelReady();
+});
+
 async function ensureSelectedModelReady() {
+  if (!isSimulationMode.value) return;
   modelPickerValue.value = datebase.value.model || "";
   if (!datebase.value.model) return;
   const seq = ++modelLoadSeq;
@@ -1068,8 +1263,73 @@ const runMonitorMenuItems = [
   },
 ];
 
-const activeTab = ref("总体客流变化");
+const activeTab = ref(props.mode === "pfa" ? "线路客流监测" : "总体客流变化");
 const isRunMonitorLeftCollapsed = ref(false);
+
+// 客流分析：父级在左侧切换，右侧由对应组件只显示当前模块
+const PFA_LINE_SECTIONS = [
+  { key: "segments", label: "线路断面客流" },
+  { key: "boarding", label: "站点乘降" },
+  { key: "efficiency", label: "运营效益" },
+  { key: "demographics", label: "客流画像" },
+  { key: "transfer", label: "关联线路" },
+];
+const PFA_STATION_SECTIONS = [
+  { key: "boarding", label: "站点乘降" },
+  { key: "od", label: "客流OD" },
+  { key: "demographics", label: "客流画像" },
+  { key: "reachability", label: "可达性" },
+];
+const pfaLineSection = ref("segments");
+const pfaStationSection = ref("boarding");
+const pfaExpandedKeys = ref(props.mode === "pfa" ? ["线路客流监测", "站点客流监测"] : []);
+provide("pfaLineSection", pfaLineSection);
+provide("pfaStationSection", pfaStationSection);
+
+// 侧栏导航：运行监测为四项；客流分析为线路/站点两组模块
+const displayMenuItems = computed(() => {
+  if (props.mode === "pfa") {
+    return [
+      { ...runMonitorMenuItems[1], label: "线路客流分析", children: PFA_LINE_SECTIONS },
+      { ...runMonitorMenuItems[2], label: "站点客流分析", children: PFA_STATION_SECTIONS },
+    ];
+  }
+  return runMonitorMenuItems;
+});
+
+const pfaIsExpanded = (key) => pfaExpandedKeys.value.includes(key);
+const isNavItemActive = (item) => {
+  if (props.mode === "pfa" && item?.children) return false;
+  return activeTab.value === item?.key;
+};
+const isPfaSubActive = (itemKey, subKey) => {
+  if (activeTab.value !== itemKey) return false;
+  if (itemKey === "线路客流监测") return pfaLineSection.value === subKey;
+  if (itemKey === "站点客流监测") return pfaStationSection.value === subKey;
+  return false;
+};
+function pfaToggleExpand(key) {
+  const i = pfaExpandedKeys.value.indexOf(key);
+  if (i >= 0) pfaExpandedKeys.value.splice(i, 1);
+  else pfaExpandedKeys.value.push(key);
+}
+function handleNavItemClick(item) {
+  if (item.children) {
+    if (!pfaIsExpanded(item.key)) pfaToggleExpand(item.key);
+    else if (activeTab.value === item.key) pfaToggleExpand(item.key);
+    if (activeTab.value !== item.key) handleSetActiveTab(item.key);
+  } else {
+    handleSetActiveTab(item.key);
+  }
+}
+function handleNavSubClick(item, sub) {
+  if (item.key === "线路客流监测") {
+    pfaLineSection.value = sub.key;
+  } else if (item.key === "站点客流监测") {
+    pfaStationSection.value = sub.key;
+  }
+  if (activeTab.value !== item.key) handleSetActiveTab(item.key);
+}
 const lineMonitorRef = ref(null);
 const stationMonitorRef = ref(null);
 const selectedLineKey = ref("");
@@ -1084,6 +1344,8 @@ const runMonitorLineOptions = ref([]);
 const runMonitorStationOptions = ref([]);
 provide("runMonitorLineOptions", runMonitorLineOptions);
 provide("runMonitorStationOptions", runMonitorStationOptions);
+provide("runMonitorLineOptionFilter", (option) => runMonitorOptionInDisplayRange(option, "line"));
+provide("runMonitorStationOptionFilter", (option) => runMonitorOptionInDisplayRange(option, "station"));
 
 const runMonitorSearchKeyword = ref("");
 const isSearchFocused = ref(false);
@@ -1100,7 +1362,10 @@ const runMonitorSearchResults = computed(() => {
   const query = runMonitorSearchKeyword.value.trim().toLowerCase();
   if (!query) return [];
   const source = runMonitorSearchType.value === "line" ? runMonitorLineOptions.value : runMonitorStationOptions.value;
-  return source.filter((item) => String(item.label).toLowerCase().includes(query)).slice(0, 50);
+  return source
+    .filter((item) => runMonitorOptionInDisplayRange(item, runMonitorSearchType.value))
+    .filter((item) => String(item.label).toLowerCase().includes(query))
+    .slice(0, 50);
 });
 const showRunMonitorSearchResults = computed(() => isSearchFocused.value && Boolean(runMonitorSearchKeyword.value.trim()));
 
@@ -1193,6 +1458,9 @@ watch(effectiveTab, (tab) => {
   closeLineRoutePicker();
   if (tab !== "线路客流监测") {
     setMonitorSelectedRouteLinks([]);
+    setMonitorTransferRouteLinks([]);
+    selectedRouteMapLinks.value = [];
+    selectedRouteDetail.value = null;
     selectedLinePanel.value = null;
     selectedLineName.value = "";
     selectedLineKey.value = "";
@@ -1207,6 +1475,7 @@ watch(effectiveTab, (tab) => {
   stationSize.value = 32;
   applyLineWidth();
   applyStationSize();
+  syncBusNetworkDisplayRange();
   scheduleLayerSyncBurst(4);
   observeLeftPanelSize();
 });
@@ -1247,19 +1516,127 @@ function toggleRightPanel() {
 const showLineWidthPopover = ref(false);
 const lineWidth = ref(1.2);
 const stationSize = ref(32);
+const pfaSegmentOpacity = ref(100);
 const vehicleSize = ref(36);
 const referenceZoom = ref(10.74);
 let isZoomCaptured = false;
 const baseMapLineMode = ref("bus-network");
 provide("BaseMapLineModeRef", baseMapLineMode);
 
+const DISPLAY_AREA_NAME = "广州市";
+const DISPLAY_RANGE_ALL = "全市";
+const showRangePopover = ref(false);
+const selectedDisplayRange = ref(DISPLAY_RANGE_ALL);
+const displayRangeList = ref([DISPLAY_RANGE_ALL]);
+const isLoadingDisplayRanges = ref(false);
+const displayRangeError = ref("");
+const adminDistrictCollection = shallowRef(emptyDistrictFeatureCollection());
+let displayRangeRequestSeq = 0;
+
+const showDisplayRangeControl = computed(() => true);
+const displayRangeOptions = computed(() => {
+  const names = [];
+  const seen = new Set();
+  for (const item of displayRangeList.value) {
+    const name = String(item || "").trim();
+    if (!name || name === DISPLAY_RANGE_ALL || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
+});
+const selectedDisplayRangeLabel = computed(() => selectedDisplayRange.value || DISPLAY_RANGE_ALL);
+const displayRangeButtonTitle = computed(() =>
+  selectedDisplayRange.value === DISPLAY_RANGE_ALL
+    ? "选择行政区显示范围"
+    : `显示范围：${selectedDisplayRangeLabel.value}，点击恢复全市`,
+);
+const displayRangeButtonAriaLabel = computed(() =>
+  selectedDisplayRange.value === DISPLAY_RANGE_ALL
+    ? "打开行政区显示范围列表"
+    : `恢复全市显示范围，当前为${selectedDisplayRangeLabel.value}`,
+);
+const activeDisplayRangeContext = computed(() =>
+  activeDistrictContext(adminDistrictCollection.value, selectedDisplayRange.value, DISPLAY_RANGE_ALL),
+);
+let busNetworkRawLines = [];
+let busNetworkRawFacilities = [];
+const busNetworkRevision = ref(0);
+
+function displayRangeRouteIds(context = activeDisplayRangeContext.value) {
+  busNetworkRevision.value;
+  if (!context) return null;
+  const ids = new Set();
+  for (const line of busNetworkRawLines) {
+    for (const route of Array.isArray(line?.routes) ? line.routes : []) {
+      if (routeIntersectsDisplayRange(route, context)) {
+        ids.add(String(route?.routeId || ""));
+      }
+    }
+  }
+  ids.delete("");
+  return ids;
+}
+
+const displayRouteIdSet = computed(() => displayRangeRouteIds());
+const displayLineNameSet = computed(() => {
+  busNetworkRevision.value;
+  const context = activeDisplayRangeContext.value;
+  if (!context) return null;
+  const names = new Set();
+  for (const line of busNetworkRawLines) {
+    const hasRoute = (Array.isArray(line?.routes) ? line.routes : [])
+      .some((route) => routeIntersectsDisplayRange(route, context));
+    if (hasRoute && line?.lineName) names.add(String(line.lineName));
+  }
+  return names;
+});
+const displayStationNameSet = computed(() => {
+  busNetworkRevision.value;
+  const context = activeDisplayRangeContext.value;
+  if (!context) return null;
+  const names = new Set();
+  for (const facility of busNetworkRawFacilities) {
+    if (facility?.facilityName && modelCoordInDisplayRange(facility?.coord, context)) {
+      names.add(String(facility.facilityName));
+    }
+  }
+  return names;
+});
+
+function runMonitorOptionInDisplayRange(option, type) {
+  if (!activeDisplayRangeContext.value) return true;
+  if (type === "station" && option?.coord) {
+    return modelCoordInDisplayRange(option.coord);
+  }
+  const value = String(option?.value ?? option?.label ?? "");
+  if (!value) return false;
+  if (type === "line") return displayLineNameSet.value?.has(value) ?? true;
+  if (type === "station") return displayStationNameSet.value?.has(value) ?? true;
+  return true;
+}
+
 const { proxy } = getCurrentInstance() || {};
 const overallFlowLoading = ref(false);
 const overallFlowError = ref("");
-const overallFlowHourly = ref(Array.from({ length: 24 }, () => 0));
+function emptyHourlyFlow() {
+  return Array.from({ length: 24 }, () => 0);
+}
+function emptyModeHourlyFlow() {
+  return { bus: emptyHourlyFlow(), metro: emptyHourlyFlow() };
+}
+const overallFlowHourlyByMode = ref(emptyModeHourlyFlow());
 let overallFlowRequestSeq = 0;
 
+const overallFlowHourly = computed(() =>
+  emptyHourlyFlow().map((_, index) =>
+    (Number(overallFlowHourlyByMode.value.bus?.[index]) || 0)
+    + (Number(overallFlowHourlyByMode.value.metro?.[index]) || 0)
+  )
+);
 const overallFlowTotal = computed(() => overallFlowHourly.value.reduce((sum, value) => sum + (Number(value) || 0), 0));
+const overallFlowBusTotal = computed(() => (overallFlowHourlyByMode.value.bus || []).reduce((sum, value) => sum + (Number(value) || 0), 0));
+const overallFlowMetroTotal = computed(() => (overallFlowHourlyByMode.value.metro || []).reduce((sum, value) => sum + (Number(value) || 0), 0));
 function buildHourlyRankingRows(hourly = []) {
   return hourly
     .map((value, hour) => {
@@ -1331,21 +1708,105 @@ function buildHourlyFlowChartOption(hourly = []) {
     ],
   };
 }
-const overallFlowChartOption = computed(() => buildHourlyFlowChartOption(overallFlowHourly.value));
+function buildOverallFlowChartOption(byMode = emptyModeHourlyFlow()) {
+  const bus = Array.isArray(byMode.bus) ? byMode.bus : emptyHourlyFlow();
+  const metro = Array.isArray(byMode.metro) ? byMode.metro : emptyHourlyFlow();
+  const hours = emptyHourlyFlow().map((_, index) => `${String(index).padStart(2, "0")}:00`);
+  return {
+    backgroundColor: "transparent",
+    color: ["#0071e3", "#16a34a"],
+    tooltip: {
+      trigger: "axis",
+      appendToBody: true,
+      backgroundColor: "rgba(255, 255, 255, 0.98)",
+      borderColor: "rgba(17, 32, 58, 0.1)",
+      borderWidth: 1,
+      textStyle: { color: "#1c2024", fontSize: 12 },
+      formatter(params = []) {
+        if (!params.length) return "";
+        const rows = params.map((item) =>
+          `${item.marker}${item.seriesName}：${Number(item.value || 0).toLocaleString("zh-CN")} 人次`
+        );
+        return `<strong>${params[0].name}</strong><br/>${rows.join("<br/>")}`;
+      },
+    },
+    legend: {
+      top: 0,
+      right: 8,
+      itemWidth: 12,
+      itemHeight: 8,
+      textStyle: { color: "#667085", fontSize: 11 },
+      data: ["公交客流", "地铁客流"],
+    },
+    grid: { top: 34, right: 18, bottom: 18, left: 14, containLabel: true },
+    xAxis: {
+      type: "category",
+      data: hours,
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: "rgba(17, 32, 58, 0.12)" } },
+      axisLabel: { color: "#667085", fontSize: 10, interval: 2 },
+    },
+    yAxis: {
+      type: "value",
+      name: "人次",
+      nameTextStyle: { color: "#98a2b3", fontSize: 10, padding: [0, 8, 0, 0] },
+      splitLine: { lineStyle: { color: "rgba(17, 32, 58, 0.07)", type: "dashed" } },
+      axisLabel: { color: "#667085", fontSize: 10 },
+    },
+    series: [
+      {
+        name: "公交客流",
+        type: "line",
+        smooth: 0.35,
+        showSymbol: false,
+        data: bus,
+        itemStyle: { color: "#0071e3" },
+        lineStyle: { width: 3, color: "#0071e3", shadowBlur: 8, shadowColor: "rgba(0, 113, 227, 0.22)" },
+      },
+      {
+        name: "地铁客流",
+        type: "line",
+        smooth: 0.35,
+        showSymbol: false,
+        data: metro,
+        itemStyle: { color: "#16a34a" },
+        lineStyle: { width: 3, color: "#16a34a", shadowBlur: 8, shadowColor: "rgba(22, 163, 74, 0.2)" },
+      },
+    ],
+  };
+}
+const overallFlowChartOption = computed(() => buildOverallFlowChartOption(overallFlowHourlyByMode.value));
 
 // 线路客流监测：右侧简化卡片 —— 选中线路的日客流量 + 全天客流变化折线图（数据由 XLZL 上抛）
 const selectedLinePanel = ref(null);
 const selectedLineName = ref("");
 const selectedRouteDetail = ref(null);
+const selectedRouteMapLinks = ref([]);
 provide("runMonitorSelectedLinePanel", selectedLinePanel);
 provide("runMonitorSelectedLineName", selectedLineName);
 provide("runMonitorSelectedRouteDetail", selectedRouteDetail);
+provide("runMonitorSelectedRouteMapLinks", selectedRouteMapLinks);
 provide("runMonitorSimplifiedRight", true);
 
-watch(selectedRouteDetail, (detail) => {
-  if (!selectedLineKey.value || !detail?.links?.length) return;
-  setMonitorSelectedRouteLinks(detail.links);
+watch(selectedRouteDetail, () => {
+  refreshMonitorSelectedRouteLinks();
+  syncBaseMapLayerVisibility();
 });
+
+watch(selectedRouteMapLinks, () => {
+  refreshMonitorSelectedRouteLinks();
+  syncBaseMapLayerVisibility();
+}, { deep: true });
+
+watch(
+  [selectedLinePanel, selectedRouteDetail, pfaLineSection, effectiveTab, () => selectModel.value?.name],
+  () => {
+    refreshMonitorSelectedRouteLinks();
+    refreshPfaTransferRouteLinks();
+    syncBaseMapLayerVisibility();
+  },
+  { deep: true },
+);
 
 const lineFlowHourly = computed(() => {
   const flow = selectedLinePanel.value?.hourlyFlow;
@@ -1389,7 +1850,13 @@ provide("runMonitorSelectedStationName", selectedStationName);
 // 不依赖客流面板是否恰好有缓存数据。
 watch([selectedLineKey, selectedStationKey, effectiveTab], () => {
   applyBusNetworkFocus();
+  syncBaseMapLayerVisibility();
 });
+
+watch([selectedRouteDetail, selectedStationName], () => {
+  applyBusNetworkFocus();
+  syncBaseMapLayerVisibility();
+}, { deep: true });
 
 const stationFlowHourly = computed(() => {
   const panel = selectedStationPanel.value || {};
@@ -1417,13 +1884,26 @@ function formatOverallFlow(value) {
   return Number.isFinite(number) ? `${Math.round(number).toLocaleString("zh-CN")} 人次` : "暂无";
 }
 
-function routePanelToOverallHourly(panel = {}) {
-  const hourly = Array.from({ length: 24 }, () => 0);
-  const routes = panel?.routes && typeof panel.routes === "object" ? Object.values(panel.routes) : [];
-  routes.forEach((route) => {
+function routeModeKey(route = {}) {
+  const text = [
+    route.mode,
+    route.transportMode,
+    route.lineName,
+    route.routeName,
+    route.lineId,
+  ].map((item) => String(item || "").toLowerCase()).join(" ");
+  return /(metro|subway|rail|地铁|轨道)/i.test(text) ? "metro" : "bus";
+}
+
+function routePanelToOverallHourlyByMode(panel = {}, routeIds = null) {
+  const hourly = emptyModeHourlyFlow();
+  const routeEntries = panel?.routes && typeof panel.routes === "object" ? Object.entries(panel.routes) : [];
+  routeEntries.forEach(([routeId, route]) => {
+    if (routeIds && !routeIds.has(String(routeId))) return;
     const values = Array.isArray(route?.hourlyFlow) ? route.hourlyFlow : [];
+    const key = routeModeKey(route);
     values.forEach((value, index) => {
-      if (index < hourly.length) hourly[index] += Number(value) || 0;
+      if (index < hourly[key].length) hourly[key][index] += Number(value) || 0;
     });
   });
   return hourly;
@@ -1437,10 +1917,10 @@ async function loadOverallFlow() {
   try {
     const res = await getRoutePanel({ datasource: selectModel.value.name }, { silentError: true });
     if (seq !== overallFlowRequestSeq) return;
-    overallFlowHourly.value = routePanelToOverallHourly(res?.data || {});
+    overallFlowHourlyByMode.value = routePanelToOverallHourlyByMode(res?.data || {}, displayRouteIdSet.value);
   } catch (error) {
     if (seq !== overallFlowRequestSeq) return;
-    overallFlowHourly.value = Array.from({ length: 24 }, () => 0);
+    overallFlowHourlyByMode.value = emptyModeHourlyFlow();
     overallFlowError.value = error?.message || "总体客流变化加载失败";
   } finally {
     if (seq === overallFlowRequestSeq) {
@@ -1450,7 +1930,7 @@ async function loadOverallFlow() {
 }
 
 watch(
-  [effectiveTab, () => selectModel.value?.name, isModelReady],
+  [effectiveTab, () => selectModel.value?.name, isModelReady, selectedDisplayRange, displayRouteIdSet],
   loadOverallFlow,
   { immediate: true },
 );
@@ -1458,14 +1938,162 @@ watch(
 const RM_SOURCE_LINES = "rm-bus-network-lines-source";
 const RM_SOURCE_STATIONS = "rm-bus-network-stations-source";
 const RM_SOURCE_SELECTED_STATION = "rm-bus-network-selected-station-source";
+const RM_SOURCE_DISPLAY_RANGE = "rm-display-range-source";
 const RM_LAYER_LINES = "rm-bus-network-lines";
 const RM_LAYER_STATIONS = "rm-bus-network-stations";
+const RM_LAYER_STATION_LABELS = "rm-bus-network-station-labels";
 const RM_LAYER_STATION_SELECTED = "rm-bus-network-station-selected";
+const RM_LAYER_DISPLAY_RANGE_OUTLINE = "rm-display-range-outline";
 const RM_STATION_ICON_ID = "rm-bus-network-station-icon";
 const RM_STATION_HIGHLIGHT_ICON_ID = "rm-bus-network-station-highlight-icon";
 const RM_STATION_ICON_SIZE = 96;
 const RM_BASE_LINE_OPACITY = 0.7;
 const RM_DIMMED_LINE_OPACITY = 0.18;
+const PFA_SEGMENT_DEFAULT_STYLES = [
+  { key: "low", label: "低客流", color: "#16a34a", max: 1 },
+  { key: "medium", label: "中客流", color: "#facc15", max: 3 },
+  { key: "high", label: "高客流", color: "#dc2626", max: null },
+];
+const pfaSegmentStyleSettings = reactive(PFA_SEGMENT_DEFAULT_STYLES.map((item) => ({ ...item })));
+const activePfaSegmentColorKey = ref(PFA_SEGMENT_DEFAULT_STYLES[0].key);
+const activePfaSegmentStyle = computed(() =>
+  pfaSegmentStyleSettings.find((item) => item.key === activePfaSegmentColorKey.value) || pfaSegmentStyleSettings[0]
+);
+const activePfaSegmentLabel = computed(() => activePfaSegmentStyle.value?.label || "断面颜色");
+const normalizedPfaSegmentThresholds = computed(() => {
+  const low = Math.max(0, Math.round(Number(pfaSegmentStyleSettings[0]?.max) || 0));
+  const mid = Math.max(low, Math.round(Number(pfaSegmentStyleSettings[1]?.max) || low));
+  return { low, mid };
+});
+function hexToRgbColor(color, fallback) {
+  const value = String(color || "").trim();
+  const normalized = value.startsWith("#") ? value.slice(1) : value;
+  const hex = normalized.length === 3
+    ? normalized.split("").map((part) => part + part).join("")
+    : normalized.slice(0, 6);
+  const number = Number.parseInt(hex, 16);
+  if (!Number.isFinite(number)) return fallback;
+  return [(number >> 16) & 255, (number >> 8) & 255, number & 255];
+}
+function clampValue(value, min, max) {
+  return Math.max(min, Math.min(max, Number(value) || 0));
+}
+function componentToHex(value) {
+  return Math.round(clampValue(value, 0, 255)).toString(16).padStart(2, "0");
+}
+function rgbToHexColor(rgb) {
+  return `#${componentToHex(rgb[0])}${componentToHex(rgb[1])}${componentToHex(rgb[2])}`;
+}
+function hsvToRgbColor(hue, saturation, value) {
+  const h = ((Number(hue) % 360) + 360) % 360;
+  const s = clampValue(saturation, 0, 1);
+  const v = clampValue(value, 0, 1);
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) {
+    r = c;
+    g = x;
+  } else if (h < 120) {
+    r = x;
+    g = c;
+  } else if (h < 180) {
+    g = c;
+    b = x;
+  } else if (h < 240) {
+    g = x;
+    b = c;
+  } else if (h < 300) {
+    r = x;
+    b = c;
+  } else {
+    r = c;
+    b = x;
+  }
+  return [
+    (r + m) * 255,
+    (g + m) * 255,
+    (b + m) * 255,
+  ];
+}
+function hsvToHexColor(hue, saturation, value = 1) {
+  return rgbToHexColor(hsvToRgbColor(hue, saturation, value));
+}
+function hexToHsvColor(color) {
+  const [r, g, b] = hexToRgbColor(color, [22, 163, 74]).map((part) => clampValue(part, 0, 255) / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  let hue = 0;
+  if (delta > 0) {
+    if (max === r) hue = 60 * (((g - b) / delta) % 6);
+    else if (max === g) hue = 60 * ((b - r) / delta + 2);
+    else hue = 60 * ((r - g) / delta + 4);
+  }
+  return {
+    h: (hue + 360) % 360,
+    s: max === 0 ? 0 : delta / max,
+    v: max,
+  };
+}
+const pfaSegmentPaletteCrosshairStyle = computed(() => {
+  const hsv = hexToHsvColor(activePfaSegmentStyle.value?.color);
+  const radiusPercent = hsv.s * 46;
+  const angle = (hsv.h * Math.PI) / 180;
+  return {
+    left: `${50 + Math.cos(angle) * radiusPercent}%`,
+    top: `${50 + Math.sin(angle) * radiusPercent}%`,
+    backgroundColor: activePfaSegmentStyle.value?.color || PFA_SEGMENT_DEFAULT_STYLES[0].color,
+  };
+});
+function handlePfaSegmentPalettePointer(event) {
+  if (event.type === "pointermove" && event.buttons !== 1) return;
+  const target = event.currentTarget;
+  if (!target?.getBoundingClientRect) return;
+  event.preventDefault();
+  if (event.type === "pointerdown" && typeof target.setPointerCapture === "function") {
+    target.setPointerCapture(event.pointerId);
+  }
+  const rect = target.getBoundingClientRect();
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  const radius = Math.max(1, Math.min(rect.width, rect.height) / 2);
+  const dx = event.clientX - centerX;
+  const dy = event.clientY - centerY;
+  const distance = Math.min(Math.hypot(dx, dy), radius);
+  const hue = (Math.atan2(dy, dx) * 180 / Math.PI + 360) % 360;
+  const saturation = clampValue(distance / radius, 0, 1);
+  const style = activePfaSegmentStyle.value;
+  if (!style) return;
+  style.color = hsvToHexColor(hue, saturation, 1);
+  applyPfaSegmentFlowStyle();
+}
+const pfaSegmentFlowStops = computed(() => {
+  const thresholds = normalizedPfaSegmentThresholds.value;
+  return [
+    {
+      maxValue: thresholds.low,
+      color: hexToRgbColor(pfaSegmentStyleSettings[0]?.color, [22, 163, 74]),
+      widthStep: 0,
+    },
+    {
+      maxValue: thresholds.mid,
+      color: hexToRgbColor(pfaSegmentStyleSettings[1]?.color, [250, 204, 21]),
+      widthStep: 0,
+    },
+    {
+      maxValue: Infinity,
+      color: hexToRgbColor(pfaSegmentStyleSettings[2]?.color, [220, 38, 38]),
+      widthStep: 0,
+    },
+  ];
+});
+const pfaSegmentLayerOpacity = computed(() =>
+  Math.max(0, Math.min(1, (Number(pfaSegmentOpacity.value) || 0) / 100))
+);
 const busNetworkLoading = ref(false);
 const busNetworkError = ref("");
 let busNetworkRequestSeq = 0;
@@ -1475,6 +2103,11 @@ let monitorRoadLayer = null;
 let monitorBusRouteLayer = null;
 let monitorSelectedRouteGlowLayer = null;
 let monitorSelectedRouteLayer = null;
+let monitorSelectedRouteSegmentLayer = null;
+let monitorTransferRouteGlowLayer = null;
+let monitorTransferRouteLayer = null;
+let pfaTransferRouteRequestSeq = 0;
+const pfaTransferRouteDetailCache = new Map();
 let busNetworkSourceRefs = new Map();
 let busNetworkCollections = {
   lines: emptyFeatureCollection(),
@@ -1640,10 +2273,34 @@ function busStationIconLayout(iconId = RM_STATION_ICON_ID, iconScale = busNetwor
   };
 }
 
+function busStationLabelLayout() {
+  return {
+    "text-field": ["coalesce", ["get", "stop_name"], ["get", "name"], ["get", "facilityName"], ""],
+    "text-size": ["interpolate", ["linear"], ["zoom"], 9, 10, 12, 12, 15, 14],
+    "text-anchor": "left",
+    "text-offset": [1.05, 0],
+    "text-max-width": 10,
+    "text-allow-overlap": true,
+    "text-ignore-placement": true,
+    "text-padding": 3,
+  };
+}
+
+function busStationLabelPaint() {
+  return {
+    "text-color": "#1f3132",
+    "text-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.72, 11, 0.92, 14, 1],
+    "text-halo-color": "rgba(248, 251, 252, 0.94)",
+    "text-halo-width": 1.5,
+    "text-halo-blur": 0.4,
+  };
+}
+
 function ensureBusNetworkLayers(map) {
   ensureBusNetworkSource(map, RM_SOURCE_LINES, busNetworkCollections.lines);
   ensureBusNetworkSource(map, RM_SOURCE_STATIONS, busNetworkCollections.stations);
   ensureBusNetworkSource(map, RM_SOURCE_SELECTED_STATION, emptyFeatureCollection());
+  ensureDisplayRangeLayer(map);
 
   if (!map.getLayer(RM_LAYER_LINES)) {
     addBusLayerBelowBuildings(map, {
@@ -1667,6 +2324,16 @@ function ensureBusNetworkLayers(map) {
       paint: { "icon-opacity": 0.96 },
     });
   }
+  if (!map.getLayer(RM_LAYER_STATION_LABELS)) {
+    map.addLayer({
+      id: RM_LAYER_STATION_LABELS,
+      type: "symbol",
+      source: RM_SOURCE_STATIONS,
+      minzoom: 14,
+      layout: busStationLabelLayout(),
+      paint: busStationLabelPaint(),
+    });
+  }
   if (!map.getLayer(RM_LAYER_STATION_SELECTED)) {
     map.addLayer({
       id: RM_LAYER_STATION_SELECTED,
@@ -1680,9 +2347,74 @@ function ensureBusNetworkLayers(map) {
   syncBaseMapLayerVisibility();
 }
 
+function displayRangeOutlineCollection(context = activeDisplayRangeContext.value) {
+  const geometry = displayRangeOutlineGeometry(context?.feature?.geometry);
+  return geometry
+    ? {
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          id: context?.feature?.id || "active-display-range",
+          geometry,
+          properties: { ...(context?.feature?.properties || {}) },
+        }],
+      }
+    : emptyFeatureCollection();
+}
+
+function displayRangeOutlineGeometry(geometry) {
+  if (!geometry) return null;
+  if (geometry.type === "LineString" || geometry.type === "MultiLineString") return geometry;
+  const rings = [];
+  if (geometry.type === "Polygon") {
+    (geometry.coordinates || []).forEach((ring) => {
+      if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
+    });
+  } else if (geometry.type === "MultiPolygon") {
+    (geometry.coordinates || []).forEach((polygon) => {
+      (Array.isArray(polygon) ? polygon : []).forEach((ring) => {
+        if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
+      });
+    });
+  }
+  if (!rings.length) return null;
+  return rings.length === 1
+    ? { type: "LineString", coordinates: rings[0] }
+    : { type: "MultiLineString", coordinates: rings };
+}
+
+function ensureDisplayRangeLayer(map = MapRef.value?.map) {
+  if (!map) return;
+  ensureBusNetworkSource(map, RM_SOURCE_DISPLAY_RANGE, displayRangeOutlineCollection());
+  if (!map.getLayer(RM_LAYER_DISPLAY_RANGE_OUTLINE)) {
+    map.addLayer({
+      id: RM_LAYER_DISPLAY_RANGE_OUTLINE,
+      type: "line",
+      source: RM_SOURCE_DISPLAY_RANGE,
+      layout: {
+        "line-join": "round",
+        "line-cap": "round",
+      },
+      paint: {
+        "line-color": "#1569de",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.4, 12, 2.1, 15, 2.8],
+        "line-opacity": 0.86,
+        "line-dasharray": [3.2, 2.4],
+      },
+    });
+  }
+  setBusLayerVisibility(map, RM_LAYER_DISPLAY_RANGE_OUTLINE, Boolean(activeDisplayRangeContext.value));
+}
+
 function setBusLayerVisibility(map, layerId, visible) {
   if (map?.getLayer?.(layerId)) {
     map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+  }
+}
+
+function setBusLayerFilter(map, layerId, filter = null) {
+  if (map?.getLayer?.(layerId)) {
+    map.setFilter(layerId, filter);
   }
 }
 
@@ -1691,10 +2423,16 @@ function applyBusNetworkPaint() {
   if (!map) return;
   if (map.getLayer(RM_LAYER_LINES)) {
     map.setPaintProperty(RM_LAYER_LINES, "line-width", busNetworkHitLineWidth.value);
+    map.setPaintProperty(RM_LAYER_LINES, "line-opacity", busLineOpacityPaint());
   }
   if (map.getLayer(RM_LAYER_STATIONS)) {
     map.setLayoutProperty(RM_LAYER_STATIONS, "icon-size", busNetworkStationIconScale.value);
+    map.setPaintProperty(RM_LAYER_STATIONS, "icon-opacity", busStationOpacityPaint());
   }
+  if (map.getLayer(RM_LAYER_STATION_LABELS)) {
+    map.setPaintProperty(RM_LAYER_STATION_LABELS, "text-opacity", busStationLabelPaint()["text-opacity"]);
+  }
+  applySelectedLineStationFilter(map);
   if (map.getLayer(RM_LAYER_STATION_SELECTED)) {
     map.setLayoutProperty(RM_LAYER_STATION_SELECTED, "icon-size", selectedBusStationIconScale.value);
   }
@@ -1707,7 +2445,35 @@ function busLineOpacityPaint() {
   return 0.001;
 }
 
+function isLineSelectionActive() {
+  return effectiveTab.value === "线路客流监测"
+    && Boolean(
+      selectedLineKey.value
+      || selectedRouteDetail.value?.routeId
+      || selectedLineName.value
+      || selectedRouteMapLinks.value?.length
+    );
+}
+
+function isPfaLineSelectionActive() {
+  return props.mode === "pfa"
+    && isLineSelectionActive();
+}
+
+function isPfaSegmentSectionActive() {
+  return props.mode === "pfa"
+    && effectiveTab.value === "线路客流监测"
+    && pfaLineSection.value === "segments";
+}
+
+function isPfaStationSelectionActive() {
+  return props.mode === "pfa"
+    && effectiveTab.value === "站点客流监测"
+    && Boolean(selectedStationKey.value || selectedStationName.value);
+}
+
 function busStationOpacityPaint() {
+  if (isPfaStationSelectionActive()) return 1;
   if (!selectedStationKey.value) return 0.96;
   return [
     "case",
@@ -1715,6 +2481,60 @@ function busStationOpacityPaint() {
     0,
     0.24,
   ];
+}
+
+function selectedRouteFacilities() {
+  const detailFacilities = selectedRouteDetail.value?.facilities;
+  if (Array.isArray(detailFacilities) && detailFacilities.length) return detailFacilities;
+  const targetRouteId = String(selectedRouteDetail.value?.routeId || "");
+  const targetKey = String(selectedLineKey.value || "");
+  if (!targetRouteId && !targetKey) return [];
+  for (const line of busNetworkRawLines) {
+    const lineId = String(line?.lineId || "");
+    const routes = Array.isArray(line?.routes) ? line.routes : [];
+    for (let index = 0; index < routes.length; index += 1) {
+      const route = routes[index];
+      const routeId = String(route?.routeId || "");
+      const routeKey = `${lineId}-${routeId || index}`;
+      if ((targetRouteId && routeId === targetRouteId) || (targetKey && routeKey === targetKey)) {
+        return Array.isArray(route?.facilities) ? route.facilities : [];
+      }
+    }
+  }
+  return [];
+}
+
+function selectedLineStationFilterExpression() {
+  const context = activeDisplayRangeContext.value;
+  if (!context || !isLineSelectionActive()) return null;
+  const facilities = selectedRouteFacilities()
+    .filter((facility) => modelCoordInDisplayRange(facility?.coord || facility, context));
+  if (!facilities.length) return ["==", ["literal", 1], 0];
+  const ids = Array.from(new Set(
+    facilities
+      .map((facility) => String(facility?.facilityId || ""))
+      .filter(Boolean)
+  ));
+  const names = Array.from(new Set(
+    facilities
+      .map((facility) => String(facility?.facilityName || ""))
+      .filter(Boolean)
+  ));
+  const filters = [];
+  if (ids.length) {
+    filters.push(["in", ["to-string", ["get", "facilityId"]], ["literal", ids]]);
+  }
+  if (names.length) {
+    filters.push(["in", ["to-string", ["get", "name"]], ["literal", names]]);
+  }
+  return filters.length ? ["any", ...filters] : ["==", ["literal", 1], 0];
+}
+
+function applySelectedLineStationFilter(map = MapRef.value?.map) {
+  if (!map) return;
+  const filter = selectedLineStationFilterExpression();
+  setBusLayerFilter(map, RM_LAYER_STATIONS, filter);
+  setBusLayerFilter(map, RM_LAYER_STATION_LABELS, filter);
 }
 
 // 选中聚焦与数据管理保持一致：高亮对象由独立图层绘制，底图对象降低透明度。
@@ -1728,8 +2548,11 @@ function applyBusNetworkFocus() {
     map.setPaintProperty(RM_LAYER_STATIONS, "icon-opacity", busStationOpacityPaint());
   }
   if (monitorBusRouteLayer) {
-    monitorBusRouteLayer.opacity = selectedLineKey.value ? RM_DIMMED_LINE_OPACITY : RM_BASE_LINE_OPACITY;
-    monitorBusRouteLayer.updatePaint();
+    monitorBusRouteLayer.setOpacity(
+      isPfaLineSelectionActive()
+        ? 0
+        : selectedLineKey.value ? RM_DIMMED_LINE_OPACITY : RM_BASE_LINE_OPACITY
+    );
   }
 }
 
@@ -1737,21 +2560,39 @@ function syncBaseMapLayerVisibility() {
   const map = MapRef.value?.map;
   if (!map) return;
   const showBusNetwork = baseMapLineMode.value === "bus-network";
-  // 线路客流监测：地图只显示线路；站点客流监测：只显示站点；车辆运行监测：两者都不显示；其余标签两者皆显示。
+  // 线路客流监测：地图只显示线路；站点客流监测：只显示站点；总体客流变化不显示站点；车辆运行监测两者都不显示。
   const tab = effectiveTab.value;
   const isVehicleTab = tab === "车辆运行监测";
-  const showLines = showBusNetwork && !isVehicleTab && tab !== "站点客流监测";
-  const showStations = showBusNetwork && !isVehicleTab && tab !== "线路客流监测";
-  setBusLayerVisibility(map, RM_LAYER_LINES, showLines);
+  const isDisplayRangeMode = Boolean(activeDisplayRangeContext.value);
+  const showLines = showBusNetwork && !isVehicleTab && (isDisplayRangeMode || tab !== "站点客流监测");
+  const showStations = showBusNetwork
+    && !isVehicleTab
+    && (isDisplayRangeMode || (tab !== "线路客流监测" && tab !== "总体客流变化"));
+  const hideBaseLines = isPfaLineSelectionActive() || (isDisplayRangeMode && isLineSelectionActive());
+  setBusLayerVisibility(map, RM_LAYER_LINES, showLines && !hideBaseLines);
   [RM_LAYER_STATIONS, RM_LAYER_STATION_SELECTED].forEach((layerId) => {
     setBusLayerVisibility(map, layerId, showStations);
   });
+  setBusLayerVisibility(map, RM_LAYER_STATION_LABELS, showStations);
+  applySelectedLineStationFilter(map);
   if (monitorBusRouteLayer) {
-    showLines ? monitorBusRouteLayer.show() : monitorBusRouteLayer.hide();
+    showLines && !hideBaseLines ? monitorBusRouteLayer.show() : monitorBusRouteLayer.hide();
   }
+  const hideSelectedRouteBase = isPfaSegmentSectionActive() && isPfaLineSelectionActive();
   [monitorSelectedRouteGlowLayer, monitorSelectedRouteLayer].forEach((layer) => {
     if (!layer) return;
-    showLines ? layer.show() : layer.hide();
+    showLines && !hideSelectedRouteBase ? layer.show() : layer.hide();
+  });
+  if (monitorSelectedRouteSegmentLayer) {
+    showLines && isPfaSegmentSectionActive() && isPfaLineSelectionActive()
+      ? monitorSelectedRouteSegmentLayer.show()
+      : monitorSelectedRouteSegmentLayer.hide();
+  }
+  [monitorTransferRouteGlowLayer, monitorTransferRouteLayer].forEach((layer) => {
+    if (!layer) return;
+    showLines && props.mode === "pfa" && pfaLineSection.value === "transfer" && isPfaLineSelectionActive()
+      ? layer.show()
+      : layer.hide();
   });
   if (monitorRoadLayer) {
     showBusNetwork ? monitorRoadLayer.hide() : monitorRoadLayer.show();
@@ -1840,6 +2681,123 @@ function buildModelStationFeatureCollection(facilities) {
   return { type: "FeatureCollection", features: Array.from(seen.values()) };
 }
 
+function lngLatInDisplayRange(lngLat, context = activeDisplayRangeContext.value) {
+  if (!context) return true;
+  return pointInDistrictContext(lngLat, context);
+}
+
+function modelCoordInDisplayRange(coord, context = activeDisplayRangeContext.value) {
+  const lngLat = modelCoordToLngLat(coord);
+  return lngLat ? lngLatInDisplayRange(lngLat, context) : false;
+}
+
+function modelLinkIntersectsDisplayRange(link, context = activeDisplayRangeContext.value) {
+  if (!context) return true;
+  const from = modelCoordToLngLat(link?.from);
+  const to = modelCoordToLngLat(link?.to);
+  return from && to ? segmentIntersectsDistrictContext(from, to, context) : false;
+}
+
+function routeIntersectsDisplayRange(route, context = activeDisplayRangeContext.value) {
+  if (!context) return true;
+  const links = Array.isArray(route?.links) ? route.links : [];
+  if (links.some((link) => modelLinkIntersectsDisplayRange(link, context))) return true;
+  return (Array.isArray(route?.facilities) ? route.facilities : [])
+    .some((facility) => modelCoordInDisplayRange(facility?.coord || facility, context));
+}
+
+function filterLineFeatureCollectionByDisplayRange(collection, context = activeDisplayRangeContext.value) {
+  if (!context) return collection;
+  const features = [];
+  (collection?.features || []).forEach((feature, featureIndex) => {
+    lineGeometryPaths(feature?.geometry).forEach((path, pathIndex) => {
+      clipLineStringToDistrictContext(path, context).forEach((coordinates, clipIndex) => {
+        if (coordinates.length < 2) return;
+        features.push({
+          type: "Feature",
+          id: [feature?.id ?? featureIndex, pathIndex, clipIndex].join("-"),
+          geometry: { type: "LineString", coordinates },
+          properties: { ...(feature?.properties || {}) },
+        });
+      });
+    });
+  });
+  return { type: "FeatureCollection", features };
+}
+
+function lineGeometryPaths(geometry) {
+  if (!geometry) return [];
+  if (geometry.type === "LineString") return [geometry.coordinates || []];
+  if (geometry.type === "MultiLineString") return Array.isArray(geometry.coordinates) ? geometry.coordinates : [];
+  return [];
+}
+
+function filterStationFeatureCollectionByDisplayRange(collection, context = activeDisplayRangeContext.value) {
+  if (!context) return collection;
+  const features = (collection?.features || []).filter((feature) => lngLatInDisplayRange(feature?.geometry?.coordinates, context));
+  return { type: "FeatureCollection", features };
+}
+
+function syncBusNetworkDisplayRange() {
+  const context = activeDisplayRangeContext.value;
+  ensureDisplayRangeLayer();
+  setGeoJsonSourceData(RM_SOURCE_DISPLAY_RANGE, displayRangeOutlineCollection(context));
+  setBusLayerVisibility(MapRef.value?.map, RM_LAYER_DISPLAY_RANGE_OUTLINE, Boolean(context));
+  setGeoJsonSourceData(RM_SOURCE_LINES, filterLineFeatureCollectionByDisplayRange(busNetworkCollections.lines, context));
+  setGeoJsonSourceData(RM_SOURCE_STATIONS, filterStationFeatureCollectionByDisplayRange(busNetworkCollections.stations, context));
+  if (monitorBusRouteLayer && selectModel.value?.name) {
+    monitorBusRouteLayer.setLineClipContext(context);
+    if (!monitorBusRouteLayer.tileMode || monitorBusRouteLayer.datasource !== selectModel.value.name) {
+      monitorBusRouteLayer.setTileSource(selectModel.value.name, { tileRequest: getRouteTileBinary });
+    }
+  }
+  applyBusNetworkPaint();
+  syncBaseMapLayerVisibility();
+}
+
+function expandLngLatBounds(value, bounds) {
+  if (!Array.isArray(value)) return;
+  if (value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))) {
+    const lng = Number(value[0]);
+    const lat = Number(value[1]);
+    bounds[0] = Math.min(bounds[0], lng);
+    bounds[1] = Math.min(bounds[1], lat);
+    bounds[2] = Math.max(bounds[2], lng);
+    bounds[3] = Math.max(bounds[3], lat);
+    return;
+  }
+  value.forEach((item) => expandLngLatBounds(item, bounds));
+}
+
+function featureCollectionLngLatBounds(collection) {
+  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const feature of collection?.features || []) {
+    expandLngLatBounds(feature?.geometry?.coordinates, bounds);
+  }
+  return Number.isFinite(bounds[0]) ? bounds : null;
+}
+
+function displayRangeFitBounds() {
+  return activeDisplayRangeContext.value?.bounds
+    || featureCollectionLngLatBounds(adminDistrictCollection.value)
+    || featureCollectionLngLatBounds(busNetworkCollections.lines)
+    || featureCollectionLngLatBounds(busNetworkCollections.stations);
+}
+
+function fitDisplayRangeContext() {
+  const bounds = displayRangeFitBounds();
+  if (!bounds || !MapRef.value) return;
+  const points = [
+    lngLatToWebMercator(bounds[0], bounds[1]),
+    lngLatToWebMercator(bounds[2], bounds[3]),
+  ].filter((point) => Array.isArray(point) && point.every(Number.isFinite));
+  if (points.length < 2) return;
+  const result = MapRef.value.setFitZoomAndCenterByPoints?.(points);
+  if (!result) {
+    MapRef.value.setCenter?.(lngLatToWebMercator((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2));
+  }
+}
+
 async function loadBusNetwork() {
   if (!MapRef.value?.map || !isModelReady.value || !selectModel.value?.name) return;
   const seq = ++busNetworkRequestSeq;
@@ -1854,6 +2812,9 @@ async function loadBusNetwork() {
     if (seq !== busNetworkRequestSeq) return;
     const lines = lineRes?.data || [];
     const facilities = facilityRes?.data || [];
+    busNetworkRawLines = lines;
+    busNetworkRawFacilities = facilities;
+    busNetworkRevision.value += 1;
     busNetworkCollections = {
       lines: buildModelLineFeatureCollection(lines),
       stations: buildModelStationFeatureCollection(facilities),
@@ -1864,6 +2825,7 @@ async function loadBusNetwork() {
     ensureBusNetworkSource(map, RM_SOURCE_STATIONS, busNetworkCollections.stations);
     await ensureBusStationIcons(map);
     ensureBusNetworkLayers(map);
+    syncBusNetworkDisplayRange();
   } catch (error) {
     if (seq !== busNetworkRequestSeq) return;
     busNetworkError.value = error?.message || "公交线网加载失败";
@@ -1902,13 +2864,49 @@ function ensureMonitorBusRouteLayer() {
     color: 0xf97316,
     opacity: 0.95,
   });
+  monitorSelectedRouteSegmentLayer = new RouteLayer({
+    zIndex: 1001,
+    lineWidth: Math.max(6.4, Math.max(4, busNetworkLineWidth.value + 3.6) * 1.08) * 10,
+    fixedPixelWidth: true,
+    workerEnabled: false,
+    flowControl: true,
+    flowWidthStep: 2,
+    widthMaxPixels: 30,
+    flowStyleStops: pfaSegmentFlowStops.value,
+    opacity: pfaSegmentLayerOpacity.value,
+  });
+  monitorTransferRouteGlowLayer = new RouteLayer({
+    zIndex: 999.2,
+    lineWidth: Math.max(4, busNetworkLineWidth.value + 3.6) * 2.2 * 10,
+    fixedPixelWidth: true,
+    workerEnabled: false,
+    flowControl: false,
+    color: 0x1569de,
+    opacity: 0.26,
+  });
+  monitorTransferRouteLayer = new RouteLayer({
+    zIndex: 999.3,
+    lineWidth: Math.max(4, busNetworkLineWidth.value + 3.6) * 10,
+    fixedPixelWidth: true,
+    workerEnabled: false,
+    flowControl: false,
+    color: 0x1569de,
+    opacity: 0.86,
+  });
   MapRef.value.addLayer(monitorBusRouteLayer);
-  // Deck 图层按加入顺序绘制：背景 -> 光晕 -> 选中线，确保高亮永远在线网上方。
+  // Deck 图层按 zIndex 绘制：背景 -> 关联线路 -> 原高亮线 -> 断面客流覆盖层。
   MapRef.value.addLayer(monitorSelectedRouteGlowLayer);
+  MapRef.value.addLayer(monitorTransferRouteGlowLayer);
+  MapRef.value.addLayer(monitorTransferRouteLayer);
   MapRef.value.addLayer(monitorSelectedRouteLayer);
+  MapRef.value.addLayer(monitorSelectedRouteSegmentLayer);
   monitorSelectedRouteGlowLayer.setData([]);
+  monitorTransferRouteGlowLayer.setData([]);
+  monitorTransferRouteLayer.setData([]);
   monitorSelectedRouteLayer.setData([]);
+  monitorSelectedRouteSegmentLayer.setData([]);
   monitorBusRouteLayer.setTileSource(selectModel.value.name, { tileRequest: getRouteTileBinary });
+  syncBusNetworkDisplayRange();
   syncBaseMapLayerVisibility();
 }
 
@@ -1918,12 +2916,105 @@ function syncMonitorRouteLineWidths() {
   monitorBusRouteLayer?.setLineWidth(baseWidth * 10);
   monitorSelectedRouteGlowLayer?.setLineWidth(selectedWidth * 2.2 * 10);
   monitorSelectedRouteLayer?.setLineWidth(selectedWidth * 10);
+  monitorSelectedRouteSegmentLayer?.setLineWidth(Math.max(6.4, selectedWidth * 1.08) * 10);
+  monitorTransferRouteGlowLayer?.setLineWidth(selectedWidth * 2.2 * 10);
+  monitorTransferRouteLayer?.setLineWidth(selectedWidth * 10);
+}
+
+function applyPfaSegmentFlowStyle() {
+  monitorSelectedRouteSegmentLayer?.setFlowControl?.(true);
+  monitorSelectedRouteSegmentLayer?.setFlowStyleStops(pfaSegmentFlowStops.value);
+  refreshMonitorSelectedRouteLinks();
+  syncBaseMapLayerVisibility();
+}
+
+function applyPfaSegmentOpacity() {
+  monitorSelectedRouteSegmentLayer?.setFlowControl?.(true);
+  monitorSelectedRouteSegmentLayer?.setOpacity(pfaSegmentLayerOpacity.value);
+}
+
+function hasSegmentFlowValue(link) {
+  return link?.flow !== null
+    && link?.flow !== undefined
+    && Number.isFinite(Number(link.flow));
 }
 
 function setMonitorSelectedRouteLinks(links = []) {
   const data = Array.isArray(links) ? links : [];
-  monitorSelectedRouteGlowLayer?.setData(data);
-  monitorSelectedRouteLayer?.setData(data);
+  const isSegmentSelection = isPfaSegmentSectionActive() && isPfaLineSelectionActive();
+  const segmentData = isSegmentSelection
+    ? data.map((link) => (hasSegmentFlowValue(link) ? link : { ...link, flow: 0 }))
+    : [];
+  const selectedRouteData = isSegmentSelection ? [] : data;
+  monitorSelectedRouteGlowLayer?.setData(selectedRouteData);
+  monitorSelectedRouteLayer?.setData(selectedRouteData);
+  monitorSelectedRouteSegmentLayer?.setData(segmentData);
+  syncBaseMapLayerVisibility();
+}
+
+function setMonitorTransferRouteLinks(links = []) {
+  const data = Array.isArray(links) ? links : [];
+  monitorTransferRouteGlowLayer?.setData(data);
+  monitorTransferRouteLayer?.setData(data);
+  syncBaseMapLayerVisibility();
+}
+
+function selectedRouteLinksForMap() {
+  if (props.mode === "pfa" && Array.isArray(selectedRouteMapLinks.value) && selectedRouteMapLinks.value.length) {
+    return selectedRouteMapLinks.value;
+  }
+  return Array.isArray(selectedRouteDetail.value?.links) ? selectedRouteDetail.value.links : [];
+}
+
+function refreshMonitorSelectedRouteLinks() {
+  if (effectiveTab.value !== "线路客流监测") {
+    setMonitorSelectedRouteLinks([]);
+    return;
+  }
+  const links = selectedRouteLinksForMap();
+  if (!links.length) {
+    setMonitorSelectedRouteLinks([]);
+    return;
+  }
+  setMonitorSelectedRouteLinks(links);
+}
+
+function pfaTransferRouteIds() {
+  if (props.mode !== "pfa" || effectiveTab.value !== "线路客流监测" || pfaLineSection.value !== "transfer") {
+    return [];
+  }
+  const currentRouteId = String(selectedRouteDetail.value?.routeId || "");
+  const seen = new Set();
+  return (Array.isArray(selectedLinePanel.value?.transfers) ? selectedLinePanel.value.transfers : [])
+    .map((item) => String(item?.routeId || ""))
+    .filter((routeId) => {
+      if (!routeId || routeId === currentRouteId || seen.has(routeId)) return false;
+      seen.add(routeId);
+      return true;
+    })
+    .slice(0, 12);
+}
+
+async function getCachedRouteDetailLinks(routeId, modelName) {
+  const key = `${modelName}::${routeId}`;
+  if (pfaTransferRouteDetailCache.has(key)) return pfaTransferRouteDetailCache.get(key);
+  const res = await getRouteDetail({ datasource: modelName, routeId }, { silentError: true });
+  const links = Array.isArray(res?.data?.links) ? res.data.links : [];
+  pfaTransferRouteDetailCache.set(key, links);
+  return links;
+}
+
+async function refreshPfaTransferRouteLinks() {
+  const routeIds = pfaTransferRouteIds();
+  const modelName = selectModel.value?.name;
+  const seq = ++pfaTransferRouteRequestSeq;
+  if (!routeIds.length || !modelName) {
+    setMonitorTransferRouteLinks([]);
+    return;
+  }
+  const linkGroups = await Promise.all(routeIds.map((routeId) => getCachedRouteDetailLinks(routeId, modelName).catch(() => [])));
+  if (seq !== pfaTransferRouteRequestSeq) return;
+  setMonitorTransferRouteLinks(linkGroups.flat());
 }
 
 function ensureMonitorRoadLayer() {
@@ -2026,7 +3117,9 @@ function plainBusFeature(feature) {
 function setSelectedBusStation(feature) {
   const source = MapRef.value?.map?.getSource(RM_SOURCE_SELECTED_STATION);
   if (!source?.setData) return;
-  source.setData(feature?.geometry ? { type: "FeatureCollection", features: [plainBusFeature(feature)] } : emptyFeatureCollection());
+  const coordinate = feature?.geometry?.coordinates;
+  const inRange = !feature || !activeDisplayRangeContext.value || lngLatInDisplayRange(coordinate);
+  source.setData(feature?.geometry && inRange ? { type: "FeatureCollection", features: [plainBusFeature(feature)] } : emptyFeatureCollection());
 }
 
 function firstRenderedBusFeature(point, layers, radius = 8) {
@@ -2185,7 +3278,6 @@ function routeSegmentLinks(candidate) {
     linkId: `picked-${candidate?.routeId || "route"}`,
     from: { x: fromX, y: fromY },
     to: { x: toX, y: toY },
-    flow: 0,
     length: Math.hypot(toX - fromX, toY - fromY),
     lanes: 1,
   }];
@@ -2276,8 +3368,13 @@ async function openLineRoutePicker(point, webMercatorXY, lngLat, domEvent) {
   // 与数据管理一致：点中路段时先高亮最近路段；用户在列表选定后再高亮完整线路。
   selectedLineKey.value = "";
   selectedStationKey.value = "";
+  selectedRouteMapLinks.value = [];
+  selectedRouteDetail.value = null;
+  selectedLinePanel.value = null;
+  selectedLineName.value = "";
   setSelectedBusStation(null);
   lineMonitorRef.value?.clearSelection?.();
+  setMonitorTransferRouteLinks([]);
   setMonitorSelectedRouteLinks(segmentLinks);
   applyBusNetworkFocus();
   const clientX = domEvent?.clientX ?? point[0];
@@ -2301,6 +3398,8 @@ async function selectLineFromBusNetwork(feature, pendingLinks = []) {
   const props = fullFeature?.properties || {};
   selectedLineKey.value = String(props._lineKey || fullFeature?.id || "");
   selectedStationKey.value = "";
+  selectedStationPanel.value = null;
+  selectedStationName.value = "";
   // 在真实 routeDetail 返回前只保留点中的真实路段，不画站点直连的近似线。
   setMonitorSelectedRouteLinks(pendingLinks);
   setSelectedBusStation(null);
@@ -2319,8 +3418,21 @@ async function selectStationFromBusNetwork(feature) {
   const props = feature?.properties || {};
   selectedStationKey.value = String(props._stationKey || feature?.id || "");
   selectedLineKey.value = "";
+  selectedRouteMapLinks.value = [];
+  selectedRouteDetail.value = null;
+  selectedLinePanel.value = null;
+  selectedLineName.value = "";
   setSelectedBusStation(feature);
+  const coords = feature?.geometry?.coordinates;
+  if (Array.isArray(coords) && coords.length >= 2 && MapRef.value) {
+    const center = lngLatToWebMercator(Number(coords[0]), Number(coords[1]));
+    if (center.every(Number.isFinite)) {
+      MapRef.value.setCenter?.(center);
+      MapRef.value.setZoom?.(15.5);
+    }
+  }
   setMonitorSelectedRouteLinks([]);
+  setMonitorTransferRouteLinks([]);
   const name = busStationName(props);
   if (!name) return;
   await nextTick();
@@ -2334,13 +3446,20 @@ async function selectStationFromBusNetwork(feature) {
 // 取消选中（点击地图空白处）
 function clearLineSelection() {
   selectedLineKey.value = "";
+  selectedRouteMapLinks.value = [];
+  selectedRouteDetail.value = null;
+  selectedLinePanel.value = null;
+  selectedLineName.value = "";
   setMonitorSelectedRouteLinks([]);
+  setMonitorTransferRouteLinks([]);
   lineMonitorRef.value?.clearSelection?.();
 }
 
 function clearStationSelection() {
   selectedStationKey.value = "";
   setSelectedBusStation(null);
+  selectedStationPanel.value = null;
+  selectedStationName.value = "";
   stationMonitorRef.value?.clearSelection?.();
 }
 
@@ -2384,14 +3503,17 @@ function unbindBusNetworkClickListener() {
 function clearBusNetworkLayers() {
   const map = MapRef.value?.map;
   if (!map) return;
-  [
+	  [
+    RM_LAYER_DISPLAY_RANGE_OUTLINE,
     RM_LAYER_STATION_SELECTED,
+    RM_LAYER_STATION_LABELS,
     RM_LAYER_STATIONS,
     RM_LAYER_LINES,
   ].forEach((layerId) => {
     if (map.getLayer?.(layerId)) map.removeLayer(layerId);
   });
-  [
+	  [
+    RM_SOURCE_DISPLAY_RANGE,
     RM_SOURCE_SELECTED_STATION,
     RM_SOURCE_STATIONS,
     RM_SOURCE_LINES,
@@ -2403,6 +3525,9 @@ function clearBusNetworkLayers() {
     lines: emptyFeatureCollection(),
     stations: emptyFeatureCollection(),
   };
+  busNetworkRawLines = [];
+  busNetworkRawFacilities = [];
+  busNetworkRevision.value += 1;
 }
 
 const minLineWidth = computed(() => 0.1);
@@ -2436,6 +3561,8 @@ watch(computedLineWidth, (val) => {
 watch(computedFlowWidthStep, () => {
   applyFlowWidthStep();
 });
+watch(pfaSegmentFlowStops, applyPfaSegmentFlowStyle, { deep: true });
+watch(pfaSegmentLayerOpacity, applyPfaSegmentOpacity);
 watch(stationSize, () => {
   applyStationSize();
 });
@@ -2532,6 +3659,7 @@ function scheduleMapResize(delay = 0) {
 function handleDocumentKeydown(event) {
   if (event.key !== "Escape") return;
   showLineWidthPopover.value = false;
+  showRangePopover.value = false;
   selectedSegment.value = null;
 }
 
@@ -2572,7 +3700,72 @@ function handleResetCompass() {
 }
 
 function handleToggleLineWidthPopover() {
+  showRangePopover.value = false;
   showLineWidthPopover.value = !showLineWidthPopover.value;
+}
+
+function closeRangePopover() {
+  showRangePopover.value = false;
+}
+
+async function loadDisplayRanges(options = {}) {
+  const { force = false } = options;
+  const seq = ++displayRangeRequestSeq;
+  isLoadingDisplayRanges.value = true;
+  displayRangeError.value = "";
+  try {
+    const data = await getCachedAdminDistricts(DISPLAY_AREA_NAME, { force });
+    if (seq !== displayRangeRequestSeq) return;
+    adminDistrictCollection.value = normalizeAdminDistrictCollection(data?.collection);
+    const names = Array.isArray(data?.districts)
+      ? data.districts.map((item) => String(item || "").trim()).filter(Boolean)
+      : districtNamesFromCollection(adminDistrictCollection.value);
+    displayRangeList.value = [
+      DISPLAY_RANGE_ALL,
+      ...names.filter((name, index, list) => name !== DISPLAY_RANGE_ALL && list.indexOf(name) === index),
+    ];
+    if (!displayRangeList.value.includes(selectedDisplayRange.value)) {
+      selectedDisplayRange.value = DISPLAY_RANGE_ALL;
+    }
+    syncBusNetworkDisplayRange();
+  } catch (error) {
+    if (seq !== displayRangeRequestSeq) return;
+    adminDistrictCollection.value = emptyDistrictFeatureCollection();
+    displayRangeList.value = [DISPLAY_RANGE_ALL];
+    selectedDisplayRange.value = DISPLAY_RANGE_ALL;
+    displayRangeError.value = error?.message || "行政区范围加载失败";
+  } finally {
+    if (seq === displayRangeRequestSeq) {
+      isLoadingDisplayRanges.value = false;
+    }
+  }
+}
+
+function toggleRangePopover() {
+  if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
+    selectedDisplayRange.value = DISPLAY_RANGE_ALL;
+    closeRangePopover();
+    return;
+  }
+  if (!showRangePopover.value) {
+    showLineWidthPopover.value = false;
+    closeLineRoutePicker();
+    if (!displayRangeOptions.value.length && !isLoadingDisplayRanges.value) {
+      loadDisplayRanges({ force: Boolean(displayRangeError.value) });
+    }
+  }
+  showRangePopover.value = !showRangePopover.value;
+}
+
+function selectDisplayRange(rangeName) {
+  const nextRange = String(rangeName || "").trim();
+  if (!nextRange) return;
+  if (nextRange === selectedDisplayRange.value) {
+    closeRangePopover();
+    return;
+  }
+  selectedDisplayRange.value = nextRange;
+  closeRangePopover();
 }
 
 function handleToggleInfo() {
@@ -2639,6 +3832,7 @@ function syncAllLayerSettings() {
   applyLineWidth();
   applyFlowWidthStep();
   applyFlowControl();
+  applyPfaSegmentOpacity();
   applyStationSize();
   applyVehicleSize();
   applyVehicleVisibilityMode();
@@ -2667,6 +3861,11 @@ function handleLineWidthChange(val) {
   applyFlowWidthStep();
 }
 
+function handlePfaSegmentOpacityChange(val) {
+  pfaSegmentOpacity.value = Math.max(0, Math.min(100, Number(val) || 0));
+  applyPfaSegmentOpacity();
+}
+
 function handleStationSizeChange(val) {
   stationSize.value = val;
   applyStationSize();
@@ -2686,10 +3885,16 @@ function applyFlowControl() {
   if (MapRef.value && MapRef.value.layers) {
     MapRef.value.layers.forEach((layer) => {
       if (typeof layer.setFlowControl === "function") {
+        if (layer === monitorSelectedRouteSegmentLayer) {
+          layer.setFlowControl(true);
+          return;
+        }
         layer.setFlowControl(flowControl.value);
       }
     });
   }
+  monitorSelectedRouteSegmentLayer?.setFlowControl?.(true);
+  monitorSelectedRouteSegmentLayer?.setFlowStyleStops?.(pfaSegmentFlowStops.value);
   monitorRoadLayer?.setFlowControl(flowControl.value);
 }
 
@@ -2761,6 +3966,18 @@ watch(baseMapLineMode, (mode) => {
   syncBaseMapLayerVisibility();
 });
 
+watch(selectedDisplayRange, () => {
+  closeLineRoutePicker();
+  clearLineSelection();
+  clearStationSelection();
+  if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL && baseMapLineMode.value !== "bus-network") {
+    baseMapLineMode.value = "bus-network";
+  }
+  syncBusNetworkDisplayRange();
+  loadOverallFlow();
+  nextTick(fitDisplayRangeContext);
+});
+
 watch(
   [() => selectModel.value?.name, isModelReady],
   ([modelName]) => {
@@ -2768,9 +3985,18 @@ watch(
     closeLineRoutePicker();
     selectedLineKey.value = "";
     selectedStationKey.value = "";
+    selectedRouteMapLinks.value = [];
+    selectedRouteDetail.value = null;
+    selectedLinePanel.value = null;
+    selectedLineName.value = "";
+    selectedStationPanel.value = null;
+    selectedStationName.value = "";
+    pfaTransferRouteDetailCache.clear();
     setMonitorSelectedRouteLinks([]);
+    setMonitorTransferRouteLinks([]);
     setSelectedBusStation(null);
     if (monitorBusRouteLayer) {
+      monitorBusRouteLayer.setLineClipContext(activeDisplayRangeContext.value);
       monitorBusRouteLayer.setTileSource(modelName, { tileRequest: getRouteTileBinary });
     } else {
       ensureMonitorBusRouteLayer();
@@ -2823,6 +4049,17 @@ async function handleAuthChanged() {
 }
 
 onMounted(() => {
+  // 地图为跨路由共享实例（注入的 MapRef）。若挂载时地图已存在，watch(MapRef) 不会触发，
+  // 需在此补做地图初始化，否则上一个页面卸载时已解绑点击/清空图层，本页将无法点选线路/站点。
+  if (MapRef.value) {
+    bindBusNetworkClickListener();
+    ensureMonitorBusRouteLayer();
+    loadBusNetwork();
+    scheduleMapResize();
+  }
+  if (showDisplayRangeControl.value) {
+    loadDisplayRanges();
+  }
   if (isPerfProbeEnabled) {
     startPerfProbe();
   }
@@ -2830,7 +4067,8 @@ onMounted(() => {
   window.addEventListener("resize", centerLeftPanel);
   window.addEventListener("auth:changed", handleAuthChanged);
   document.addEventListener("keydown", handleDocumentKeydown);
-  handleGetSchemeList({ autoSelect: true }).then(async () => {
+  const bootstrapSimulation = isSimulationMode.value
+    ? handleGetSchemeList({ autoSelect: true }).then(async () => {
     if (datebase.value.scheme && !modelList.value.length) {
       const list = await handleGetModelList();
       if (list.length && (!datebase.value.model || !list.some((item) => item.name === datebase.value.model))) {
@@ -2839,7 +4077,9 @@ onMounted(() => {
       }
       await ensureSelectedModelReady();
     }
-  }).finally(() => {
+  })
+    : Promise.resolve();
+  bootstrapSimulation.finally(() => {
     initialModelBootstrap.value = false;
     isRestoringSelection = false;
     observeLeftPanelSize();
@@ -2857,6 +4097,12 @@ onUnmounted(() => {
   monitorSelectedRouteLayer = null;
   monitorSelectedRouteGlowLayer?.dispose();
   monitorSelectedRouteGlowLayer = null;
+  monitorSelectedRouteSegmentLayer?.dispose();
+  monitorSelectedRouteSegmentLayer = null;
+  monitorTransferRouteLayer?.dispose();
+  monitorTransferRouteLayer = null;
+  monitorTransferRouteGlowLayer?.dispose();
+  monitorTransferRouteGlowLayer = null;
   monitorBusRouteLayer?.dispose();
   monitorBusRouteLayer = null;
   monitorRoadLayer?.dispose();
@@ -2896,6 +4142,19 @@ onUnmounted(() => {
   scale: var(--app-panel-scale);
 }
 
+/* 客流分析侧栏：线路客流分析子功能展开动效 */
+.slide-fade-enter-active,
+.slide-fade-leave-active {
+  transition:
+    opacity var(--dm2-dur, 240ms) var(--dm2-ease-out, ease),
+    transform var(--dm2-dur, 240ms) var(--dm2-ease-out, ease);
+}
+.slide-fade-enter-from,
+.slide-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
 .datebase_box {
   position: fixed;
   top: calc(var(--app-header-height) / 2);
@@ -2906,8 +4165,42 @@ onUnmounted(() => {
   transform: translateY(-50%);
   transform-origin: right center;
   z-index: calc(var(--z-header) + 10);
-  max-width: min(46vw, 520px);
+  max-width: min(62vw, 680px);
   min-width: 0;
+
+  .data-source-segment {
+    display: inline-flex;
+    align-items: center;
+    height: 34px;
+    padding: 3px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: var(--app-card-radius);
+    background: rgba(251, 253, 255, 0.9);
+    box-shadow: 0 8px 20px rgba(37, 99, 235, 0.08);
+    flex: 0 0 auto;
+
+    button {
+      height: 26px;
+      min-width: 42px;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--app-muted);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
+
+      &.active {
+        color: var(--app-blue);
+        background: rgba(21, 105, 222, 0.1);
+        box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.12) inset;
+      }
+    }
+  }
+
   .handle {
     cursor: default;
     font-size: 0.95rem;
@@ -3265,6 +4558,218 @@ onUnmounted(() => {
         width: 126px;
       }
     }
+
+    .segment-style-panel {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(21, 105, 222, 0.09);
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+
+    .segment-style-head,
+    .segment-style-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 86px;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .segment-style-head {
+      color: var(--app-muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .segment-style-color {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 26px;
+      padding: 3px 7px;
+      border: 1px solid rgba(21, 105, 222, 0.12);
+      border-radius: 8px;
+      background: rgba(248, 251, 255, 0.72);
+      color: var(--app-ink-soft);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      text-align: left;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+
+      &:hover,
+      &.active {
+        color: var(--app-blue);
+        border-color: rgba(21, 105, 222, 0.32);
+        background: rgba(21, 105, 222, 0.08);
+      }
+    }
+
+    .segment-color-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.92);
+      box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.2);
+      flex: 0 0 auto;
+    }
+
+    .segment-style-row :deep(.el-input-number) {
+      width: 86px;
+    }
+
+    .segment-style-row :deep(.el-input__wrapper) {
+      padding: 0 8px;
+    }
+
+    .segment-style-tail {
+      color: var(--app-muted);
+      font-size: 10px;
+      font-weight: 700;
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .segment-palette-box {
+      margin-top: 2px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(21, 105, 222, 0.08);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .segment-palette-meta {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--app-muted);
+      font-size: 11px;
+      font-weight: 700;
+
+      strong {
+        color: var(--app-blue);
+        font-size: 11px;
+      }
+    }
+
+    .segment-color-wheel {
+      position: relative;
+      width: min(178px, 100%);
+      aspect-ratio: 1;
+      border-radius: 50%;
+      cursor: crosshair;
+      background:
+        radial-gradient(circle, rgba(248, 252, 255, 0.98) 0%, rgba(248, 252, 255, 0.34) 35%, rgba(248, 252, 255, 0) 69%),
+        conic-gradient(from 90deg, #ff2d2d 0deg, #ffd60a 58deg, #00e653 118deg, #00d7ff 180deg, #135dff 238deg, #ff33d6 300deg, #ff2d2d 360deg);
+      border: 1px solid rgba(13, 57, 104, 0.18);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.78), 0 8px 20px rgba(15, 50, 90, 0.12);
+      touch-action: none;
+    }
+
+    .segment-color-crosshair {
+      position: absolute;
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      border: 2px solid rgba(248, 252, 255, 0.96);
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.42), 0 2px 6px rgba(15, 23, 42, 0.22);
+      pointer-events: none;
+    }
+  }
+}
+
+.rm-range-popover {
+  position: absolute;
+  right: 48px;
+  top: 76px;
+  width: min(220px, calc(100vw - 96px));
+  max-height: min(58vh, 430px);
+  padding: var(--space-sm);
+  z-index: calc(var(--z-popover) - 1);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  background: var(--app-panel-bg);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-panel-radius);
+  box-shadow: var(--app-shadow-sm);
+
+  .popover-title {
+    padding: 0 2px 8px;
+    margin: 0;
+    border-bottom: 1px solid rgba(21, 105, 222, 0.09);
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--app-ink);
+  }
+
+  .range-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow-y: auto;
+    padding-right: 2px;
+  }
+
+  .range-option {
+    width: 100%;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--app-ink-soft);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background-color 0.18s ease,
+      border-color 0.18s ease,
+      color 0.18s ease;
+
+    &:hover,
+    &.active {
+      color: var(--app-cyan-strong);
+      background: var(--app-cyan-soft);
+      border-color: rgba(37, 167, 204, 0.22);
+    }
+  }
+
+  .range-option-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .range-option-check {
+    flex: 0 0 auto;
+  }
+
+  .range-state,
+  .range-error {
+    margin: 0;
+    padding: 8px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--app-muted);
+  }
+
+  .range-error {
+    color: var(--app-coral);
   }
 }
 
@@ -3614,6 +5119,10 @@ onUnmounted(() => {
     height: 100%;
   }
 
+  :deep(.el-scrollbar__wrap) {
+    overflow: hidden !important;
+  }
+
   #datavisualization_index_box2 {
     height: 100%;
     min-height: 0;
@@ -3621,6 +5130,7 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: stretch;
     gap: var(--dm2-space-3);
+    overflow: hidden;
   }
 
   :deep(.MCard2) {
@@ -3669,6 +5179,18 @@ onUnmounted(() => {
   }
 }
 
+.rm-right-card-subtitle {
+  max-width: 360px;
+  margin: 6px 0 0;
+  color: var(--dm2-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .rm-panel-kicker {
   margin: 0;
   color: var(--dm2-accent-strong);
@@ -3684,7 +5206,7 @@ onUnmounted(() => {
 }
 
 .overall-flow-card .rm-overall-summary {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .rm-summary-item {
@@ -3714,6 +5236,77 @@ onUnmounted(() => {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+}
+
+.rm-compact-flow-card {
+  overflow: hidden;
+
+  .rm-right-card-title {
+    padding-bottom: 10px;
+
+    h2 {
+      margin-top: 0;
+      font-size: 18px;
+      line-height: 1.18;
+    }
+  }
+
+  .rm-overall-summary {
+    gap: 8px;
+    padding-top: 10px;
+  }
+
+  .rm-summary-item {
+    gap: 3px;
+    padding: 8px 9px;
+    border-radius: 8px;
+
+    span {
+      font-size: 10px;
+      line-height: 1.2;
+    }
+
+    strong {
+      font-size: 15px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+  }
+
+  .rm-overall-chart {
+    flex-basis: 158px;
+    min-height: 158px;
+    margin-top: 10px;
+    padding: 4px 2px 0;
+    border-radius: 9px;
+  }
+
+  .hourly-ranking-panel {
+    margin-top: 10px;
+  }
+
+  .ranking-title-text {
+    margin-bottom: 7px;
+    font-size: 13px;
+  }
+
+  .ranking-header {
+    margin-bottom: 4px;
+    padding: 7px 12px;
+
+    span {
+      font-size: 11px;
+    }
+  }
+
+  .ranking-row {
+    min-height: 34px;
+    padding: 7px 12px;
+  }
+
+  .flow-value {
+    font-size: 13px;
   }
 }
 

@@ -24,6 +24,7 @@ export const useModelSelectionStore = defineStore("modelSelection", () => {
   function getSelection(pageKey) {
     const selection = selections.value?.[pageKey] || {};
     return {
+      sourceMode: selection.sourceMode || "simulation",
       scheme: selection.scheme || "",
       model: selection.model || "",
     };
@@ -33,6 +34,7 @@ export const useModelSelectionStore = defineStore("modelSelection", () => {
     selections.value = {
       ...selections.value,
       [pageKey]: {
+        sourceMode: selection.sourceMode || "simulation",
         scheme: selection.scheme || "",
         model: selection.model || "",
       },

@@ -6,6 +6,10 @@ import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.api.core.v01.Id;
+import org.matsim.api.core.v01.population.Activity;
+import org.matsim.api.core.v01.population.Person;
+import org.matsim.api.core.v01.population.PlanElement;
+import org.matsim.api.core.v01.population.Population;
 import org.matsim.pt.transitSchedule.api.TransitLine;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitRouteStop;
@@ -32,13 +36,21 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimStationPanelCache {
 
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v3";
+    // v7: 可达性按“物理同点”识别换乘点（同名站按坐标聚类拆分），修复同名异地站点（如“东区市场”相距数十公里）
+    //     被当成同一换乘点导致的跨城“假可达”问题，需重算缓存。
+    // v8: 客流画像对齐线路面板，按“出行目的/出行者属性”两个维度互斥统计，各维度由前端补足到 100%。
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v8";
+
+    // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
+    // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
+    private static final double STOP_CLUSTER_RADIUS = 300.0;
 
     private static final String PANEL_FILE = "station-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
     private static final int HOURS = 24;
     private static final int LEADERBOARD_LIMIT = 50;
     private static final int OD_LIMIT = 12;
+    private static final int REACHABILITY_STATION_LIMIT = 80;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
@@ -108,6 +120,7 @@ public final class MatsimStationPanelCache {
         indexPassengerTracks(data.getPersonTracks(), stations, index);
         indexStationOd(data.getPersonTracks(), stations, index);
         indexReachability(stations, index);
+        stations.values().forEach(station -> station.finish(data.getPopulation()));
 
         Map<String, Object> stationPayloads = new LinkedHashMap<>();
         stations.values().stream()
@@ -130,7 +143,13 @@ public final class MatsimStationPanelCache {
             String facilityId = entry.getKey().toString();
             TransitStopFacility facility = entry.getValue();
             index.facilityToName.put(facilityId, nonBlank(facility.getName(), facilityId));
+            if (facility.getCoord() != null) {
+                index.facilityToCoord.put(facilityId, new double[]{facility.getCoord().getX(), facility.getCoord().getY()});
+            }
         }
+
+        // 同名站点按邻近度聚类成“物理换乘点”，避免同名异地站点被当成同一换乘点（跨城假可达的根因）。
+        index.buildStopNodes(STOP_CLUSTER_RADIUS);
 
         for (Map.Entry<Id<TransitLine>, TransitLine> lineEntry : data.getSchedule().getTransitLines().entrySet()) {
             String lineId = lineEntry.getKey().toString();
@@ -141,9 +160,14 @@ public final class MatsimStationPanelCache {
                 TransitRoute route = routeEntry.getValue();
                 RouteMeta routeMeta = new RouteMeta(lineId, lineName, routeId, route);
                 index.routes.put(routeId, routeMeta);
-                index.routeToStations.put(routeId, routeMeta.stationNames);
-                for (String stationName : routeMeta.stationNames) {
-                    index.stationToRoutes.computeIfAbsent(stationName, ignored -> new LinkedHashSet<>()).add(routeId);
+                // 可达性图按“物理换乘点”(stop node)而非站名构建，避免同名异地站点产生假换乘。
+                Set<String> routeNodes = new LinkedHashSet<>();
+                for (TransitRouteStop stop : route.getStops()) {
+                    routeNodes.add(index.stopNode(stop.getStopFacility().getId().toString()));
+                }
+                index.routeToNodes.put(routeId, routeNodes);
+                for (String node : routeNodes) {
+                    index.nodeToRoutes.computeIfAbsent(node, ignored -> new LinkedHashSet<>()).add(routeId);
                 }
             }
         }
@@ -217,8 +241,9 @@ public final class MatsimStationPanelCache {
                 String destination = index.stationName(idString(track.getFacilityId()));
                 if (!origin.equals(destination)) {
                     int hour = hourOf(safeTime(openBoarding));
-                    stations.computeIfAbsent(origin, StationPanelAccumulator::new).addOd(origin, destination, hour);
-                    stations.computeIfAbsent(destination, StationPanelAccumulator::new).addOd(origin, destination, hour);
+                    RouteMeta route = index.routes.get(idString(openBoarding.getRouteId()));
+                    stations.computeIfAbsent(origin, StationPanelAccumulator::new).addOd(origin, destination, route, hour);
+                    stations.computeIfAbsent(destination, StationPanelAccumulator::new).addOd(origin, destination, route, hour);
                 }
                 openBoarding = null;
             }
@@ -227,31 +252,41 @@ public final class MatsimStationPanelCache {
 
     private static void indexReachability(Map<String, StationPanelAccumulator> stations, StationNetworkIndex index) {
         for (StationPanelAccumulator station : stations.values()) {
+            // 起点用本站各物理站台对应的换乘点（按设施坐标聚类得到），而非站名。
+            Set<String> originNodes = index.nodesOf(station.facilityIds, station.stationName);
             Set<String> seenRoutes = new LinkedHashSet<>();
-            Set<String> seenStations = new LinkedHashSet<>();
-            seenStations.add(station.stationName);
+            Set<String> seenNodes = new LinkedHashSet<>(originNodes);
 
-            Set<String> directRoutes = new LinkedHashSet<>(index.stationToRoutes.getOrDefault(station.stationName, Set.of()));
+            Set<String> directRoutes = routesByNodes(originNodes, index);
             seenRoutes.addAll(directRoutes);
-            Set<String> direct = newStationsByRoutes(directRoutes, seenStations, index);
-            seenStations.addAll(direct);
+            Set<String> directNodes = newNodesByRoutes(directRoutes, seenNodes, index);
+            seenNodes.addAll(directNodes);
 
-            Set<String> transfer1Routes = nextSameStationTransferRoutes(directRoutes, seenRoutes, index);
+            Set<String> transfer1Routes = nextTransferRoutes(directRoutes, seenRoutes, index);
             seenRoutes.addAll(transfer1Routes);
-            Set<String> transfer1 = newStationsByRoutes(transfer1Routes, seenStations, index);
-            seenStations.addAll(transfer1);
+            Set<String> transfer1Nodes = newNodesByRoutes(transfer1Routes, seenNodes, index);
+            seenNodes.addAll(transfer1Nodes);
 
-            Set<String> transfer2Routes = nextSameStationTransferRoutes(transfer1Routes, seenRoutes, index);
-            Set<String> transfer2 = newStationsByRoutes(transfer2Routes, seenStations, index);
+            Set<String> transfer2Routes = nextTransferRoutes(transfer1Routes, seenRoutes, index);
+            Set<String> transfer2Nodes = newNodesByRoutes(transfer2Routes, seenNodes, index);
 
-            station.setReachability(direct.size(), transfer1.size(), transfer2.size());
+            // 对外仍以站名汇报可达站点（同一物理点可能含多名站台，按名去重）。
+            station.setReachability(index.namesOf(directNodes), index.namesOf(transfer1Nodes), index.namesOf(transfer2Nodes));
         }
     }
 
-    private static Set<String> nextSameStationTransferRoutes(Set<String> frontierRoutes, Set<String> seenRoutes, StationNetworkIndex index) {
+    private static Set<String> routesByNodes(Set<String> nodes, StationNetworkIndex index) {
         Set<String> result = new LinkedHashSet<>();
-        for (String stationName : stationsByRoutes(frontierRoutes, index)) {
-            for (String routeId : index.stationToRoutes.getOrDefault(stationName, Set.of())) {
+        for (String node : nodes) {
+            result.addAll(index.nodeToRoutes.getOrDefault(node, Set.of()));
+        }
+        return result;
+    }
+
+    private static Set<String> nextTransferRoutes(Set<String> frontierRoutes, Set<String> seenRoutes, StationNetworkIndex index) {
+        Set<String> result = new LinkedHashSet<>();
+        for (String node : nodesByRoutes(frontierRoutes, index)) {
+            for (String routeId : index.nodeToRoutes.getOrDefault(node, Set.of())) {
                 if (!seenRoutes.contains(routeId)) {
                     result.add(routeId);
                 }
@@ -260,16 +295,16 @@ public final class MatsimStationPanelCache {
         return result;
     }
 
-    private static Set<String> newStationsByRoutes(Set<String> routeIds, Set<String> seenStations, StationNetworkIndex index) {
-        Set<String> result = stationsByRoutes(routeIds, index);
-        result.removeAll(seenStations);
+    private static Set<String> newNodesByRoutes(Set<String> routeIds, Set<String> seenNodes, StationNetworkIndex index) {
+        Set<String> result = nodesByRoutes(routeIds, index);
+        result.removeAll(seenNodes);
         return result;
     }
 
-    private static Set<String> stationsByRoutes(Set<String> routeIds, StationNetworkIndex index) {
+    private static Set<String> nodesByRoutes(Set<String> routeIds, StationNetworkIndex index) {
         Set<String> result = new LinkedHashSet<>();
         for (String routeId : routeIds) {
-            result.addAll(index.routeToStations.getOrDefault(routeId, Set.of()));
+            result.addAll(index.routeToNodes.getOrDefault(routeId, Set.of()));
         }
         return result;
     }
@@ -453,6 +488,13 @@ public final class MatsimStationPanelCache {
         return Math.round(value * 100.0) / 100.0;
     }
 
+    private static double percent(double numerator, double denominator) {
+        if (denominator <= 0) {
+            return 0.0;
+        }
+        return round2(Math.min(100.0, numerator * 100.0 / denominator));
+    }
+
     private static String normalizeVehicleMode(String rawText) {
         String text = rawText == null ? "" : rawText.toLowerCase(Locale.ROOT);
         if (text.contains("subway") || text.contains("metro") || text.contains("rail")
@@ -462,17 +504,187 @@ public final class MatsimStationPanelCache {
         return "bus";
     }
 
+    private static String firstText(Person person, String... keys) {
+        if (person == null || person.getAttributes() == null) {
+            return "";
+        }
+        for (String key : keys) {
+            Object value = person.getAttributes().getAttribute(key);
+            if (value != null) {
+                return value.toString();
+            }
+        }
+        return "";
+    }
+
+    private static String allAttributeText(Person person) {
+        if (person == null || person.getAttributes() == null || person.getAttributes().isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        person.getAttributes().getAsMap().forEach((key, value) -> {
+            builder.append(key).append('=');
+            if (value != null) {
+                builder.append(value);
+            }
+            builder.append(';');
+        });
+        return builder.toString().toLowerCase(Locale.ROOT);
+    }
+
+    private static Set<String> activityTypes(Person person) {
+        Set<String> result = new LinkedHashSet<>();
+        if (person == null) {
+            return result;
+        }
+        person.getPlans().forEach(plan -> {
+            for (PlanElement element : plan.getPlanElements()) {
+                if (element instanceof Activity activity && activity.getType() != null) {
+                    result.add(activity.getType().toLowerCase(Locale.ROOT));
+                }
+            }
+        });
+        return result;
+    }
+
+    private static Integer age(Person person) {
+        String raw = firstText(person, "age", "Age", "AGE", "年龄");
+        if (raw.isBlank()) {
+            return null;
+        }
+        try {
+            return (int) Math.floor(Double.parseDouble(raw.trim()));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static boolean hasToken(String text, String... tokens) {
+        for (String token : tokens) {
+            if (text.contains(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasActivity(Set<String> types, String... tokens) {
+        for (String type : types) {
+            for (String token : tokens) {
+                if (type.contains(token)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static List<String> limitedStationNames(Set<String> stationNames) {
+        return sortedStationNames(stationNames).stream()
+                .limit(REACHABILITY_STATION_LIMIT)
+                .toList();
+    }
+
+    private static List<String> sortedStationNames(Set<String> stationNames) {
+        return stationNames.stream()
+                .filter(name -> name != null && !name.isBlank())
+                .sorted(String::compareToIgnoreCase)
+                .toList();
+    }
+
     private static final class StationNetworkIndex {
         private final Map<String, String> facilityToName = new HashMap<>();
+        private final Map<String, double[]> facilityToCoord = new HashMap<>();
         private final Map<String, RouteMeta> routes = new LinkedHashMap<>();
-        private final Map<String, Set<String>> stationToRoutes = new HashMap<>();
-        private final Map<String, Set<String>> routeToStations = new HashMap<>();
+        // 可达性图以“物理换乘点”(stop node) 为节点；同名站点按坐标聚类后可能拆成多个节点。
+        private final Map<String, Set<String>> nodeToRoutes = new HashMap<>();
+        private final Map<String, Set<String>> routeToNodes = new HashMap<>();
+        private final Map<String, String> facilityToNode = new HashMap<>();
+        private final Map<String, String> nodeToName = new HashMap<>();
+        private final Map<String, Set<String>> nameToNodes = new HashMap<>();
 
         private String stationName(String facilityId) {
             if (facilityId == null || facilityId.isBlank()) {
                 return "unknown";
             }
             return nonBlank(facilityToName.get(facilityId), facilityId);
+        }
+
+        // 同名设施按邻近度单链聚类成换乘点：相距 ≤ radius 视为同一物理点，远离则拆成 name#0 / name#1 …
+        private void buildStopNodes(double radius) {
+            double r2 = radius * radius;
+            Map<String, List<String>> facilitiesByName = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : facilityToName.entrySet()) {
+                facilitiesByName.computeIfAbsent(entry.getValue(), ignored -> new ArrayList<>()).add(entry.getKey());
+            }
+            for (Map.Entry<String, List<String>> entry : facilitiesByName.entrySet()) {
+                String name = entry.getKey();
+                List<List<String>> clusters = new ArrayList<>();
+                for (String facilityId : entry.getValue()) {
+                    double[] coord = facilityToCoord.get(facilityId);
+                    List<String> hit = null;
+                    if (coord != null) {
+                        for (List<String> cluster : clusters) {
+                            for (String member : cluster) {
+                                double[] mc = facilityToCoord.get(member);
+                                if (mc == null) {
+                                    continue;
+                                }
+                                double dx = coord[0] - mc[0];
+                                double dy = coord[1] - mc[1];
+                                if (dx * dx + dy * dy <= r2) {
+                                    hit = cluster;
+                                    break;
+                                }
+                            }
+                            if (hit != null) {
+                                break;
+                            }
+                        }
+                    }
+                    if (hit == null) {
+                        hit = new ArrayList<>();
+                        clusters.add(hit);
+                    }
+                    hit.add(facilityId);
+                }
+                boolean split = clusters.size() > 1;
+                for (int k = 0; k < clusters.size(); k++) {
+                    String nodeId = split ? name + "#" + k : name;
+                    nodeToName.put(nodeId, name);
+                    nameToNodes.computeIfAbsent(name, ignored -> new LinkedHashSet<>()).add(nodeId);
+                    for (String facilityId : clusters.get(k)) {
+                        facilityToNode.put(facilityId, nodeId);
+                    }
+                }
+            }
+        }
+
+        private String stopNode(String facilityId) {
+            String node = facilityToNode.get(facilityId);
+            return node != null ? node : stationName(facilityId);
+        }
+
+        private Set<String> nodesOf(Set<String> facilityIds, String fallbackName) {
+            Set<String> nodes = new LinkedHashSet<>();
+            for (String facilityId : facilityIds) {
+                String node = facilityToNode.get(facilityId);
+                if (node != null) {
+                    nodes.add(node);
+                }
+            }
+            if (nodes.isEmpty()) {
+                nodes.addAll(nameToNodes.getOrDefault(fallbackName, Set.of()));
+            }
+            return nodes;
+        }
+
+        private Set<String> namesOf(Set<String> nodes) {
+            Set<String> names = new LinkedHashSet<>();
+            for (String node : nodes) {
+                names.add(nonBlank(nodeToName.get(node), node));
+            }
+            return names;
         }
     }
 
@@ -527,6 +739,17 @@ public final class MatsimStationPanelCache {
         private final int[] boardingByHour = new int[HOURS];
         private final int[] alightingByHour = new int[HOURS];
         private final Map<String, OdAccumulator> od = new HashMap<>();
+        private Set<String> directReachableStations = Set.of();
+        private Set<String> transfer1ReachableStations = Set.of();
+        private Set<String> transfer2ReachableStations = Set.of();
+        private Map<String, Object> demographics = Map.of(
+                "commuter", 0,
+                "student", 0,
+                "elderly", 0,
+                "shopping", 0,
+                "leisure", 0,
+                "other", 0
+        );
         private int directReachable = 0;
         private int transfer1Reachable = 0;
         private int transfer2Reachable = 0;
@@ -562,15 +785,110 @@ public final class MatsimStationPanelCache {
             }
         }
 
-        private void addOd(String origin, String destination, int hour) {
-            String key = origin + "::" + destination;
-            od.computeIfAbsent(key, ignored -> new OdAccumulator(origin, destination)).flowByHour[hour]++;
+        private void addOd(String origin, String destination, RouteMeta route, int hour) {
+            String routeKey = route == null ? "unknown" : route.routeId;
+            String key = routeKey + "::" + origin + "::" + destination;
+            od.computeIfAbsent(key, ignored -> new OdAccumulator(origin, destination, route)).flowByHour[hour]++;
         }
 
-        private void setReachability(int direct, int transfer1, int transfer2) {
-            this.directReachable = direct;
-            this.transfer1Reachable = transfer1;
-            this.transfer2Reachable = transfer2;
+        private void setReachability(Set<String> direct, Set<String> transfer1, Set<String> transfer2) {
+            this.directReachableStations = new LinkedHashSet<>(direct);
+            this.transfer1ReachableStations = new LinkedHashSet<>(transfer1);
+            this.transfer2ReachableStations = new LinkedHashSet<>(transfer2);
+            this.directReachable = direct.size();
+            this.transfer1Reachable = transfer1.size();
+            this.transfer2Reachable = transfer2.size();
+        }
+
+        private void finish(Population population) {
+            buildDemographics(population);
+        }
+
+        private void buildDemographics(Population population) {
+            if (population == null || riderIds.isEmpty()) {
+                demographics = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
+                return;
+            }
+            int total = 0;
+            int commuter = 0;
+            int student = 0;
+            int elderly = 0;
+            int shopping = 0;
+            int leisure = 0;
+            int other = 0;
+            Map<String, Integer> activityCounts = new LinkedHashMap<>();
+            for (String riderId : riderIds) {
+                Person person = population.getPersons().get(Id.create(riderId, Person.class));
+                if (person == null) {
+                    continue;
+                }
+                total++;
+                Set<String> activities = activityTypes(person);
+                for (String activity : activities) {
+                    if (activity != null && !activity.isBlank()) {
+                        activityCounts.merge(activity, 1, Integer::sum);
+                    }
+                }
+                String attributes = allAttributeText(person);
+                Integer personAge = age(person);
+                boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
+                        || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
+                boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
+                        || hasToken(attributes, "student", "school", "university", "学生");
+                boolean isElderly = personAge != null && personAge >= 60
+                        || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
+                boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
+                        || hasToken(attributes, "shopping", "购物");
+                boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
+                        || hasToken(attributes, "leisure", "休闲", "娱乐");
+                if (isElderly) {
+                    elderly++;
+                } else if (isStudent) {
+                    student++;
+                }
+                if (isCommuter) {
+                    commuter++;
+                } else if (isShopping) {
+                    shopping++;
+                } else if (isLeisure) {
+                    leisure++;
+                } else {
+                    other++;
+                }
+            }
+            demographics = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
+            demographics.put("activityTypes", activityPayloads(activityCounts, total));
+        }
+
+        private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
+                int shopping, int leisure, int other) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("riderCount", total);
+            payload.put("commuter", percent(commuter, total));
+            payload.put("student", percent(student, total));
+            payload.put("elderly", percent(elderly, total));
+            payload.put("shopping", percent(shopping, total));
+            payload.put("leisure", percent(leisure, total));
+            payload.put("other", percent(other, total));
+            payload.put("source", "population-attributes-and-activities");
+            return payload;
+        }
+
+        private List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts, int total) {
+            return activityCounts.entrySet().stream()
+                    .sorted((left, right) -> {
+                        int countCompare = Integer.compare(right.getValue(), left.getValue());
+                        return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
+                    })
+                    .map(entry -> {
+                        Map<String, Object> payload = new LinkedHashMap<>();
+                        payload.put("key", entry.getKey());
+                        payload.put("label", entry.getKey());
+                        payload.put("count", entry.getValue());
+                        payload.put("ratio", percent(entry.getValue(), total));
+                        return payload;
+                    })
+                    .toList();
         }
 
         private String mode() {
@@ -640,7 +958,12 @@ public final class MatsimStationPanelCache {
             reachability.put("direct", directReachable);
             reachability.put("transfer1", transfer1Reachable);
             reachability.put("transfer2", transfer2Reachable);
+            reachability.put("directStations", limitedStationNames(directReachableStations));
+            reachability.put("transfer1Stations", limitedStationNames(transfer1ReachableStations));
+            reachability.put("transfer2Stations", limitedStationNames(transfer2ReachableStations));
+            reachability.put("stationListLimit", REACHABILITY_STATION_LIMIT);
             payload.put("reachability", reachability);
+            payload.put("demographics", demographics);
 
             Map<String, Object> metrics = new LinkedHashMap<>();
             metrics.put("passenger", passengerFlow());
@@ -679,11 +1002,19 @@ public final class MatsimStationPanelCache {
     private static final class OdAccumulator {
         private final String origin;
         private final String destination;
+        private final String routeId;
+        private final String lineName;
+        private final String routeName;
+        private final String routeDesc;
         private final int[] flowByHour = new int[HOURS];
 
-        private OdAccumulator(String origin, String destination) {
+        private OdAccumulator(String origin, String destination, RouteMeta route) {
             this.origin = origin;
             this.destination = destination;
+            this.routeId = route == null ? "" : route.routeId;
+            this.lineName = route == null ? "" : route.lineName;
+            this.routeName = route == null ? "" : route.routeName;
+            this.routeDesc = route == null ? "" : route.desc;
         }
 
         private int flow() {
@@ -695,6 +1026,11 @@ public final class MatsimStationPanelCache {
             payload.put("origin", origin);
             payload.put("destination", destination);
             payload.put("counterpart", stationName.equals(origin) ? destination : origin);
+            payload.put("routeId", routeId);
+            payload.put("lineName", lineName);
+            payload.put("routeName", routeName);
+            payload.put("routeDesc", routeDesc);
+            payload.put("direction", routeDesc);
             payload.put("flowByHour", flowByHour);
             payload.put("flow", flow());
             payload.put("ratio", totalFlow == 0 ? 0.0 : round2(flow() * 100.0 / totalFlow));

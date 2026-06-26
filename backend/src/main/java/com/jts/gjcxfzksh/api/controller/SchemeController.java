@@ -21,42 +21,42 @@ import org.springframework.web.bind.annotation.RestController;
 public class SchemeController {
 
     @Resource
-    private SchemeService service;
+    private SchemeService schemeService;
 
     @Operation(summary = "方案列表")
     @PostMapping("/schemeList")
     public AjaxResult schemeList() {
-        return AjaxResult.ok(service.schemeList(CurrentUser.getUsername()));
+        return AjaxResult.ok(schemeService.schemeList(CurrentUser.getUsername()));
     }
 
     @PostMapping("/modelList")
     @Operation(summary = "模型列表")
     public AjaxResult modelList(@RequestBody ModelListParam param) {
-        return AjaxResult.ok(service.modelList(CurrentUser.getUsername(), param.getSchemeName()));
+        return AjaxResult.ok(schemeService.modelList(CurrentUser.getUsername(), param.getSchemeName()));
     }
 
     @PostMapping("/loadModel")
     @Operation(summary = "加载模型")
     public AjaxResult loadModel(@RequestBody LoadModelParam param) {
-        return AjaxResult.okError(service.loadModel(CurrentUser.getUsername(), param.getName()));
+        return AjaxResult.okError(schemeService.loadModel(CurrentUser.getUsername(), param.getName()));
     }
 
     @PostMapping("/unloadModel")
     @Operation(summary = "卸载模型")
     public AjaxResult unloadModel(@RequestBody LoadModelParam param) {
-        return AjaxResult.okError(service.unloadModel(CurrentUser.getUsername(), param.getName()));
+        return AjaxResult.okError(schemeService.unloadModel(CurrentUser.getUsername(), param.getName()));
     }
 
     @PostMapping("/cacheStatus")
     @Operation(summary = "模型缓存状态")
     public AjaxResult cacheStatus(@RequestBody LoadModelParam param) {
-        return AjaxResult.ok(service.cacheStatus(CurrentUser.getUsername(), param.getName()));
+        return AjaxResult.ok(schemeService.cacheStatus(CurrentUser.getUsername(), param.getName()));
     }
 
     @PostMapping("/rebuildCache")
     @Operation(summary = "重建模型缓存")
     public AjaxResult rebuildCache(@RequestBody LoadModelParam param) {
-        return AjaxResult.okError(service.rebuildCache(CurrentUser.getUsername(), param.getName()));
+        return AjaxResult.okError(schemeService.rebuildCache(CurrentUser.getUsername(), param.getName()));
     }
 
 

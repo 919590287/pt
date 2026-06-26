@@ -107,29 +107,18 @@
     </div>
   </div>
 
-  <teleport v-if="!runMonitorSimplifiedRight" to="#datavisualization_index_box2" defer>
-    <MCard2 v-if="!runMonitorSimplifiedRight && currentSelectedRoute" class="SJZL_right_card" :open="true">
+  <teleport v-if="!runMonitorSimplifiedRight || pfaRightPanel" to="#datavisualization_index_box2" defer>
+    <MCard2 v-if="(!runMonitorSimplifiedRight || pfaRightPanel) && currentSelectedRoute" class="SJZL_right_card pfa-route-card" :open="true">
       <template #title>
         <div class="ranking-title-container">
           <div class="header-actions-left">
-            <div class="detail-tab-selector">
-              <div 
-                v-for="tab in [{value: 'overview', label: '线路数据总览'}, {value: 'boardingAlighting', label: '线路乘降分析'}, {value: 'segments', label: '线路断面分析'}, {value: 'transfer', label: '换乘关联分析'}]" 
-                :key="tab.value"
-                :class="['tab-pill', activeDetailTab === tab.value ? 'active' : '']"
-                @click.stop="activeDetailTab = tab.value"
-              >
-                {{ tab.label }}
-              </div>
+            <div class="pfa-route-heading">
+              <span class="pfa-route-name">{{ currentSelectedRoute.lineName || currentSelectedRoute.info?.lineName || '线路客流分析' }}</span>
+              <span class="pfa-route-sub">{{ routeMetrics.stationCount }} · 全长 {{ routeMetrics.length }}</span>
             </div>
           </div>
           <div class="header-actions">
-            <el-button 
-              type="primary" 
-              size="small" 
-              class="export-btn"
-              @click.stop="handleExportDetail"
-            >
+            <el-button type="primary" size="small" class="export-btn" @click.stop="handleExportDetail">
               <el-icon style="margin-right: 4px;"><Download /></el-icon>
               导出
             </el-button>
@@ -137,364 +126,153 @@
         </div>
       </template>
       <template #body>
-        <!-- Tab 1: 线路数据总览 -->
-        <div v-if="activeDetailTab === 'overview'" class="route-detail-panel">
-          <!-- 8 Metrics Grid -->
-          <div class="metrics-grid">
-            <div class="metric-card">
-              <span class="label">线路长度</span>
-              <span class="value">{{ routeMetrics.length }}</span>
+        <div class="pfa-route-sections">
+          <!-- 统计时段（仅断面 / 乘降 / 关联换乘按时段统计）-->
+          <div v-if="['segments', 'boarding', 'transfer'].includes(pfaLineSection)" class="time-range-section">
+            <div class="time-range-header">
+              <span class="title">统计时段选择</span>
+              <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
             </div>
-            <div class="metric-card">
-              <span class="label">首班时间</span>
-              <span class="value">{{ routeMetrics.firstTime }}</span>
-            </div>
-            <div class="metric-card">
-              <span class="label">末班时间</span>
-              <span class="value">{{ routeMetrics.lastTime }}</span>
-            </div>
-            <div class="metric-card">
-              <span class="label">直线系数</span>
-              <span class="value">{{ routeMetrics.directness }}</span>
-            </div>
-            <div class="metric-card">
-              <span class="label">站点数量</span>
-              <span class="value">{{ routeMetrics.stationCount }}</span>
-            </div>
-            <div class="metric-card">
-              <span class="label">平均站距</span>
-              <span class="value">{{ routeMetrics.avgStationDistance }}</span>
-            </div>
-            <div class="metric-card">
-              <span class="label">日均客流</span>
-              <span class="value">{{ routeMetrics.passenger }}</span>
-            </div>
-            <div class="metric-card">
-              <span class="label">满载率</span>
-              <span class="value">{{ routeMetrics.loadRate }}</span>
-            </div>
+            <el-slider v-model="segmentTimeRange" range :min="6" :max="22" :step="1" :show-tooltip="false" class="time-range-slider" />
           </div>
 
-          <!-- Passenger Flow Chart Section -->
-          <div class="passenger-flow-section">
+          <!-- ① 线路断面客流与满载率 -->
+          <section v-if="pfaLineSection === 'segments'" class="pfa-section">
             <div class="section-header">
-              <span class="section-title">全天客流变化</span>
+              <span class="section-title">线路断面客流与满载率</span>
+            </div>
+            <div class="segments-table">
+              <div class="table-header">
+                <span class="col-name">断面（相邻站点）</span>
+                <span class="col-flow">客流量</span>
+                <span class="col-load">满载率</span>
+              </div>
+              <div class="table-body">
+                <div v-for="(seg, idx) in routeSegments" :key="idx" class="table-row">
+                  <span class="col-name">{{ seg.name }}</span>
+                  <span class="col-flow">{{ seg.flow.toLocaleString() }}</span>
+                  <span class="col-load">
+                    <span :class="['load-indicator', seg.loadRate >= 70 ? 'high' : seg.loadRate >= 45 ? 'medium' : 'low']">{{ seg.loadRate }}%</span>
+                  </span>
+                </div>
+                <div v-if="!routeSegments.length" class="pfa-empty">暂无断面数据</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ② 站点分时段乘降（折线 / 柱状可切换） -->
+          <section v-else-if="pfaLineSection === 'boarding'" class="pfa-section">
+            <div class="section-header">
+              <span class="section-title">站点乘降客流（按所选时段）</span>
               <div class="chart-type-selector">
                 <div
                   v-for="type in ['line', 'bar']"
                   :key="type"
-                  :class="['type-pill', activeChartType === type ? 'active' : '']"
-                  @click="activeChartType = type"
+                  :class="['type-pill', boardingChartType === type ? 'active' : '']"
+                  @click="boardingChartType = type"
                 >
                   {{ type === 'line' ? '折线图' : '柱状图' }}
                 </div>
               </div>
             </div>
-            <div class="chart-container-wrapper">
+            <div class="chart-container-wrapper" :class="{ 'is-split': isStationSplit }">
               <el-auto-resizer class="chart_box">
                 <template #default="{ height, width }">
                   <VChart
                     v-if="width > 0 && height > 0"
-                    class="flow-chart"
-                    :option="passengerFlowChartOption"
+                    class="boarding-alighting-bar-chart"
+                    :option="boardingAlightingChartOption"
                     autoresize
                     :update-options="{ notMerge: true }"
                   />
                 </template>
               </el-auto-resizer>
             </div>
-          </div>
+          </section>
 
-          <!-- Passenger Portrait Section -->
-          <div class="demographics-section">
-            <div class="section-title">客流画像</div>
-            <div class="demographics-content">
-              <!-- Visual Demographics Row -->
-              <div class="demographics-cards">
-                <div class="demo-card commuter">
-                  <div class="card-meta">
-                    <div class="demo-icon">
-                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
-                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-                      </svg>
-                    </div>
-                    <span class="demo-label">通勤比例</span>
-                    <span class="demo-value">{{ routeDemographics.commuter }}%</span>
-                  </div>
-                  <div class="demo-progress-wrapper">
-                    <div class="demo-progress-bar commuter" :style="{ width: routeDemographics.commuter + '%' }"></div>
-                  </div>
-                </div>
-
-                <div class="demo-card student">
-                  <div class="card-meta">
-                    <div class="demo-icon">
-                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M22 10v6M2 10l10-5 10 5-10 5z"></path>
-                        <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"></path>
-                      </svg>
-                    </div>
-                    <span class="demo-label">学生比例</span>
-                    <span class="demo-value">{{ routeDemographics.student }}%</span>
-                  </div>
-                  <div class="demo-progress-wrapper">
-                    <div class="demo-progress-bar student" :style="{ width: routeDemographics.student + '%' }"></div>
-                  </div>
-                </div>
-
-                <div class="demo-card elderly">
-                  <div class="card-meta">
-                    <div class="demo-icon">
-                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                        <circle cx="9" cy="7" r="4"></circle>
-                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-                      </svg>
-                    </div>
-                    <span class="demo-label">老人比例</span>
-                    <span class="demo-value">{{ routeDemographics.elderly }}%</span>
-                  </div>
-                  <div class="demo-progress-wrapper">
-                    <div class="demo-progress-bar elderly" :style="{ width: routeDemographics.elderly + '%' }"></div>
-                  </div>
-                </div>
+          <!-- ③ 运营效益 -->
+          <section v-else-if="pfaLineSection === 'efficiency'" class="pfa-section">
+            <div class="section-header">
+              <span class="section-title">运营效益</span>
+            </div>
+            <div class="efficiency-grid">
+              <div class="eff-card">
+                <span class="eff-label">日客流量</span>
+                <span class="eff-value">{{ operationStats.dailyFlow }}</span>
+              </div>
+              <div class="eff-card">
+                <span class="eff-label">日发车班次</span>
+                <span class="eff-value">{{ operationStats.departures }}</span>
+              </div>
+              <div class="eff-card">
+                <span class="eff-label">车辆数</span>
+                <span class="eff-value">{{ operationStats.vehicles }}</span>
+              </div>
+              <div class="eff-card">
+                <span class="eff-label">单班次客流</span>
+                <span class="eff-value">{{ operationStats.perTrip }}</span>
+              </div>
+              <div class="eff-card">
+                <span class="eff-label">车日均客流量</span>
+                <span class="eff-value">{{ operationStats.perVehicle }}</span>
               </div>
             </div>
-          </div>
+          </section>
 
-          <!-- Timeline Stations List -->
-          <div class="stations-section">
-            <div class="section-title">沿途站点 (按站序)</div>
-            <div class="station-scroll-list">
-              <div class="timeline-container">
-                <div 
-                  v-for="(fac, index) in currentSelectedRoute.facilities" 
-                  :key="fac.facilityId || index"
-                  class="timeline-item"
-                >
-                  <div :class="['timeline-dot', index === 0 ? 'first' : '', index === currentSelectedRoute.facilities.length - 1 ? 'last' : '']">
-                    <div class="dot-inner"></div>
-                  </div>
-                  <div class="timeline-content">
-                    <span class="station-name">{{ fac.facilityName }}</span>
-                    <span class="station-idx">第 {{ index + 1 }} 站</span>
-                  </div>
+          <!-- ④ 客流画像 -->
+          <section v-else-if="pfaLineSection === 'demographics'" class="pfa-section">
+            <div class="section-header">
+              <span class="section-title">客流画像</span>
+              <span v-if="demographicsRiderCount" class="pfa-section-meta">样本 {{ demographicsRiderCount.toLocaleString() }} 人</span>
+            </div>
+            <div class="demo-groups">
+              <div v-for="g in demographicsGroups" :key="g.key" class="demo-group">
+                <div class="demo-group-head">
+                  <span class="demo-group-title">{{ g.title }}</span>
+                  <span class="demo-group-sum">合计 100%</span>
                 </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Tab 2: 线路乘降分析 -->
-        <div v-else-if="activeDetailTab === 'boardingAlighting'" class="route-boarding-alighting-panel">
-          <!-- Double Dot Slider for Time Range -->
-          <div class="time-range-section">
-            <div class="time-range-header">
-              <span class="title">统计时段选择</span>
-              <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
-            </div>
-            <el-slider 
-              v-model="segmentTimeRange" 
-              range 
-              :min="6" 
-              :max="22" 
-              :step="1"
-              :show-tooltip="false"
-              class="time-range-slider"
-            />
-          </div>
-
-          <!-- Boarding Alighting Chart Section -->
-          <div class="boarding-alighting-header">
-            <span class="section-title">站点乘降指标分析</span>
-          </div>
-
-          <div class="boarding-alighting-chart-wrapper">
-            <el-auto-resizer class="chart_box">
-              <template #default="{ height, width }">
-                <VChart
-                  v-if="width > 0 && height > 0"
-                  class="boarding-alighting-bar-chart"
-                  :option="boardingAlightingChartOption"
-                  autoresize
-                  :update-options="{ notMerge: true }"
-                />
-              </template>
-            </el-auto-resizer>
-          </div>
-
-          <div class="boarding-profile-header">
-            <span class="section-title">沿线乘降与车内客流</span>
-          </div>
-
-          <div class="boarding-profile-chart-wrapper">
-            <el-auto-resizer class="chart_box">
-              <template #default="{ height, width }">
-                <VChart
-                  v-if="width > 0 && height > 0"
-                  class="boarding-profile-chart"
-                  :option="boardingProfileChartOption"
-                  autoresize
-                  :update-options="{ notMerge: true }"
-                />
-              </template>
-            </el-auto-resizer>
-          </div>
-        </div>
-
-        <!-- Tab 3: 线路断面分析 -->
-        <div v-else-if="activeDetailTab === 'segments'" class="route-segments-panel">
-          <!-- Double Dot Slider for Time Range -->
-          <div class="time-range-section">
-            <div class="time-range-header">
-              <span class="title">统计时段选择</span>
-              <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
-            </div>
-            <el-slider 
-              v-model="segmentTimeRange" 
-              range 
-              :min="6" 
-              :max="22" 
-              :step="1"
-              :show-tooltip="false"
-              class="time-range-slider"
-            />
-          </div>
-
-          <!-- View Mode Selector: Table vs Chart -->
-          <div class="segments-header">
-            <span class="section-title">断面指标分析</span>
-            <el-radio-group v-model="segmentViewMode" size="small" class="view-mode-group">
-              <el-radio-button value="table">数据表格</el-radio-button>
-              <el-radio-button value="chart">可视化图表</el-radio-button>
-            </el-radio-group>
-          </div>
-
-          <!-- View 1: Data Table -->
-          <div v-if="segmentViewMode === 'table'" class="segments-scroll-wrapper">
-            <div class="segments-table">
-              <div class="table-header">
-                <span class="col-name">断面名称</span>
-                <span class="col-flow">客流量 (人次)</span>
-                <span class="col-load">满载率</span>
-              </div>
-              <div class="table-body">
-                <div 
-                  v-for="(seg, idx) in routeSegments" 
-                  :key="idx"
-                  class="table-row"
-                >
-                  <span class="col-name">{{ seg.name }}</span>
-                  <span class="col-flow">{{ seg.flow.toLocaleString() }}</span>
-                  <span class="col-load">
-                    <span :class="['load-indicator', seg.loadRate >= 70 ? 'high' : seg.loadRate >= 45 ? 'medium' : 'low']">
-                      {{ seg.loadRate }}%
+                <div class="demo-list">
+                  <div v-for="d in g.items" :key="d.key" class="demo-row">
+                    <span class="demo-label">
+                      <span class="demo-dot" :style="{ background: d.color }"></span>
+                      {{ d.label }}
                     </span>
-                  </span>
+                    <span class="demo-track">
+                      <span class="demo-fill" :style="{ width: Math.min(100, d.value) + '%', background: d.color }"></span>
+                    </span>
+                    <span class="demo-pct">{{ d.value.toFixed(1) }}%</span>
+                  </div>
                 </div>
               </div>
+              <div v-if="!demographicsGroups.length" class="pfa-empty">暂无客流画像数据</div>
             </div>
-          </div>
+          </section>
 
-          <!-- View 2: ECharts Visual Representation -->
-          <div v-else class="segments-chart-wrapper">
-            <el-auto-resizer class="chart_box">
-              <template #default="{ height, width }">
-                <VChart
-                  v-if="width > 0 && height > 0"
-                  class="segments-bar-chart"
-                  :option="segmentChartOption"
-                  autoresize
-                  :update-options="{ notMerge: true }"
-                />
-              </template>
-            </el-auto-resizer>
-          </div>
-        </div>
-
-        <!-- Tab 4: 换乘关联分析 -->
-        <div v-else-if="activeDetailTab === 'transfer'" class="route-transfer-panel">
-          <!-- Double Dot Slider for Time Range -->
-          <div class="time-range-section">
-            <div class="time-range-header">
-              <span class="title">统计时段选择</span>
-              <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
+          <!-- ⑤ 关联线路分析（直接换乘） -->
+          <section v-else-if="pfaLineSection === 'transfer'" class="pfa-section">
+            <div class="section-header">
+              <span class="section-title">关联线路分析（直接换乘）</span>
             </div>
-            <el-slider 
-              v-model="segmentTimeRange" 
-              range 
-              :min="6" 
-              :max="22" 
-              :step="1"
-              :show-tooltip="false"
-              class="time-range-slider"
-            />
-          </div>
-
-          <!-- View Mode Selector: Table vs Chart -->
-          <div class="transfer-header">
-            <span class="section-title">换乘线路关联分析</span>
-            <el-radio-group v-model="transferViewMode" size="small" class="view-mode-group">
-              <el-radio-button value="table">数据表格</el-radio-button>
-              <el-radio-button value="chart">可视化图表</el-radio-button>
-            </el-radio-group>
-          </div>
-
-          <!-- View 1: Data Table -->
-          <div v-if="transferViewMode === 'table'" class="transfer-scroll-wrapper">
-            <div class="transfer-table">
-              <div class="table-header">
-                <span class="col-name">关联换乘线路</span>
-                <span class="col-station">换乘站</span>
-                <span class="col-flow">换乘客流 (人次)</span>
-                <span class="col-ratio">换乘占比</span>
-              </div>
-              <div class="table-body">
-                <div 
-                  v-for="(item, idx) in transferTableData" 
-                  :key="idx"
-                  class="table-row"
-                >
-                  <span class="col-name">
-                    <span :class="['line-badge-icon', item.name.startsWith('地铁') ? 'metro' : 'bus']">
-                      {{ item.name.startsWith('地铁') ? 'M' : 'B' }}
-                    </span>
-                    {{ item.name }}
-                  </span>
-                  <span class="col-station">{{ item.station }}</span>
-                  <span class="col-flow">{{ item.flow.toLocaleString() }}</span>
-                  <span class="col-ratio">
-                    <span class="ratio-bar-bg">
-                      <span class="ratio-bar-fill" :style="{ width: item.ratio * 2 + '%' }"></span>
-                    </span>
-                    <span class="ratio-text">{{ item.ratio }}%</span>
-                  </span>
-                </div>
-              </div>
+            <div class="transfer-chart-wrapper">
+              <el-auto-resizer class="chart_box">
+                <template #default="{ height, width }">
+                  <VChart
+                    v-if="width > 0 && height > 0"
+                    class="transfer-bar-chart"
+                    :option="transferChartOption"
+                    autoresize
+                    :update-options="{ notMerge: true }"
+                  />
+                </template>
+              </el-auto-resizer>
             </div>
-          </div>
-
-          <!-- View 2: ECharts Visual Representation -->
-          <div v-else class="transfer-chart-wrapper">
-            <el-auto-resizer class="chart_box">
-              <template #default="{ height, width }">
-                <VChart
-                  v-if="width > 0 && height > 0"
-                  class="transfer-bar-chart"
-                  :option="transferChartOption"
-                  autoresize
-                  :update-options="{ notMerge: true }"
-                />
-              </template>
-            </el-auto-resizer>
-          </div>
+            <div v-if="!transferTableData.length" class="pfa-empty">暂无换乘关联数据</div>
+          </section>
         </div>
       </template>
     </MCard2>
 
-    <div v-else class="rm-right-card rm-ranking-card">
+    <div v-else-if="!runMonitorSimplifiedRight && !pfaRightPanel" class="rm-right-card rm-ranking-card">
       <div class="rm-right-card-title">
         <div class="rm-title-head">
           <p class="rm-panel-kicker">线路客流</p>
@@ -553,7 +331,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
+import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick, unref } from "vue";
 import { Search, Location, Timer, Connection, Download } from "@element-plus/icons-vue";
 import { getLineAll, getRouteDetail, getRoutePanel, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
 import MCard from "./MCard.vue";
@@ -595,11 +373,19 @@ const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""))
 
 // 运行监测页：右侧改为简化卡片（单条线路日客流量+折线图）。
 // 此处禁用本组件向右侧面板的 teleport，并把选中线路数据上抛给 index.vue。
-// 客流分析页不提供这些注入，默认值保证其行为完全不变。
 const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
+// 客流分析模式：即使简化（地图/选中复用运行监测），也渲染完整 MCard2 面板
+const pfaRightPanel = inject("pfaRightPanel", ref(false));
+// 客流分析：当前激活的子功能（右侧只显示对应统计）segments/boarding/efficiency/demographics/transfer
+const pfaLineSection = inject("pfaLineSection", ref("segments"));
 const runMonitorSelectedLinePanel = inject("runMonitorSelectedLinePanel", null);
 const runMonitorSelectedLineName = inject("runMonitorSelectedLineName", null);
 const runMonitorSelectedRouteDetail = inject("runMonitorSelectedRouteDetail", null);
+const runMonitorSelectedRouteMapLinks = inject("runMonitorSelectedRouteMapLinks", null);
+const runMonitorLineOptionFilter = inject("runMonitorLineOptionFilter", () => true);
+const runMonitorStationOptionFilter = inject("runMonitorStationOptionFilter", () => true);
+const shouldRenderPfaRightPanel = computed(() => Boolean(unref(pfaRightPanel)));
+const shouldLoadSelectedRoutePanel = computed(() => runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value);
 
 // 统一的当前选中路线计算属性
 const currentSelectedRoute = computed(() => {
@@ -615,6 +401,12 @@ const currentSelectedRoute = computed(() => {
   }
   return null;
 });
+
+// 站点数超过该阈值时，乘降客流图拆成上下两行展示，避免横轴站名糊在一起
+const STATION_SPLIT_THRESHOLD = 18;
+const isStationSplit = computed(
+  () => (currentSelectedRoute.value?.facilities?.length || 0) > STATION_SPLIT_THRESHOLD
+);
 
 const currentRoutePanel = computed(() => {
   const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
@@ -696,10 +488,95 @@ const routeDemographics = computed(() => {
   };
 });
 
+// 客流画像分两个维度展示，每个维度内各类目占比合计=100%（不足部分用“其他”补足）：
+//  · 出行目的：按出行者本次出行的主要目的划分（后端互斥单选）
+//  · 出行者属性：按出行者身份属性划分（后端互斥单选）
+// 维度内类目可自由增减，渲染层会按实际类目通用地补足“其他”，保证合计始终为 100%。
+const DEMO_GROUPS = [
+  {
+    key: "purpose",
+    title: "出行目的",
+    items: [
+      { key: "commuter", label: "通勤", color: "#0071e3" },
+      { key: "shopping", label: "购物", color: "#7c3aed" },
+      { key: "leisure", label: "休闲", color: "#1a8a3f" },
+    ],
+  },
+  {
+    key: "attribute",
+    title: "出行者属性",
+    items: [
+      { key: "student", label: "学生", color: "#2f75d6" },
+      { key: "elderly", label: "老人", color: "#b06a00" },
+    ],
+  },
+];
+const DEMO_OTHER = { label: "其他", color: "#94a3b8" };
+
+function normalizeDisplayPercents(items = []) {
+  if (!items.length) return [];
+  const tenths = items.map((item) => Math.max(0, Math.round((Number(item.value) || 0) * 10)));
+  let delta = 1000 - tenths.reduce((sum, value) => sum + value, 0);
+  while (delta !== 0) {
+    if (delta > 0) {
+      const index = tenths.reduce((best, value, current) => (value < tenths[best] ? current : best), 0);
+      tenths[index] += 1;
+      delta -= 1;
+      continue;
+    }
+    const index = tenths.reduce((best, value, current) => (value > tenths[best] ? current : best), 0);
+    if (tenths[index] <= 0) break;
+    tenths[index] -= 1;
+    delta += 1;
+  }
+  return items.map((item, index) => ({ ...item, value: tenths[index] / 10 }));
+}
+
+const demographicsGroups = computed(() => {
+  const demo = currentRoutePanel.value?.demographics || {};
+  if (toFiniteNumber(demo.riderCount, 0) <= 0) return [];
+  return DEMO_GROUPS.map((group) => {
+    let items = group.items
+      .filter((it) => Object.prototype.hasOwnProperty.call(demo, it.key))
+      .map((it) => ({ ...it, value: Math.max(0, Math.min(100, toFiniteNumber(demo[it.key], 0))) }));
+    let known = items.reduce((sum, it) => sum + it.value, 0);
+    // 防御：已知类目本身已超 100%（异常/陈旧的重叠数据）时等比缩放，保证该维度合计=100%
+    if (known > 100) {
+      items = items.map((it) => ({ ...it, value: (it.value * 100) / known }));
+      known = 100;
+    }
+    // 用“其他”把该维度补足到 100%
+    items.push({ ...DEMO_OTHER, key: `${group.key}-other`, value: Math.max(0, 100 - known) });
+    return { key: group.key, title: group.title, items: normalizeDisplayPercents(items) };
+  });
+});
+const demographicsRiderCount = computed(() =>
+  toFiniteNumber(currentRoutePanel.value?.demographics?.riderCount, 0)
+);
+
+// 运营效益：日客流量 / 日发车班次 / 车辆数 / 单班次客流 / 车日均客流量
+const operationStats = computed(() => {
+  const m = currentRoutePanel.value?.metrics || {};
+  const info = currentSelectedRoute.value?.info || {};
+  const passenger = toFiniteNumber(m.passenger ?? info.passenger, 0);
+  const departures = toFiniteNumber(m.departures, 0);
+  const vehicles = toFiniteNumber(m.vehicles, 0);
+  const perTrip = toFiniteNumber(m.perTripFlow, departures > 0 ? passenger / departures : 0);
+  const perVehicle = toFiniteNumber(m.perVehicleFlow, vehicles > 0 ? passenger / vehicles : 0);
+  const flow = (n) => (Number.isFinite(n) && n > 0 ? `${Math.round(n).toLocaleString()} 人次` : "--");
+  return {
+    dailyFlow: flow(passenger),
+    departures: departures > 0 ? `${Math.round(departures)} 班` : "--",
+    vehicles: vehicles > 0 ? `${Math.round(vehicles)} 辆` : "--",
+    perTrip: flow(perTrip),
+    perVehicle: flow(perVehicle),
+  };
+});
+
 const boardingAlightingChartOption = computed(() => {
   const route = currentSelectedRoute.value || {};
   const facilities = route.facilities || [];
-  
+
   const stationNames = facilities.map(f => f.facilityName || "");
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
@@ -713,20 +590,79 @@ const boardingAlightingChartOption = computed(() => {
     const flow = stationFlowMap.get(fac.facilityId);
     return -sumHourRange(flow?.alightingByHour, startHour, endHour);
   });
-  
-  return {
+
+  const isBar = boardingChartType.value === "bar";
+
+  // 站点过多时，单行旋转标签在窄面板内会相互糊成一团。
+  // 超过阈值则把图表拆成上下两行（两张子图），每行各承担一半站点，
+  // 单行标签数量减半、横向空间翻倍，从而互不重叠、清晰可读。
+  const SPLIT_THRESHOLD = STATION_SPLIT_THRESHOLD;
+  const splitRows = stationNames.length > SPLIT_THRESHOLD;
+
+  const boardingColor = {
+    type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+    colorStops: [{ offset: 0, color: "#0f9f6e" }, { offset: 1, color: "#087a55" }]
+  };
+  const alightingColor = {
+    type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+    colorStops: [{ offset: 0, color: "#f43f5e" }, { offset: 1, color: "#e11d48" }]
+  };
+
+  const makeXAxis = (data, gridIndex, rotate) => ({
+    type: "category",
+    data,
+    gridIndex,
+    axisLine: { lineStyle: { color: "rgba(21, 105, 222, 0.15)" } },
+    axisLabel: {
+      color: "#64748b",
+      fontSize: 10,
+      interval: 0,
+      rotate,
+      width: 64,
+      overflow: "truncate",
+      ellipsis: "…",
+      hideOverlap: true,
+      margin: 8
+    }
+  });
+
+  const makeYAxis = (gridIndex, min, max) => ({
+    type: "value",
+    gridIndex,
+    min,
+    max,
+    axisLine: { show: false },
+    axisTick: { show: false },
+    splitLine: { lineStyle: { color: "rgba(21, 105, 222, 0.06)", type: "dashed" } },
+    axisLabel: {
+      color: "#64748b",
+      fontSize: 10,
+      formatter: (value) => Math.abs(value)
+    }
+  });
+
+  const makeSeries = (name, color, data, axisIndex, stackId, radius) => ({
+    name,
+    type: boardingChartType.value,
+    xAxisIndex: axisIndex,
+    yAxisIndex: axisIndex,
+    stack: isBar ? stackId : undefined,
+    smooth: !isBar,
+    symbol: "circle",
+    symbolSize: 6,
+    barWidth: "40%",
+    itemStyle: { color, borderRadius: radius },
+    data
+  });
+
+  const baseOption = {
     backgroundColor: "transparent",
     tooltip: {
       trigger: "axis",
-      axisPointer: {
-        type: "shadow"
-      },
+      axisPointer: { type: "shadow" },
       backgroundColor: "rgba(30, 41, 59, 0.9)",
       borderColor: "rgba(255, 255, 255, 0.15)",
-      textStyle: {
-        color: "#ffffff",
-        fontSize: 12
-      },
+      textStyle: { color: "#ffffff", fontSize: 12 },
       formatter: (params) => {
         const stationName = params[0].name;
         let html = `<div style="font-weight: bold; margin-bottom: 4px;">${stationName}</div>`;
@@ -745,106 +681,52 @@ const boardingAlightingChartOption = computed(() => {
     },
     legend: {
       data: ["上车人数", "下车人数"],
-      textStyle: {
-        color: "#64748b",
-        fontSize: 11
-      },
+      textStyle: { color: "#64748b", fontSize: 11 },
       top: 0,
       icon: "rect"
-    },
-    grid: {
-      left: "3%",
-      right: "4%",
-      bottom: "15%",
-      top: "15%",
-      containLabel: true
-    },
-    xAxis: {
-      type: "category",
-      data: stationNames,
-      axisLine: {
-        lineStyle: {
-          color: "rgba(21, 105, 222, 0.15)"
-        }
-      },
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 9,
-        interval: 0,
-        rotate: 35,
-        formatter: (value) => {
-          if (value.length > 5) {
-            return value.substring(0, 5) + "...";
-          }
-          return value;
-        }
-      }
-    },
-    yAxis: {
-      type: "value",
-      axisLine: {
-        show: false
-      },
-      axisTick: {
-        show: false
-      },
-      splitLine: {
-        lineStyle: {
-          color: "rgba(21, 105, 222, 0.06)",
-          type: "dashed"
-        }
-      },
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 10,
-        formatter: (value) => {
-          return Math.abs(value);
-        }
-      }
-    },
+    }
+  };
+
+  if (!splitRows) {
+    return {
+      ...baseOption,
+      grid: { left: "3%", right: "4%", bottom: 8, top: "15%", containLabel: true },
+      xAxis: makeXAxis(stationNames, 0, 35),
+      yAxis: makeYAxis(0),
+      series: [
+        makeSeries("上车人数", boardingColor, boardingData, 0, "Total", [4, 4, 0, 0]),
+        makeSeries("下车人数", alightingColor, alightingData, 0, "Total", [0, 0, 4, 4])
+      ]
+    };
+  }
+
+  // ── 两行（两张子图）布局：站点对半切分到上下两行 ──
+  const mid = Math.ceil(stationNames.length / 2);
+  // 两行共用同一纵轴量程，保证跨行的柱高可直接比较
+  const finiteBoarding = boardingData.filter(v => Number.isFinite(v));
+  const finiteAlighting = alightingData.filter(v => Number.isFinite(v));
+  const yMax = Math.max(1, ...finiteBoarding);
+  const yMin = Math.min(0, ...finiteAlighting);
+
+  return {
+    ...baseOption,
+    grid: [
+      { left: "3%", right: "4%", top: "8%", height: "32%", containLabel: true },
+      { left: "3%", right: "4%", top: "58%", height: "32%", containLabel: true }
+    ],
+    xAxis: [
+      makeXAxis(stationNames.slice(0, mid), 0, 30),
+      makeXAxis(stationNames.slice(mid), 1, 30)
+    ],
+    yAxis: [
+      makeYAxis(0, yMin, yMax),
+      makeYAxis(1, yMin, yMax)
+    ],
     series: [
-      {
-        name: "上车人数",
-        type: "bar",
-        stack: "Total",
-        barWidth: "40%",
-        itemStyle: {
-          color: {
-            type: "linear",
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: "#0f9f6e" },
-              { offset: 1, color: "#087a55" }
-            ]
-          },
-          borderRadius: [4, 4, 0, 0]
-        },
-        data: boardingData
-      },
-      {
-        name: "下车人数",
-        type: "bar",
-        stack: "Total",
-        barWidth: "40%",
-        itemStyle: {
-          color: {
-            type: "linear",
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: "#f43f5e" },
-              { offset: 1, color: "#e11d48" }
-            ]
-          },
-          borderRadius: [0, 0, 4, 4]
-        },
-        data: alightingData
-      }
+      makeSeries("上车人数", boardingColor, boardingData.slice(0, mid), 0, "row0", [4, 4, 0, 0]),
+      makeSeries("下车人数", alightingColor, alightingData.slice(0, mid), 0, "row0", [0, 0, 4, 4]),
+      makeSeries("上车人数", boardingColor, boardingData.slice(mid), 1, "row1", [4, 4, 0, 0]),
+      makeSeries("下车人数", alightingColor, alightingData.slice(mid), 1, "row1", [0, 0, 4, 4])
     ]
   };
 });
@@ -1103,6 +985,8 @@ const transferTableData = computed(() => {
 
 const { proxy } = getCurrentInstance() || {};
 const activeChartType = ref("line");
+// 站点乘降图：折线 / 柱状切换
+const boardingChartType = ref("bar");
 
 const passengerFlowChartOption = computed(() => {
   const isLine = activeChartType.value === "line";
@@ -1302,10 +1186,126 @@ const routeSegments = computed(() => {
   const endHour = segmentTimeRange.value[1];
   return (currentRoutePanel.value?.segments || []).map((segment) => ({
     name: segment.name,
+    fromFacilityId: String(segment.fromFacilityId || ""),
+    toFacilityId: String(segment.toFacilityId || ""),
     flow: Math.round(sumHourRange(segment.flowByHour, startHour, endHour)),
     loadRate: Number(averageHourRange(segment.loadRateByHour, startHour, endHour).toFixed(1))
   }));
 });
+
+function pointToLinkDistanceSq(coord, link) {
+  const px = Number(coord?.x);
+  const py = Number(coord?.y);
+  const ax = Number(link?.from?.x);
+  const ay = Number(link?.from?.y);
+  const bx = Number(link?.to?.x);
+  const by = Number(link?.to?.y);
+  if (![px, py, ax, ay, bx, by].every(Number.isFinite)) return Number.POSITIVE_INFINITY;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  const t = lenSq > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq)) : 0;
+  const nx = ax + t * dx;
+  const ny = ay + t * dy;
+  const ox = px - nx;
+  const oy = py - ny;
+  return ox * ox + oy * oy;
+}
+
+function nearestRouteLinkIndex(links, coord, startIndex = 0) {
+  if (!coord || !Array.isArray(links) || !links.length) return -1;
+  let bestIndex = -1;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  const from = Math.max(0, Math.min(links.length - 1, Number(startIndex) || 0));
+  for (let i = from; i < links.length; i++) {
+    const distance = pointToLinkDistanceSq(coord, links[i]);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+  return bestIndex;
+}
+
+function segmentFlowByFacilityPair(segments = []) {
+  const result = new Map();
+  segments.forEach((segment) => {
+    const fromId = String(segment?.fromFacilityId || "");
+    const toId = String(segment?.toFacilityId || "");
+    if (!fromId || !toId) return;
+    result.set(`${fromId}->${toId}`, Math.max(0, Number(segment.flow) || 0));
+  });
+  return result;
+}
+
+function indexedSegmentFlow(segments = [], index = 0) {
+  if (!segments.length) return 0;
+  const safeIndex = Math.max(0, Math.min(segments.length - 1, Number(index) || 0));
+  return Math.max(0, Number(segments[safeIndex]?.flow) || 0);
+}
+
+function mapSegmentFlowsByLinkOrder(links = [], segments = []) {
+  if (!Array.isArray(links) || !links.length) return [];
+  if (!Array.isArray(segments) || !segments.length) return links.map((link) => ({ ...link, flow: 0 }));
+  return links.map((link, index) => {
+    const segmentIndex = Math.min(segments.length - 1, Math.floor((index / Math.max(1, links.length)) * segments.length));
+    return { ...link, flow: indexedSegmentFlow(segments, segmentIndex) };
+  });
+}
+
+function buildRouteFlowMapLinks(route, segments = []) {
+  const links = Array.isArray(route?.links) ? route.links : [];
+  if (!links.length) return [];
+  const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
+  const flowByPair = segmentFlowByFacilityPair(segments);
+  if (facilities.length < 2) return mapSegmentFlowsByLinkOrder(links, segments);
+
+  const result = links.map((link) => ({ ...link, flow: 0 }));
+  let mappedCount = 0;
+  let cursor = 0;
+  for (let i = 0; i + 1 < facilities.length; i++) {
+    const fromFac = facilities[i];
+    const toFac = facilities[i + 1];
+    const fromCoord = fromFac?.coord || fromFac;
+    const toCoord = toFac?.coord || toFac;
+    const fromIndex = nearestRouteLinkIndex(links, fromCoord, cursor);
+    const toIndex = nearestRouteLinkIndex(links, toCoord, Math.max(cursor, fromIndex));
+    if (fromIndex < 0 || toIndex < 0) continue;
+    const start = Math.min(fromIndex, toIndex);
+    const end = Math.max(fromIndex, toIndex);
+    const key = `${String(fromFac?.facilityId || "")}->${String(toFac?.facilityId || "")}`;
+    const flow = flowByPair.get(key) ?? indexedSegmentFlow(segments, i);
+    for (let linkIndex = start; linkIndex <= end; linkIndex++) {
+      result[linkIndex].flow = flow;
+    }
+    mappedCount++;
+    cursor = Math.max(0, end);
+  }
+  return mappedCount > 0 ? result : mapSegmentFlowsByLinkOrder(links, segments);
+}
+
+watch(
+  () => [
+    shouldRenderPfaRightPanel.value,
+    currentSelectedRoute.value?.routeId,
+    currentSelectedRoute.value?.links?.length || 0,
+    currentSelectedRoute.value?.facilities?.length || 0,
+    selectedRouteDetail.value,
+    currentRoutePanel.value,
+    routeSegments.value,
+    segmentTimeRange.value[0],
+    segmentTimeRange.value[1],
+  ],
+  () => {
+    if (!runMonitorSelectedRouteMapLinks) return;
+    if (!shouldRenderPfaRightPanel.value || !currentSelectedRoute.value) {
+      runMonitorSelectedRouteMapLinks.value = [];
+      return;
+    }
+    runMonitorSelectedRouteMapLinks.value = buildRouteFlowMapLinks(currentSelectedRoute.value, routeSegments.value);
+  },
+  { immediate: true, deep: true },
+);
 
 const segmentChartOption = computed(() => {
   const linearGradient = (proxy?.$echarts?.graphic?.LinearGradient) || function() { return null; };
@@ -1496,7 +1496,9 @@ watch(BaseMapLineModeRef, (mode) => {
 const lineOptions = computed(() => {
   const names = rawLines.value.map(line => line.lineName).filter(Boolean);
   const uniqueNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  return uniqueNames.map(name => ({ value: name, label: name }));
+  return uniqueNames
+    .map(name => ({ value: name, label: name }))
+    .filter((option) => runMonitorLineOptionFilter(option));
 });
 
 // 计算所有唯一的站点名称，并转换为 el-select-v2 需要的 options 格式
@@ -1516,7 +1518,9 @@ const stationOptions = computed(() => {
     }
   });
   const uniqueNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  return uniqueNames.map(name => ({ value: name, label: name }));
+  return uniqueNames
+    .map(name => ({ value: name, label: name }))
+    .filter((option) => runMonitorStationOptionFilter(option));
 });
 
 // 将线路候选项上抛给 index.vue 的右上角搜索框
@@ -1645,6 +1649,12 @@ async function selectLineByFeature(props = {}) {
 function routeStopStations(route) {
   const seen = new Set();
   return (route?.facilities || []).map((fac) => {
+    if (!runMonitorStationOptionFilter({
+      value: fac.facilityName,
+      label: fac.facilityName,
+      facilityId: fac.facilityId,
+      coord: fac.coord,
+    })) return null;
     const coord = fac.coord || {};
     const x = Number(coord.x);
     const y = Number(coord.y);
@@ -1663,7 +1673,7 @@ function routeStopStations(route) {
 }
 
 function updateSelectedRouteStops(route) {
-  if (runMonitorSimplifiedRight) {
+  if (runMonitorSimplifiedRight && !shouldRenderPfaRightPanel.value) {
     cleanUpSelectedRouteStops();
     return;
   }
@@ -1809,14 +1819,31 @@ async function loadRoutePanelDetail(routeId) {
   return promise;
 }
 
+async function loadSelectedRoutePanel(routeId) {
+  const key = String(routeId || "");
+  if (!key || !shouldLoadSelectedRoutePanel.value) return null;
+  const detailPanel = await loadRoutePanelDetail(key);
+  if (detailPanel) return detailPanel;
+  if (!shouldRenderPfaRightPanel.value) return null;
+  const panel = await ensureRoutePanelData();
+  const routePanel = panel?.routes?.[key] || null;
+  if (routePanel) {
+    routePanelDetailCache.set(key, routePanel);
+  }
+  return routePanel;
+}
+
 function ensureRoutePanelData() {
   if (routePanelData.value) return Promise.resolve(routePanelData.value);
   if (routePanelPromise) return routePanelPromise;
   const model = props.model;
   routePanelPromise = getRoutePanel({ datasource: model }, { silentError: true })
     .then((res) => {
-      if (props.model === model) routePanelData.value = res.data || null;
-      return routePanelData.value;
+      const data = res.data || null;
+      if (props.model === model && data?.routes) {
+        routePanelData.value = data;
+      }
+      return data;
     })
     .catch(() => null)
     .finally(() => {
@@ -1832,11 +1859,11 @@ async function handleSelectRoute(route) {
   selectedRoutePanel.value = routePanelDetailCache.get(routeId) || null;
   const [detail, panel] = await Promise.all([
     loadRouteDetail(route),
-    runMonitorSimplifiedRight ? loadRoutePanelDetail(routeId) : Promise.resolve(null),
+    loadSelectedRoutePanel(routeId),
   ]);
   if (String(activeRouteId.value) !== routeId) return;
   selectedRouteDetail.value = detail;
-  if (runMonitorSimplifiedRight) selectedRoutePanel.value = panel;
+  if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
   if (detail?.links && detail.links.length > 0) {
     updateLayers(detail.links);
     centerOnRoute(detail.links);
@@ -1860,9 +1887,19 @@ function handleStationChange(stationName) {
     if (line.routes) {
       line.routes.forEach(route => {
         if (route.facilities) {
-          const hasFac = route.facilities.some(fac => fac.facilityName === stationName);
+          const hasFac = route.facilities.some((fac) => fac.facilityName === stationName && runMonitorStationOptionFilter({
+            value: fac.facilityName,
+            label: fac.facilityName,
+            facilityId: fac.facilityId,
+            coord: fac.coord,
+          }));
           if (hasFac) {
-            const fac = route.facilities.find(fac => fac.facilityName === stationName);
+            const fac = route.facilities.find((item) => item.facilityName === stationName && runMonitorStationOptionFilter({
+              value: item.facilityName,
+              label: item.facilityName,
+              facilityId: item.facilityId,
+              coord: item.coord,
+            }));
             matches.push({
               lineId: line.lineId,
               lineName: line.lineName,
@@ -1894,11 +1931,11 @@ async function handleSelectMatchedRoute(item) {
   selectedRoutePanel.value = routePanelDetailCache.get(routeId) || null;
   const [detail, panel] = await Promise.all([
     loadRouteDetail(item),
-    runMonitorSimplifiedRight ? loadRoutePanelDetail(routeId) : Promise.resolve(null),
+    loadSelectedRoutePanel(routeId),
   ]);
   if (String(activeMatchedRouteId.value) !== routeId) return;
   selectedRouteDetail.value = detail;
-  if (runMonitorSimplifiedRight) selectedRoutePanel.value = panel;
+  if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
   if (detail?.links) {
     updateLayers(detail.links);
     centerOnRoute(detail.links);
@@ -1924,7 +1961,7 @@ async function loadAllLines() {
   loading.value = true;
   routePanelData.value = null;
   selectedRoutePanel.value = null;
-  if (!runMonitorSimplifiedRight) ensureRoutePanelData();
+  if (!runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value) ensureRoutePanelData();
   try {
     const lineRes = await getLineAll({ datasource: model });
     if (props.model !== model) return;
@@ -1968,6 +2005,7 @@ watch(() => props.model, (newModel) => {
     activeRouteId.value = "";
     activeMatchedRouteId.value = "";
     matchedRoutes.value = [];
+    if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
     selectedRouteDetail.value = null;
     loadAllLines();
   }
@@ -1975,6 +2013,7 @@ watch(() => props.model, (newModel) => {
 
 onUnmounted(() => {
   if (runMonitorSelectedRouteDetail) runMonitorSelectedRouteDetail.value = null;
+  if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
   _BgRouteLayer.dispose();
   _RouteLayer.dispose();
   cleanUpSelectedRouteStops();
@@ -1989,6 +2028,7 @@ function clearSelection() {
   matchedRoutes.value = [];
   selectedRouteDetail.value = null;
   selectedRoutePanel.value = null;
+  if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
   updateLayers(null);
   cleanUpSelectedRouteStops();
 }
@@ -2006,6 +2046,406 @@ defineExpose({
   flex-direction: column;
   gap: var(--space-sm);
   width: 100%;
+}
+
+/* ===== 线路客流分析 · 右侧面板（统一到 dm2 蓝玻璃面板体系）===== */
+/* MCard2 置于 .dm-overview-panel 玻璃面板内：去卡片化，作为内容容器，避免卡中卡 */
+.SJZL_right_card.pfa-route-card {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.SJZL_right_card.pfa-route-card :deep(.MCard2_title_box) {
+  min-height: 0;
+  padding: 0 0 12px;
+  background: transparent;
+  border-bottom: 1px solid var(--dm2-line);
+}
+.SJZL_right_card.pfa-route-card :deep(.MCard2_title_box:hover) {
+  background: transparent;
+}
+.SJZL_right_card.pfa-route-card :deep(.MCard2_open_btn) {
+  color: var(--dm2-muted-soft);
+}
+.SJZL_right_card.pfa-route-card :deep(.MCard2_body_box) {
+  padding: 0;
+  border-top: 0;
+}
+
+/* 标题区：线路名 + 规模信息 + 导出 */
+.SJZL_right_card.pfa-route-card :deep(.ranking-title-container) {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dm2-space-3);
+  min-width: 0;
+}
+.pfa-route-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.pfa-route-name {
+  font-size: var(--dm2-text-xl);
+  font-weight: var(--dm2-fw-bold);
+  line-height: 1.2;
+  color: var(--dm2-accent-strong);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pfa-route-sub {
+  font-size: var(--dm2-text-xs);
+  color: var(--dm2-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pfa-route-sections {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--dm2-font);
+}
+
+/* 各分区扁平排布，发丝线分隔，避免卡中卡 */
+.pfa-route-sections .pfa-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-3);
+  padding: var(--dm2-space-5) 0;
+  border-top: 1px solid var(--dm2-line-faint);
+}
+.pfa-route-sections .pfa-section:first-of-type {
+  padding-top: var(--dm2-space-4);
+  border-top: 0;
+}
+.pfa-route-sections .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm2-space-2);
+}
+.pfa-route-sections .section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--dm2-space-2);
+  font-size: var(--dm2-text-md);
+  font-weight: var(--dm2-fw-semibold);
+  color: var(--dm2-ink);
+  letter-spacing: -0.01em;
+}
+.pfa-route-sections .section-title::before {
+  content: "";
+  width: 3px;
+  height: 13px;
+  border-radius: var(--dm2-radius-pill);
+  background: var(--dm2-accent);
+}
+
+/* 统计时段：控件组，浅蓝磨砂底 */
+.pfa-route-sections .time-range-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-2);
+  padding: var(--dm2-space-3) var(--dm2-space-4);
+  margin: var(--dm2-space-4) 0 0;
+  border-radius: var(--dm2-radius);
+  background: var(--dm2-surface-sunken);
+  border: 1px solid var(--dm2-line);
+}
+.pfa-route-sections .time-range-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.pfa-route-sections .time-range-header .title {
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-semibold);
+  color: var(--dm2-ink-soft);
+}
+.pfa-route-sections .time-range-header .range-text {
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-bold);
+  color: var(--dm2-accent);
+  font-family: var(--dm2-font-num);
+  font-variant-numeric: tabular-nums;
+}
+.pfa-route-sections .time-range-slider {
+  width: calc(100% - 8px);
+  margin: 0 auto;
+}
+.pfa-route-sections .time-range-slider :deep(.el-slider__runway) {
+  background-color: var(--dm2-line);
+}
+.pfa-route-sections .time-range-slider :deep(.el-slider__bar) {
+  background-color: var(--dm2-accent);
+}
+.pfa-route-sections .time-range-slider :deep(.el-slider__button) {
+  border-color: var(--dm2-accent);
+  width: 14px;
+  height: 14px;
+}
+
+/* ① 断面客流与满载率：扁平数据表（修复列对齐）*/
+.pfa-route-sections .segments-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-sm);
+  overflow: hidden;
+}
+.pfa-route-sections .segments-table .table-header,
+.pfa-route-sections .segments-table .table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px 56px;
+  align-items: center;
+  gap: var(--dm2-space-3);
+  padding: var(--dm2-space-2) var(--dm2-space-3);
+}
+.pfa-route-sections .segments-table .table-header {
+  background: var(--dm2-surface-sunken);
+  border-bottom: 1px solid var(--dm2-line);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+  color: var(--dm2-muted);
+}
+.pfa-route-sections .segments-table .table-body {
+  display: flex;
+  flex-direction: column;
+}
+.pfa-route-sections .segments-table .table-row {
+  font-size: var(--dm2-text-sm);
+  border-bottom: 1px solid var(--dm2-line-faint);
+  transition: background-color var(--dm2-dur-fast) var(--dm2-ease);
+}
+.pfa-route-sections .segments-table .table-row:last-child {
+  border-bottom: 0;
+}
+.pfa-route-sections .segments-table .table-row:hover {
+  background: var(--dm2-accent-weak);
+}
+/* 覆盖全局 .col-name / .col-flow（排行榜用的 width:108px / flex 列），改由网格轨道定宽 */
+.pfa-route-sections .segments-table .col-name {
+  display: block;
+  width: auto;
+  min-width: 0;
+  font-weight: var(--dm2-fw-medium);
+  color: var(--dm2-ink-soft);
+  line-height: 1.35;
+}
+.pfa-route-sections .segments-table .col-flow {
+  display: block;
+  width: auto;
+  text-align: right;
+  white-space: nowrap;
+  font-family: var(--dm2-font-num);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--dm2-fw-semibold);
+  color: var(--dm2-ink);
+}
+.pfa-route-sections .segments-table .col-load {
+  display: block;
+  width: auto;
+  text-align: right;
+  white-space: nowrap;
+}
+.pfa-route-sections .segments-table .load-indicator {
+  display: inline-block;
+  min-width: 44px;
+  padding: 2px 7px;
+  border-radius: var(--dm2-radius-pill);
+  font-family: var(--dm2-font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+}
+.pfa-route-sections .segments-table .load-indicator.high {
+  background: var(--dm2-delete-weak);
+  color: var(--dm2-delete);
+}
+.pfa-route-sections .segments-table .load-indicator.medium {
+  background: var(--dm2-modify-weak);
+  color: var(--dm2-modify);
+}
+.pfa-route-sections .segments-table .load-indicator.low {
+  background: var(--dm2-add-weak);
+  color: var(--dm2-add);
+}
+
+/* ② 站点乘降图 & ⑤ 关联线路图 */
+.pfa-route-sections .chart-type-selector {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface-sunken);
+  border: 1px solid var(--dm2-line);
+}
+.pfa-route-sections .chart-type-selector .type-pill {
+  padding: 3px 10px;
+  border-radius: calc(var(--dm2-radius-sm) - 3px);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+  color: var(--dm2-muted);
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--dm2-dur-fast) var(--dm2-ease),
+    background-color var(--dm2-dur-fast) var(--dm2-ease);
+}
+.pfa-route-sections .chart-type-selector .type-pill:hover {
+  color: var(--dm2-ink-soft);
+}
+.pfa-route-sections .chart-type-selector .type-pill.active {
+  color: #fff;
+  background: var(--dm2-accent);
+  box-shadow: var(--dm2-accent-glow);
+}
+.pfa-route-sections .chart-container-wrapper,
+.pfa-route-sections .transfer-chart-wrapper {
+  height: 208px;
+  width: 100%;
+}
+.pfa-route-sections .chart_box {
+  width: 100%;
+  height: 100%;
+}
+/* 站点过多时乘降客流图拆成上下两行，需要更高的容器承载两张子图 */
+.pfa-route-sections .chart-container-wrapper.is-split {
+  height: 340px;
+}
+
+/* ③ 运营效益：发丝线网格的指标表（克制，无渐变 hero）*/
+.pfa-route-sections .efficiency-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-line);
+  overflow: hidden;
+}
+.pfa-route-sections .eff-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-1);
+  padding: var(--dm2-space-3);
+  background: var(--dm2-surface);
+}
+.pfa-route-sections .eff-card:first-child {
+  grid-column: span 2;
+}
+.pfa-route-sections .eff-label {
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-medium);
+  color: var(--dm2-muted);
+}
+.pfa-route-sections .eff-value {
+  font-size: var(--dm2-text-lg);
+  font-weight: var(--dm2-fw-bold);
+  color: var(--dm2-ink);
+  font-family: var(--dm2-font-num);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.pfa-route-sections .eff-card:first-child .eff-value {
+  font-size: var(--dm2-text-title);
+  color: var(--dm2-accent-strong);
+}
+
+/* 分区右上角的轻量元信息（样本量等）*/
+.pfa-route-sections .pfa-section-meta {
+  font-size: var(--dm2-text-xs);
+  color: var(--dm2-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ④ 客流画像：可扩展的占比条形列表（按类型自适应，不再横向溢出）*/
+.pfa-route-sections .demo-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-5);
+}
+.pfa-route-sections .demo-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-3);
+}
+.pfa-route-sections .demo-group-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--dm2-space-2);
+  padding-bottom: var(--dm2-space-2);
+  border-bottom: 1px solid var(--dm2-line);
+}
+.pfa-route-sections .demo-group-title {
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-semibold);
+  color: var(--dm2-ink);
+  letter-spacing: 0.02em;
+}
+.pfa-route-sections .demo-group-sum {
+  font-size: var(--dm2-text-xs);
+  color: var(--dm2-ink-soft);
+  font-family: var(--dm2-font-num);
+  font-variant-numeric: tabular-nums;
+}
+.pfa-route-sections .demo-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-3);
+}
+.pfa-route-sections .demo-row {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 50px;
+  align-items: center;
+  gap: var(--dm2-space-3);
+}
+.pfa-route-sections .demo-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--dm2-text-sm);
+  color: var(--dm2-ink-soft);
+  white-space: nowrap;
+}
+.pfa-route-sections .demo-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.pfa-route-sections .demo-track {
+  height: 7px;
+  border-radius: var(--dm2-radius-pill);
+  background: var(--dm2-line);
+  overflow: hidden;
+}
+.pfa-route-sections .demo-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--dm2-radius-pill);
+  transition: width var(--dm2-dur-slow) var(--dm2-ease-out);
+}
+.pfa-route-sections .demo-pct {
+  text-align: right;
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-semibold);
+  color: var(--dm2-ink);
+  font-family: var(--dm2-font-num);
+  font-variant-numeric: tabular-nums;
+}
+
+.pfa-route-sections .pfa-empty {
+  padding: var(--dm2-space-5);
+  text-align: center;
+  font-size: var(--dm2-text-sm);
+  color: var(--dm2-muted-soft);
 }
 
 .search-card {

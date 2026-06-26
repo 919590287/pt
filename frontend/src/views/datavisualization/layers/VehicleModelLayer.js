@@ -566,6 +566,7 @@ export class VehicleModelLayer {
     this.zAxis = new THREE.Vector3(0, 0, 1);
     this.origin = [0, 0];
     this.originReady = false;
+    this.vehicleScaleRatio = 1;
     this.vehicleScale = DEFAULT_MODEL_WORLD_SCALE;
     this.trajectoryTime = 0;
     this.vehicles = [];
@@ -681,7 +682,8 @@ export class VehicleModelLayer {
   }
 
   setVehicleScale(scale) {
-    const nextScale = Math.max(0.35, Math.min(2.5, Number(scale) || 1)) * DEFAULT_MODEL_WORLD_SCALE;
+    this.vehicleScaleRatio = Math.max(0.35, Math.min(2.5, Number(scale) || 1));
+    const nextScale = this.vehicleScaleRatio * DEFAULT_MODEL_WORLD_SCALE;
     if (Math.abs(nextScale - this.vehicleScale) < 0.001) return;
     this.vehicleScale = nextScale;
     this.updateInstances();
