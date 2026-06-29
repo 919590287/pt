@@ -2,6 +2,13 @@ package com.jts.gjcxfzksh.data.cache;
 
 import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
+import com.jts.gjcxfzksh.data.id.DepartureId;
+import com.jts.gjcxfzksh.data.id.LineId;
+import com.jts.gjcxfzksh.data.id.PersonId;
+import com.jts.gjcxfzksh.data.id.RouteId;
+import com.jts.gjcxfzksh.data.id.StopFacilityId;
+import com.jts.gjcxfzksh.data.id.VehicleId;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -41,7 +48,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -149,6 +158,73 @@ class MatsimAnalysisCacheLargeStreamTest {
         assertEquals(1, ((Number) info.get("rcxcs")).intValue());
     }
 
+    @Test
+    void routePanelSeparatesDuplicateRouteIdsAndClassifiesChineseMetro() throws Exception {
+        Path output = tempDir.resolve("duplicate-route-id").resolve("output");
+        Path cache = tempDir.resolve("duplicate-route-id-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+
+        MatsimData data = new MatsimData("area/public/duplicate-route-id", output.toString(), cache.toString(), false);
+        data.setScenario(buildDuplicateRouteIdScenario());
+        data.setPersonTracks(new LinkedHashSet<>(Set.of(
+                track("person-bus", "bus-line", "shared", "bus1", "bus-dep", "bus-stop-1", true, 8.0),
+                track("person-metro", "metro-line", "shared", "metro1", "metro-dep", "metro-stop-1", true, 9.0),
+                track("person-metro-north", "metro-line-north", "north", "metro2", "metro-north-dep", "metro-north-stop-1", true, 10.0),
+                track("person-foshan", "foshan-metro-line", "foshan-shared", "foshan1", "foshan-dep", "foshan-stop-1", true, 11.0)
+        )));
+
+        MatsimRoutePanelCache.prepareOnModelLoad(data);
+
+        Map<String, Object> panel = MatsimRoutePanelCache.readRoutePanel(data);
+        Map<?, ?> routes = (Map<?, ?>) panel.get("routes");
+        Map<?, ?> busRoute = (Map<?, ?>) routes.get("bus-line::shared");
+        Map<?, ?> numberedBusRoute = (Map<?, ?>) routes.get("busgtfs_ROUTE1494");
+        Map<?, ?> metroRoute = (Map<?, ?>) routes.get("metro-line::shared");
+        assertNotNull(busRoute);
+        assertNotNull(numberedBusRoute);
+        assertNotNull(metroRoute);
+        assertEquals("bus", busRoute.get("mode"));
+        assertEquals("bus", numberedBusRoute.get("mode"));
+        assertEquals("subway", metroRoute.get("mode"));
+        assertEquals(1L, ((Number) ((Map<?, ?>) busRoute.get("metrics")).get("passenger")).longValue());
+        assertEquals(1L, ((Number) ((Map<?, ?>) metroRoute.get("metrics")).get("passenger")).longValue());
+
+        Map<String, Object> metroDetail = MatsimRoutePanelCache.readRoutePanelDetail(data, "metro-line", "shared");
+        assertEquals("subway", metroDetail.get("mode"));
+        assertEquals(1L, ((Number) ((Map<?, ?>) metroDetail.get("metrics")).get("passenger")).longValue());
+
+        Map<?, ?> lineGroups = (Map<?, ?>) panel.get("lineGroups");
+        // 数字编号的公交线（“3号线”）不得被当成地铁分组
+        assertFalse(lineGroups.containsKey("metro::3号线"));
+        // 地铁1号线 + 1号线北延段 合并为一条线（同线分段）
+        Map<?, ?> metroGroup = (Map<?, ?>) lineGroups.get("metro::地铁1号线");
+        assertNotNull(metroGroup);
+        assertEquals("地铁1号线", metroGroup.get("lineName"));
+        assertEquals(2L, ((Number) ((Map<?, ?>) metroGroup.get("metrics")).get("passenger")).longValue());
+        // 佛山1号线虽与广州1号线同号，但属不同系统，必须保持独立、不被并入地铁1号线
+        Map<?, ?> foshanGroup = (Map<?, ?>) lineGroups.get("metro::佛山1号线");
+        assertNotNull(foshanGroup);
+        assertEquals("佛山1号线", foshanGroup.get("lineName"));
+        assertEquals(1L, ((Number) ((Map<?, ?>) foshanGroup.get("metrics")).get("passenger")).longValue());
+
+        Map<?, ?> summary = (Map<?, ?>) panel.get("summary");
+        Map<?, ?> leaderboard = (Map<?, ?>) summary.get("leaderboard");
+        List<?> subway = (List<?>) leaderboard.get("subway");
+        // 排行榜首位是合并后的地铁1号线(=2)，而非被错误并入佛山1号线的(=3)
+        assertEquals("metro::地铁1号线", ((Map<?, ?>) subway.getFirst()).get("lineId"));
+        assertEquals(2L, ((Number) ((Map<?, ?>) subway.getFirst()).get("passengerFlow")).longValue());
+        // 佛山1号线作为独立线路出现在排行榜中
+        Map<String, Object> foshanRow = subway.stream()
+                .map(item -> (Map<String, Object>) item)
+                .filter(item -> "metro::佛山1号线".equals(item.get("lineId")))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(foshanRow);
+        assertEquals("佛山1号线", foshanRow.get("lineName"));
+        assertEquals(1L, ((Number) foshanRow.get("passengerFlow")).longValue());
+    }
+
     private void writeEvents(Path path) throws Exception {
         try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
             writer.write("<events version=\"1.0\">\n");
@@ -179,6 +255,125 @@ class MatsimAnalysisCacheLargeStreamTest {
         network.addLink(link);
         buildTransitSchedule(scenario);
         return scenario;
+    }
+
+    private MutableScenario buildDuplicateRouteIdScenario() {
+        MutableScenario scenario = (MutableScenario) ScenarioUtils.createScenario(ConfigUtils.createConfig());
+        Network network = scenario.getNetwork();
+        NetworkFactory networkFactory = network.getFactory();
+        Node from = networkFactory.createNode(Id.createNodeId("dup-n1"), new Coord(0, 0));
+        Node to = networkFactory.createNode(Id.createNodeId("dup-n2"), new Coord(100, 0));
+        network.addNode(from);
+        network.addNode(to);
+        Link link = networkFactory.createLink(Id.createLinkId("dup-l1"), from, to);
+        link.setLength(100);
+        network.addLink(link);
+
+        TransitSchedule schedule = scenario.getTransitSchedule();
+        TransitScheduleFactory scheduleFactory = schedule.getFactory();
+        TransitStopFacility busStop1 = scheduleFactory.createTransitStopFacility(Id.create("bus-stop-1", TransitStopFacility.class), new Coord(0, 0), false);
+        TransitStopFacility busStop2 = scheduleFactory.createTransitStopFacility(Id.create("bus-stop-2", TransitStopFacility.class), new Coord(100, 0), false);
+        TransitStopFacility metroStop1 = scheduleFactory.createTransitStopFacility(Id.create("metro-stop-1", TransitStopFacility.class), new Coord(0, 10), false);
+        TransitStopFacility metroStop2 = scheduleFactory.createTransitStopFacility(Id.create("metro-stop-2", TransitStopFacility.class), new Coord(100, 10), false);
+        TransitStopFacility metroNorthStop1 = scheduleFactory.createTransitStopFacility(Id.create("metro-north-stop-1", TransitStopFacility.class), new Coord(100, 10), false);
+        TransitStopFacility metroNorthStop2 = scheduleFactory.createTransitStopFacility(Id.create("metro-north-stop-2", TransitStopFacility.class), new Coord(200, 10), false);
+        schedule.addStopFacility(busStop1);
+        schedule.addStopFacility(busStop2);
+        schedule.addStopFacility(metroStop1);
+        schedule.addStopFacility(metroStop2);
+        schedule.addStopFacility(metroNorthStop1);
+        schedule.addStopFacility(metroNorthStop2);
+
+        TransitLine busLine = scheduleFactory.createTransitLine(Id.create("bus-line", TransitLine.class));
+        busLine.setName("公交快线");
+        TransitRoute busRoute = routeWithDeparture(scheduleFactory, "shared", "bus", "bus1", "bus-dep", busStop1, busStop2);
+        busRoute.setDescription("嘉禾望岗地铁站(B出口) - 空港大道");
+        busLine.addRoute(busRoute);
+        schedule.addTransitLine(busLine);
+
+        TransitLine numberedBusLine = scheduleFactory.createTransitLine(Id.create("numbered-bus-line", TransitLine.class));
+        numberedBusLine.setName("3号线");
+        TransitRoute numberedBusRoute = routeWithDeparture(scheduleFactory, "busgtfs_ROUTE1494", "pt", "bus3", "bus3-dep", busStop1, busStop2);
+        numberedBusRoute.setDescription("嘉禾望岗地铁站(B出口) - 科甲水站");
+        numberedBusLine.addRoute(numberedBusRoute);
+        schedule.addTransitLine(numberedBusLine);
+
+        TransitLine metroLine = scheduleFactory.createTransitLine(Id.create("metro-line", TransitLine.class));
+        metroLine.setName("地铁1号线");
+        metroLine.addRoute(routeWithDeparture(scheduleFactory, "shared", "pt", "metro1", "metro-dep", metroStop1, metroStop2));
+        schedule.addTransitLine(metroLine);
+
+        TransitLine metroNorthLine = scheduleFactory.createTransitLine(Id.create("metro-line-north", TransitLine.class));
+        metroNorthLine.setName("地铁1号线北延段");
+        metroNorthLine.addRoute(routeWithDeparture(scheduleFactory, "north", "pt", "metro2", "metro-north-dep", metroNorthStop1, metroNorthStop2));
+        schedule.addTransitLine(metroNorthLine);
+
+        // 佛山1号线与广州地铁1号线同为“1号线”但属不同系统，必须各自独立，绝不能被合并。
+        TransitStopFacility foshanStop1 = scheduleFactory.createTransitStopFacility(Id.create("foshan-stop-1", TransitStopFacility.class), new Coord(0, 20), false);
+        TransitStopFacility foshanStop2 = scheduleFactory.createTransitStopFacility(Id.create("foshan-stop-2", TransitStopFacility.class), new Coord(100, 20), false);
+        schedule.addStopFacility(foshanStop1);
+        schedule.addStopFacility(foshanStop2);
+        TransitLine foshanLine = scheduleFactory.createTransitLine(Id.create("foshan-metro-line", TransitLine.class));
+        foshanLine.setName("佛山1号线");
+        foshanLine.addRoute(routeWithDeparture(scheduleFactory, "foshan-shared", "pt", "foshan1", "foshan-dep", foshanStop1, foshanStop2));
+        schedule.addTransitLine(foshanLine);
+
+        VehicleType vehicleType = VehicleUtils.createVehicleType(Id.create("dup-vehicle-type", VehicleType.class));
+        vehicleType.getCapacity().setSeats(40);
+        vehicleType.getCapacity().setStandingRoom(60);
+        scenario.getTransitVehicles().addVehicleType(vehicleType);
+        scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("bus1", Vehicle.class), vehicleType));
+        scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("bus3", Vehicle.class), vehicleType));
+        scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("metro1", Vehicle.class), vehicleType));
+        scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("metro2", Vehicle.class), vehicleType));
+        scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("foshan1", Vehicle.class), vehicleType));
+        return scenario;
+    }
+
+    private TransitRoute routeWithDeparture(
+            TransitScheduleFactory factory,
+            String routeId,
+            String mode,
+            String vehicleId,
+            String departureId,
+            TransitStopFacility stop1,
+            TransitStopFacility stop2
+    ) {
+        TransitRoute route = factory.createTransitRoute(
+                Id.create(routeId, TransitRoute.class),
+                RouteUtils.createLinkNetworkRouteImpl(Id.createLinkId("dup-l1"), Id.createLinkId("dup-l1")),
+                List.of(
+                        factory.createTransitRouteStop(stop1, 0.0, 0.0),
+                        factory.createTransitRouteStop(stop2, 60.0, 60.0)
+                ),
+                mode
+        );
+        Departure departure = factory.createDeparture(Id.create(departureId, Departure.class), 0.0);
+        departure.setVehicleId(Id.create(vehicleId, Vehicle.class));
+        route.addDeparture(departure);
+        return route;
+    }
+
+    private PTPersonTrack track(
+            String personId,
+            String lineId,
+            String routeId,
+            String vehicleId,
+            String departureId,
+            String facilityId,
+            boolean enter,
+            double time
+    ) {
+        PTPersonTrack track = new PTPersonTrack();
+        track.setPersonId(PersonId.create(personId));
+        track.setLineId(LineId.create(lineId));
+        track.setRouteId(RouteId.create(routeId));
+        track.setVehicleId(VehicleId.create(vehicleId));
+        track.setDepartureId(DepartureId.create(departureId));
+        track.setFacilityId(StopFacilityId.create(facilityId));
+        track.setEnter(enter);
+        track.setTime(time);
+        return track;
     }
 
     private void buildTransitSchedule(MutableScenario scenario) {
@@ -241,7 +436,7 @@ class MatsimAnalysisCacheLargeStreamTest {
     }
 
     private void assertPersonTracksContain(Path cache, String value) throws Exception {
-        Path tracks = cache.resolve("pt-events-v1").resolve("person-tracks.tsv.gz");
+        Path tracks = cache.resolve("pt-events-v2").resolve("person-tracks.tsv.gz");
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new GZIPInputStream(Files.newInputStream(tracks)), StandardCharsets.UTF_8))) {
             assertTrue(reader.lines().anyMatch(line -> line.contains(value)));
         }

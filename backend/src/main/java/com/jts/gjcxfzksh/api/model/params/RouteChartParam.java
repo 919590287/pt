@@ -6,6 +6,7 @@ import lombok.EqualsAndHashCode;
 @Data
 @EqualsAndHashCode(callSuper = true)
 public class RouteChartParam extends DatasourceParam {
+    private String lineId;
     private String routeId;
     private String departureId;
     private int beginSecond;

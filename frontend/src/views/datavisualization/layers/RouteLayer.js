@@ -17,15 +17,6 @@ export class RouteLayer extends NetworkLayer {
   }
 
   currentTileDetail() {
-    const mapZoom = Number(this.map?.zoom);
-    if (!Number.isFinite(mapZoom)) {
-      return { level: "all", z: 0, full: true };
-    }
-    if (mapZoom < this.fullModeMaxZoom) return { level: "all", z: 0, full: true };
-    if (mapZoom >= 13.0) return { level: "full", z: 12 };
-    if (mapZoom >= 11.7) return { level: "corridor", z: 12 };
-    if (mapZoom >= 10.2) return { level: "district", z: 11 };
-    if (mapZoom >= 8.8) return { level: "city", z: 10 };
-    return { level: "overview", z: 8 };
+    return super.currentTileDetail();
   }
 }

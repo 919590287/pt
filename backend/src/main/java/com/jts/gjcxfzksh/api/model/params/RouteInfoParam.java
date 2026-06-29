@@ -7,6 +7,7 @@ import lombok.EqualsAndHashCode;
 @EqualsAndHashCode(callSuper = true)
 public class RouteInfoParam extends DatasourceParam {
 
+    private String lineId;
     private String routeId;
 
 }

@@ -21,6 +21,8 @@ public class RouteDetailVO {
 
     private String routeId;
     private String routeName;
+    private String transportMode;
+    private String mode;
     private Info info;
     private List<PTLink> links = new ArrayList<>();
     private List<FacilityVO> facilities = new ArrayList<>();
@@ -32,6 +34,8 @@ public class RouteDetailVO {
     public RouteDetailVO(TransitRoute route, Network network) {
         this.routeId = route.getId().toString();
         this.routeName = this.routeId;
+        this.transportMode = route.getTransportMode();
+        this.mode = normalizeMode(route.getTransportMode());
         NetworkRoute networkRoute = route.getRoute();
         double routeDist = 0;
         routeDist += DistanceUtil.distance(network.getLinks().get(networkRoute.getStartLinkId()));
@@ -76,6 +80,19 @@ public class RouteDetailVO {
         info.facNum = route.getStops().size();
         info.facDist = info.routeDist / info.facNum;
         this.info = info;
+    }
+
+    private String normalizeMode(String rawMode) {
+        String text = rawMode == null ? "" : rawMode.toLowerCase();
+        if (text.contains("subway") || text.contains("metro") || text.contains("rail")
+                || text.contains("train") || text.contains("mtr") || text.contains("地铁")
+                || text.contains("轨道") || text.contains("轻轨") || text.contains("有轨")) {
+            return "subway";
+        }
+        if (text.contains("bus") || text.contains("公交")) {
+            return "bus";
+        }
+        return "";
     }
 
     @Data

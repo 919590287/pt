@@ -87,6 +87,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
@@ -96,10 +98,10 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 @Slf4j
 public final class MatsimAnalysisCache {
 
-    public static final String TRAJECTORY_CACHE_VERSION = "trajectory-v6";
+    public static final String TRAJECTORY_CACHE_VERSION = "trajectory-v8";
     public static final int TRAJECTORY_CHUNK_SECONDS = 300;
 
-    private static final String PERSON_TRACK_CACHE_VERSION = "pt-events-v1";
+    private static final String PERSON_TRACK_CACHE_VERSION = "pt-events-v2";
     private static final String PERSON_TRACK_FILE = "person-tracks.tsv.gz";
     private static final byte[] TRAJECTORY_BINARY_MAGIC = new byte[]{'G', 'J', 'T', 'B'};
     private static final int TRAJECTORY_BINARY_VERSION = 1;
@@ -110,6 +112,12 @@ public final class MatsimAnalysisCache {
     private static final int TRAJECTORY_MAX_OPEN_CHUNKS_DEFAULT = 48;
     private static final String TRAJECTORY_LIGHT_MANIFEST_FILE = "manifest-lite.json";
     private static final int TRAJECTORY_LIGHT_MANIFEST_VERSION = 2;
+    private static final Pattern CHINESE_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
+            "(?i)(?:地铁|轨道|线路)?\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
+    );
+    private static final Pattern ENGLISH_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
+            "(?i)(?:metro|subway|mtr)(?:[-_\\s]*line)?[-_\\s]*([0-9]{1,2})\\b|\\bline[-_\\s]*([0-9]{1,2})\\b"
+    );
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final ConcurrentMap<String, Object> BUILD_LOCKS = new ConcurrentHashMap<>();
@@ -840,13 +848,14 @@ public final class MatsimAnalysisCache {
             String lineName = nonBlank(line.getName(), lineIdText);
             line.getRoutes().forEach((routeId, route) -> {
                 String routeIdText = routeId.toString();
-                String mode = normalizeVehicleMode(route.getTransportMode(), true);
+                String routeName = nonBlank(route.getDescription(), routeIdText);
+                String mode = inferTransitMode(lineName, lineIdText, routeName, routeIdText, route.getTransportMode());
                 routes.putIfAbsent(routeIdText, new RouteMeta(
                         mode,
                         lineIdText,
                         lineName,
                         routeIdText,
-                        routeIdText,
+                        routeName,
                         routeStops(route),
                         firstDepartureTime(route),
                         lastDepartureTime(route)
@@ -1518,13 +1527,118 @@ public final class MatsimAnalysisCache {
 
     private static String normalizeVehicleMode(String rawMode, boolean transitVehicle) {
         String text = rawMode == null ? "" : rawMode.toLowerCase(Locale.ROOT);
-        if (text.contains("subway") || text.contains("metro") || text.contains("rail") || text.contains("train")) {
+        if (text.contains("subway") || text.contains("metro") || text.contains("rail")
+                || text.contains("train") || text.contains("mtr") || text.contains("地铁")
+                || text.contains("轨道") || text.contains("轻轨") || text.contains("有轨")) {
             return "subway";
         }
         if (transitVehicle || text.contains("bus") || text.contains("pt")) {
             return "bus";
         }
         return "car";
+    }
+
+    private static String inferTransitMode(String lineName, String lineId, String routeName, String routeId, String transportMode) {
+        String mode = normalizeDeclaredTransportMode(transportMode);
+        if ("subway".equals(mode) || "bus".equals(mode)) {
+            return mode;
+        }
+        String lineText = nonBlank(lineName, "") + " " + nonBlank(lineId, "");
+        String routeText = nonBlank(routeName, "") + " " + nonBlank(routeId, "");
+        if (!containsMetroModeKeyword(lineText) && containsBusIdKeyword(lineId + " " + routeId)) {
+            return "bus";
+        }
+        if (!canonicalMetroLineNumber(lineText).isBlank()
+                || containsMetroModeKeyword(lineText)
+                || !canonicalMetroLineNumber(routeText).isBlank()
+                || containsRouteIdMetroKeyword(routeId)) {
+            return "subway";
+        }
+        return "bus";
+    }
+
+    private static String normalizeDeclaredTransportMode(String rawMode) {
+        String text = rawMode == null ? "" : rawMode.toLowerCase(Locale.ROOT);
+        if (text.contains("subway") || text.contains("metro") || text.contains("rail")
+                || text.contains("train") || text.contains("mtr") || text.contains("地铁")
+                || text.contains("轨道") || text.contains("轻轨") || text.contains("有轨")) {
+            return "subway";
+        }
+        if (text.contains("bus") || text.contains("公交")) {
+            return "bus";
+        }
+        return "";
+    }
+
+    private static boolean containsMetroModeKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("subway") || value.contains("metro") || value.contains("mtr")
+                || value.contains("rail") || value.contains("train")
+                || value.contains("地铁") || value.contains("轨道")
+                || value.contains("轻轨") || value.contains("有轨");
+    }
+
+    private static boolean containsRouteIdMetroKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("subway") || value.contains("metro") || value.contains("mtr");
+    }
+
+    private static boolean containsBusIdKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("busgtfs") || value.contains("bus_gtfs")
+                || value.startsWith("bus") || value.contains(" bus");
+    }
+
+    private static String canonicalMetroLineNumber(String text) {
+        String value = nonBlank(text, "");
+        Matcher matcher = CHINESE_METRO_LINE_NUMBER_PATTERN.matcher(value);
+        while (matcher.find()) {
+            String number = chineseLineNumber(matcher.group(1));
+            if (!number.isBlank()) {
+                return number;
+            }
+        }
+        matcher = ENGLISH_METRO_LINE_NUMBER_PATTERN.matcher(value);
+        while (matcher.find()) {
+            String number = chineseLineNumber(nonBlank(matcher.group(1), matcher.group(2)));
+            if (!number.isBlank()) {
+                return number;
+            }
+        }
+        return "";
+    }
+
+    private static String chineseLineNumber(String token) {
+        if (token == null || token.isBlank()) {
+            return "";
+        }
+        String value = token.trim();
+        if (value.chars().allMatch(Character::isDigit)) {
+            return String.valueOf(Integer.parseInt(value));
+        }
+        return switch (value) {
+            case "一" -> "1";
+            case "二" -> "2";
+            case "三" -> "3";
+            case "四" -> "4";
+            case "五" -> "5";
+            case "六" -> "6";
+            case "七" -> "7";
+            case "八" -> "8";
+            case "九" -> "9";
+            case "十" -> "10";
+            case "十一" -> "11";
+            case "十二" -> "12";
+            case "十三" -> "13";
+            case "十四" -> "14";
+            case "十五" -> "15";
+            case "十六" -> "16";
+            case "十七" -> "17";
+            case "十八" -> "18";
+            case "十九" -> "19";
+            case "二十" -> "20";
+            default -> "";
+        };
     }
 
     private static int modeCode(String mode) {

@@ -36,6 +36,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -45,7 +47,12 @@ public final class MatsimRoutePanelCache {
 
     // v4: 运营效益指标(班次/车辆/单班次/车日均) + 客流画像新增 购物/休闲/其他 类型，需重算缓存
     // v5: 客流画像按维度互斥单选(出行者属性: 老人/学生; 出行目的: 通勤/购物/休闲/其他)，各维度合计≤100%，需重算缓存
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v5";
+    // v6: routeId 不再假设全局唯一；地铁识别纳入线路名称、中文“地铁/轨道”等上下文，需重算缓存
+    // v7: 地铁线路按规范化后的“地铁N号线”聚合（如 3号线 + 3号线北延段），需重算缓存
+    // v8: 交通方式优先使用 transportMode，避免“地铁站”类站名把公交误判为地铁；地铁线路号提取改为严格语义匹配。
+    // v9: 地铁聚合改为按“规范化线路名”而非裸线路号，避免跨系统同号线被错误合并
+    //     （佛山2/3号线≠广州2/3号线、南海/黄埔/海珠有轨电车1号线≠地铁1号线），同时仍合并同线分段（北段/东段/西段/知识城线），需重算缓存
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v9";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
@@ -53,6 +60,21 @@ public final class MatsimRoutePanelCache {
     private static final int TRANSFER_WINDOW_SECONDS = 1800;
     private static final int LEADERBOARD_LIMIT = 50;
     private static final int TRANSFER_LIMIT = 12;
+    private static final Pattern CHINESE_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
+            "(?i)(?:地铁|轨道|线路)?\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
+    );
+    private static final Pattern ENGLISH_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
+            "(?i)(?:metro|subway|mtr)(?:[-_\\s]*line)?[-_\\s]*([0-9]{1,2})\\b|\\bline[-_\\s]*([0-9]{1,2})\\b"
+    );
+    // 同一条地铁线的分段/支线后缀：仅这些应被剥离后合并（如 3号线 + 3号线北段、12号线东段 + 12号线西段、14号线 + 14号线知识城线）。
+    // 城市/制式前缀（佛山、南海、黄埔、海珠、有轨电车…）不在此列，确保跨系统同号线不被合并。
+    private static final Pattern METRO_SEGMENT_SUFFIX_PATTERN = Pattern.compile(
+            "(北延段|南延段|东延段|西延段|北延线|南延线|东延线|西延线|北段|南段|东段|西段|延长线|延长段|知识城支线|知识城线|支线|一期|二期|三期|四期|首期工程|首期|首通段|后通段)"
+    );
+    // 规范化后恰为“N号线”（阿拉伯或中文数字）才算“纯地铁线路号”，展示为“地铁N号线”。
+    private static final Pattern PURE_METRO_LINE_PATTERN = Pattern.compile(
+            "^(?:[0-9]{1,2}|[一二三四五六七八九十]{1,4})号线$"
+    );
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final Map<String, Map<String, Object>> MEMORY_CACHE = Collections.synchronizedMap(
@@ -99,16 +121,46 @@ public final class MatsimRoutePanelCache {
         }
     }
 
-    public static Map<String, Object> readRoutePanelDetail(MatsimData data, String routeId) {
+    public static Map<String, Object> readRoutePanelDetail(MatsimData data, String lineId, String routeId) {
         if (routeId == null || routeId.isBlank()) return Map.of();
         Map<String, Object> panel = readRoutePanel(data);
         Object routesValue = panel.get("routes");
         if (!(routesValue instanceof Map<?, ?> routes)) return Map.of();
-        Object routeValue = routes.get(routeId);
+        Object routeValue = null;
+        if (lineId != null && !lineId.isBlank()) {
+            routeValue = routes.get(routeKey(lineId, routeId));
+        }
+        if (routeValue == null) {
+            routeValue = routes.get(routeId);
+        }
+        if (routeValue == null) {
+            routeValue = findRoutePayload(routes, lineId, routeId);
+        }
         if (!(routeValue instanceof Map<?, ?> route)) return Map.of();
         Map<String, Object> result = new LinkedHashMap<>();
         route.forEach((key, value) -> result.put(String.valueOf(key), value));
         return result;
+    }
+
+    private static Object findRoutePayload(Map<?, ?> routes, String lineId, String routeId) {
+        Object match = null;
+        for (Object value : routes.values()) {
+            if (!(value instanceof Map<?, ?> route)) {
+                continue;
+            }
+            if (!routeId.equals(String.valueOf(route.get("routeId")))) {
+                continue;
+            }
+            if (lineId != null && !lineId.isBlank()
+                    && !lineId.equals(String.valueOf(route.get("lineId")))) {
+                continue;
+            }
+            if (match != null && (lineId == null || lineId.isBlank())) {
+                return null;
+            }
+            match = value;
+        }
+        return match;
     }
 
     private static Map<String, Object> loadPanel(MatsimData data) {
@@ -170,10 +222,11 @@ public final class MatsimRoutePanelCache {
         indexTransfers(data.getPersonTracks(), routes);
         Population population = data.getPopulation();
 
+        Map<String, Integer> routeIdCounts = routeIdCounts(routes.values());
         Map<String, Object> routePayloads = new LinkedHashMap<>();
         for (RoutePanelAccumulator route : routes.values()) {
             route.finish(population);
-            routePayloads.put(route.routeId, route.toPayload());
+            routePayloads.put(route.payloadKey(routeIdCounts), route.toPayload());
         }
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -182,6 +235,7 @@ public final class MatsimRoutePanelCache {
         result.put("generatedAt", System.currentTimeMillis());
         result.put("summary", buildSummary(routes.values()));
         result.put("routes", routePayloads);
+        result.put("lineGroups", buildLineGroups(routes.values()));
         return result;
     }
 
@@ -195,8 +249,16 @@ public final class MatsimRoutePanelCache {
             for (Map.Entry<Id<TransitRoute>, TransitRoute> routeEntry : line.getRoutes().entrySet()) {
                 String routeId = routeEntry.getKey().toString();
                 TransitRoute route = routeEntry.getValue();
-                result.put(routeId, new RoutePanelAccumulator(data, network, lineId, lineName, routeId, route));
+                result.put(routeKey(lineId, routeId), new RoutePanelAccumulator(data, network, lineId, lineName, routeId, route));
             }
+        }
+        return result;
+    }
+
+    private static Map<String, Integer> routeIdCounts(Collection<RoutePanelAccumulator> routes) {
+        Map<String, Integer> result = new HashMap<>();
+        for (RoutePanelAccumulator route : routes) {
+            result.merge(route.routeId, 1, Integer::sum);
         }
         return result;
     }
@@ -206,7 +268,7 @@ public final class MatsimRoutePanelCache {
             return;
         }
         for (PTPersonTrack track : tracks) {
-            RoutePanelAccumulator route = routes.get(idString(track.getRouteId()));
+            RoutePanelAccumulator route = routeForTrack(routes, track);
             if (route != null) {
                 route.addTrack(track);
             }
@@ -237,8 +299,8 @@ public final class MatsimRoutePanelCache {
                 if (delta < 0 || delta > TRANSFER_WINDOW_SECONDS) {
                     continue;
                 }
-                RoutePanelAccumulator fromRoute = routes.get(idString(leave.getRouteId()));
-                RoutePanelAccumulator toRoute = routes.get(idString(enter.getRouteId()));
+                RoutePanelAccumulator fromRoute = routeForTrack(routes, leave);
+                RoutePanelAccumulator toRoute = routeForTrack(routes, enter);
                 if (fromRoute == null || toRoute == null || fromRoute.lineId.equals(toRoute.lineId)) {
                     continue;
                 }
@@ -250,6 +312,31 @@ public final class MatsimRoutePanelCache {
                 toRoute.addTransfer(fromRoute, idString(enter.getFacilityId()), hour);
             }
         });
+    }
+
+    private static RoutePanelAccumulator routeForTrack(Map<String, RoutePanelAccumulator> routes, PTPersonTrack track) {
+        String routeId = idString(track.getRouteId());
+        if (routeId == null || routeId.isBlank()) {
+            return null;
+        }
+        String lineId = idString(track.getLineId());
+        if (lineId != null && !lineId.isBlank()) {
+            RoutePanelAccumulator route = routes.get(routeKey(lineId, routeId));
+            if (route != null) {
+                return route;
+            }
+        }
+        RoutePanelAccumulator match = null;
+        for (RoutePanelAccumulator route : routes.values()) {
+            if (!routeId.equals(route.routeId)) {
+                continue;
+            }
+            if (match != null) {
+                return null;
+            }
+            match = route;
+        }
+        return match;
     }
 
     private static boolean sameTransferStation(
@@ -277,8 +364,10 @@ public final class MatsimRoutePanelCache {
         for (RoutePanelAccumulator route : routes) {
             totalBoardings += route.totalBoardings;
             totalAlightings += route.totalAlightings;
-            LineLeaderboardAccumulator line = lineStats.computeIfAbsent(route.lineId,
-                    ignored -> new LineLeaderboardAccumulator(route.lineId, route.lineName, route.mode, route.desc));
+            String lineKey = lineGroupKey(route);
+            String lineName = lineGroupName(route);
+            LineLeaderboardAccumulator line = lineStats.computeIfAbsent(lineKey,
+                    ignored -> new LineLeaderboardAccumulator(lineKey, lineName, route.mode, route.desc));
             line.add(route);
         }
 
@@ -293,6 +382,21 @@ public final class MatsimRoutePanelCache {
         summary.put("totalAlightings", totalAlightings);
         summary.put("leaderboard", leaderboard);
         return summary;
+    }
+
+    private static Map<String, Object> buildLineGroups(Collection<RoutePanelAccumulator> routes) {
+        Map<String, LineGroupAccumulator> groups = new LinkedHashMap<>();
+        for (RoutePanelAccumulator route : routes) {
+            if (!"subway".equals(route.mode)) {
+                continue;
+            }
+            String key = lineGroupKey(route);
+            groups.computeIfAbsent(key, ignored -> new LineGroupAccumulator(key, lineGroupName(route), route.mode))
+                    .add(route);
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        groups.forEach((key, group) -> payload.put(key, group.toPayload()));
+        return payload;
     }
 
     private static List<Map<String, Object>> leaderboard(Collection<LineLeaderboardAccumulator> lines, String mode) {
@@ -438,6 +542,145 @@ public final class MatsimRoutePanelCache {
         return value == null || value.isBlank() ? fallback : value;
     }
 
+    private static String routeKey(String lineId, String routeId) {
+        return nonBlank(lineId, "") + "::" + nonBlank(routeId, "");
+    }
+
+    // 地铁线路聚合键：按“规范化线路名”聚合，而非裸线路号。
+    // 这样 3号线 + 3号线北段 仍合并，但 佛山3号线、广州3号线、黄埔有轨电车1号线 各自独立，不再因同号被错误合并。
+    private static String lineGroupKey(RoutePanelAccumulator route) {
+        if (!"subway".equals(route.mode)) {
+            return route.lineId;
+        }
+        return "metro::" + metroLineCanonicalName(route.lineName, route.lineId);
+    }
+
+    private static String lineGroupName(RoutePanelAccumulator route) {
+        if (!"subway".equals(route.mode)) {
+            return route.lineName;
+        }
+        String canonical = metroLineCanonicalName(route.lineName, route.lineId);
+        if (PURE_METRO_LINE_PATTERN.matcher(canonical).matches()) {
+            return "地铁" + canonical;
+        }
+        return nonBlank(canonical, nonBlank(route.lineName, route.lineId));
+    }
+
+    // 规范化地铁线路名：去空白、去括号备注、剥离同线分段后缀（北段/东段/西段/知识城线…）。
+    // 剥离后若为空则回退原名，避免“知识城线”这类无号线名被清空。
+    private static String metroLineCanonicalName(String lineName, String lineId) {
+        String base = nonBlank(lineName, nonBlank(lineId, ""))
+                .replaceAll("\\s+", "")
+                .replaceAll("[（(].*?[）)]", "");
+        String stripped = METRO_SEGMENT_SUFFIX_PATTERN.matcher(base).replaceAll("");
+        return stripped.isBlank() ? base : stripped;
+    }
+
+    private static String canonicalMetroLineNumber(String text) {
+        String value = nonBlank(text, "");
+        Matcher matcher = CHINESE_METRO_LINE_NUMBER_PATTERN.matcher(value);
+        while (matcher.find()) {
+            String token = matcher.group(1);
+            String number = chineseLineNumber(token);
+            if (!number.isBlank()) {
+                return number;
+            }
+        }
+        matcher = ENGLISH_METRO_LINE_NUMBER_PATTERN.matcher(value);
+        while (matcher.find()) {
+            String token = nonBlank(matcher.group(1), matcher.group(2));
+            String number = chineseLineNumber(token);
+            if (!number.isBlank()) {
+                return number;
+            }
+        }
+        return "";
+    }
+
+    private static String inferTransitMode(String lineName, String lineId, String routeName, String routeId, String transportMode) {
+        String mode = normalizeDeclaredTransportMode(transportMode);
+        if ("subway".equals(mode) || "bus".equals(mode)) {
+            return mode;
+        }
+        String lineText = nonBlank(lineName, "") + " " + nonBlank(lineId, "");
+        String routeText = nonBlank(routeName, "") + " " + nonBlank(routeId, "");
+        if (!containsMetroModeKeyword(lineText) && containsBusIdKeyword(lineId + " " + routeId)) {
+            return "bus";
+        }
+        if (!canonicalMetroLineNumber(lineText).isBlank()
+                || containsMetroModeKeyword(lineText)
+                || !canonicalMetroLineNumber(routeText).isBlank()
+                || containsRouteIdMetroKeyword(routeId)) {
+            return "subway";
+        }
+        return "bus";
+    }
+
+    private static String normalizeDeclaredTransportMode(String rawMode) {
+        String text = rawMode == null ? "" : rawMode.toLowerCase(Locale.ROOT);
+        if (text.contains("subway") || text.contains("metro") || text.contains("rail")
+                || text.contains("train") || text.contains("mtr") || text.contains("地铁")
+                || text.contains("轨道") || text.contains("轻轨") || text.contains("有轨")) {
+            return "subway";
+        }
+        if (text.contains("bus") || text.contains("公交")) {
+            return "bus";
+        }
+        return "";
+    }
+
+    private static boolean containsMetroModeKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("subway") || value.contains("metro") || value.contains("mtr")
+                || value.contains("rail") || value.contains("train")
+                || value.contains("地铁") || value.contains("轨道")
+                || value.contains("轻轨") || value.contains("有轨");
+    }
+
+    private static boolean containsRouteIdMetroKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("subway") || value.contains("metro") || value.contains("mtr");
+    }
+
+    private static boolean containsBusIdKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("busgtfs") || value.contains("bus_gtfs")
+                || value.startsWith("bus") || value.contains(" bus");
+    }
+
+    private static String chineseLineNumber(String token) {
+        if (token == null || token.isBlank()) {
+            return "";
+        }
+        String value = token.trim();
+        if (value.chars().allMatch(Character::isDigit)) {
+            return String.valueOf(Integer.parseInt(value));
+        }
+        return switch (value) {
+            case "一" -> "1";
+            case "二" -> "2";
+            case "三" -> "3";
+            case "四" -> "4";
+            case "五" -> "5";
+            case "六" -> "6";
+            case "七" -> "7";
+            case "八" -> "8";
+            case "九" -> "9";
+            case "十" -> "10";
+            case "十一" -> "11";
+            case "十二" -> "12";
+            case "十三" -> "13";
+            case "十四" -> "14";
+            case "十五" -> "15";
+            case "十六" -> "16";
+            case "十七" -> "17";
+            case "十八" -> "18";
+            case "十九" -> "19";
+            case "二十" -> "20";
+            default -> "";
+        };
+    }
+
     private static double round2(double value) {
         return Math.round(value * 100.0) / 100.0;
     }
@@ -455,17 +698,6 @@ public final class MatsimRoutePanelCache {
             result += value;
         }
         return result;
-    }
-
-    private static String normalizeVehicleMode(String rawMode, boolean transitVehicle) {
-        String text = rawMode == null ? "" : rawMode.toLowerCase(Locale.ROOT);
-        if (text.contains("subway") || text.contains("metro") || text.contains("rail") || text.contains("train")) {
-            return "subway";
-        }
-        if (transitVehicle || text.contains("bus") || text.contains("pt")) {
-            return "bus";
-        }
-        return "car";
     }
 
     private static int vehicleCapacity(MatsimData data, Id<Vehicle> vehicleId) {
@@ -596,7 +828,7 @@ public final class MatsimRoutePanelCache {
             this.lineName = lineName;
             this.routeId = routeId;
             this.routeName = nonBlank(route.getDescription(), routeId);
-            this.mode = normalizeVehicleMode(route.getTransportMode(), true);
+            this.mode = inferTransitMode(lineName, lineId, routeName, routeId, route.getTransportMode());
             this.routeDistance = routeDistance(route, network);
             this.directness = directness(route, routeDistance);
             this.firstTime = route.getDepartures().values().stream()
@@ -748,8 +980,15 @@ public final class MatsimRoutePanelCache {
             return payload;
         }
 
+        private String payloadKey(Map<String, Integer> routeIdCounts) {
+            return routeIdCounts.getOrDefault(routeId, 0) > 1
+                    ? routeKey(lineId, routeId)
+                    : routeId;
+        }
+
         private Map<String, Object> toPayload() {
             Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("routeKey", routeKey(lineId, routeId));
             payload.put("lineId", lineId);
             payload.put("lineName", lineName);
             payload.put("routeId", routeId);
@@ -846,6 +1085,119 @@ public final class MatsimRoutePanelCache {
     }
 
     private record StopMeta(int index, String facilityId, String facilityName) {
+    }
+
+    private static final class LineGroupAccumulator {
+        private final String lineId;
+        private final String lineName;
+        private final String mode;
+        private final Set<String> sourceLineIds = new LinkedHashSet<>();
+        private final Set<String> routeIds = new LinkedHashSet<>();
+        private final List<String> routeKeys = new ArrayList<>();
+        private final Set<String> facilityIds = new LinkedHashSet<>();
+        private final Map<String, StationFlowAccumulator> stationFlows = new LinkedHashMap<>();
+        private final Map<String, Double> routeDistanceByLine = new LinkedHashMap<>();
+        private final int[] hourlyBoardings = new int[HOURS];
+        private final int[] hourlyAlightings = new int[HOURS];
+        private final int[] capacityByHour = new int[HOURS];
+        private final List<Map<String, Object>> segments = new ArrayList<>();
+        private final Set<String> vehicleIds = new LinkedHashSet<>();
+        private long totalBoardings = 0;
+        private long totalAlightings = 0;
+        private double capacityTotal = 0.0;
+        private int departureCount = 0;
+        private double firstTime = Double.MAX_VALUE;
+        private double lastTime = 0.0;
+
+        private LineGroupAccumulator(String lineId, String lineName, String mode) {
+            this.lineId = lineId;
+            this.lineName = lineName;
+            this.mode = mode;
+        }
+
+        private void add(RoutePanelAccumulator route) {
+            sourceLineIds.add(route.lineId);
+            routeIds.add(route.routeId);
+            routeKeys.add(routeKey(route.lineId, route.routeId));
+            totalBoardings += route.totalBoardings;
+            totalAlightings += route.totalAlightings;
+            capacityTotal += route.capacityTotal;
+            departureCount += route.departureCount;
+            firstTime = Math.min(firstTime, route.firstTime);
+            lastTime = Math.max(lastTime, route.lastTime);
+            vehicleIds.addAll(route.vehicleIds);
+            routeDistanceByLine.merge(route.lineId, route.routeDistance, Math::max);
+            for (StopMeta stop : route.stops) {
+                facilityIds.add(stop.facilityId);
+            }
+            addIntArray(hourlyBoardings, route.hourlyBoardings);
+            addIntArray(hourlyAlightings, route.hourlyAlightings);
+            addIntArray(capacityByHour, route.capacityByHour);
+            for (StationFlowAccumulator source : route.stationFlows.values()) {
+                StationFlowAccumulator target = stationFlows.computeIfAbsent(source.facilityId,
+                        ignored -> new StationFlowAccumulator(source.facilityId, source.facilityName));
+                addIntArray(target.boardingByHour, source.boardingByHour);
+                addIntArray(target.alightingByHour, source.alightingByHour);
+            }
+            for (SegmentFlowAccumulator segment : route.segments) {
+                Map<String, Object> payload = segment.toPayload();
+                payload.put("routeKey", routeKey(route.lineId, route.routeId));
+                payload.put("lineId", route.lineId);
+                payload.put("routeId", route.routeId);
+                payload.put("routeName", route.routeName);
+                payload.put("lineName", route.lineName);
+                segments.add(payload);
+            }
+        }
+
+        private static void addIntArray(int[] target, int[] source) {
+            for (int i = 0; i < Math.min(target.length, source.length); i++) {
+                target[i] += source[i];
+            }
+        }
+
+        private Map<String, Object> toPayload() {
+            double routeDistance = routeDistanceByLine.values().stream().mapToDouble(Double::doubleValue).sum();
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("lineGroup", true);
+            payload.put("routeKey", lineId);
+            payload.put("lineId", lineId);
+            payload.put("lineName", lineName);
+            payload.put("routeId", lineId);
+            payload.put("routeName", lineName);
+            payload.put("mode", mode);
+            payload.put("sourceLineIds", sourceLineIds);
+            payload.put("routeIds", routeIds);
+            payload.put("routeKeys", routeKeys);
+            payload.put("desc", sourceLineIds.size() > 1 ? String.join(" / ", sourceLineIds) : "");
+            payload.put("hours", Stream.iterate(0, i -> i + 1).limit(HOURS).toList());
+            payload.put("hourlyFlow", hourlyBoardings);
+            payload.put("boardingByHour", hourlyBoardings);
+            payload.put("alightingByHour", hourlyAlightings);
+            payload.put("capacityByHour", capacityByHour);
+            payload.put("stationFlows", stationFlows.values().stream().map(StationFlowAccumulator::toPayload).toList());
+            payload.put("segments", segments);
+            payload.put("transfers", List.of());
+            payload.put("demographics", Map.of("riderCount", 0));
+
+            Map<String, Object> metrics = new LinkedHashMap<>();
+            metrics.put("routeDist", round2(routeDistance));
+            metrics.put("firstTime", firstTime == Double.MAX_VALUE ? 0.0 : firstTime);
+            metrics.put("lastTime", lastTime);
+            metrics.put("facNum", facilityIds.size());
+            metrics.put("facDist", facilityIds.size() > 1 ? round2(routeDistance / (facilityIds.size() - 1)) : 0.0);
+            metrics.put("lc", 0.0);
+            metrics.put("passenger", totalBoardings);
+            metrics.put("loadRate", percent(totalBoardings, capacityTotal));
+            metrics.put("passengerStrength", routeDistance <= 0 ? 0.0 : round2(totalBoardings / (routeDistance / 1000.0)));
+            int vehicles = vehicleIds.size();
+            metrics.put("departures", departureCount);
+            metrics.put("vehicles", vehicles);
+            metrics.put("perTripFlow", departureCount > 0 ? round2(totalBoardings / (double) departureCount) : 0.0);
+            metrics.put("perVehicleFlow", vehicles > 0 ? round2(totalBoardings / (double) vehicles) : 0.0);
+            payload.put("metrics", metrics);
+            return payload;
+        }
     }
 
     private static final class StationFlowAccumulator {

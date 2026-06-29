@@ -70,9 +70,11 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public RouteDetailVO routeDetail(RouteInfoParam param) {
         MatsimData matsim_data = matsim_data(param);
-        RouteDetailVO cached = MatsimPrecomputedCache.readRouteDetail(matsim_data, param.getRouteId());
-        if (cached != null) {
-            return cached;
+        if (param.getLineId() == null || param.getLineId().isBlank()) {
+            RouteDetailVO cached = MatsimPrecomputedCache.readRouteDetail(matsim_data, param.getRouteId());
+            if (cached != null) {
+                return cached;
+            }
         }
         Network network = network(param);
         if (param.getRouteId() == null) {
@@ -90,6 +92,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         // 填充日均客流
         vo.getInfo().setPassenger(queryPTTrack(new RouteChartParam() {{
             setDatasource(param.getDatasource());
+            setLineId(param.getLineId());
             setRouteId(param.getRouteId());
             setBeginSecond(0);
             setEndSecond(Integer.MAX_VALUE);
@@ -160,9 +163,23 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
                 list.add(rdv);
             }
             vo.setRoutes(list);
+            vo.setMode(lineMode(list));
             lineList.add(vo);
         }
         return lineList;
+    }
+
+    private String lineMode(List<RouteDetailVO> routes) {
+        if (routes == null || routes.isEmpty()) {
+            return "";
+        }
+        if (routes.stream().anyMatch(route -> "subway".equals(route.getMode()))) {
+            return "subway";
+        }
+        if (routes.stream().anyMatch(route -> "bus".equals(route.getMode()))) {
+            return "bus";
+        }
+        return routes.getFirst().getMode();
     }
 
     @Override
@@ -172,7 +189,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
 
     @Override
     public Map<String, Object> routePanelDetail(RouteInfoParam param) {
-        return MatsimRoutePanelCache.readRoutePanelDetail(matsim_data(param), param.getRouteId());
+        return MatsimRoutePanelCache.readRoutePanelDetail(matsim_data(param), param.getLineId(), param.getRouteId());
     }
 
     @Override
@@ -274,6 +291,14 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
      */
     private TransitRoute getTransitRoute(Id<TransitRoute> routeId, DatasourceParam param) {
         TransitSchedule schedule = matsim_data(param).getSchedule();
+        if (param instanceof RouteInfoParam routeInfoParam
+                && routeInfoParam.getLineId() != null
+                && !routeInfoParam.getLineId().isBlank()) {
+            TransitLine line = schedule.getTransitLines().get(Id.create(routeInfoParam.getLineId(), TransitLine.class));
+            if (line != null) {
+                return line.getRoutes().get(routeId);
+            }
+        }
         Map<Id<TransitLine>, TransitLine> transitLines = schedule.getTransitLines();
         for (Map.Entry<Id<TransitLine>, TransitLine> line : transitLines.entrySet()) {
             TransitLine transitLine = line.getValue();
@@ -439,7 +464,12 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
                     if (param.getRouteId() == null) {
                         return false;
                     }
-                    return t.getRouteId().equals(RouteId.create(param.getRouteId()));
+                    if (!t.getRouteId().equals(RouteId.create(param.getRouteId()))) {
+                        return false;
+                    }
+                    return param.getLineId() == null
+                            || param.getLineId().isBlank()
+                            || String.valueOf(t.getLineId()).equals(param.getLineId());
                 }
             }
             return false;

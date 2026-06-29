@@ -33,20 +33,23 @@ public class PTHandler implements
     private final ConcurrentHashMap<RouteId, TransitRoute> routes = new ConcurrentHashMap<>();
     /* 数据读取临时对应关系 */
     private final ConcurrentMap<VehicleId, StopFacilityId> vfMap = new ConcurrentHashMap<>();
-    // TransitRouteId -> TransitLineId
-    private final ConcurrentMap<RouteId, LineId> rlMap = new ConcurrentHashMap<>();
     // VehicleId -> departureId
     private final ConcurrentMap<VehicleId, DepartureId> vdMap = new ConcurrentHashMap<>();
     // VehicleId -> TransitRouteId
     private final ConcurrentMap<VehicleId, RouteId> vrMap = new ConcurrentHashMap<>();
+    // VehicleId -> TransitLineId. TransitRouteId is only unique within a line in many MATSim schedules.
+    private final ConcurrentMap<VehicleId, LineId> vlMap = new ConcurrentHashMap<>();
 
     public PTHandler(TransitSchedule schedule) {
         schedule.getTransitLines().forEach((lineId, line) -> line.getRoutes().forEach((routeId, route) -> {
             routes.put(RouteId.create(routeId), route);
-            rlMap.put(RouteId.create(routeId), LineId.create(lineId));
             route.getDepartures().forEach((departureId, departure) -> {
+                if (departure.getVehicleId() == null) {
+                    return;
+                }
                 vdMap.put(VehicleId.create(departure.getVehicleId()), DepartureId.create(departureId));
                 vrMap.put(VehicleId.create(departure.getVehicleId()), RouteId.create(routeId));
+                vlMap.put(VehicleId.create(departure.getVehicleId()), LineId.create(lineId));
             });
         }));
     }
@@ -89,7 +92,7 @@ public class PTHandler implements
         trace.setTime(time);
         trace.setPersonId(personId);
         trace.setVehicleId(vehicleId);
-        trace.setLineId(rlMap.get(routeId));
+        trace.setLineId(vlMap.get(vehicleId));
         trace.setRouteId(routeId);
         trace.setDepartureId(departureId);
         trace.setFacilityId(facilityId);

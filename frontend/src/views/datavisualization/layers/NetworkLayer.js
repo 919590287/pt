@@ -1,5 +1,5 @@
 import { COORDINATE_SYSTEM } from "@deck.gl/core";
-import { LineLayer } from "@deck.gl/layers";
+import { LineLayer, PathLayer } from "@deck.gl/layers";
 import { Layer, MAP_EVENT, webMercatorToLngLat } from "@/mymap/index.js";
 import { getTileNetwork, getTileNetworkBinary, getFullNetworkBinary } from "@/api/network.js";
 import { clipSegmentToDistrictContext } from "@/utils/adminDistrictRange.js";
@@ -55,6 +55,10 @@ function networkLineMinPixels() {
 
 function networkLineSoftEdgePixels() {
   return Math.max(0, runtimeNumber("networkLineSoftEdgePixels", 0));
+}
+
+function routePathJoinToleranceMeters() {
+  return Math.max(0, runtimeNumber("routePathJoinToleranceMeters", 45));
 }
 
 function webMercatorToTile(x, y, z = TILE_ZOOM) {
@@ -233,6 +237,43 @@ function linksToBinaryData(links = [], version = 0) {
     length,
     lanes,
   }, version);
+}
+
+function linkFlowValue(link) {
+  const value = Number(
+    link?.flow ??
+    link?.trafficVolume ??
+    link?.traffic_volume ??
+    link?.simulatedTrafficVolume ??
+    link?.simulated_traffic_volume ??
+    0,
+  );
+  return Number.isFinite(value) ? value : 0;
+}
+
+function linkWebMercatorEndpoints(link) {
+  const fromX = Number(link?.from?.x);
+  const fromY = Number(link?.from?.y);
+  const toX = Number(link?.to?.x);
+  const toY = Number(link?.to?.y);
+  if (![fromX, fromY, toX, toY].every(Number.isFinite)) return null;
+  return {
+    source: [fromX, fromY],
+    target: [toX, toY],
+  };
+}
+
+function distanceSq(a, b) {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  return dx * dx + dy * dy;
+}
+
+function appendPoint(path, point) {
+  const last = path[path.length - 1];
+  if (!last || distanceSq(last, point) > 0.01) {
+    path.push(point);
+  }
 }
 
 function parseTileResponse(response, version = 0) {
@@ -457,6 +498,7 @@ export class NetworkLayer extends Layer {
     this.workerCallbacks = new Map();
     this.workerGeneration = 0;
     this.combineSeq = 0;
+    this.rawLinks = [];
   }
 
   onAdd(map) {
@@ -543,6 +585,7 @@ export class NetworkLayer extends Layer {
     this.dataVersion++;
     const version = this.dataVersion;
     const links = Array.isArray(data) ? data : [];
+    this.rawLinks = links;
     if (!links.length) {
       this.deckData = emptyBinaryData(version);
       this.flowWidthCache = null;
@@ -578,6 +621,7 @@ export class NetworkLayer extends Layer {
 
   setTileSource(datasource, opt = {}) {
     this.tileMode = true;
+    this.rawLinks = [];
     this.datasource = datasource || "";
     this.tileZoom = opt.tileZoom || this.tileZoom || TILE_ZOOM;
     this.fullModeMaxZoom = Number.isFinite(Number(opt.fullModeMaxZoom)) ? Number(opt.fullModeMaxZoom) : this.fullModeMaxZoom;
@@ -1056,6 +1100,12 @@ export class NetworkLayer extends Layer {
       miterLimit: 2,
     };
     this.publishDebug(data, attributes);
+    const pathData = this.tileMode ? [] : this.buildContinuousPathData(data, lineColor, zoomWidth, visualOpacity);
+    if (pathData.length) {
+      const layers = this.renderPathLayers(pathData, commonProps, softEdgePixels, widthMaxPixels, widthScale, zoomWidth);
+      setSharedDeckLayer(this.map, this.layerId, layers, this.zIndex);
+      return;
+    }
     const layers = [];
     if (softEdgePixels > 0) {
       layers.push(new LineLayer({
@@ -1091,6 +1141,128 @@ export class NetworkLayer extends Layer {
     });
     layers.push(layer);
     setSharedDeckLayer(this.map, this.layerId, layers, this.zIndex);
+  }
+
+  buildContinuousPathData(data, lineColor, zoomWidth, opacity) {
+    const links = Array.isArray(this.rawLinks) ? this.rawLinks : [];
+    if (links.length < 2) return [];
+
+    const baseWidth = Math.max(3, lineWidthToPixels(this.lineWidth));
+    const stepWidth = Math.max(1, lineWidthToPixels(this.flowWidthStep || this.flowMaxWidth));
+    const alpha = Math.max(0, Math.min(255, Math.round((Number(opacity) || 0) * 255)));
+    const tolerance = routePathJoinToleranceMeters();
+    const toleranceSq = tolerance * tolerance;
+    const paths = [];
+    let current = null;
+
+    const flush = () => {
+      if (current?.points?.length > 1) {
+        paths.push({
+          path: current.points.map((point) => webMercatorToLngLat(point[0], point[1])),
+          color: current.color,
+          width: current.width,
+        });
+      }
+      current = null;
+    };
+
+    const styleForLink = (link) => {
+      if (!this.flowControl) {
+        return {
+          key: "default",
+          color: lineColor,
+          width: zoomWidth,
+        };
+      }
+      const flow = linkFlowValue(link);
+      let ratio = 0;
+      if (data.maxFlow > data.minFlow) {
+        ratio = clamp01((Math.max(data.minFlow, flow) - data.minFlow) / (data.maxFlow - data.minFlow));
+      } else {
+        ratio = data.maxFlow > 0 ? 1 : 0;
+      }
+      const style = this.flowStyleForValue(flow, ratio);
+      const color = [style.color[0], style.color[1], style.color[2], alpha];
+      const width = baseWidth + stepWidth * style.widthStep;
+      return {
+        key: `${style.color.join(",")}:${style.widthStep}`,
+        color,
+        width,
+      };
+    };
+
+    for (const link of links) {
+      const endpoints = linkWebMercatorEndpoints(link);
+      if (!endpoints) continue;
+
+      const style = styleForLink(link);
+      let start = endpoints.source;
+      let end = endpoints.target;
+
+      if (!current || current.key !== style.key) {
+        flush();
+        current = { key: style.key, color: style.color, width: style.width, points: [start, end] };
+        continue;
+      }
+
+      const last = current.points[current.points.length - 1];
+      const sourceDistance = distanceSq(last, endpoints.source);
+      const targetDistance = distanceSq(last, endpoints.target);
+      if (targetDistance < sourceDistance) {
+        start = endpoints.target;
+        end = endpoints.source;
+      }
+      const joinDistance = Math.min(sourceDistance, targetDistance);
+      if (joinDistance > toleranceSq) {
+        flush();
+        current = { key: style.key, color: style.color, width: style.width, points: [start, end] };
+        continue;
+      }
+
+      if (joinDistance > 0.01) {
+        current.points[current.points.length - 1] = [
+          (last[0] + start[0]) / 2,
+          (last[1] + start[1]) / 2,
+        ];
+      }
+      appendPoint(current.points, end);
+    }
+
+    flush();
+    return paths;
+  }
+
+  renderPathLayers(pathData, commonProps, softEdgePixels, widthMaxPixels, widthScale, zoomWidth) {
+    const layers = [];
+    const pathProps = {
+      ...commonProps,
+      data: pathData,
+      getPath: (item) => item.path,
+      getColor: (item) => item.color,
+      getWidth: (item) => item.width,
+      widthScale: this.flowControl ? widthScale : 1,
+      widthMaxPixels,
+    };
+
+    if (softEdgePixels > 0) {
+      layers.push(new PathLayer({
+        ...pathProps,
+        id: `${this.layerId}-soft-edge`,
+        opacity: 0.28,
+        getWidth: (item) => item.width + softEdgePixels,
+        widthMinPixels: networkLineMinPixels() + softEdgePixels,
+        widthMaxPixels: widthMaxPixels + softEdgePixels,
+      }));
+    }
+
+    layers.push(new PathLayer({
+      ...pathProps,
+      id: this.layerId,
+      widthMinPixels: this.fixedPixelWidth
+        ? 0.1
+        : this.flowControl ? Math.min(networkLineMinPixels(), 0.55) : networkLineMinPixels(),
+    }));
+    return layers;
   }
 
   setLineWidth(lineWidth) {

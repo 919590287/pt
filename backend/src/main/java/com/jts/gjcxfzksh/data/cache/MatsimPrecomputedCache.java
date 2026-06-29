@@ -64,7 +64,7 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimPrecomputedCache {
 
-    public static final String VISUAL_CACHE_VERSION = "visual-v6";
+    public static final String VISUAL_CACHE_VERSION = "visual-v7";
     private static final int VISUAL_TILE_ZOOM = 12;
     private static final int MIN_VISUAL_TILE_ZOOM = 8;
     private static final int ROUTE_DETAIL_SHARD_COUNT = 32;
@@ -275,6 +275,7 @@ public final class MatsimPrecomputedCache {
                 routes.add(new RouteDetailVO(route, network));
             }
             vo.setRoutes(routes);
+            vo.setMode(lineMode(routes));
             lineList.add(vo);
         }
         return lineList;
@@ -286,12 +287,15 @@ public final class MatsimPrecomputedCache {
             LineVO line = new LineVO();
             line.setLineId(sourceLine.getLineId());
             line.setLineName(sourceLine.getLineName());
+            line.setMode(sourceLine.getMode());
             List<RouteDetailVO> routes = new ArrayList<>();
             if (sourceLine.getRoutes() != null) {
                 for (RouteDetailVO sourceRoute : sourceLine.getRoutes()) {
                     RouteDetailVO route = new RouteDetailVO();
                     route.setRouteId(sourceRoute.getRouteId());
                     route.setRouteName(sourceRoute.getRouteName());
+                    route.setTransportMode(sourceRoute.getTransportMode());
+                    route.setMode(sourceRoute.getMode());
                     route.setInfo(sourceRoute.getInfo());
                     route.setFacilities(sourceRoute.getFacilities());
                     route.setDepartures(List.of());
@@ -303,6 +307,19 @@ public final class MatsimPrecomputedCache {
             result.add(line);
         }
         return result;
+    }
+
+    private static String lineMode(List<RouteDetailVO> routes) {
+        if (routes == null || routes.isEmpty()) {
+            return "";
+        }
+        if (routes.stream().anyMatch(route -> "subway".equals(route.getMode()))) {
+            return "subway";
+        }
+        if (routes.stream().anyMatch(route -> "bus".equals(route.getMode()))) {
+            return "bus";
+        }
+        return routes.getFirst().getMode();
     }
 
     private static List<FacilityVO> buildStations(MatsimData data) {

@@ -78,8 +78,8 @@
               <div class="matched-list">
                 <div
                   v-for="item in matchedRoutes"
-                  :key="item.routeId"
-                  :class="['matched-item', activeMatchedRouteId === item.routeId ? 'active' : '']"
+                  :key="routeUniqueKey(item)"
+                  :class="['matched-item', activeMatchedRouteId === routeUniqueKey(item) ? 'active' : '']"
                   @click="handleSelectMatchedRoute(item)"
                 >
                   <div class="item-header">
@@ -391,12 +391,24 @@ const shouldLoadSelectedRoutePanel = computed(() => runMonitorSimplifiedRight ||
 const currentSelectedRoute = computed(() => {
   const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
   if (!targetId) return null;
-  if (String(selectedRouteDetail.value?.routeId || "") === String(targetId)) return selectedRouteDetail.value;
+  if (selectedRouteDetail.value && routeMatchesKey(selectedRouteDetail.value, targetId)) return selectedRouteDetail.value;
   if (routeDetailCache.has(String(targetId))) return routeDetailCache.get(String(targetId));
+  if (searchMode.value === "station") {
+    const matched = matchedRoutes.value.find((route) => routeUniqueKey(route) === String(targetId));
+    if (matched) return matched;
+  }
+  if (searchMode.value === "line" && selectedLineName.value) {
+    const groupRoute = buildLineGroupRoute(selectedLineName.value);
+    if (groupRoute && routeMatchesKey(groupRoute, targetId)) return groupRoute;
+    for (const line of linesForDisplayName(selectedLineName.value)) {
+      const match = (line?.routes || []).find((route) => String(route.routeId) === String(targetId));
+      if (match) return withLineMeta(match, line);
+    }
+  }
   for (const line of rawLines.value) {
     if (line.routes) {
       const match = line.routes.find(r => String(r.routeId) === String(targetId));
-      if (match) return match;
+      if (match) return withLineMeta(match, line);
     }
   }
   return null;
@@ -411,15 +423,226 @@ const isStationSplit = computed(
 const currentRoutePanel = computed(() => {
   const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
   if (!targetId) return null;
-  if (String(selectedRoutePanel.value?.routeId || "") === String(targetId)) {
+  if (selectedRoutePanel.value && routeMatchesKey(selectedRoutePanel.value, targetId)) {
     return selectedRoutePanel.value;
   }
-  return routePanelData.value?.routes?.[targetId] || null;
+  const route = currentSelectedRoute.value;
+  const key = route ? routeUniqueKey(route) : String(targetId);
+  if (route?.lineGroup) {
+    return routePanelData.value?.lineGroups?.[key]
+      || routePanelData.value?.routes?.[key]
+      || null;
+  }
+  return routePanelData.value?.routes?.[key]
+    || routePanelData.value?.routes?.[targetId]
+    || findRoutePanelPayload(routePanelData.value?.routes, route)
+    || null;
 });
 
 function toFiniteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function withLineMeta(route = {}, line = {}) {
+  return {
+    ...route,
+    lineId: route.lineId || line.lineId || "",
+    lineName: route.lineName || lineDisplayName(line) || line.lineName || "",
+    rawLineName: route.rawLineName || line.lineName || "",
+  };
+}
+
+function routeUniqueKey(route = {}) {
+  if (route?.lineGroup) return String(route.routeKey || route.routeId || route.lineId || "");
+  const routeId = String(route?.routeId || "");
+  const lineId = String(route?.lineId || "");
+  return lineId ? `${lineId}::${routeId}` : routeId;
+}
+
+function routeMatchesKey(route = {}, key = "") {
+  const text = String(key || "");
+  return routeUniqueKey(route) === text || String(route?.routeId || "") === text;
+}
+
+function findRoutePanelPayload(routes = {}, route = null) {
+  if (!route || !routes || typeof routes !== "object") return null;
+  const routeId = String(route.routeId || "");
+  const lineId = String(route.lineId || "");
+  return Object.values(routes).find((item) => (
+    item
+    && String(item.routeId || "") === routeId
+    && (!lineId || String(item.lineId || "") === lineId)
+  )) || null;
+}
+
+function metroLineNumber(text = "") {
+  const raw = String(text || "");
+  const chinese = raw.match(/(?:地铁|轨道|线路)?\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\s*(?:号线|线)/i);
+  const english = raw.match(/(?:metro|subway|mtr)(?:[-_\s]*line)?[-_\s]*([0-9]{1,2})\b|\bline[-_\s]*([0-9]{1,2})\b/i);
+  const token = chinese?.[1] || english?.[1] || english?.[2] || "";
+  if (!token) return "";
+  if (/^\d+$/.test(token)) return String(Number(token));
+  const table = {
+    一: "1", 二: "2", 三: "3", 四: "4", 五: "5", 六: "6", 七: "7", 八: "8", 九: "9", 十: "10",
+    十一: "11", 十二: "12", 十三: "13", 十四: "14", 十五: "15", 十六: "16", 十七: "17", 十八: "18", 十九: "19", 二十: "20",
+  };
+  return table[token] || "";
+}
+
+function normalizedTransitMode(text = "") {
+  const value = String(text || "").toLowerCase();
+  if (/subway|metro|mtr|rail|train|地铁|轨道|轻轨|有轨/.test(value)) return "subway";
+  if (/bus|公交/.test(value)) return "bus";
+  return "";
+}
+
+function declaredTransitMode(line = {}) {
+  const ownMode = normalizedTransitMode(line.mode || line.transportMode);
+  if (ownMode) return ownMode;
+  const routeModes = (Array.isArray(line.routes) ? line.routes : [])
+    .map((route) => normalizedTransitMode(route?.mode || route?.transportMode))
+    .filter(Boolean);
+  if (routeModes.includes("subway")) return "subway";
+  if (routeModes.includes("bus")) return "bus";
+  return "";
+}
+
+function hasMetroModeKeyword(text = "") {
+  return /subway|metro|mtr|rail|train|地铁|轨道|轻轨|有轨/i.test(String(text || ""));
+}
+
+function hasRouteIdMetroKeyword(text = "") {
+  return /subway|metro|mtr/i.test(String(text || ""));
+}
+
+function hasBusIdKeyword(text = "") {
+  const value = String(text || "").toLowerCase();
+  return value.includes("busgtfs")
+    || value.includes("bus_gtfs")
+    || value.startsWith("bus")
+    || value.includes(" bus");
+}
+
+// 同一条地铁线的分段/支线后缀：剥离后合并（如 3号线 + 3号线北段、12号线东段 + 12号线西段、14号线 + 14号线知识城线）。
+// 城市/制式前缀（佛山、南海、黄埔、海珠、有轨电车…）不在此列，确保跨系统同号线不会被错误合并。
+const METRO_SEGMENT_SUFFIX = /(北延段|南延段|东延段|西延段|北延线|南延线|东延线|西延线|北段|南段|东段|西段|延长线|延长段|知识城支线|知识城线|支线|一期|二期|三期|四期|首期工程|首期|首通段|后通段)/g;
+// 规范化后恰为“N号线”（阿拉伯或中文数字）才算“纯地铁线路号”，展示为“地铁N号线”。
+const PURE_METRO_LINE = /^(?:[0-9]{1,2}|[一二三四五六七八九十]{1,4})号线$/;
+
+// 规范化地铁线路名：去空白、去括号备注、剥离同线分段后缀；剥离后为空则回退原名。
+function metroLineCanonicalName(line = {}) {
+  const base = String(line.lineName || line.lineId || "")
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/[（(].*?[）)]/g, "");
+  const stripped = base.replace(METRO_SEGMENT_SUFFIX, "");
+  return stripped || base;
+}
+
+function isMetroLine(line = {}) {
+  const declaredMode = declaredTransitMode(line);
+  if (declaredMode === "subway") return true;
+  if (declaredMode === "bus") return false;
+  const lineText = [line.lineName, line.lineId].filter(Boolean).join(" ");
+  const idText = [
+    line.lineId,
+    ...(Array.isArray(line.routes) ? line.routes.map((route) => route?.routeId) : []),
+  ].filter(Boolean).join(" ");
+  if (!hasMetroModeKeyword(lineText) && hasBusIdKeyword(idText)) return false;
+  if (metroLineNumber(lineText) || hasMetroModeKeyword(lineText)) return true;
+  return (Array.isArray(line.routes) ? line.routes : []).some((route) => (
+    metroLineNumber([route?.routeName, route?.routeId].filter(Boolean).join(" "))
+    || hasRouteIdMetroKeyword(route?.routeId)
+  ));
+}
+
+// 地铁线路聚合键：按“规范化线路名”聚合，而非裸线路号，避免跨系统同号线被错误合并。
+function lineGroupKey(line = {}) {
+  if (!isMetroLine(line)) return String(line.lineName || line.lineId || "");
+  return `metro::${metroLineCanonicalName(line)}`;
+}
+
+function lineDisplayName(line = {}) {
+  if (!isMetroLine(line)) return line.lineName || line.lineId || "未命名线路";
+  const canonical = metroLineCanonicalName(line);
+  if (PURE_METRO_LINE.test(canonical)) return `地铁${canonical}`;
+  return canonical || line.lineName || line.lineId || "未命名线路";
+}
+
+function linesForDisplayName(displayName) {
+  const target = normalizeLineSearchName(displayName);
+  if (!target) return [];
+  return rawLines.value.filter((line) => normalizeLineSearchName(lineDisplayName(line)) === target);
+}
+
+// 物理站点键：地铁整线由多种服务模式（区间车/交路）组成，同一物理站在不同模式下
+// 会有不同的 facilityId（…S014.link…P00013 / …P00014…）。这里按站名归并（站名缺失时回退到
+// facilityId 中 ".link" 之前的站点编码），使整线只统计真实物理站点，而非按服务模式重复计数。
+function physicalStationKey(fac = {}) {
+  const name = String(fac?.facilityName || "").trim();
+  if (name && name !== "--") return `name:${name}`;
+  const id = String(fac?.facilityId || "");
+  const cut = id.indexOf(".link");
+  return `id:${cut > 0 ? id.slice(0, cut) : id}`;
+}
+
+// 把（可能按服务模式重复的）站点客流按物理站点归并并逐时累加。
+function stationFlowLookup(stationFlows = []) {
+  const map = new Map();
+  (Array.isArray(stationFlows) ? stationFlows : []).forEach((item) => {
+    const key = physicalStationKey(item);
+    let agg = map.get(key);
+    if (!agg) {
+      agg = { boardingByHour: new Array(24).fill(0), alightingByHour: new Array(24).fill(0) };
+      map.set(key, agg);
+    }
+    const boarding = Array.isArray(item.boardingByHour) ? item.boardingByHour : [];
+    const alighting = Array.isArray(item.alightingByHour) ? item.alightingByHour : [];
+    for (let h = 0; h < 24; h++) {
+      agg.boardingByHour[h] += Number(boarding[h]) || 0;
+      agg.alightingByHour[h] += Number(alighting[h]) || 0;
+    }
+  });
+  return map;
+}
+
+function uniqueFacilities(routes = []) {
+  const seen = new Set();
+  const facilities = [];
+  routes.forEach((route) => {
+    (Array.isArray(route?.facilities) ? route.facilities : []).forEach((fac) => {
+      const key = physicalStationKey(fac);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      facilities.push(fac);
+    });
+  });
+  return facilities;
+}
+
+function routeWithCachedDetail(route = {}) {
+  const key = routeUniqueKey(route);
+  const cached = key ? routeDetailCache.get(key) : null;
+  return cached ? { ...route, ...cached } : route;
+}
+
+function buildLineGroupRoute(displayName, lines = linesForDisplayName(displayName)) {
+  const routes = lines.flatMap((line) => (Array.isArray(line.routes) ? line.routes : [])
+    .map((route) => routeWithCachedDetail(withLineMeta(route, line))));
+  if (!routes.length) return null;
+  const key = lineGroupKey(lines[0]);
+  return {
+    lineGroup: true,
+    routeKey: key,
+    lineId: key,
+    lineName: displayName,
+    routeId: key,
+    routeName: displayName,
+    links: routes.flatMap((route) => Array.isArray(route.links) ? route.links : []),
+    facilities: uniqueFacilities(routes),
+    childRoutes: routes,
+  };
 }
 
 function sumHourRange(values, startHour, endHour) {
@@ -454,7 +677,10 @@ const routeMetrics = computed(() => {
   const info = route.info || {};
   const panelMetrics = currentRoutePanel.value?.metrics || {};
   const length = toFiniteNumber(panelMetrics.routeDist ?? info.routeDist, 0);
-  const stationCount = toFiniteNumber(panelMetrics.facNum ?? info.facNum ?? route.facilities?.length, 0);
+  // 整线（多服务模式合并）：后端 facNum 是按交路重复计数的虚高值，改用归并后的物理站点数。
+  const stationCount = route.lineGroup
+    ? toFiniteNumber(route.facilities?.length, 0)
+    : toFiniteNumber(panelMetrics.facNum ?? info.facNum ?? route.facilities?.length, 0);
   const avgStationDistance = toFiniteNumber(panelMetrics.facDist ?? info.facDist, 0);
   const fallbackStationDistance = stationCount > 1 && Number.isFinite(length) && length > 0
     ? length / (stationCount - 1)
@@ -580,14 +806,13 @@ const boardingAlightingChartOption = computed(() => {
   const stationNames = facilities.map(f => f.facilityName || "");
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
-  const stationFlowMap = new Map((currentRoutePanel.value?.stationFlows || [])
-    .map(item => [item.facilityId, item]));
+  const stationFlowMap = stationFlowLookup(currentRoutePanel.value?.stationFlows);
   const boardingData = facilities.map((fac) => {
-    const flow = stationFlowMap.get(fac.facilityId);
+    const flow = stationFlowMap.get(physicalStationKey(fac));
     return sumHourRange(flow?.boardingByHour, startHour, endHour);
   });
   const alightingData = facilities.map((fac) => {
-    const flow = stationFlowMap.get(fac.facilityId);
+    const flow = stationFlowMap.get(physicalStationKey(fac));
     return -sumHourRange(flow?.alightingByHour, startHour, endHour);
   });
 
@@ -736,15 +961,14 @@ const boardingProfileChartOption = computed(() => {
   const facilities = route.facilities || [];
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
-  const stationFlowMap = new Map((currentRoutePanel.value?.stationFlows || [])
-    .map(item => [item.facilityId, item]));
+  const stationFlowMap = stationFlowLookup(currentRoutePanel.value?.stationFlows);
   const stationNames = facilities.map(f => f.facilityName || "");
   const boardingData = facilities.map((fac) => {
-    const flow = stationFlowMap.get(fac.facilityId);
+    const flow = stationFlowMap.get(physicalStationKey(fac));
     return sumHourRange(flow?.boardingByHour, startHour, endHour);
   });
   const alightingData = facilities.map((fac) => {
-    const flow = stationFlowMap.get(fac.facilityId);
+    const flow = stationFlowMap.get(physicalStationKey(fac));
     return sumHourRange(flow?.alightingByHour, startHour, endHour);
   });
   const onboardData = [];
@@ -1119,6 +1343,10 @@ watch(
     if (runMonitorSelectedLineName) {
       const route = currentSelectedRoute.value || {};
       const baseName = selectedLineName.value || route.lineName || route.routeName || route.lineId || "";
+      if (route.lineGroup) {
+        runMonitorSelectedLineName.value = baseName;
+        return;
+      }
       const facilities = Array.isArray(route.facilities) ? route.facilities : [];
       const startName = facilities[0]?.facilityName || "";
       const endName = facilities[facilities.length - 1]?.facilityName || "";
@@ -1181,16 +1409,76 @@ function handleExportDetail() {
   }
 }
 
-const routeSegments = computed(() => {
+// 原始断面：按服务模式（交路/区间车）逐条，保留方向与路线归属，供地图按子路线着色使用。
+const rawRouteSegments = computed(() => {
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
   return (currentRoutePanel.value?.segments || []).map((segment) => ({
     name: segment.name,
+    routeKey: String(segment.routeKey || ""),
+    lineId: String(segment.lineId || ""),
+    routeId: String(segment.routeId || ""),
     fromFacilityId: String(segment.fromFacilityId || ""),
     toFacilityId: String(segment.toFacilityId || ""),
     flow: Math.round(sumHourRange(segment.flowByHour, startHour, endHour)),
     loadRate: Number(averageHourRange(segment.loadRateByHour, startHour, endHour).toFixed(1))
   }));
+});
+
+// 无向站对键：把上下行同一物理区段（“A - B”与“B - A”）视为同一断面。
+function stationPairKeyOf(a, b) {
+  return [String(a || "").trim(), String(b || "").trim()].sort().join("");
+}
+
+// 展示用断面：整线（多服务模式合并）时，按“物理相邻站对”归并——把同一区段的各交路先按方向累加，
+// 再取上下行中客流较大的方向（单向最大断面，行业惯用口径）。使断面数与站点数对应
+// （34 站 → 约 33 个相邻区段），而非按交路/方向重复罗列。满载率按所选时段用整线运力重算。
+const routeSegments = computed(() => {
+  const panel = currentRoutePanel.value;
+  const startHour = segmentTimeRange.value[0];
+  const endHour = segmentTimeRange.value[1];
+  if (!panel?.lineGroup) return rawRouteSegments.value;
+  const capacityByHour = Array.isArray(panel.capacityByHour) ? panel.capacityByHour : [];
+  const byPair = new Map();
+  (panel.segments || []).forEach((segment) => {
+    const name = String(segment.name || "");
+    const parts = name.split(" - ");
+    if (parts.length < 2) return;
+    const fromName = parts[0].trim();
+    const toName = parts[parts.length - 1].trim();
+    const pairKey = stationPairKeyOf(fromName, toName);
+    const dirKey = `${fromName}${toName}`;
+    let pair = byPair.get(pairKey);
+    if (!pair) {
+      pair = new Map();
+      byPair.set(pairKey, pair);
+    }
+    let dir = pair.get(dirKey);
+    if (!dir) {
+      dir = { name, fromName, toName, flowByHour: new Array(24).fill(0) };
+      pair.set(dirKey, dir);
+    }
+    const flowByHour = Array.isArray(segment.flowByHour) ? segment.flowByHour : [];
+    for (let h = 0; h < dir.flowByHour.length; h++) {
+      dir.flowByHour[h] += Number(flowByHour[h]) || 0;
+    }
+  });
+  const dirTotal = (dir) => dir.flowByHour.reduce((sum, v) => sum + v, 0);
+  return Array.from(byPair.values()).map((pair) => {
+    const dirs = Array.from(pair.values());
+    const peak = dirs.reduce((best, dir) => (dirTotal(dir) > dirTotal(best) ? dir : best), dirs[0]);
+    const loadByHour = peak.flowByHour.map((flow, h) => {
+      const cap = Number(capacityByHour[h]) || 0;
+      return cap > 0 ? Math.min(100, (flow * 100) / cap) : 0;
+    });
+    return {
+      name: peak.name,
+      fromName: peak.fromName,
+      toName: peak.toName,
+      flow: Math.round(sumHourRange(peak.flowByHour, startHour, endHour)),
+      loadRate: Number(averageHourRange(loadByHour, startHour, endHour).toFixed(1))
+    };
+  });
 });
 
 function pointToLinkDistanceSq(coord, link) {
@@ -1227,13 +1515,14 @@ function nearestRouteLinkIndex(links, coord, startIndex = 0) {
   return bestIndex;
 }
 
-function segmentFlowByFacilityPair(segments = []) {
+// 断面客流按“无向站对”建索引，供地图按物理区段着色（与右侧断面表使用同一客流口径）。
+function segmentFlowByNamePair(segments = []) {
   const result = new Map();
   segments.forEach((segment) => {
-    const fromId = String(segment?.fromFacilityId || "");
-    const toId = String(segment?.toFacilityId || "");
-    if (!fromId || !toId) return;
-    result.set(`${fromId}->${toId}`, Math.max(0, Number(segment.flow) || 0));
+    const parts = String(segment?.name || "").split(" - ");
+    if (parts.length < 2) return;
+    const key = stationPairKeyOf(parts[0], parts[parts.length - 1]);
+    result.set(key, Math.max(0, Number(segment.flow) || 0));
   });
   return result;
 }
@@ -1253,11 +1542,11 @@ function mapSegmentFlowsByLinkOrder(links = [], segments = []) {
   });
 }
 
-function buildRouteFlowMapLinks(route, segments = []) {
+function buildSingleRouteFlowMapLinks(route, segments = []) {
   const links = Array.isArray(route?.links) ? route.links : [];
   if (!links.length) return [];
   const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
-  const flowByPair = segmentFlowByFacilityPair(segments);
+  const flowByPair = segmentFlowByNamePair(segments);
   if (facilities.length < 2) return mapSegmentFlowsByLinkOrder(links, segments);
 
   const result = links.map((link) => ({ ...link, flow: 0 }));
@@ -1273,7 +1562,8 @@ function buildRouteFlowMapLinks(route, segments = []) {
     if (fromIndex < 0 || toIndex < 0) continue;
     const start = Math.min(fromIndex, toIndex);
     const end = Math.max(fromIndex, toIndex);
-    const key = `${String(fromFac?.facilityId || "")}->${String(toFac?.facilityId || "")}`;
+    // 按相邻站对（与断面表同一无向口径）取客流，保证地图配色与断面数值一致。
+    const key = stationPairKeyOf(fromFac?.facilityName, toFac?.facilityName);
     const flow = flowByPair.get(key) ?? indexedSegmentFlow(segments, i);
     for (let linkIndex = start; linkIndex <= end; linkIndex++) {
       result[linkIndex].flow = flow;
@@ -1282,6 +1572,15 @@ function buildRouteFlowMapLinks(route, segments = []) {
     cursor = Math.max(0, end);
   }
   return mappedCount > 0 ? result : mapSegmentFlowsByLinkOrder(links, segments);
+}
+
+function buildRouteFlowMapLinks(route, segments = []) {
+  // 整线：各子路线（方向/交路）都按同一份合并后的物理断面客流着色，避免按单交路客流偏小而配色失真。
+  if (route?.lineGroup && Array.isArray(route.childRoutes) && route.childRoutes.length) {
+    const mapped = route.childRoutes.flatMap((childRoute) => buildSingleRouteFlowMapLinks(childRoute, segments));
+    if (mapped.length) return mapped;
+  }
+  return buildSingleRouteFlowMapLinks(route, segments);
 }
 
 watch(
@@ -1302,6 +1601,7 @@ watch(
       runMonitorSelectedRouteMapLinks.value = [];
       return;
     }
+    // 地图与右侧断面表使用同一份合并后的物理断面客流，保证配色与数值一致。
     runMonitorSelectedRouteMapLinks.value = buildRouteFlowMapLinks(currentSelectedRoute.value, routeSegments.value);
   },
   { immediate: true, deep: true },
@@ -1494,7 +1794,7 @@ watch(BaseMapLineModeRef, (mode) => {
 
 // 计算所有唯一的线路名称，并转换为 el-select-v2 需要的 options 格式
 const lineOptions = computed(() => {
-  const names = rawLines.value.map(line => line.lineName).filter(Boolean);
+  const names = rawLines.value.map(line => lineDisplayName(line)).filter(Boolean);
   const uniqueNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, "zh-CN"));
   return uniqueNames
     .map(name => ({ value: name, label: name }))
@@ -1537,23 +1837,33 @@ if (runMonitorLineOptions) {
 // 获取选定线路的所有行车方向/子线路
 const selectedLineRoutes = computed(() => {
   if (!selectedLineName.value) return [];
-  const line = rawLines.value.find(l => l.lineName === selectedLineName.value);
-  return line ? line.routes || [] : [];
+  const lines = linesForDisplayName(selectedLineName.value);
+  const routes = lines.flatMap((line) => (line.routes || []).map((route) => withLineMeta(route, line)));
+  if (lines.some(isMetroLine)) {
+    const groupRoute = buildLineGroupRoute(selectedLineName.value, lines);
+    return groupRoute ? [groupRoute, ...routes] : routes;
+  }
+  return routes;
 });
 
 // 获取当前活动路线方向的详情
 const activeRoute = computed(() => {
   if (!activeRouteId.value) return null;
+  if (selectedLineName.value) {
+    const groupRoute = buildLineGroupRoute(selectedLineName.value);
+    if (groupRoute && routeMatchesKey(groupRoute, activeRouteId.value)) return groupRoute;
+  }
   for (const line of rawLines.value) {
     if (line.routes) {
       const match = line.routes.find(r => r.routeId === activeRouteId.value);
-      if (match) return match;
+      if (match) return withLineMeta(match, line);
     }
   }
   return null;
 });
 
 function getRouteEndpointLabel(route, index) {
+  if (route?.lineGroup) return "整线";
   const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
   const startName = facilities[0]?.facilityName || "";
   const endName = facilities[facilities.length - 1]?.facilityName || "";
@@ -1602,14 +1912,16 @@ async function selectLineByName(lineName) {
   const target = normalizeLineSearchName(lineName);
   if (!target) return false;
   const line =
+    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)) === target) ||
     rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === target) ||
-    rawLines.value.find((item) => normalizeLineSearchName(item.lineName).includes(target) || target.includes(normalizeLineSearchName(item.lineName)));
-  if (!line?.lineName) return false;
+    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)).includes(target) || target.includes(normalizeLineSearchName(lineDisplayName(item))));
+  const displayName = line ? lineDisplayName(line) : "";
+  if (!displayName) return false;
   searchMode.value = "line";
   selectedStationName.value = "";
-  selectedLineName.value = line.lineName;
+  selectedLineName.value = displayName;
   await nextTick();
-  await handleLineChange(line.lineName);
+  await handleLineChange(displayName);
   return true;
 }
 
@@ -1624,14 +1936,15 @@ async function selectLineByFeature(props = {}) {
   const targetName = normalizeLineSearchName(name);
   if (!targetName) return false;
   const line =
+    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)) === targetName) ||
     rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === targetName) ||
-    rawLines.value.find((item) => normalizeLineSearchName(item.lineName).includes(targetName) || targetName.includes(normalizeLineSearchName(item.lineName)));
+    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)).includes(targetName) || targetName.includes(normalizeLineSearchName(lineDisplayName(item))));
   if (!line) return false;
   searchMode.value = "line";
   selectedStationName.value = "";
-  selectedLineName.value = line.lineName;
+  selectedLineName.value = lineDisplayName(line);
   await nextTick();
-  const routes = line.routes || [];
+  const routes = selectedLineRoutes.value.filter((route) => !route.lineGroup);
   let target = null;
   const routeIdHint = props.routeId ?? props.route_id;
   if (routeIdHint != null && routeIdHint !== "") {
@@ -1778,31 +2091,63 @@ async function handleLineChange(lineName) {
 // 选择某条线路的某个方向
 async function loadRouteDetail(route) {
   if (!route?.routeId) return route;
+  if (route.lineGroup) return loadLineGroupDetail(route);
   const routeId = String(route.routeId);
-  if (routeDetailCache.has(routeId)) {
-    return routeDetailCache.get(routeId);
+  const key = routeUniqueKey(route);
+  if (routeDetailCache.has(key)) {
+    return routeDetailCache.get(key);
   }
   const res = await getRouteDetail({
     datasource: props.model,
+    lineId: route.lineId || "",
     routeId: route.routeId,
   });
   const detail = {
     ...route,
     ...(res.data || {}),
+    lineId: route.lineId || res.data?.lineId || "",
+    lineName: route.lineName || res.data?.lineName || "",
     facilities: res.data?.facilities || route.facilities || [],
     info: res.data?.info || route.info || {},
   };
-  routeDetailCache.set(routeId, detail);
+  routeDetailCache.set(key, detail);
   return detail;
 }
 
-async function loadRoutePanelDetail(routeId) {
-  const key = String(routeId || "");
-  if (!key) return null;
+async function loadLineGroupDetail(route) {
+  const key = routeUniqueKey(route);
+  if (routeDetailCache.has(key)) return routeDetailCache.get(key);
+  const childRoutes = Array.isArray(route?.childRoutes) ? route.childRoutes : [];
+  const childDetails = (await Promise.all(childRoutes.map((child) => loadRouteDetail(child))))
+    .filter(Boolean);
+  const detail = {
+    ...route,
+    links: childDetails.flatMap((child) => Array.isArray(child?.links) ? child.links : []),
+    facilities: uniqueFacilities(childDetails.length ? childDetails : childRoutes),
+    childRoutes: childDetails.length ? childDetails : childRoutes,
+  };
+  routeDetailCache.set(key, detail);
+  return detail;
+}
+
+async function loadRoutePanelDetail(route) {
+  const routeId = String(route?.routeId || "");
+  if (!routeId) return null;
+  const key = routeUniqueKey(route);
+  if (route?.lineGroup) {
+    const panel = await ensureRoutePanelData();
+    const groupPanel = panel?.lineGroups?.[key] || null;
+    if (groupPanel) routePanelDetailCache.set(key, groupPanel);
+    return groupPanel;
+  }
   if (routePanelDetailCache.has(key)) return routePanelDetailCache.get(key);
   if (routePanelDetailPromises.has(key)) return routePanelDetailPromises.get(key);
   const model = props.model;
-  const promise = getRoutePanelDetail({ datasource: model, routeId: key }, { silentError: true })
+  const promise = getRoutePanelDetail({
+    datasource: model,
+    lineId: route.lineId || "",
+    routeId,
+  }, { silentError: true })
     .then((res) => {
       const panel = res?.data && typeof res.data === "object" ? res.data : null;
       if (props.model === model && panel && Object.keys(panel).length) {
@@ -1819,14 +2164,17 @@ async function loadRoutePanelDetail(routeId) {
   return promise;
 }
 
-async function loadSelectedRoutePanel(routeId) {
-  const key = String(routeId || "");
+async function loadSelectedRoutePanel(route) {
+  const key = routeUniqueKey(route);
   if (!key || !shouldLoadSelectedRoutePanel.value) return null;
-  const detailPanel = await loadRoutePanelDetail(key);
+  const detailPanel = await loadRoutePanelDetail(route);
   if (detailPanel) return detailPanel;
   if (!shouldRenderPfaRightPanel.value) return null;
   const panel = await ensureRoutePanelData();
-  const routePanel = panel?.routes?.[key] || null;
+  const routePanel = panel?.routes?.[key]
+    || panel?.routes?.[String(route?.routeId || "")]
+    || findRoutePanelPayload(panel?.routes, route)
+    || null;
   if (routePanel) {
     routePanelDetailCache.set(key, routePanel);
   }
@@ -1855,11 +2203,12 @@ function ensureRoutePanelData() {
 async function handleSelectRoute(route) {
   const routeId = String(route?.routeId || "");
   if (!routeId) return;
+  const key = routeUniqueKey(route);
   activeRouteId.value = routeId;
-  selectedRoutePanel.value = routePanelDetailCache.get(routeId) || null;
+  selectedRoutePanel.value = routePanelDetailCache.get(key) || null;
   const [detail, panel] = await Promise.all([
     loadRouteDetail(route),
-    loadSelectedRoutePanel(routeId),
+    loadSelectedRoutePanel(route),
   ]);
   if (String(activeRouteId.value) !== routeId) return;
   selectedRouteDetail.value = detail;
@@ -1927,13 +2276,14 @@ function handleStationChange(stationName) {
 async function handleSelectMatchedRoute(item) {
   const routeId = String(item?.routeId || "");
   if (!routeId) return;
-  activeMatchedRouteId.value = routeId;
-  selectedRoutePanel.value = routePanelDetailCache.get(routeId) || null;
+  const key = routeUniqueKey(item);
+  activeMatchedRouteId.value = key;
+  selectedRoutePanel.value = routePanelDetailCache.get(key) || null;
   const [detail, panel] = await Promise.all([
     loadRouteDetail(item),
-    loadSelectedRoutePanel(routeId),
+    loadSelectedRoutePanel(item),
   ]);
-  if (String(activeMatchedRouteId.value) !== routeId) return;
+  if (String(activeMatchedRouteId.value) !== key) return;
   selectedRouteDetail.value = detail;
   if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
   if (detail?.links) {
@@ -2052,13 +2402,18 @@ defineExpose({
 /* MCard2 置于 .dm-overview-panel 玻璃面板内：去卡片化，作为内容容器，避免卡中卡 */
 .SJZL_right_card.pfa-route-card {
   width: 100%;
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  overflow: visible;
+  overflow: hidden;
 }
 .SJZL_right_card.pfa-route-card :deep(.MCard2_title_box) {
+  flex: 0 0 auto;
   min-height: 0;
   padding: 0 0 12px;
   background: transparent;
@@ -2071,6 +2426,10 @@ defineExpose({
   color: var(--dm2-muted-soft);
 }
 .SJZL_right_card.pfa-route-card :deep(.MCard2_body_box) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   padding: 0;
   border-top: 0;
 }
@@ -2107,13 +2466,18 @@ defineExpose({
 }
 
 .pfa-route-sections {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   font-family: var(--dm2-font);
+  overflow: hidden;
 }
 
 /* 各分区扁平排布，发丝线分隔，避免卡中卡 */
 .pfa-route-sections .pfa-section {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--dm2-space-3);
@@ -2149,6 +2513,7 @@ defineExpose({
 
 /* 统计时段：控件组，浅蓝磨砂底 */
 .pfa-route-sections .time-range-section {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--dm2-space-2);
@@ -2193,6 +2558,8 @@ defineExpose({
 
 /* ① 断面客流与满载率：扁平数据表（修复列对齐）*/
 .pfa-route-sections .segments-table {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--dm2-line);
@@ -2208,6 +2575,7 @@ defineExpose({
   padding: var(--dm2-space-2) var(--dm2-space-3);
 }
 .pfa-route-sections .segments-table .table-header {
+  flex: 0 0 auto;
   background: var(--dm2-surface-sunken);
   border-bottom: 1px solid var(--dm2-line);
   font-size: var(--dm2-text-xs);
@@ -2215,8 +2583,12 @@ defineExpose({
   color: var(--dm2-muted);
 }
 .pfa-route-sections .segments-table .table-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .pfa-route-sections .segments-table .table-row {
   font-size: var(--dm2-text-sm);

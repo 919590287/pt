@@ -1568,9 +1568,11 @@ function displayRangeRouteIds(context = activeDisplayRangeContext.value) {
   if (!context) return null;
   const ids = new Set();
   for (const line of busNetworkRawLines) {
+    const lineId = String(line?.lineId || "");
     for (const route of Array.isArray(line?.routes) ? line.routes : []) {
       if (routeIntersectsDisplayRange(route, context)) {
-        ids.add(String(route?.routeId || ""));
+        const routeId = String(route?.routeId || "");
+        ids.add(lineId && routeId ? `${lineId}::${routeId}` : routeId);
       }
     }
   }
@@ -1899,7 +1901,13 @@ function routePanelToOverallHourlyByMode(panel = {}, routeIds = null) {
   const hourly = emptyModeHourlyFlow();
   const routeEntries = panel?.routes && typeof panel.routes === "object" ? Object.entries(panel.routes) : [];
   routeEntries.forEach(([routeId, route]) => {
-    if (routeIds && !routeIds.has(String(routeId))) return;
+    const ids = [
+      routeId,
+      route?.routeId,
+      route?.routeKey,
+      route?.lineId && route?.routeId ? `${route.lineId}::${route.routeId}` : "",
+    ].map((value) => String(value || "")).filter(Boolean);
+    if (routeIds && !ids.some((id) => routeIds.has(id))) return;
     const values = Array.isArray(route?.hourlyFlow) ? route.hourlyFlow : [];
     const key = routeModeKey(route);
     values.forEach((value, index) => {
@@ -2123,9 +2131,9 @@ const busNetworkStationIconScale = computed(() => {
     ["exponential", 1.25],
     ["zoom"],
     8,
-    0.024,
+    0.06,
     10,
-    highZoomScale * 0.12,
+    Math.max(0.08, highZoomScale * 0.18),
     12,
     highZoomScale * 0.32,
     14,

@@ -9,6 +9,7 @@ public class LineVO {
 
     private String lineId;
     private String lineName;
+    private String mode;
     List<RouteDetailVO> routes;
 
 }
