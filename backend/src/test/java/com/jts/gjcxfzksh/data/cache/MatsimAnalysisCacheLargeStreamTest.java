@@ -22,6 +22,9 @@ import org.matsim.api.core.v01.network.Link;
 import org.matsim.api.core.v01.network.Network;
 import org.matsim.api.core.v01.network.NetworkFactory;
 import org.matsim.api.core.v01.network.Node;
+import org.matsim.api.core.v01.population.Person;
+import org.matsim.api.core.v01.population.Plan;
+import org.matsim.api.core.v01.population.PopulationFactory;
 import org.matsim.core.api.experimental.events.VehicleArrivesAtFacilityEvent;
 import org.matsim.core.api.experimental.events.VehicleDepartsAtFacilityEvent;
 import org.matsim.core.config.ConfigUtils;
@@ -147,11 +150,23 @@ class MatsimAnalysisCacheLargeStreamTest {
         Map<?, ?> route1 = (Map<?, ?>) routes.get("route1");
         Map<?, ?> routeMetrics = (Map<?, ?>) route1.get("metrics");
         assertEquals(1L, ((Number) routeMetrics.get("passenger")).longValue());
+        Map<?, ?> routeDemographics = (Map<?, ?>) route1.get("demographics");
+        assertEquals(1, ((Number) routeDemographics.get("riderCount")).intValue());
+        Set<String> routeActivities = activityKeys((List<?>) routeDemographics.get("activityTypes"));
+        assertTrue(routeActivities.contains("home"));
+        assertTrue(routeActivities.contains("gym"));
+        assertFalse(routeActivities.contains("work"));
 
         Map<String, Object> stationPanel = MatsimStationPanelCache.readStationPanel(data);
         Map<?, ?> stationSummary = (Map<?, ?>) stationPanel.get("summary");
         assertEquals(1L, ((Number) stationSummary.get("totalBoardings")).longValue());
         assertEquals(1L, ((Number) stationSummary.get("totalAlightings")).longValue());
+        Map<?, ?> stations = (Map<?, ?>) stationPanel.get("stations");
+        Map<?, ?> stop1 = (Map<?, ?>) stations.get("stop1");
+        Map<?, ?> stationDemographics = (Map<?, ?>) stop1.get("demographics");
+        Set<String> stationActivities = activityKeys((List<?>) stationDemographics.get("activityTypes"));
+        assertTrue(stationActivities.contains("gym"));
+        assertFalse(stationActivities.contains("work"));
 
         Map<String, Object> info = MatsimPrecomputedCache.readInfo(data);
         assertNotNull(info);
@@ -202,6 +217,11 @@ class MatsimAnalysisCacheLargeStreamTest {
         assertNotNull(metroGroup);
         assertEquals("地铁1号线", metroGroup.get("lineName"));
         assertEquals(2L, ((Number) ((Map<?, ?>) metroGroup.get("metrics")).get("passenger")).longValue());
+        Map<?, ?> metroGroupDemographics = (Map<?, ?>) metroGroup.get("demographics");
+        assertEquals(2, ((Number) metroGroupDemographics.get("riderCount")).intValue());
+        Set<String> metroGroupActivities = activityKeys((List<?>) metroGroupDemographics.get("activityTypes"));
+        assertTrue(metroGroupActivities.contains("home"));
+        assertTrue(metroGroupActivities.contains("airport"));
         // 佛山1号线虽与广州1号线同号，但属不同系统，必须保持独立、不被并入地铁1号线
         Map<?, ?> foshanGroup = (Map<?, ?>) lineGroups.get("metro::佛山1号线");
         assertNotNull(foshanGroup);
@@ -254,6 +274,7 @@ class MatsimAnalysisCacheLargeStreamTest {
         Link link = factory.createLink(Id.createLinkId("l1"), from, to);
         network.addLink(link);
         buildTransitSchedule(scenario);
+        addPersonWithActivities(scenario, "passenger&1", List.of("home", "gym"), List.of("work"));
         return scenario;
     }
 
@@ -327,7 +348,35 @@ class MatsimAnalysisCacheLargeStreamTest {
         scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("metro1", Vehicle.class), vehicleType));
         scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("metro2", Vehicle.class), vehicleType));
         scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create("foshan1", Vehicle.class), vehicleType));
+        addPersonWithActivities(scenario, "person-bus", List.of("home", "work"), List.of());
+        addPersonWithActivities(scenario, "person-metro", List.of("home", "airport"), List.of());
+        addPersonWithActivities(scenario, "person-metro-north", List.of("home", "airport"), List.of("shop"));
+        addPersonWithActivities(scenario, "person-foshan", List.of("home", "school"), List.of());
         return scenario;
+    }
+
+    private void addPersonWithActivities(MutableScenario scenario, String personId, List<String> selectedActivities, List<String> alternateActivities) {
+        PopulationFactory factory = scenario.getPopulation().getFactory();
+        Person person = factory.createPerson(Id.createPersonId(personId));
+        Plan selectedPlan = activityPlan(factory, selectedActivities);
+        person.addPlan(selectedPlan);
+        person.setSelectedPlan(selectedPlan);
+        if (!alternateActivities.isEmpty()) {
+            person.addPlan(activityPlan(factory, alternateActivities));
+        }
+        scenario.getPopulation().addPerson(person);
+    }
+
+    private Plan activityPlan(PopulationFactory factory, List<String> activities) {
+        Plan plan = factory.createPlan();
+        List<String> source = activities.isEmpty() ? List.of("home") : activities;
+        for (int index = 0; index < source.size(); index++) {
+            plan.addActivity(factory.createActivityFromCoord(source.get(index), new Coord(index * 100, 0)));
+            if (index + 1 < source.size()) {
+                plan.addLeg(factory.createLeg("pt"));
+            }
+        }
+        return plan;
     }
 
     private TransitRoute routeWithDeparture(
@@ -440,5 +489,18 @@ class MatsimAnalysisCacheLargeStreamTest {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new GZIPInputStream(Files.newInputStream(tracks)), StandardCharsets.UTF_8))) {
             assertTrue(reader.lines().anyMatch(line -> line.contains(value)));
         }
+    }
+
+    private Set<String> activityKeys(List<?> activities) {
+        Set<String> keys = new LinkedHashSet<>();
+        if (activities == null) {
+            return keys;
+        }
+        for (Object item : activities) {
+            if (item instanceof Map<?, ?> map && map.get("key") != null) {
+                keys.add(map.get("key").toString());
+            }
+        }
+        return keys;
     }
 }

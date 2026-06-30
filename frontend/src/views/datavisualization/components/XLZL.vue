@@ -229,7 +229,7 @@
               <div v-for="g in demographicsGroups" :key="g.key" class="demo-group">
                 <div class="demo-group-head">
                   <span class="demo-group-title">{{ g.title }}</span>
-                  <span class="demo-group-sum">合计 100%</span>
+                  <span class="demo-group-sum">{{ g.sumLabel || '合计 100%' }}</span>
                 </div>
                 <div class="demo-list">
                   <div v-for="d in g.items" :key="d.key" class="demo-row">
@@ -338,6 +338,7 @@ import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import { RouteLayer } from "../layers/RouteLayer.js";
 import { emptyFeatureCollection, stationsToFeatureCollection } from "../layers/maplibreLayerUtils.js";
+import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { injectSync } from "@/utils";
 
 const props = defineProps({
@@ -705,79 +706,11 @@ const routeMetrics = computed(() => {
   };
 });
 
-const routeDemographics = computed(() => {
-  const demographics = currentRoutePanel.value?.demographics || {};
-  return {
-    commuter: toFiniteNumber(demographics.commuter, 0),
-    student: toFiniteNumber(demographics.student, 0),
-    elderly: toFiniteNumber(demographics.elderly, 0)
-  };
-});
-
-// 客流画像分两个维度展示，每个维度内各类目占比合计=100%（不足部分用“其他”补足）：
-//  · 出行目的：按出行者本次出行的主要目的划分（后端互斥单选）
-//  · 出行者属性：按出行者身份属性划分（后端互斥单选）
-// 维度内类目可自由增减，渲染层会按实际类目通用地补足“其他”，保证合计始终为 100%。
-const DEMO_GROUPS = [
-  {
-    key: "purpose",
-    title: "出行目的",
-    items: [
-      { key: "commuter", label: "通勤", color: "#0071e3" },
-      { key: "shopping", label: "购物", color: "#7c3aed" },
-      { key: "leisure", label: "休闲", color: "#1a8a3f" },
-    ],
-  },
-  {
-    key: "attribute",
-    title: "出行者属性",
-    items: [
-      { key: "student", label: "学生", color: "#2f75d6" },
-      { key: "elderly", label: "老人", color: "#b06a00" },
-    ],
-  },
-];
-const DEMO_OTHER = { label: "其他", color: "#94a3b8" };
-
-function normalizeDisplayPercents(items = []) {
-  if (!items.length) return [];
-  const tenths = items.map((item) => Math.max(0, Math.round((Number(item.value) || 0) * 10)));
-  let delta = 1000 - tenths.reduce((sum, value) => sum + value, 0);
-  while (delta !== 0) {
-    if (delta > 0) {
-      const index = tenths.reduce((best, value, current) => (value < tenths[best] ? current : best), 0);
-      tenths[index] += 1;
-      delta -= 1;
-      continue;
-    }
-    const index = tenths.reduce((best, value, current) => (value > tenths[best] ? current : best), 0);
-    if (tenths[index] <= 0) break;
-    tenths[index] -= 1;
-    delta += 1;
-  }
-  return items.map((item, index) => ({ ...item, value: tenths[index] / 10 }));
-}
-
 const demographicsGroups = computed(() => {
-  const demo = currentRoutePanel.value?.demographics || {};
-  if (toFiniteNumber(demo.riderCount, 0) <= 0) return [];
-  return DEMO_GROUPS.map((group) => {
-    let items = group.items
-      .filter((it) => Object.prototype.hasOwnProperty.call(demo, it.key))
-      .map((it) => ({ ...it, value: Math.max(0, Math.min(100, toFiniteNumber(demo[it.key], 0))) }));
-    let known = items.reduce((sum, it) => sum + it.value, 0);
-    // 防御：已知类目本身已超 100%（异常/陈旧的重叠数据）时等比缩放，保证该维度合计=100%
-    if (known > 100) {
-      items = items.map((it) => ({ ...it, value: (it.value * 100) / known }));
-      known = 100;
-    }
-    // 用“其他”把该维度补足到 100%
-    items.push({ ...DEMO_OTHER, key: `${group.key}-other`, value: Math.max(0, 100 - known) });
-    return { key: group.key, title: group.title, items: normalizeDisplayPercents(items) };
-  });
+  return buildPassengerProfileGroups(currentRoutePanel.value?.demographics || {});
 });
 const demographicsRiderCount = computed(() =>
-  toFiniteNumber(currentRoutePanel.value?.demographics?.riderCount, 0)
+  passengerProfileRiderCount(currentRoutePanel.value?.demographics || {})
 );
 
 // 运营效益：日客流量 / 日发车班次 / 车辆数 / 单班次客流 / 车日均客流量

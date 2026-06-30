@@ -42,7 +42,8 @@ public final class MatsimStationPanelCache {
     //     被当成同一换乘点导致的跨城“假可达”问题，需重算缓存。
     // v8: 客流画像对齐线路面板，按“出行目的/出行者属性”两个维度互斥统计，各维度由前端补足到 100%。
     // v9: 交通方式优先使用 transportMode，避免“地铁站”类站名把公交误判为地铁。
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v9";
+    // v10: 客流画像活动类型优先读取 selected plan，避免把未采用的备选计划算入当前客流。
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v10";
 
     // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
     // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
@@ -640,14 +641,20 @@ public final class MatsimStationPanelCache {
         if (person == null) {
             return result;
         }
-        person.getPlans().forEach(plan -> {
-            for (PlanElement element : plan.getPlanElements()) {
-                if (element instanceof Activity activity && activity.getType() != null) {
-                    result.add(activity.getType().toLowerCase(Locale.ROOT));
-                }
-            }
-        });
+        if (person.getSelectedPlan() != null) {
+            collectActivityTypes(person.getSelectedPlan().getPlanElements(), result);
+            return result;
+        }
+        person.getPlans().forEach(plan -> collectActivityTypes(plan.getPlanElements(), result));
         return result;
+    }
+
+    private static void collectActivityTypes(List<PlanElement> elements, Set<String> result) {
+        for (PlanElement element : elements) {
+            if (element instanceof Activity activity && activity.getType() != null) {
+                result.add(activity.getType().toLowerCase(Locale.ROOT));
+            }
+        }
     }
 
     private static Integer age(Person person) {

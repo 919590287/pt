@@ -153,7 +153,7 @@
               <div v-for="g in stationDemographicsGroups" :key="g.key" class="demo-group">
                 <div class="demo-group-head">
                   <span class="demo-group-title">{{ g.title }}</span>
-                  <span class="demo-group-sum">合计 100%</span>
+                  <span class="demo-group-sum">{{ g.sumLabel || '合计 100%' }}</span>
                 </div>
                 <div class="demo-list">
                   <div v-for="d in g.items" :key="d.key" class="demo-row">
@@ -517,6 +517,7 @@ import { getStationPanel } from "@/api/facility";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import { StationLayer } from "../layers/StationLayer.js";
+import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { injectSync } from "@/utils";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 
@@ -645,66 +646,11 @@ const stationBoardingSummary = computed(() => {
   };
 });
 
-const STATION_DEMO_GROUPS = [
-  {
-    key: "purpose",
-    title: "出行目的",
-    items: [
-      { key: "commuter", label: "通勤", color: "#0071e3" },
-      { key: "shopping", label: "购物", color: "#7c3aed" },
-      { key: "leisure", label: "休闲", color: "#1a8a3f" },
-    ],
-  },
-  {
-    key: "attribute",
-    title: "出行者属性",
-    items: [
-      { key: "student", label: "学生", color: "#2f75d6" },
-      { key: "elderly", label: "老人", color: "#b06a00" },
-    ],
-  },
-];
-const STATION_DEMO_OTHER = { label: "其他", color: "#94a3b8" };
-
-function normalizeDisplayPercents(items) {
-  const result = items.map((item) => ({
-    ...item,
-    value: Math.max(0, Math.min(100, toFiniteNumber(item.value, 0))),
-  }));
-  const tenths = result.map((item) => Math.round(item.value * 10));
-  let delta = 1000 - tenths.reduce((sum, value) => sum + value, 0);
-  while (delta !== 0) {
-    if (delta > 0) {
-      tenths[tenths.length - 1] += 1;
-      delta -= 1;
-      continue;
-    }
-    const index = tenths.reduce((best, value, current) => (value > tenths[best] ? current : best), 0);
-    if (tenths[index] <= 0) break;
-    tenths[index] -= 1;
-    delta += 1;
-  }
-  return result.map((item, index) => ({ ...item, value: tenths[index] / 10 }));
-}
-
 const stationDemographicsGroups = computed(() => {
-  const demo = currentStationPanel.value?.demographics || {};
-  if (toFiniteNumber(demo.riderCount, 0) <= 0) return [];
-  return STATION_DEMO_GROUPS.map((group) => {
-    let items = group.items
-      .filter((item) => Object.prototype.hasOwnProperty.call(demo, item.key))
-      .map((item) => ({ ...item, value: Math.max(0, Math.min(100, toFiniteNumber(demo[item.key], 0))) }));
-    let known = items.reduce((sum, item) => sum + item.value, 0);
-    if (known > 100) {
-      items = items.map((item) => ({ ...item, value: (item.value * 100) / known }));
-      known = 100;
-    }
-    items.push({ ...STATION_DEMO_OTHER, key: `${group.key}-other`, value: Math.max(0, 100 - known) });
-    return { key: group.key, title: group.title, items: normalizeDisplayPercents(items) };
-  });
+  return buildPassengerProfileGroups(currentStationPanel.value?.demographics || {});
 });
 const stationDemographicsRiderCount = computed(() =>
-  toFiniteNumber(currentStationPanel.value?.demographics?.riderCount, 0)
+  passengerProfileRiderCount(currentStationPanel.value?.demographics || {})
 );
 
 const { proxy } = getCurrentInstance() || {};

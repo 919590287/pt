@@ -52,7 +52,8 @@ public final class MatsimRoutePanelCache {
     // v8: 交通方式优先使用 transportMode，避免“地铁站”类站名把公交误判为地铁；地铁线路号提取改为严格语义匹配。
     // v9: 地铁聚合改为按“规范化线路名”而非裸线路号，避免跨系统同号线被错误合并
     //     （佛山2/3号线≠广州2/3号线、南海/黄埔/海珠有轨电车1号线≠地铁1号线），同时仍合并同线分段（北段/东段/西段/知识城线），需重算缓存
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v9";
+    // v10: 客流画像输出真实 output plans 活动类型，并让地铁聚合线路继承画像统计，需重算缓存
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v10";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
@@ -235,7 +236,7 @@ public final class MatsimRoutePanelCache {
         result.put("generatedAt", System.currentTimeMillis());
         result.put("summary", buildSummary(routes.values()));
         result.put("routes", routePayloads);
-        result.put("lineGroups", buildLineGroups(routes.values()));
+        result.put("lineGroups", buildLineGroups(routes.values(), population));
         return result;
     }
 
@@ -384,7 +385,7 @@ public final class MatsimRoutePanelCache {
         return summary;
     }
 
-    private static Map<String, Object> buildLineGroups(Collection<RoutePanelAccumulator> routes) {
+    private static Map<String, Object> buildLineGroups(Collection<RoutePanelAccumulator> routes, Population population) {
         Map<String, LineGroupAccumulator> groups = new LinkedHashMap<>();
         for (RoutePanelAccumulator route : routes) {
             if (!"subway".equals(route.mode)) {
@@ -395,7 +396,10 @@ public final class MatsimRoutePanelCache {
                     .add(route);
         }
         Map<String, Object> payload = new LinkedHashMap<>();
-        groups.forEach((key, group) -> payload.put(key, group.toPayload()));
+        groups.forEach((key, group) -> {
+            group.finish(population);
+            payload.put(key, group.toPayload());
+        });
         return payload;
     }
 
@@ -747,15 +751,23 @@ public final class MatsimRoutePanelCache {
 
     private static Set<String> activityTypes(Person person) {
         Set<String> result = new LinkedHashSet<>();
-        if (person == null || person.getSelectedPlan() == null) {
+        if (person == null) {
             return result;
         }
-        for (PlanElement element : person.getSelectedPlan().getPlanElements()) {
+        if (person.getSelectedPlan() != null) {
+            collectActivityTypes(person.getSelectedPlan().getPlanElements(), result);
+            return result;
+        }
+        person.getPlans().forEach(plan -> collectActivityTypes(plan.getPlanElements(), result));
+        return result;
+    }
+
+    private static void collectActivityTypes(List<PlanElement> elements, Set<String> result) {
+        for (PlanElement element : elements) {
             if (element instanceof Activity activity && activity.getType() != null) {
                 result.add(activity.getType().toLowerCase(Locale.ROOT));
             }
         }
-        return result;
     }
 
     private static Integer age(Person person) {
@@ -926,6 +938,7 @@ public final class MatsimRoutePanelCache {
             int shopping = 0;
             int leisure = 0;
             int other = 0;
+            Map<String, Integer> activityCounts = new LinkedHashMap<>();
             for (String riderId : riderIds) {
                 Person person = population.getPersons().get(Id.create(riderId, Person.class));
                 if (person == null) {
@@ -933,6 +946,11 @@ public final class MatsimRoutePanelCache {
                 }
                 total++;
                 Set<String> activities = activityTypes(person);
+                for (String activity : activities) {
+                    if (activity != null && !activity.isBlank()) {
+                        activityCounts.merge(activity, 1, Integer::sum);
+                    }
+                }
                 String attributes = allAttributeText(person);
                 Integer personAge = age(person);
                 boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
@@ -964,6 +982,7 @@ public final class MatsimRoutePanelCache {
                 }
             }
             demographics = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
+            demographics.put("activityTypes", activityPayloads(activityCounts, total));
         }
 
         private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
@@ -978,6 +997,23 @@ public final class MatsimRoutePanelCache {
             payload.put("other", percent(other, total));
             payload.put("source", "population-attributes-and-activities");
             return payload;
+        }
+
+        private List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts, int total) {
+            return activityCounts.entrySet().stream()
+                    .sorted((left, right) -> {
+                        int countCompare = Integer.compare(right.getValue(), left.getValue());
+                        return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
+                    })
+                    .map(entry -> {
+                        Map<String, Object> payload = new LinkedHashMap<>();
+                        payload.put("key", entry.getKey());
+                        payload.put("label", entry.getKey());
+                        payload.put("count", entry.getValue());
+                        payload.put("ratio", percent(entry.getValue(), total));
+                        return payload;
+                    })
+                    .toList();
         }
 
         private String payloadKey(Map<String, Integer> routeIdCounts) {
@@ -1102,6 +1138,8 @@ public final class MatsimRoutePanelCache {
         private final int[] capacityByHour = new int[HOURS];
         private final List<Map<String, Object>> segments = new ArrayList<>();
         private final Set<String> vehicleIds = new LinkedHashSet<>();
+        private final Set<String> riderIds = new LinkedHashSet<>();
+        private Map<String, Object> demographics = Map.of("riderCount", 0);
         private long totalBoardings = 0;
         private long totalAlightings = 0;
         private double capacityTotal = 0.0;
@@ -1126,6 +1164,7 @@ public final class MatsimRoutePanelCache {
             firstTime = Math.min(firstTime, route.firstTime);
             lastTime = Math.max(lastTime, route.lastTime);
             vehicleIds.addAll(route.vehicleIds);
+            riderIds.addAll(route.riderIds);
             routeDistanceByLine.merge(route.lineId, route.routeDistance, Math::max);
             for (StopMeta stop : route.stops) {
                 facilityIds.add(stop.facilityId);
@@ -1148,6 +1187,97 @@ public final class MatsimRoutePanelCache {
                 payload.put("lineName", route.lineName);
                 segments.add(payload);
             }
+        }
+
+        private void finish(Population population) {
+            buildDemographics(population);
+        }
+
+        private void buildDemographics(Population population) {
+            if (population == null || riderIds.isEmpty()) {
+                demographics = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
+                return;
+            }
+            int total = 0;
+            int commuter = 0;
+            int student = 0;
+            int elderly = 0;
+            int shopping = 0;
+            int leisure = 0;
+            int other = 0;
+            Map<String, Integer> activityCounts = new LinkedHashMap<>();
+            for (String riderId : riderIds) {
+                Person person = population.getPersons().get(Id.create(riderId, Person.class));
+                if (person == null) {
+                    continue;
+                }
+                total++;
+                Set<String> activities = activityTypes(person);
+                for (String activity : activities) {
+                    if (activity != null && !activity.isBlank()) {
+                        activityCounts.merge(activity, 1, Integer::sum);
+                    }
+                }
+                String attributes = allAttributeText(person);
+                Integer personAge = age(person);
+                boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
+                        || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
+                boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
+                        || hasToken(attributes, "student", "school", "university", "学生");
+                boolean isElderly = personAge != null && personAge >= 60
+                        || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
+                boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
+                        || hasToken(attributes, "shopping", "购物");
+                boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
+                        || hasToken(attributes, "leisure", "休闲", "娱乐");
+                if (isElderly) {
+                    elderly++;
+                } else if (isStudent) {
+                    student++;
+                }
+                if (isCommuter) {
+                    commuter++;
+                } else if (isShopping) {
+                    shopping++;
+                } else if (isLeisure) {
+                    leisure++;
+                } else {
+                    other++;
+                }
+            }
+            demographics = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
+            demographics.put("activityTypes", activityPayloads(activityCounts, total));
+        }
+
+        private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
+                int shopping, int leisure, int other) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("riderCount", total);
+            payload.put("commuter", percent(commuter, total));
+            payload.put("student", percent(student, total));
+            payload.put("elderly", percent(elderly, total));
+            payload.put("shopping", percent(shopping, total));
+            payload.put("leisure", percent(leisure, total));
+            payload.put("other", percent(other, total));
+            payload.put("source", "population-attributes-and-activities");
+            return payload;
+        }
+
+        private List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts, int total) {
+            return activityCounts.entrySet().stream()
+                    .sorted((left, right) -> {
+                        int countCompare = Integer.compare(right.getValue(), left.getValue());
+                        return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
+                    })
+                    .map(entry -> {
+                        Map<String, Object> payload = new LinkedHashMap<>();
+                        payload.put("key", entry.getKey());
+                        payload.put("label", entry.getKey());
+                        payload.put("count", entry.getValue());
+                        payload.put("ratio", percent(entry.getValue(), total));
+                        return payload;
+                    })
+                    .toList();
         }
 
         private static void addIntArray(int[] target, int[] source) {
@@ -1178,7 +1308,7 @@ public final class MatsimRoutePanelCache {
             payload.put("stationFlows", stationFlows.values().stream().map(StationFlowAccumulator::toPayload).toList());
             payload.put("segments", segments);
             payload.put("transfers", List.of());
-            payload.put("demographics", Map.of("riderCount", 0));
+            payload.put("demographics", demographics);
 
             Map<String, Object> metrics = new LinkedHashMap<>();
             metrics.put("routeDist", round2(routeDistance));
