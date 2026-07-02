@@ -23,6 +23,9 @@ public class DepartureVO {
      */
     private String vehicleId;
 
+    public DepartureVO() {
+    }
+
     /**
      * matsim班次对象转换
      *

@@ -6,6 +6,7 @@ import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.TileNetwork;
+import com.jts.gjcxfzksh.exception.BusinessException;
 import jakarta.annotation.Resource;
 import org.matsim.api.core.v01.network.Network;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
@@ -37,8 +38,14 @@ public class DatasourceService {
     }
 
     private void checkDatasourceAccess(DatasourceParam param) {
+        if (param == null) {
+            throw new BusinessException("请求参数不能为空");
+        }
+        if (param.getDatasource() == null || param.getDatasource().isBlank()) {
+            throw new BusinessException("datasource 不能为空");
+        }
         String username = CurrentUser.getUsername();
-        if (username != null && param != null) {
+        if (username != null) {
             matsimConfig.requireSchemeAccess(param.getDatasource(), username);
         }
     }

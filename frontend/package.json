@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:stage": "vite build --mode staging",
     "preview": "vite preview",
+    "test:unit": "vitest run",
     "type-check": "vue-tsc --build"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
     "unplugin-auto-import": "^20.1.0",
     "vite": "^8.0.8",
     "vite-plugin-vue-devtools": "^8.1.1",
+    "vitest": "^4.0.15",
     "vue-tsc": "^3.2.6"
   },
   "engines": {

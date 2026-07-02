@@ -44,6 +44,7 @@
         <jwt.version>0.9.1</jwt.version>
         <kaptcha.version>2.3.3</kaptcha.version>
         <lombok.version>1.18.36</lombok.version>
+        <testng.version>7.10.2</testng.version>
     </properties>
     <repositories>
         <repository>
@@ -200,7 +201,7 @@
         <dependency>
             <groupId>org.testng</groupId>
             <artifactId>testng</artifactId>
-            <version>RELEASE</version>
+            <version>${testng.version}</version>
             <scope>compile</scope>
         </dependency>
 

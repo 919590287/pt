@@ -69,7 +69,19 @@
       </template>
       <template #body>
         <div v-if="shouldRenderPfaRightPanel" class="pfa-station-sections">
-          <div v-if="['boarding', 'od'].includes(pfaStationSection)" class="time-range-section">
+          <div v-if="stationPanelUnavailable" :class="['pfa-status-card', selectedStationPanelStatus.type]">
+            <span class="pfa-status-title">{{ selectedStationPanelStatus.text }}</span>
+            <span v-if="selectedStationPanelStatus.type === 'generating'" class="pfa-status-sub">后端正在准备缓存，当前站点与地图选择已保留。</span>
+            <el-button
+              v-if="selectedStationPanelStatus.type === 'error'"
+              type="primary"
+              size="small"
+              @click.stop="ensureStationPanelData({ force: true })"
+            >
+              重试
+            </el-button>
+          </div>
+          <div v-if="!stationPanelUnavailable && ['boarding', 'od'].includes(pfaStationSection)" class="time-range-section">
             <div class="time-range-header">
               <span class="title">统计时段选择</span>
               <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
@@ -77,7 +89,7 @@
             <el-slider v-model="segmentTimeRange" range :min="6" :max="22" :step="1" :show-tooltip="false" class="time-range-slider" />
           </div>
 
-          <section v-if="pfaStationSection === 'boarding'" class="pfa-section">
+          <section v-if="!stationPanelUnavailable && pfaStationSection === 'boarding'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">站点乘降客流</span>
               <span class="pfa-section-meta">上车 {{ stationBoardingSummary.boarding }} · 下车 {{ stationBoardingSummary.alighting }}</span>
@@ -97,7 +109,7 @@
             </div>
           </section>
 
-          <section v-else-if="pfaStationSection === 'od'" class="pfa-section">
+          <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'od'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">客流OD</span>
               <div class="chart-type-selector">
@@ -144,7 +156,7 @@
             </div>
           </section>
 
-          <section v-else-if="pfaStationSection === 'demographics'" class="pfa-section">
+          <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'demographics'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">客流画像</span>
               <span v-if="stationDemographicsRiderCount" class="pfa-section-meta">样本 {{ stationDemographicsRiderCount.toLocaleString() }} 人</span>
@@ -172,7 +184,7 @@
             </div>
           </section>
 
-          <section v-else-if="pfaStationSection === 'reachability'" class="pfa-section">
+          <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'reachability'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">可达性</span>
               <span class="pfa-section-meta">按直达、一次换乘、二次换乘分级</span>
@@ -512,8 +524,8 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
 import { Location, Download } from "@element-plus/icons-vue";
-import { getLineAll } from "@/api/route";
 import { getStationPanel } from "@/api/facility";
+import { abortOtherModelDataRequests, getCachedLineAll } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import { StationLayer } from "../layers/StationLayer.js";
@@ -528,13 +540,19 @@ const props = defineProps({
 const loading = ref(true);
 const rawLines = ref([]);
 const stationPanelData = ref(null);
+const stationPanelStatus = ref("idle");
+const stationPanelError = ref("");
 let stationPanelPromise = null;
 let stationPanelRetryTimer = null;
 let stationPanelRetryCount = 0;
+let stationPanelAbortController = null;
 
 const selectedStationName = ref("");
 const selectedStationFacilityId = ref("");
 const selectedStationCoord = ref(null);
+const selectedReverseStationName = ref("");
+const selectedReverseStationFacilityId = ref("");
+const selectedReverseStationCoord = ref(null);
 const matchedRoutes = ref([]);
 const allMapStations = ref([]);
 
@@ -553,12 +571,22 @@ const pfaStationSection = inject("pfaStationSection", ref("boarding"));
 const runMonitorStationOptionFilter = inject("runMonitorStationOptionFilter", () => true);
 const shouldRenderPfaRightPanel = computed(() => Boolean(pfaRightPanel?.value ?? pfaRightPanel));
 
+function isCanceledRequest(error) {
+  return error?.message === "请求已取消"
+    || error?.message === "canceled"
+    || error?.cause?.message === "canceled"
+    || error?.cause?.code === "ERR_CANCELED";
+}
+
 // 监听当前选中的站点，控制右侧面板内容状态
 watch(selectedStationName, (newStation) => {
   if (activeDatavisualizationTab.value === "站点客流监测") {
     rightPanelHasContent.value = true;
   }
   if (!newStation) {
+    selectedReverseStationName.value = "";
+    selectedReverseStationFacilityId.value = "";
+    selectedReverseStationCoord.value = null;
     cleanUpSelectedStationRing();
     cleanUpReachabilityOverlay();
     restoreReachabilityStationFilter();
@@ -589,16 +617,59 @@ function hourSlice(values, startHour = 6, endHour = 22) {
   return result;
 }
 
-const currentStationPanel = computed(() => {
-  const stationName = selectedStationName.value;
+function stationPanelByName(stationName) {
   const stations = stationPanelData.value?.stations || {};
   if (!stationName) return null;
   if (stations[stationName]) return stations[stationName];
   const target = normalizeStationSearchName(stationName);
   const matchedKey = Object.keys(stations).find((key) => normalizeStationSearchName(key) === target);
-  if (matchedKey) return stations[matchedKey];
+  return matchedKey ? stations[matchedKey] : null;
+}
+
+function stationPanelForSide(stationName, facilityId = "", options = {}) {
+  const { fallbackToAggregate = true } = options || {};
+  const stationPanel = stationPanelByName(stationName);
+  if (!stationPanel) return null;
+  const id = String(facilityId || "");
+  const facilityPanels = stationPanel.facilityPanels;
+  if (id && facilityPanels && typeof facilityPanels === "object") {
+    if (facilityPanels[id]) return {
+      ...stationPanel,
+      ...facilityPanels[id],
+      stationName: stationPanel.stationName || stationName,
+      mode: stationPanel.mode,
+      desc: stationPanel.desc,
+    };
+    const matched = Object.values(facilityPanels).find((panel) =>
+      String(panel?.facilityId || "") === id
+      || (Array.isArray(panel?.facilityIds) && panel.facilityIds.some((candidate) => String(candidate || "") === id))
+    );
+    if (matched) return {
+      ...stationPanel,
+      ...matched,
+      stationName: stationPanel.stationName || stationName,
+      mode: stationPanel.mode,
+      desc: stationPanel.desc,
+    };
+  }
+  return fallbackToAggregate ? stationPanel : null;
+}
+
+const currentStationPanel = computed(() => {
+  const stationName = selectedStationName.value;
+  if (!stationName) return null;
+  if (shouldRenderPfaRightPanel.value) {
+    const aggregatePanel = stationPanelByName(stationName);
+    if (aggregatePanel) return aggregatePanel;
+  }
+  const isDirectionalPair = Boolean(selectedReverseStationName.value || selectedReverseStationFacilityId.value);
+  const sidePanel = stationPanelForSide(stationName, selectedStationFacilityId.value, {
+    fallbackToAggregate: !isDirectionalPair && !selectedStationFacilityId.value,
+  });
+  if (sidePanel) return sidePanel;
+  const stations = stationPanelData.value?.stations || {};
   const facilityId = String(selectedStationFacilityId.value || "");
-  if (facilityId) {
+  if (facilityId && !isDirectionalPair) {
     return Object.values(stations).find((station) =>
       Array.isArray(station?.facilityIds)
       && station.facilityIds.some((id) => String(id || "") === facilityId)
@@ -606,6 +677,31 @@ const currentStationPanel = computed(() => {
   }
   return null;
 });
+
+const currentReverseStationPanel = computed(() => {
+  if (!selectedReverseStationName.value && !selectedReverseStationFacilityId.value) return null;
+  return stationPanelForSide(
+    selectedReverseStationName.value || selectedStationName.value,
+    selectedReverseStationFacilityId.value,
+    { fallbackToAggregate: false },
+  );
+});
+
+const selectedStationPanelStatus = computed(() => {
+  if (!selectedStationName.value) return { type: "idle", text: "" };
+  if (stationPanelStatus.value === "loading") return { type: "loading", text: "站点客流数据加载中" };
+  if (stationPanelStatus.value === "generating") return { type: "generating", text: "站点客流缓存生成中，请稍后刷新" };
+  if (stationPanelStatus.value === "error") return { type: "error", text: stationPanelError.value || "站点客流数据加载失败" };
+  if (stationPanelStatus.value === "ready" && !currentStationPanel.value) {
+    return { type: "empty", text: "该站点暂无客流数据" };
+  }
+  return { type: "ready", text: "" };
+});
+
+const stationPanelUnavailable = computed(() =>
+  Boolean(selectedStationName.value)
+  && ["loading", "generating", "error", "empty"].includes(selectedStationPanelStatus.value.type)
+);
 
 const selectedStationType = computed(() => {
   if (!selectedStationName.value) return "";
@@ -818,19 +914,41 @@ if (runMonitorStationOptions) {
 
 // 运行监测页：把当前选中站点的客流面板与名称上抛给 index.vue 的右侧卡片。
 const runMonitorSelectedStationPanel = inject("runMonitorSelectedStationPanel", null);
+const runMonitorSelectedReverseStationPanel = inject("runMonitorSelectedReverseStationPanel", null);
 const runMonitorSelectedStationName = inject("runMonitorSelectedStationName", null);
-if (runMonitorSelectedStationPanel || runMonitorSelectedStationName) {
-  watch([currentStationPanel, selectedStationName], () => {
+const runMonitorSelectedReverseStationName = inject("runMonitorSelectedReverseStationName", null);
+const runMonitorStationPanelStatus = inject("runMonitorStationPanelStatus", null);
+const runMonitorStationPanelError = inject("runMonitorStationPanelError", null);
+if (runMonitorSelectedStationPanel || runMonitorSelectedReverseStationPanel || runMonitorSelectedStationName || runMonitorSelectedReverseStationName || runMonitorStationPanelStatus || runMonitorStationPanelError) {
+  watch([currentStationPanel, currentReverseStationPanel, selectedStationName, selectedReverseStationName], () => {
     if (runMonitorSelectedStationPanel) {
       runMonitorSelectedStationPanel.value = currentStationPanel.value || null;
+    }
+    if (runMonitorSelectedReverseStationPanel) {
+      runMonitorSelectedReverseStationPanel.value = currentReverseStationPanel.value || null;
     }
     if (runMonitorSelectedStationName) {
       runMonitorSelectedStationName.value = selectedStationName.value || "";
     }
+    if (runMonitorSelectedReverseStationName) {
+      runMonitorSelectedReverseStationName.value = selectedReverseStationName.value || "";
+    }
+  }, { immediate: true });
+  watch([selectedStationPanelStatus, stationPanelError], () => {
+    if (runMonitorStationPanelStatus) {
+      runMonitorStationPanelStatus.value = selectedStationPanelStatus.value.type;
+    }
+    if (runMonitorStationPanelError) {
+      runMonitorStationPanelError.value = selectedStationPanelStatus.value.text || stationPanelError.value || "";
+    }
   }, { immediate: true });
   onUnmounted(() => {
     if (runMonitorSelectedStationPanel) runMonitorSelectedStationPanel.value = null;
+    if (runMonitorSelectedReverseStationPanel) runMonitorSelectedReverseStationPanel.value = null;
     if (runMonitorSelectedStationName) runMonitorSelectedStationName.value = "";
+    if (runMonitorSelectedReverseStationName) runMonitorSelectedReverseStationName.value = "";
+    if (runMonitorStationPanelStatus) runMonitorStationPanelStatus.value = "idle";
+    if (runMonitorStationPanelError) runMonitorStationPanelError.value = "";
   });
 }
 
@@ -1345,7 +1463,36 @@ const selectedOnlyStations = computed(() => {
     };
     if (stationInDisplayRange(fallback)) stations = [fallback];
   }
-  return stations.slice(0, 1);
+  const result = stations.slice(0, 1);
+  const reverseCoordKey = selectedReverseStationCoord.value ? stationCoordKeyFromStation(selectedReverseStationCoord.value) : "";
+  const reverseFacilityId = String(selectedReverseStationFacilityId.value || "");
+  let reverseStation = null;
+  if (reverseCoordKey) {
+    reverseStation = sourceStations.find(
+      (station) => (station.key || station.coordKey || stationCoordKeyFromStation(station)) === reverseCoordKey,
+    );
+  }
+  if (!reverseStation && reverseFacilityId) {
+    reverseStation = sourceStations.find((station) => String(station.facilityId || "") === reverseFacilityId);
+  }
+  if (!reverseStation && selectedReverseStationCoord.value) {
+    reverseStation = {
+      key: reverseCoordKey || selectedReverseStationName.value,
+      coordKey: reverseCoordKey || selectedReverseStationName.value,
+      name: selectedReverseStationName.value || selectedStationName.value,
+      facilityId: reverseFacilityId,
+      x: selectedReverseStationCoord.value.x,
+      y: selectedReverseStationCoord.value.y,
+      type: selectedStationType.value === "地铁" ? "subway" : "bus",
+    };
+  }
+  if (reverseStation && stationInDisplayRange(reverseStation)) {
+    const reverseKey = reverseStation.key || reverseStation.coordKey || stationCoordKeyFromStation(reverseStation);
+    if (!result.some((station) => (station.key || station.coordKey || stationCoordKeyFromStation(station)) === reverseKey)) {
+      result.push(reverseStation);
+    }
+  }
+  return result;
 });
 
 const reachabilityVisibleStations = computed(() => {
@@ -1537,6 +1684,27 @@ function normalizeStationSearchName(value = "") {
     .toLowerCase();
 }
 
+function stationCoordDistance(a, b) {
+  if (!a || !b) return Number.POSITIVE_INFINITY;
+  const dx = Number(a.x) - Number(b.x);
+  const dy = Number(a.y) - Number(b.y);
+  return Number.isFinite(dx) && Number.isFinite(dy) ? Math.hypot(dx, dy) : Number.POSITIVE_INFINITY;
+}
+
+function oppositeStationCandidate(stationName, facilityId = "", coord = null) {
+  const candidates = stationCoordCandidates.value.get(stationName) || [];
+  if (candidates.length < 2) return null;
+  const currentFacilityId = String(facilityId || "");
+  const currentCoordKey = coord ? stationCoordKey(coord.x, coord.y) : "";
+  return candidates
+    .filter((candidate) => {
+      if (currentFacilityId && String(candidate.facilityId || "") === currentFacilityId) return false;
+      if (currentCoordKey && String(candidate.coordKey || "") === currentCoordKey) return false;
+      return true;
+    })
+    .sort((left, right) => stationCoordDistance(coord, left) - stationCoordDistance(coord, right))[0] || null;
+}
+
 async function selectStationByName(stationName) {
   const target = normalizeStationSearchName(stationName);
   if (!target) return false;
@@ -1547,10 +1715,12 @@ async function selectStationByName(stationName) {
       return name.includes(target) || target.includes(name);
     });
   if (!option?.value) return false;
-  selectedStationFacilityId.value = "";
+  const primary = (stationCoordCandidates.value.get(option.value) || [])[0] || null;
+  const reverse = oppositeStationCandidate(option.value, primary?.facilityId, primary);
+  selectedStationFacilityId.value = String(primary?.facilityId || "");
   selectedStationName.value = option.value;
   await nextTick();
-  handleStationChange(option.value);
+  handleStationChange(option.value, selectedStationFacilityId.value, reverse);
   return true;
 }
 
@@ -1558,10 +1728,20 @@ async function selectStationByFeature(props = {}) {
   const stationName = props.facilityName || props.stop_name || props.station_name || props.name || "";
   if (!stationName) return false;
   const facilityId = String(props.facilityId || props.stop_id || props._stationKey || "");
+  const paired = {
+    name: props.pairedStationName || stationName,
+    facilityId: String(props.pairedFacilityId || ""),
+    x: Number(props.pairedCoord?.x),
+    y: Number(props.pairedCoord?.y),
+  };
   selectedStationFacilityId.value = facilityId;
   selectedStationName.value = stationName;
   await nextTick();
-  handleStationChange(stationName, facilityId);
+  handleStationChange(
+    stationName,
+    facilityId,
+    paired.facilityId || (Number.isFinite(paired.x) && Number.isFinite(paired.y)) ? paired : null,
+  );
   return true;
 }
 
@@ -1570,10 +1750,13 @@ function selectLeaderboardStation(item) {
 }
 
 // 切换站点时
-function handleStationChange(stationName, facilityId = "") {
+function handleStationChange(stationName, facilityId = "", pairedStation = null) {
   if (!stationName) {
     selectedStationFacilityId.value = "";
     selectedStationCoord.value = null;
+    selectedReverseStationName.value = "";
+    selectedReverseStationFacilityId.value = "";
+    selectedReverseStationCoord.value = null;
     matchedRoutes.value = [];
     cleanUpSelectedStationRing();
     cleanUpReachabilityOverlay();
@@ -1581,6 +1764,9 @@ function handleStationChange(stationName, facilityId = "") {
   }
 
   selectedStationFacilityId.value = String(facilityId || "");
+  selectedReverseStationName.value = "";
+  selectedReverseStationFacilityId.value = "";
+  selectedReverseStationCoord.value = null;
 
   const matches = [];
   let stationCoord = null;
@@ -1631,6 +1817,15 @@ function handleStationChange(stationName, facilityId = "") {
 
   matchedRoutes.value = matches;
   selectedStationCoord.value = exactStationCoord || stationCoord || stationCoordIndex.value.get(stationName) || null;
+  const reverseCandidate = pairedStation
+    || oppositeStationCandidate(stationName, selectedStationFacilityId.value, selectedStationCoord.value);
+  if (reverseCandidate?.facilityId || reverseCandidate?.name) {
+    selectedReverseStationName.value = reverseCandidate.name || stationName;
+    selectedReverseStationFacilityId.value = String(reverseCandidate.facilityId || "");
+    if (Number.isFinite(Number(reverseCandidate.x)) && Number.isFinite(Number(reverseCandidate.y))) {
+      selectedReverseStationCoord.value = { x: Number(reverseCandidate.x), y: Number(reverseCandidate.y) };
+    }
+  }
   if ((runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value) && !stationPanelData.value) {
     ensureStationPanelData();
   }
@@ -1663,7 +1858,13 @@ function clearStationPanelRetry() {
 
 function scheduleStationPanelRetry(model) {
   if (!model || props.model !== model || stationPanelData.value || stationPanelRetryTimer) return;
-  if (stationPanelRetryCount >= 120) return;
+  if (stationPanelRetryCount >= 120) {
+    stationPanelStatus.value = "error";
+    stationPanelError.value = "站点客流缓存生成超时";
+    return;
+  }
+  stationPanelStatus.value = "generating";
+  stationPanelError.value = "";
   stationPanelRetryCount += 1;
   const delay = Math.min(10_000, 2_000 + stationPanelRetryCount * 500);
   stationPanelRetryTimer = setTimeout(() => {
@@ -1674,28 +1875,51 @@ function scheduleStationPanelRetry(model) {
   }, delay);
 }
 
-function ensureStationPanelData() {
-  if (stationPanelData.value) return Promise.resolve(stationPanelData.value);
+function ensureStationPanelData(options = {}) {
+  const { force = false } = options;
+  if (stationPanelData.value && !force) return Promise.resolve(stationPanelData.value);
   if (stationPanelPromise) return stationPanelPromise;
   const model = props.model;
-  stationPanelPromise = getStationPanel({ datasource: model }, { silentError: true })
+  if (!model) return Promise.resolve(null);
+  if (force) {
+    stationPanelData.value = null;
+    clearStationPanelRetry();
+    stationPanelRetryCount = 0;
+  }
+  stationPanelAbortController?.abort();
+  stationPanelAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  stationPanelStatus.value = "loading";
+  stationPanelError.value = "";
+  stationPanelPromise = getStationPanel(
+    { datasource: model },
+    { silentError: true, signal: stationPanelAbortController?.signal },
+  )
     .then((res) => {
       const data = res.data || null;
       if (props.model === model && data?.stations) {
         stationPanelData.value = data;
+        stationPanelStatus.value = "ready";
+        stationPanelError.value = "";
         clearStationPanelRetry();
         stationPanelRetryCount = 0;
       } else if (props.model === model) {
+        stationPanelData.value = null;
         scheduleStationPanelRetry(model);
       }
       return stationPanelData.value;
     })
-    .catch(() => {
-      scheduleStationPanelRetry(model);
+    .catch((error) => {
+      if (isCanceledRequest(error)) return null;
+      if (props.model === model) {
+        stationPanelData.value = null;
+        stationPanelStatus.value = "error";
+        stationPanelError.value = error?.message || "站点客流数据加载失败";
+      }
       return null;
     })
     .finally(() => {
       stationPanelPromise = null;
+      stationPanelAbortController = null;
     });
   return stationPanelPromise;
 }
@@ -1704,15 +1928,18 @@ function ensureStationPanelData() {
 async function loadAllData() {
   const model = props.model;
   loading.value = true;
+  abortOtherModelDataRequests(model);
   stationPanelData.value = null;
+  stationPanelStatus.value = "idle";
+  stationPanelError.value = "";
   allMapStations.value = [];
   clearStationPanelRetry();
   stationPanelRetryCount = 0;
   if (!runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value) ensureStationPanelData();
   try {
-      const lineRes = await getLineAll({ datasource: model });
+      const lineRes = await getCachedLineAll(model);
       if (props.model !== model) return;
-      const data = lineRes.data || [];
+      const data = Array.isArray(lineRes) ? lineRes : [];
       rawLines.value = data;
 
       // 提取唯一的站点用于地图打点渲染 (按坐标去重)
@@ -1762,8 +1989,8 @@ async function loadAllData() {
         renderReachabilityOverlay();
         applyReachabilityStationFilter();
       });
-  } catch {
-    if (props.model === model) rawLines.value = [];
+  } catch (error) {
+    if (props.model === model && !isCanceledRequest(error)) rawLines.value = [];
   } finally {
     if (props.model === model) {
       loading.value = false;
@@ -2235,13 +2462,19 @@ onMounted(() => {
 
 watch(() => props.model, (newModel) => {
   if (newModel) {
+    stationPanelAbortController?.abort();
     clearStationPanelRetry();
     stationPanelRetryCount = 0;
     stationPanelData.value = null;
+    stationPanelStatus.value = "idle";
+    stationPanelError.value = "";
     allMapStations.value = [];
     selectedStationName.value = "";
     selectedStationFacilityId.value = "";
     selectedStationCoord.value = null;
+    selectedReverseStationName.value = "";
+    selectedReverseStationFacilityId.value = "";
+    selectedReverseStationCoord.value = null;
     matchedRoutes.value = [];
     cleanUpSelectedStationRing();
     cleanUpReachabilityOverlay();
@@ -2250,6 +2483,7 @@ watch(() => props.model, (newModel) => {
 });
 
 onUnmounted(() => {
+  stationPanelAbortController?.abort();
   clearStationPanelRetry();
   _StationLayer.dispose();
   cleanUpSelectedStationRing();
@@ -2262,6 +2496,9 @@ function clearSelection() {
   selectedStationName.value = "";
   selectedStationFacilityId.value = "";
   selectedStationCoord.value = null;
+  selectedReverseStationName.value = "";
+  selectedReverseStationFacilityId.value = "";
+  selectedReverseStationCoord.value = null;
   matchedRoutes.value = [];
   cleanUpSelectedStationRing();
   cleanUpReachabilityOverlay();
@@ -2585,6 +2822,34 @@ defineExpose({
 .pfa-station-sections .pfa-section:first-of-type {
   padding-top: var(--dm2-space-4);
   border-top: 0;
+}
+
+.pfa-status-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid rgba(21, 105, 222, 0.16);
+  border-radius: 8px;
+  background: rgba(248, 251, 255, 0.78);
+  color: #334155;
+}
+
+.pfa-status-card.error {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: rgba(254, 242, 242, 0.82);
+}
+
+.pfa-status-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pfa-status-sub {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
 }
 
 .pfa-station-sections .section-header {

@@ -64,7 +64,7 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimPrecomputedCache {
 
-    public static final String VISUAL_CACHE_VERSION = "visual-v7";
+    public static final String VISUAL_CACHE_VERSION = "visual-v8";
     private static final int VISUAL_TILE_ZOOM = 12;
     private static final int MIN_VISUAL_TILE_ZOOM = 8;
     private static final int ROUTE_DETAIL_SHARD_COUNT = 32;
@@ -145,6 +145,10 @@ public final class MatsimPrecomputedCache {
     }
 
     public static RouteDetailVO readRouteDetail(MatsimData data, String routeId) {
+        return readRouteDetail(data, null, routeId);
+    }
+
+    public static RouteDetailVO readRouteDetail(MatsimData data, String lineId, String routeId) {
         if (!isVisualCacheReady(data)) {
             return null;
         }
@@ -153,14 +157,15 @@ public final class MatsimPrecomputedCache {
         }
         try {
             Map<String, String> index = JSON.readValue(routeIndexPath(data).toFile(), STRING_MAP_TYPE);
-            String file = index.get(routeId);
+            String key = lineId == null || lineId.isBlank() ? routeId : routeKey(lineId, routeId);
+            String file = index.get(key);
             if (file == null || file.isBlank()) {
                 return null;
             }
             Map<String, RouteDetailVO> shard = readGzipJson(routeDetailsDir(data).resolve(file), ROUTE_DETAIL_MAP_TYPE);
-            return shard.get(routeId);
+            return shard.get(key);
         } catch (Exception e) {
-            log.warn("读取线路详情预计算失败: model={}, routeId={}", data.getName(), routeId, e);
+            log.warn("读取线路详情预计算失败: model={}, lineId={}, routeId={}", data.getName(), lineId, routeId, e);
             return null;
         }
     }
@@ -922,6 +927,17 @@ public final class MatsimPrecomputedCache {
         for (int i = 0; i < ROUTE_DETAIL_SHARD_COUNT; i++) {
             shards.add(new LinkedHashMap<>());
         }
+        Map<String, Integer> routeIdCounts = new HashMap<>();
+        for (LineVO line : lines) {
+            if (line.getRoutes() == null) {
+                continue;
+            }
+            for (RouteDetailVO route : line.getRoutes()) {
+                if (route.getRouteId() != null && !route.getRouteId().isBlank()) {
+                    routeIdCounts.merge(route.getRouteId(), 1, Integer::sum);
+                }
+            }
+        }
         for (LineVO line : lines) {
             if (line.getRoutes() == null) {
                 continue;
@@ -930,10 +946,15 @@ public final class MatsimPrecomputedCache {
                 if (route.getRouteId() == null || route.getRouteId().isBlank()) {
                     continue;
                 }
-                int shardIndex = Math.floorMod(route.getRouteId().hashCode(), ROUTE_DETAIL_SHARD_COUNT);
+                String key = routeKey(line.getLineId(), route.getRouteId());
+                int shardIndex = Math.floorMod(key.hashCode(), ROUTE_DETAIL_SHARD_COUNT);
                 String fileName = String.format(Locale.ROOT, "shard-%02d.json.gz", shardIndex);
-                shards.get(shardIndex).put(route.getRouteId(), route);
-                index.put(route.getRouteId(), fileName);
+                shards.get(shardIndex).put(key, route);
+                index.put(key, fileName);
+                if (routeIdCounts.getOrDefault(route.getRouteId(), 0) == 1) {
+                    shards.get(shardIndex).put(route.getRouteId(), route);
+                    index.put(route.getRouteId(), fileName);
+                }
             }
         }
         for (int i = 0; i < shards.size(); i++) {
@@ -1006,6 +1027,14 @@ public final class MatsimPrecomputedCache {
 
     private static String tileKey(int tileX, int tileY) {
         return tileX + "," + tileY;
+    }
+
+    private static String routeKey(String lineId, String routeId) {
+        return nonBlank(lineId, "") + "::" + nonBlank(routeId, "");
+    }
+
+    private static String nonBlank(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     private static long lastModified(String filePath) {

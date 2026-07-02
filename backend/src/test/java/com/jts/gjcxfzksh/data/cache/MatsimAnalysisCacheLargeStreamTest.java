@@ -1,7 +1,13 @@
 package com.jts.gjcxfzksh.data.cache;
 
+import com.jts.gjcxfzksh.api.model.params.RouteChartParam;
+import com.jts.gjcxfzksh.api.model.vo.FacilityFlowVO;
+import com.jts.gjcxfzksh.api.model.vo.RouteDetailVO;
+import com.jts.gjcxfzksh.api.model.vo.RoutePickVO;
+import com.jts.gjcxfzksh.api.service.impl.RouteServiceImpl;
 import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.DepartureId;
 import com.jts.gjcxfzksh.data.id.LineId;
@@ -47,6 +53,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.lang.reflect.Method;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -190,6 +197,7 @@ class MatsimAnalysisCacheLargeStreamTest {
         )));
 
         MatsimRoutePanelCache.prepareOnModelLoad(data);
+        MatsimPrecomputedCache.prepareOnModelLoad(data);
 
         Map<String, Object> panel = MatsimRoutePanelCache.readRoutePanel(data);
         Map<?, ?> routes = (Map<?, ?>) panel.get("routes");
@@ -243,6 +251,88 @@ class MatsimAnalysisCacheLargeStreamTest {
         assertNotNull(foshanRow);
         assertEquals("佛山1号线", foshanRow.get("lineName"));
         assertEquals(1L, ((Number) foshanRow.get("passengerFlow")).longValue());
+
+        RouteDetailVO busDetail = MatsimPrecomputedCache.readRouteDetail(data, "bus-line", "shared");
+        RouteDetailVO metroDetailFromCache = MatsimPrecomputedCache.readRouteDetail(data, "metro-line", "shared");
+        assertNotNull(busDetail);
+        assertNotNull(metroDetailFromCache);
+        assertEquals("bus", busDetail.getTransportMode());
+        assertEquals("pt", metroDetailFromCache.getTransportMode());
+        assertEquals("bus-stop-1", busDetail.getFacilities().getFirst().getFacilityId());
+        assertEquals("metro-stop-1", metroDetailFromCache.getFacilities().getFirst().getFacilityId());
+
+        List<RoutePickVO> candidates = MatsimRouteSpatialIndex.query(data, 50.0, 0.0, 80.0, 10);
+        long sharedCandidates = candidates.stream()
+                .filter(candidate -> "shared".equals(candidate.getRouteId()))
+                .count();
+        assertEquals(2L, sharedCandidates);
+        assertTrue(candidates.stream().anyMatch(candidate ->
+                "bus-line".equals(candidate.getLineId()) && "shared".equals(candidate.getRouteId())));
+        assertTrue(candidates.stream().anyMatch(candidate ->
+                "metro-line".equals(candidate.getLineId()) && "shared".equals(candidate.getRouteId())));
+    }
+
+    @Test
+    void stationPanelCachesInMemoryAndKeepsDuplicateRouteIdsSeparate() throws Exception {
+        Path output = tempDir.resolve("station-duplicate-route-id").resolve("output");
+        Path cache = tempDir.resolve("station-duplicate-route-id-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+
+        MatsimData data = new MatsimData("area/public/station-duplicate-route-id", output.toString(), cache.toString(), false);
+        data.setScenario(buildDuplicateRouteIdScenario());
+        data.setPersonTracks(new LinkedHashSet<>(Set.of(
+                track("person-bus", "bus-line", "shared", "bus1", "bus-dep", "bus-stop-1", true, 8.0),
+                track("person-metro", "metro-line", "shared", "metro1", "metro-dep", "metro-stop-1", true, 9.0)
+        )));
+
+        MatsimStationPanelCache.prepareOnModelLoad(data);
+        Map<String, Object> firstRead = MatsimStationPanelCache.readStationPanel(data);
+        Map<?, ?> stations = (Map<?, ?>) firstRead.get("stations");
+        Map<?, ?> busStop = (Map<?, ?>) stations.get("bus-stop-1");
+        List<?> routes = (List<?>) busStop.get("routes");
+        assertTrue(routes.stream().anyMatch(route ->
+                route instanceof Map<?, ?> item
+                        && "bus-line".equals(item.get("lineId"))
+                        && "shared".equals(item.get("routeId"))));
+
+        Path panelPath = cache.resolve(MatsimStationPanelCache.STATION_PANEL_CACHE_VERSION).resolve("station-panel.json.gz");
+        Files.writeString(panelPath, "not gzip", StandardCharsets.UTF_8);
+        Map<String, Object> secondRead = MatsimStationPanelCache.readStationPanel(data);
+        assertEquals("ready", secondRead.get("status"));
+        assertEquals(firstRead, secondRead);
+    }
+
+    @Test
+    void routeFlowTreatsNullSingleAsFalseAndUsesLineScopedRoute() throws Exception {
+        String datasource = "area/public/route-flow-null-single";
+        Path output = tempDir.resolve("route-flow-null-single").resolve("output");
+        Path cache = tempDir.resolve("route-flow-null-single-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+
+        MatsimData data = new MatsimData(datasource, output.toString(), cache.toString(), false);
+        data.setScenario(buildDuplicateRouteIdScenario());
+        data.setPersonTracks(new LinkedHashSet<>(Set.of(
+                track("person-bus", "bus-line", "shared", "bus1", "bus-dep", "bus-stop-1", true, 8.0),
+                track("person-metro", "metro-line", "shared", "metro1", "metro-dep", "metro-stop-1", true, 9.0)
+        )));
+        registerDatasource(datasource, data);
+        try {
+            RouteChartParam param = new RouteChartParam();
+            param.setDatasource(datasource);
+            param.setLineId("metro-line");
+            param.setRouteId("shared");
+            param.setSingle(null);
+
+            List<FacilityFlowVO> flow = new RouteServiceImpl().routeFlow(param);
+
+            assertEquals(2, flow.size());
+            assertEquals("metro-stop-1", flow.getFirst().getId());
+            assertEquals(1L, flow.getFirst().getUp());
+        } finally {
+            Datasource.remove(datasource);
+        }
     }
 
     private void writeEvents(Path path) throws Exception {
@@ -472,6 +562,13 @@ class MatsimAnalysisCacheLargeStreamTest {
         );
         loadEvent.setAccessible(true);
         loadEvent.invoke(null, data, null);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void registerDatasource(String name, MatsimData data) throws Exception {
+        Field dataMapField = Datasource.class.getDeclaredField("dataMap");
+        dataMapField.setAccessible(true);
+        ((Map<String, Database>) dataMapField.get(null)).put(name, new Database(data));
     }
 
     private void assertPassengerSeriesContainsBoarding(Map<String, Object> manifest) {

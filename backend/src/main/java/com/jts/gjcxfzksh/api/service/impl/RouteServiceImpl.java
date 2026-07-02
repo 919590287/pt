@@ -70,14 +70,12 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public RouteDetailVO routeDetail(RouteInfoParam param) {
         MatsimData matsim_data = matsim_data(param);
-        if (param.getLineId() == null || param.getLineId().isBlank()) {
-            RouteDetailVO cached = MatsimPrecomputedCache.readRouteDetail(matsim_data, param.getRouteId());
-            if (cached != null) {
-                return cached;
-            }
+        RouteDetailVO cached = MatsimPrecomputedCache.readRouteDetail(matsim_data, param.getLineId(), param.getRouteId());
+        if (cached != null) {
+            return cached;
         }
         Network network = network(param);
-        if (param.getRouteId() == null) {
+        if (param.getRouteId() == null || param.getRouteId().isBlank()) {
             throw new BusinessException("routeId 不能为空");
         }
         TransitRoute route = getTransitRoute(Id.create(param.getRouteId(), TransitRoute.class), param);
@@ -104,7 +102,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public Map<String, Object> routeInfo(RouteInfoParam param) {
         MatsimData matsim_data = matsim_data(param);
-        if (param.getRouteId() == null) {
+        if (param.getRouteId() == null || param.getRouteId().isBlank()) {
             throw new BusinessException("routeId 不能为空");
         }
         TransitRoute transitRoute = getTransitRoute(Id.create(param.getRouteId(), TransitRoute.class), param);
@@ -273,6 +271,9 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
 
     private List<FacilityFlowVO> facilityByRouteId(RouteChartParam param) {
         List<FacilityFlowVO> facilityList = new ArrayList<>();
+        if (param.getRouteId() == null || param.getRouteId().isBlank()) {
+            return facilityList;
+        }
         TransitRoute route = getTransitRoute(Id.create(param.getRouteId(), TransitRoute.class), param);
         if (route != null) {
             route.getStops().forEach(stop -> {
@@ -291,10 +292,9 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
      */
     private TransitRoute getTransitRoute(Id<TransitRoute> routeId, DatasourceParam param) {
         TransitSchedule schedule = matsim_data(param).getSchedule();
-        if (param instanceof RouteInfoParam routeInfoParam
-                && routeInfoParam.getLineId() != null
-                && !routeInfoParam.getLineId().isBlank()) {
-            TransitLine line = schedule.getTransitLines().get(Id.create(routeInfoParam.getLineId(), TransitLine.class));
+        String lineId = routeLineId(param);
+        if (lineId != null && !lineId.isBlank()) {
+            TransitLine line = schedule.getTransitLines().get(Id.create(lineId, TransitLine.class));
             if (line != null) {
                 return line.getRoutes().get(routeId);
             }
@@ -308,6 +308,16 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
                     return route.getValue();
                 }
             }
+        }
+        return null;
+    }
+
+    private String routeLineId(DatasourceParam param) {
+        if (param instanceof RouteInfoParam routeInfoParam) {
+            return routeInfoParam.getLineId();
+        }
+        if (param instanceof RouteChartParam routeChartParam) {
+            return routeChartParam.getLineId();
         }
         return null;
     }
@@ -355,7 +365,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
                 }
             }
         }
-        return awaitTime / count;
+        return count == 0 ? 0.0 : awaitTime / count;
     }
 
     /**
@@ -367,10 +377,10 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         NetworkRoute networkRoute = transitRoute.getRoute();
         length += DistanceUtil.distance(networkRoute, matsim_data.getNetwork());
         personCount += matsim_data.getPersonTracks().stream().filter(track -> {
-            return track.getEnter() && track.getRouteId().equals(transitRoute.getId());
+            return Boolean.TRUE.equals(track.getEnter()) && track.getRouteId().equals(transitRoute.getId());
         }).count();
 
-        return personCount / (length / 1000);
+        return length <= 0 ? 0.0 : personCount / (length / 1000);
     }
 
     /**
@@ -386,14 +396,18 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         double vehCount = 0.;
         double personCount = 0.;
         for (VehicleId vehId : vehicleIds) {
-            VehicleType vehicleType = vehicleMap.get(vehId).getType();
+            Vehicle vehicle = vehicleMap.get(vehId);
+            if (vehicle == null || vehicle.getType() == null || vehicle.getType().getCapacity() == null) {
+                continue;
+            }
+            VehicleType vehicleType = vehicle.getType();
             List<PTPersonTrack> list = person.get(vehId);
             personCount += list == null ? 0 : list.size();
             vehCount += vehicleType.getCapacity().getStandingRoom();
             vehCount += vehicleType.getCapacity().getSeats();
         }
 
-        return personCount / vehCount;
+        return vehCount <= 0 ? 0.0 : personCount / vehCount;
     }
 
     /**
@@ -417,10 +431,13 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         Map<Id<Link>, ? extends Link> linkMap = network.getLinks();
         for (Id<Link> linkId : links) {
             Link link = linkMap.get(linkId);
+            if (link == null) {
+                continue;
+            }
             rc += NetworkUtils.getEuclideanDistance(link.getFromNode().getCoord(), link.getToNode().getCoord());
         }
 
-        return length / rc;
+        return rc <= 0 ? 0.0 : length / rc;
     }
 
     /**
@@ -432,6 +449,9 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         NetworkRoute networkRoute = route.getRoute();
         // 距离
         double distance = DistanceUtil.distance(networkRoute, network);
+        if (route.getStops().size() < 2) {
+            return 0.0;
+        }
         TransitRouteStop first = route.getStops().getFirst();
         TransitRouteStop last = route.getStops().getLast();
         // 直线距离
@@ -440,7 +460,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
             lc += (distance / lcDistance);
             routeCount++;
         }
-        return lc / routeCount; // 平均值
+        return routeCount == 0 ? 0.0 : lc / routeCount; // 平均值
     }
 
     /**
@@ -451,19 +471,23 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         if (list == null || list.isEmpty()) {
             return new ArrayList<>();
         }
+        boolean single = Boolean.TRUE.equals(param.getSingle());
+        if (single) {
+            if (param.getDepartureId() == null || param.getDepartureId().isBlank()) {
+                throw new BusinessException("departureId 不能为空");
+            }
+        } else if (param.getRouteId() == null || param.getRouteId().isBlank()) {
+            throw new BusinessException("routeId 不能为空");
+        }
+        int beginSecond = Math.max(0, param.getBeginSecond());
+        int endSecond = param.getEndSecond() <= 0 ? Integer.MAX_VALUE : param.getEndSecond();
         return list.stream().filter(t -> {
             // 时间
-            if (t.getTime() >= param.getBeginSecond() && t.getTime() <= param.getEndSecond()) {
+            if (t.getTime() >= beginSecond && t.getTime() <= endSecond) {
                 // 单趟
-                if (param.getSingle()) {
-                    if (param.getDepartureId() == null) {
-                        return false;
-                    }
+                if (single) {
                     return t.getDepartureId().equals(DepartureId.create(param.getDepartureId()));
                 } else {
-                    if (param.getRouteId() == null) {
-                        return false;
-                    }
                     if (!t.getRouteId().equals(RouteId.create(param.getRouteId()))) {
                         return false;
                     }

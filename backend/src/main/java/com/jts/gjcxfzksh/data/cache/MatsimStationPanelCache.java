@@ -23,6 +23,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -43,7 +44,9 @@ public final class MatsimStationPanelCache {
     // v8: 客流画像对齐线路面板，按“出行目的/出行者属性”两个维度互斥统计，各维度由前端补足到 100%。
     // v9: 交通方式优先使用 transportMode，避免“地铁站”类站名把公交误判为地铁。
     // v10: 客流画像活动类型优先读取 selected plan，避免把未采用的备选计划算入当前客流。
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v10";
+    // v11: routeId 不再假设全局唯一，站点面板内部线路索引改用 lineId::routeId；读取增加受限内存 LRU。
+    // v12: 增加 facility 级小时上下车统计，用于前端区分道路两侧同名站点。
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v12";
 
     // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
     // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
@@ -63,12 +66,21 @@ public final class MatsimStationPanelCache {
     );
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
+    private static final Map<String, Map<String, Object>> MEMORY_CACHE = Collections.synchronizedMap(
+            new LinkedHashMap<>(4, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
+                    return size() > 2;
+                }
+            }
+    );
 
     private MatsimStationPanelCache() {
     }
 
     public static void prepareOnModelLoad(MatsimData data) {
         ensureStationPanelCache(data);
+        loadPanel(data);
     }
 
     public static Map<String, Object> readStationPanel(MatsimData data) {
@@ -80,10 +92,27 @@ public final class MatsimStationPanelCache {
             );
         }
         try {
-            return readGzipJson(panelPath(data));
+            return loadPanel(data);
         } catch (Exception e) {
             log.warn("读取站点客流面板缓存失败: model={}, path={}", data.getName(), panelPath(data), e);
             return Map.of();
+        }
+    }
+
+    private static Map<String, Object> loadPanel(MatsimData data) {
+        String cacheKey = panelPath(data).toAbsolutePath().normalize().toString();
+        Map<String, Object> cached = MEMORY_CACHE.get(cacheKey);
+        if (cached != null) return cached;
+        synchronized (MEMORY_CACHE) {
+            cached = MEMORY_CACHE.get(cacheKey);
+            if (cached != null) return cached;
+            try {
+                cached = readGzipJson(panelPath(data));
+                MEMORY_CACHE.put(cacheKey, cached);
+                return cached;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 
@@ -96,6 +125,7 @@ public final class MatsimStationPanelCache {
             Map<String, Object> payload = buildPanel(data);
             writeGzipJson(panelPath(data), payload);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MEMORY_CACHE.remove(panelPath(data).toAbsolutePath().normalize().toString());
             log.info("站点客流面板缓存生成完成: model={}, stations={}",
                     data.getName(), ((Map<?, ?>) payload.getOrDefault("stations", Map.of())).size());
         } catch (Exception e) {
@@ -169,15 +199,15 @@ public final class MatsimStationPanelCache {
                 String routeId = routeEntry.getKey().toString();
                 TransitRoute route = routeEntry.getValue();
                 RouteMeta routeMeta = new RouteMeta(lineId, lineName, routeId, route);
-                index.routes.put(routeId, routeMeta);
+                index.routes.put(routeMeta.key(), routeMeta);
                 // 可达性图按“物理换乘点”(stop node)而非站名构建，避免同名异地站点产生假换乘。
                 Set<String> routeNodes = new LinkedHashSet<>();
                 for (TransitRouteStop stop : route.getStops()) {
                     routeNodes.add(index.stopNode(stop.getStopFacility().getId().toString()));
                 }
-                index.routeToNodes.put(routeId, routeNodes);
+                index.routeToNodes.put(routeMeta.key(), routeNodes);
                 for (String node : routeNodes) {
-                    index.nodeToRoutes.computeIfAbsent(node, ignored -> new LinkedHashSet<>()).add(routeId);
+                    index.nodeToRoutes.computeIfAbsent(node, ignored -> new LinkedHashSet<>()).add(routeMeta.key());
                 }
             }
         }
@@ -480,6 +510,10 @@ public final class MatsimStationPanelCache {
 
     private static String nonBlank(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String routeKey(String lineId, String routeId) {
+        return nonBlank(lineId, "") + "::" + nonBlank(routeId, "");
     }
 
     private static int intSum(int[] values) {
@@ -821,6 +855,10 @@ public final class MatsimStationPanelCache {
             this.desc = routeDesc(stationNames);
         }
 
+        private String key() {
+            return routeKey(lineId, routeId);
+        }
+
         private Map<String, Object> toPayload() {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("lineId", lineId);
@@ -844,6 +882,7 @@ public final class MatsimStationPanelCache {
     private static final class StationPanelAccumulator {
         private final String stationName;
         private final Set<String> facilityIds = new LinkedHashSet<>();
+        private final Map<String, FacilityPanelAccumulator> facilityPanels = new LinkedHashMap<>();
         private final Map<String, RouteMeta> routes = new LinkedHashMap<>();
         private final Set<String> riderIds = new LinkedHashSet<>();
         private final int[] boardingByHour = new int[HOURS];
@@ -873,21 +912,34 @@ public final class MatsimStationPanelCache {
         private void addFacility(String facilityId) {
             if (facilityId != null && !facilityId.isBlank()) {
                 facilityIds.add(facilityId);
+                facilityPanels.computeIfAbsent(facilityId, ignored -> new FacilityPanelAccumulator(stationName, facilityId));
             }
         }
 
         private void addRoute(RouteMeta route) {
-            routes.putIfAbsent(route.routeId, route);
+            routes.putIfAbsent(route.key(), route);
         }
 
         private void addTrack(PTPersonTrack track) {
             int hour = hourOf(safeTime(track));
+            String facilityId = idString(track.getFacilityId());
+            FacilityPanelAccumulator facilityPanel = null;
+            if (facilityId != null && !facilityId.isBlank()) {
+                addFacility(facilityId);
+                facilityPanel = facilityPanels.get(facilityId);
+            }
             if (Boolean.TRUE.equals(track.getEnter())) {
                 boardingByHour[hour]++;
                 totalBoardings++;
+                if (facilityPanel != null) {
+                    facilityPanel.addBoarding(hour);
+                }
             } else {
                 alightingByHour[hour]++;
                 totalAlightings++;
+                if (facilityPanel != null) {
+                    facilityPanel.addAlighting(hour);
+                }
             }
             String personId = idString(track.getPersonId());
             if (personId != null) {
@@ -896,7 +948,7 @@ public final class MatsimStationPanelCache {
         }
 
         private void addOd(String origin, String destination, RouteMeta route, int hour) {
-            String routeKey = route == null ? "unknown" : route.routeId;
+            String routeKey = route == null ? "unknown" : route.key();
             String key = routeKey + "::" + origin + "::" + destination;
             od.computeIfAbsent(key, ignored -> new OdAccumulator(origin, destination, route)).flowByHour[hour]++;
         }
@@ -1058,6 +1110,11 @@ public final class MatsimStationPanelCache {
             payload.put("hourlyFlow", hourlyFlow());
             payload.put("boardingByHour", boardingByHour);
             payload.put("alightingByHour", alightingByHour);
+            Map<String, Object> facilityPayloads = new LinkedHashMap<>();
+            facilityPanels.values().stream()
+                    .sorted(Comparator.comparing(panel -> panel.facilityId, String::compareToIgnoreCase))
+                    .forEach(panel -> facilityPayloads.put(panel.facilityId, panel.toPayload()));
+            payload.put("facilityPanels", facilityPayloads);
             payload.put("routes", routes.values().stream()
                     .sorted(Comparator.comparing(route -> route.lineName))
                     .map(RouteMeta::toPayload)
@@ -1106,6 +1163,70 @@ public final class MatsimStationPanelCache {
                     .limit(OD_LIMIT)
                     .map(item -> item.toPayload(stationName, totalFlow))
                     .toList();
+        }
+    }
+
+    private static final class FacilityPanelAccumulator {
+        private final String stationName;
+        private final String facilityId;
+        private final int[] boardingByHour = new int[HOURS];
+        private final int[] alightingByHour = new int[HOURS];
+        private long totalBoardings = 0;
+        private long totalAlightings = 0;
+
+        private FacilityPanelAccumulator(String stationName, String facilityId) {
+            this.stationName = stationName;
+            this.facilityId = facilityId;
+        }
+
+        private void addBoarding(int hour) {
+            boardingByHour[hour]++;
+            totalBoardings++;
+        }
+
+        private void addAlighting(int hour) {
+            alightingByHour[hour]++;
+            totalAlightings++;
+        }
+
+        private long passengerFlow() {
+            return totalBoardings + totalAlightings;
+        }
+
+        private int[] hourlyFlow() {
+            int[] result = new int[HOURS];
+            for (int i = 0; i < HOURS; i++) {
+                result[i] = boardingByHour[i] + alightingByHour[i];
+            }
+            return result;
+        }
+
+        private int peakFlow() {
+            int peak = 0;
+            for (int value : hourlyFlow()) {
+                peak = Math.max(peak, value);
+            }
+            return peak;
+        }
+
+        private Map<String, Object> toPayload() {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("stationName", stationName);
+            payload.put("facilityId", facilityId);
+            payload.put("facilityIds", List.of(facilityId));
+            payload.put("hours", List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23));
+            payload.put("hourlyFlow", hourlyFlow());
+            payload.put("boardingByHour", boardingByHour);
+            payload.put("alightingByHour", alightingByHour);
+
+            Map<String, Object> metrics = new LinkedHashMap<>();
+            metrics.put("passenger", passengerFlow());
+            metrics.put("boarding", totalBoardings);
+            metrics.put("alighting", totalAlightings);
+            metrics.put("peakFlow", peakFlow());
+            metrics.put("facilityCount", 1);
+            payload.put("metrics", metrics);
+            return payload;
         }
     }
 

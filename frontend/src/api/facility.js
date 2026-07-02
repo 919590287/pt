@@ -4,11 +4,12 @@ import request from "@/utils/request";
 // POST /pt/facility/facilityAll
 // 接口ID：450702185
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-450702185
-export function getFacilityAll(data) {
+export function getFacilityAll(data, config = {}) {
   return request({
     url: `/pt/facility/facilityAll`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
   })
 }
 

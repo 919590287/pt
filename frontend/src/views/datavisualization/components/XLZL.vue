@@ -129,11 +129,33 @@
         <div class="pfa-route-sections">
           <!-- 统计时段（仅断面 / 乘降 / 关联换乘按时段统计）-->
           <div v-if="['segments', 'boarding', 'transfer'].includes(pfaLineSection)" class="time-range-section">
+            <div class="time-unit-row">
+              <span class="time-unit-label">统计时间单位</span>
+              <div class="time-unit-selector" role="group" aria-label="统计时间单位">
+                <button
+                  v-for="option in timeUnitOptions"
+                  :key="option.value"
+                  type="button"
+                  :class="['time-unit-btn', segmentTimeUnit === option.value ? 'active' : '']"
+                  @click="segmentTimeUnit = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
+            </div>
             <div class="time-range-header">
               <span class="title">统计时段选择</span>
               <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
             </div>
-            <el-slider v-model="segmentTimeRange" range :min="6" :max="22" :step="1" :show-tooltip="false" class="time-range-slider" />
+            <el-slider
+              v-model="segmentTimeRange"
+              range
+              :min="6"
+              :max="22"
+              :step="segmentTimeStep"
+              :show-tooltip="false"
+              class="time-range-slider"
+            />
           </div>
 
           <!-- ① 线路断面客流与满载率 -->
@@ -164,57 +186,52 @@
           <section v-else-if="pfaLineSection === 'boarding'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">站点乘降客流（按所选时段）</span>
-              <div class="chart-type-selector">
-                <div
-                  v-for="type in ['line', 'bar']"
-                  :key="type"
-                  :class="['type-pill', boardingChartType === type ? 'active' : '']"
-                  @click="boardingChartType = type"
-                >
-                  {{ type === 'line' ? '折线图' : '柱状图' }}
+              <div class="section-actions">
+                <div class="chart-type-selector">
+                  <div
+                    v-for="type in ['line', 'bar']"
+                    :key="type"
+                    :class="['type-pill', boardingChartType === type ? 'active' : '']"
+                    @click="boardingChartType = type"
+                  >
+                    {{ type === 'line' ? '折线图' : '柱状图' }}
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  class="chart-fullscreen-btn"
+                  :disabled="!currentSelectedRoute?.facilities?.length"
+                  title="全屏查看站点乘降客流"
+                  @click.stop="boardingFullscreenVisible = true"
+                >
+                  <el-icon><FullScreen /></el-icon>
+                  <span>全屏</span>
+                </button>
               </div>
             </div>
-            <div class="chart-container-wrapper" :class="{ 'is-split': isStationSplit }">
-              <el-auto-resizer class="chart_box">
-                <template #default="{ height, width }">
-                  <VChart
-                    v-if="width > 0 && height > 0"
-                    class="boarding-alighting-bar-chart"
-                    :option="boardingAlightingChartOption"
-                    autoresize
-                    :update-options="{ notMerge: true }"
-                  />
-                </template>
-              </el-auto-resizer>
-            </div>
-          </section>
-
-          <!-- ③ 运营效益 -->
-          <section v-else-if="pfaLineSection === 'efficiency'" class="pfa-section">
-            <div class="section-header">
-              <span class="section-title">运营效益</span>
-            </div>
-            <div class="efficiency-grid">
-              <div class="eff-card">
-                <span class="eff-label">日客流量</span>
-                <span class="eff-value">{{ operationStats.dailyFlow }}</span>
-              </div>
-              <div class="eff-card">
-                <span class="eff-label">日发车班次</span>
-                <span class="eff-value">{{ operationStats.departures }}</span>
-              </div>
-              <div class="eff-card">
-                <span class="eff-label">车辆数</span>
-                <span class="eff-value">{{ operationStats.vehicles }}</span>
-              </div>
-              <div class="eff-card">
-                <span class="eff-label">单班次客流</span>
-                <span class="eff-value">{{ operationStats.perTrip }}</span>
-              </div>
-              <div class="eff-card">
-                <span class="eff-label">车日均客流量</span>
-                <span class="eff-value">{{ operationStats.perVehicle }}</span>
+            <div :class="['boarding-chart-stack', { 'has-dual': boardingChartPanels.length > 1 }]">
+              <div
+                v-for="chart in boardingChartPanels"
+                :key="chart.key"
+                class="boarding-chart-panel"
+              >
+                <div v-if="boardingChartPanels.length > 1" class="boarding-chart-title">
+                  <span>{{ chart.title }}</span>
+                  <span>{{ chart.subtitle }}</span>
+                </div>
+                <div class="chart-container-wrapper">
+                  <el-auto-resizer class="chart_box">
+                    <template #default="{ height, width }">
+                      <VChart
+                        v-if="width > 0 && height > 0"
+                        class="boarding-alighting-bar-chart"
+                        :option="chart.option"
+                        autoresize
+                        :update-options="{ notMerge: true }"
+                      />
+                    </template>
+                  </el-auto-resizer>
+                </div>
               </div>
             </div>
           </section>
@@ -253,18 +270,37 @@
             <div class="section-header">
               <span class="section-title">关联线路分析（直接换乘）</span>
             </div>
-            <div class="transfer-chart-wrapper">
-              <el-auto-resizer class="chart_box">
-                <template #default="{ height, width }">
-                  <VChart
-                    v-if="width > 0 && height > 0"
-                    class="transfer-bar-chart"
-                    :option="transferChartOption"
-                    autoresize
-                    :update-options="{ notMerge: true }"
-                  />
-                </template>
-              </el-auto-resizer>
+            <div
+              class="transfer-analysis-layout"
+              :style="{ '--transfer-chart-height': `${transferChartHeight}px` }"
+            >
+              <div class="transfer-chart-wrapper">
+                <el-auto-resizer class="chart_box">
+                  <template #default="{ height, width }">
+                    <VChart
+                      v-if="width > 0 && height > 0"
+                      class="transfer-bar-chart"
+                      :option="transferChartOption"
+                      autoresize
+                      :update-options="{ notMerge: true }"
+                    />
+                  </template>
+                </el-auto-resizer>
+              </div>
+              <div v-if="transferTableData.length" class="transfer-meta-list">
+                <div class="transfer-meta-header">
+                  <span>票价</span>
+                  <span>发车间隔</span>
+                </div>
+                <div
+                  v-for="item in transferTableData"
+                  :key="item.key"
+                  class="transfer-meta-row"
+                >
+                  <span>{{ item.fare }}</span>
+                  <span>{{ item.headway }}</span>
+                </div>
+              </div>
             </div>
             <div v-if="!transferTableData.length" class="pfa-empty">暂无换乘关联数据</div>
           </section>
@@ -328,12 +364,52 @@
       </div>
     </div>
   </teleport>
+
+  <el-dialog
+    v-model="boardingFullscreenVisible"
+    class="boarding-fullscreen-dialog"
+    fullscreen
+    append-to-body
+    destroy-on-close
+    :lock-scroll="true"
+  >
+    <template #header>
+      <div class="boarding-fullscreen-header">
+        <div>
+          <div class="boarding-fullscreen-kicker">站点乘降客流</div>
+          <div class="boarding-fullscreen-title">
+            {{ currentSelectedRoute?.lineName || currentSelectedRoute?.info?.lineName || '线路客流分析' }}
+          </div>
+        </div>
+        <span class="boarding-fullscreen-meta">{{ formatHourLabel(segmentTimeRange[0]) }}-{{ formatHourLabel(segmentTimeRange[1]) }} · {{ segmentTimeUnit }}min</span>
+      </div>
+    </template>
+    <div :class="['boarding-fullscreen-body', { 'has-dual': boardingFullscreenPanels.length > 1 }]">
+      <section
+        v-for="chart in boardingFullscreenPanels"
+        :key="chart.key"
+        class="boarding-fullscreen-panel"
+      >
+        <div v-if="boardingFullscreenPanels.length > 1" class="boarding-fullscreen-chart-title">
+          <span>{{ chart.title }}</span>
+          <span>{{ chart.subtitle }}</span>
+        </div>
+        <VChart
+          class="boarding-fullscreen-chart"
+          :option="chart.option"
+          autoresize
+          :update-options="{ notMerge: true }"
+        />
+      </section>
+    </div>
+  </el-dialog>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick, unref } from "vue";
-import { Search, Location, Timer, Connection, Download } from "@element-plus/icons-vue";
-import { getLineAll, getRouteDetail, getRoutePanel, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
+import { Search, Location, Download, FullScreen } from "@element-plus/icons-vue";
+import { getRouteDetail, getRoutePanel, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
+import { abortOtherModelDataRequests, getCachedLineAll } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import { RouteLayer } from "../layers/RouteLayer.js";
@@ -354,7 +430,12 @@ const routePanelDetailCache = new Map();
 const routePanelDetailPromises = new Map();
 const routePanelData = ref(null);
 const selectedRoutePanel = ref(null);
+const selectedReverseRouteDetail = ref(null);
+const selectedReverseRoutePanel = ref(null);
 let routePanelPromise = null;
+let routePanelAbortController = null;
+let selectionAbortController = null;
+let selectionRequestSeq = 0;
 
 const selectedLineName = ref("");
 const selectedStationName = ref("");
@@ -362,6 +443,20 @@ const activeRouteId = ref("");
 const activeMatchedRouteId = ref("");
 const matchedRoutes = ref([]);
 const selectedRouteDetail = ref(null);
+
+function isCanceledRequest(error) {
+  return error?.message === "请求已取消"
+    || error?.message === "canceled"
+    || error?.cause?.message === "canceled"
+    || error?.cause?.code === "ERR_CANCELED";
+}
+
+function nextSelectionSignal() {
+  selectionAbortController?.abort();
+  selectionAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  selectionRequestSeq += 1;
+  return { seq: selectionRequestSeq, signal: selectionAbortController?.signal };
+}
 
 // 注入来自 index.vue 的全局线宽配置与 MapRef
 const LineWidthRef = inject("LineWidthRef", ref(100));
@@ -377,12 +472,15 @@ const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""))
 const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
 // 客流分析模式：即使简化（地图/选中复用运行监测），也渲染完整 MCard2 面板
 const pfaRightPanel = inject("pfaRightPanel", ref(false));
-// 客流分析：当前激活的子功能（右侧只显示对应统计）segments/boarding/efficiency/demographics/transfer
+// 客流分析：当前激活的子功能（右侧只显示对应统计）segments/boarding/demographics/transfer
 const pfaLineSection = inject("pfaLineSection", ref("segments"));
 const runMonitorSelectedLinePanel = inject("runMonitorSelectedLinePanel", null);
 const runMonitorSelectedLineName = inject("runMonitorSelectedLineName", null);
 const runMonitorSelectedRouteDetail = inject("runMonitorSelectedRouteDetail", null);
 const runMonitorSelectedRouteMapLinks = inject("runMonitorSelectedRouteMapLinks", null);
+const runMonitorSelectedReverseLinePanel = inject("runMonitorSelectedReverseLinePanel", null);
+const runMonitorSelectedReverseRouteDetail = inject("runMonitorSelectedReverseRouteDetail", null);
+const runMonitorSelectedReverseRouteMapLinks = inject("runMonitorSelectedReverseRouteMapLinks", null);
 const runMonitorLineOptionFilter = inject("runMonitorLineOptionFilter", () => true);
 const runMonitorStationOptionFilter = inject("runMonitorStationOptionFilter", () => true);
 const shouldRenderPfaRightPanel = computed(() => Boolean(unref(pfaRightPanel)));
@@ -415,11 +513,8 @@ const currentSelectedRoute = computed(() => {
   return null;
 });
 
-// 站点数超过该阈值时，乘降客流图拆成上下两行展示，避免横轴站名糊在一起
-const STATION_SPLIT_THRESHOLD = 18;
-const isStationSplit = computed(
-  () => (currentSelectedRoute.value?.facilities?.length || 0) > STATION_SPLIT_THRESHOLD
-);
+// 右侧窄面板最多显示约这么多站名，其余站点仍参与图表统计。
+const BOARDING_LABEL_TARGET = 10;
 
 const currentRoutePanel = computed(() => {
   const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
@@ -434,10 +529,7 @@ const currentRoutePanel = computed(() => {
       || routePanelData.value?.routes?.[key]
       || null;
   }
-  return routePanelData.value?.routes?.[key]
-    || routePanelData.value?.routes?.[targetId]
-    || findRoutePanelPayload(routePanelData.value?.routes, route)
-    || null;
+  return routePanelFromPayload(routePanelData.value?.routes, route);
 });
 
 function toFiniteNumber(value, fallback = 0) {
@@ -475,6 +567,17 @@ function findRoutePanelPayload(routes = {}, route = null) {
     && String(item.routeId || "") === routeId
     && (!lineId || String(item.lineId || "") === lineId)
   )) || null;
+}
+
+function routePanelFromPayload(routes = {}, route = null) {
+  if (!route || !routes || typeof routes !== "object") return null;
+  const key = routeUniqueKey(route);
+  const routeId = String(route.routeId || "");
+  const lineId = String(route.lineId || "");
+  return routes[key]
+    || findRoutePanelPayload(routes, route)
+    || (!lineId && routeId ? routes[routeId] : null)
+    || null;
 }
 
 function metroLineNumber(text = "") {
@@ -646,10 +749,15 @@ function buildLineGroupRoute(displayName, lines = linesForDisplayName(displayNam
   };
 }
 
+function selectedHourBucketRange(startHour, endHour) {
+  const start = Math.max(0, Math.min(23, Math.floor(Number(startHour) || 0)));
+  const end = Math.max(start, Math.min(23, Math.floor(Number(endHour) || start)));
+  return { start, end };
+}
+
 function sumHourRange(values, startHour, endHour) {
   if (!Array.isArray(values)) return 0;
-  const start = Math.max(0, Math.min(23, Number(startHour) || 0));
-  const end = Math.max(start, Math.min(23, Number(endHour) || start));
+  const { start, end } = selectedHourBucketRange(startHour, endHour);
   let total = 0;
   for (let hour = start; hour <= end; hour++) {
     total += toFiniteNumber(values[hour], 0);
@@ -659,8 +767,7 @@ function sumHourRange(values, startHour, endHour) {
 
 function averageHourRange(values, startHour, endHour) {
   if (!Array.isArray(values)) return 0;
-  const start = Math.max(0, Math.min(23, Number(startHour) || 0));
-  const end = Math.max(start, Math.min(23, Number(endHour) || start));
+  const { start, end } = selectedHourBucketRange(startHour, endHour);
   let total = 0;
   let count = 0;
   for (let hour = start; hour <= end; hour++) {
@@ -713,49 +820,39 @@ const demographicsRiderCount = computed(() =>
   passengerProfileRiderCount(currentRoutePanel.value?.demographics || {})
 );
 
-// 运营效益：日客流量 / 日发车班次 / 车辆数 / 单班次客流 / 车日均客流量
-const operationStats = computed(() => {
-  const m = currentRoutePanel.value?.metrics || {};
-  const info = currentSelectedRoute.value?.info || {};
-  const passenger = toFiniteNumber(m.passenger ?? info.passenger, 0);
-  const departures = toFiniteNumber(m.departures, 0);
-  const vehicles = toFiniteNumber(m.vehicles, 0);
-  const perTrip = toFiniteNumber(m.perTripFlow, departures > 0 ? passenger / departures : 0);
-  const perVehicle = toFiniteNumber(m.perVehicleFlow, vehicles > 0 ? passenger / vehicles : 0);
-  const flow = (n) => (Number.isFinite(n) && n > 0 ? `${Math.round(n).toLocaleString()} 人次` : "--");
-  return {
-    dailyFlow: flow(passenger),
-    departures: departures > 0 ? `${Math.round(departures)} 班` : "--",
-    vehicles: vehicles > 0 ? `${Math.round(vehicles)} 辆` : "--",
-    perTrip: flow(perTrip),
-    perVehicle: flow(perVehicle),
-  };
-});
+function verticalStationLabel(value) {
+  return Array.from(String(value || "")).join("\n");
+}
 
-const boardingAlightingChartOption = computed(() => {
-  const route = currentSelectedRoute.value || {};
-  const facilities = route.facilities || [];
+function stationLabelInterval(total, showAll, target = BOARDING_LABEL_TARGET) {
+  if (showAll || total <= target) return 0;
+  const step = Math.max(1, Math.ceil(total / target));
+  return (index) => index === 0 || index === total - 1 || index % step === 0;
+}
+
+function buildBoardingAlightingChartOption({ route = null, panel = null, fullscreen = false, compact = false } = {}) {
+  const targetRoute = route || currentSelectedRoute.value || {};
+  const targetPanel = panel || currentRoutePanel.value || {};
+  const facilities = targetRoute.facilities || [];
 
   const stationNames = facilities.map(f => f.facilityName || "");
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
-  const stationFlowMap = stationFlowLookup(currentRoutePanel.value?.stationFlows);
+  const stationFlowMap = stationFlowLookup(targetPanel?.stationFlows);
   const boardingData = facilities.map((fac) => {
     const flow = stationFlowMap.get(physicalStationKey(fac));
-    return sumHourRange(flow?.boardingByHour, startHour, endHour);
+    return Math.round(sumHourRange(flow?.boardingByHour, startHour, endHour));
   });
   const alightingData = facilities.map((fac) => {
     const flow = stationFlowMap.get(physicalStationKey(fac));
-    return -sumHourRange(flow?.alightingByHour, startHour, endHour);
+    return -Math.round(sumHourRange(flow?.alightingByHour, startHour, endHour));
   });
 
   const isBar = boardingChartType.value === "bar";
-
-  // 站点过多时，单行旋转标签在窄面板内会相互糊成一团。
-  // 超过阈值则把图表拆成上下两行（两张子图），每行各承担一半站点，
-  // 单行标签数量减半、横向空间翻倍，从而互不重叠、清晰可读。
-  const SPLIT_THRESHOLD = STATION_SPLIT_THRESHOLD;
-  const splitRows = stationNames.length > SPLIT_THRESHOLD;
+  const finiteBoarding = boardingData.filter(v => Number.isFinite(v));
+  const finiteAlighting = alightingData.filter(v => Number.isFinite(v));
+  const yMax = Math.max(1, ...finiteBoarding);
+  const yMin = Math.min(0, ...finiteAlighting);
 
   const boardingColor = {
     type: "linear", x: 0, y: 0, x2: 0, y2: 1,
@@ -766,58 +863,59 @@ const boardingAlightingChartOption = computed(() => {
     colorStops: [{ offset: 0, color: "#f43f5e" }, { offset: 1, color: "#e11d48" }]
   };
 
-  const makeXAxis = (data, gridIndex, rotate) => ({
+  const makeXAxis = (data) => ({
     type: "category",
     data,
-    gridIndex,
     axisLine: { lineStyle: { color: "rgba(21, 105, 222, 0.15)" } },
+    axisTick: { alignWithLabel: true, lineStyle: { color: "rgba(21, 105, 222, 0.12)" } },
     axisLabel: {
       color: "#64748b",
-      fontSize: 10,
-      interval: 0,
-      rotate,
-      width: 64,
-      overflow: "truncate",
-      ellipsis: "…",
-      hideOverlap: true,
-      margin: 8
+      fontSize: fullscreen ? 11 : compact ? 9 : 10,
+      lineHeight: fullscreen ? 13 : compact ? 10 : 12,
+      interval: stationLabelInterval(data.length, fullscreen, compact ? 7 : BOARDING_LABEL_TARGET),
+      rotate: 0,
+      formatter: verticalStationLabel,
+      hideOverlap: false,
+      margin: fullscreen ? 12 : compact ? 6 : 9
     }
   });
 
-  const makeYAxis = (gridIndex, min, max) => ({
+  const makeYAxis = () => ({
     type: "value",
-    gridIndex,
-    min,
-    max,
+    min: yMin,
+    max: yMax,
+    minInterval: 1,
     axisLine: { show: false },
     axisTick: { show: false },
     splitLine: { lineStyle: { color: "rgba(21, 105, 222, 0.06)", type: "dashed" } },
     axisLabel: {
       color: "#64748b",
       fontSize: 10,
-      formatter: (value) => Math.abs(value)
+      formatter: (value) => Math.round(Math.abs(Number(value) || 0))
     }
   });
 
-  const makeSeries = (name, color, data, axisIndex, stackId, radius) => ({
+  const makeSeries = (name, color, data, stackId, radius) => ({
     name,
     type: boardingChartType.value,
-    xAxisIndex: axisIndex,
-    yAxisIndex: axisIndex,
     stack: isBar ? stackId : undefined,
     smooth: !isBar,
     symbol: "circle",
-    symbolSize: 6,
-    barWidth: "40%",
+    symbolSize: fullscreen ? 7 : 6,
+    barWidth: fullscreen ? "42%" : "40%",
     itemStyle: { color, borderRadius: radius },
+    lineStyle: !isBar ? { width: fullscreen ? 3 : 2.4 } : undefined,
+    emphasis: { focus: "series" },
     data
   });
 
-  const baseOption = {
+  return {
     backgroundColor: "transparent",
+    animationDuration: fullscreen ? 420 : 280,
+    animationEasing: "quarticOut",
     tooltip: {
       trigger: "axis",
-      axisPointer: { type: "shadow" },
+      axisPointer: { type: isBar ? "shadow" : "line" },
       backgroundColor: "rgba(30, 41, 59, 0.9)",
       borderColor: "rgba(255, 255, 255, 0.15)",
       textStyle: { color: "#ffffff", fontSize: 12 },
@@ -825,7 +923,7 @@ const boardingAlightingChartOption = computed(() => {
         const stationName = params[0].name;
         let html = `<div style="font-weight: bold; margin-bottom: 4px;">${stationName}</div>`;
         params.forEach(p => {
-          const val = Math.abs(p.value);
+          const val = Math.round(Math.abs(Number(p.value) || 0));
           html += `<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px;">
             <div style="display: flex; align-items: center;">
               <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${p.color}; margin-right: 6px;"></span>
@@ -840,53 +938,81 @@ const boardingAlightingChartOption = computed(() => {
     legend: {
       data: ["上车人数", "下车人数"],
       textStyle: { color: "#64748b", fontSize: 11 },
-      top: 0,
+      top: fullscreen ? 18 : 0,
       icon: "rect"
-    }
-  };
-
-  if (!splitRows) {
-    return {
-      ...baseOption,
-      grid: { left: "3%", right: "4%", bottom: 8, top: "15%", containLabel: true },
-      xAxis: makeXAxis(stationNames, 0, 35),
-      yAxis: makeYAxis(0),
-      series: [
-        makeSeries("上车人数", boardingColor, boardingData, 0, "Total", [4, 4, 0, 0]),
-        makeSeries("下车人数", alightingColor, alightingData, 0, "Total", [0, 0, 4, 4])
-      ]
-    };
-  }
-
-  // ── 两行（两张子图）布局：站点对半切分到上下两行 ──
-  const mid = Math.ceil(stationNames.length / 2);
-  // 两行共用同一纵轴量程，保证跨行的柱高可直接比较
-  const finiteBoarding = boardingData.filter(v => Number.isFinite(v));
-  const finiteAlighting = alightingData.filter(v => Number.isFinite(v));
-  const yMax = Math.max(1, ...finiteBoarding);
-  const yMin = Math.min(0, ...finiteAlighting);
-
-  return {
-    ...baseOption,
-    grid: [
-      { left: "3%", right: "4%", top: "8%", height: "32%", containLabel: true },
-      { left: "3%", right: "4%", top: "58%", height: "32%", containLabel: true }
-    ],
-    xAxis: [
-      makeXAxis(stationNames.slice(0, mid), 0, 30),
-      makeXAxis(stationNames.slice(mid), 1, 30)
-    ],
-    yAxis: [
-      makeYAxis(0, yMin, yMax),
-      makeYAxis(1, yMin, yMax)
-    ],
+    },
+    grid: {
+      left: fullscreen ? 56 : "3%",
+      right: fullscreen ? 36 : "4%",
+      top: fullscreen ? 68 : compact ? 28 : 36,
+      bottom: fullscreen ? 150 : compact ? 76 : 112,
+      containLabel: false
+    },
+    xAxis: makeXAxis(stationNames),
+    yAxis: makeYAxis(),
     series: [
-      makeSeries("上车人数", boardingColor, boardingData.slice(0, mid), 0, "row0", [4, 4, 0, 0]),
-      makeSeries("下车人数", alightingColor, alightingData.slice(0, mid), 0, "row0", [0, 0, 4, 4]),
-      makeSeries("上车人数", boardingColor, boardingData.slice(mid), 1, "row1", [4, 4, 0, 0]),
-      makeSeries("下车人数", alightingColor, alightingData.slice(mid), 1, "row1", [0, 0, 4, 4])
+      makeSeries("上车人数", boardingColor, boardingData, "Total", [4, 4, 0, 0]),
+      makeSeries("下车人数", alightingColor, alightingData, "Total", [0, 0, 4, 4])
     ]
   };
+}
+
+function routeDirectionText(route = {}) {
+  const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
+  const start = facilities[0]?.facilityName || "";
+  const end = facilities[facilities.length - 1]?.facilityName || "";
+  return start && end ? `${start} 至 ${end}` : route?.routeName || route?.lineName || "";
+}
+
+const hasReverseBoardingChart = computed(() => {
+  return Boolean(selectedReverseRouteDetail.value?.facilities?.length && selectedReverseRoutePanel.value);
+});
+
+const boardingAlightingChartOption = computed(() => buildBoardingAlightingChartOption({
+  route: currentSelectedRoute.value,
+  panel: currentRoutePanel.value,
+  compact: hasReverseBoardingChart.value,
+}));
+
+const reverseBoardingAlightingChartOption = computed(() => buildBoardingAlightingChartOption({
+  route: selectedReverseRouteDetail.value,
+  panel: selectedReverseRoutePanel.value,
+  compact: true,
+}));
+
+const boardingChartPanels = computed(() => {
+  const panels = [{
+    key: "primary",
+    title: "当前方向",
+    subtitle: routeDirectionText(currentSelectedRoute.value),
+    option: boardingAlightingChartOption.value,
+  }];
+  if (hasReverseBoardingChart.value) {
+    panels.push({
+      key: "reverse",
+      title: "对向线路",
+      subtitle: routeDirectionText(selectedReverseRouteDetail.value),
+      option: reverseBoardingAlightingChartOption.value,
+    });
+  }
+  return panels;
+});
+
+const boardingFullscreenPanels = computed(() => {
+  return boardingChartPanels.value.map((panel) => ({
+    ...panel,
+    option: panel.key === "reverse"
+      ? buildBoardingAlightingChartOption({
+          route: selectedReverseRouteDetail.value,
+          panel: selectedReverseRoutePanel.value,
+          fullscreen: true,
+        })
+      : buildBoardingAlightingChartOption({
+          route: currentSelectedRoute.value,
+          panel: currentRoutePanel.value,
+          fullscreen: true,
+        }),
+  }));
 });
 
 const boardingProfileChartOption = computed(() => {
@@ -1024,22 +1150,90 @@ const boardingProfileChartOption = computed(() => {
   };
 });
 
-function buildTransferRowsForRange() {
+function transferLineKey(name = "") {
+  return normalizeLineSearchName(name) || String(name || "").trim();
+}
+
+function routeTransferStationNames() {
+  const names = new Set();
+  const addRoute = (route) => {
+    (Array.isArray(route?.facilities) ? route.facilities : []).forEach((fac) => {
+      const name = String(fac?.facilityName || "").trim();
+      if (name) names.add(name);
+    });
+  };
+  addRoute(currentSelectedRoute.value);
+  addRoute(selectedReverseRouteDetail.value || findReverseRoute(currentSelectedRoute.value));
+  return names;
+}
+
+function lineTouchesTransferStations(line = {}, stationNames = new Set()) {
+  if (!stationNames.size) return false;
+  return (Array.isArray(line?.routes) ? line.routes : []).some((route) =>
+    (Array.isArray(route?.facilities) ? route.facilities : []).some((fac) =>
+      stationNames.has(String(fac?.facilityName || "").trim())
+    )
+  );
+}
+
+function baseTransferLineRows() {
+  const stationNames = routeTransferStationNames();
+  const currentLineKey = transferLineKey(currentSelectedRoute.value?.lineName || selectedLineName.value);
+  const rows = new Map();
+  rawLines.value.forEach((line) => {
+    if (!lineTouchesTransferStations(line, stationNames)) return;
+    const name = lineDisplayName(line);
+    const key = transferLineKey(name);
+    if (!key || key === currentLineKey) return;
+    if (!rows.has(key)) {
+      rows.set(key, {
+        key,
+        name,
+        fare: "-",
+        headway: "-",
+        flow: 0,
+        ratio: 0,
+      });
+    }
+  });
+  return rows;
+}
+
+function addTransferPanelRows(rows, panel) {
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
-  const rows = (currentRoutePanel.value?.transfers || []).map((item) => ({
-    name: item.lineName || item.lineId || "--",
-    station: item.station || "--",
-    flow: sumHourRange(item.flowByHour, startHour, endHour),
-    ratio: 0
-  })).filter(item => item.flow > 0);
-  const total = rows.reduce((sum, item) => sum + item.flow, 0);
-  return rows
+  const currentLineKey = transferLineKey(currentSelectedRoute.value?.lineName || selectedLineName.value);
+  (Array.isArray(panel?.transfers) ? panel.transfers : []).forEach((item) => {
+    const name = item.lineName || item.lineId || "--";
+    const key = transferLineKey(name);
+    if (!key || key === currentLineKey) return;
+    if (!rows.has(key)) {
+      rows.set(key, {
+        key,
+        name,
+        fare: "-",
+        headway: "-",
+        flow: 0,
+        ratio: 0,
+      });
+    }
+    const row = rows.get(key);
+    row.flow += Math.round(sumHourRange(item.flowByHour, startHour, endHour));
+  });
+}
+
+function buildTransferRowsForRange() {
+  const rows = baseTransferLineRows();
+  addTransferPanelRows(rows, currentRoutePanel.value);
+  addTransferPanelRows(rows, selectedReverseRoutePanel.value);
+  const list = Array.from(rows.values());
+  const total = list.reduce((sum, item) => sum + item.flow, 0);
+  return list
     .map(item => ({
       ...item,
       ratio: total > 0 ? Number(((item.flow / total) * 100).toFixed(1)) : 0
     }))
-    .sort((a, b) => b.flow - a.flow);
+    .sort((a, b) => b.flow - a.flow || a.name.localeCompare(b.name, "zh-CN"));
 }
 
 const transferChartOption = computed(() => {
@@ -1074,13 +1268,14 @@ const transferChartOption = computed(() => {
     },
     grid: {
       left: "3%",
-      right: "6%",
+      right: "4%",
       bottom: "8%",
       top: "5%",
       containLabel: true
     },
     xAxis: {
       type: "value",
+      minInterval: 1,
       axisLine: {
         show: false
       },
@@ -1095,12 +1290,14 @@ const transferChartOption = computed(() => {
       },
       axisLabel: {
         color: "#64748b",
-        fontSize: 10
+        fontSize: 10,
+        formatter: (value) => Math.round(Number(value) || 0)
       }
     },
     yAxis: {
       type: "category",
       data: transferLines,
+      inverse: true,
       axisLine: {
         lineStyle: {
           color: "rgba(21, 105, 222, 0.15)"
@@ -1140,10 +1337,16 @@ const transferTableData = computed(() => {
   return buildTransferRowsForRange();
 });
 
+const transferChartHeight = computed(() => {
+  const rows = Math.max(transferTableData.value.length, 1);
+  return Math.max(220, rows * 28 + 44);
+});
+
 const { proxy } = getCurrentInstance() || {};
 const activeChartType = ref("line");
 // 站点乘降图：折线 / 柱状切换
 const boardingChartType = ref("bar");
+const boardingFullscreenVisible = ref(false);
 
 const passengerFlowChartOption = computed(() => {
   const isLine = activeChartType.value === "line";
@@ -1321,11 +1524,39 @@ const currentLeaderboard = computed(() => {
 const activeDetailTab = ref("overview");
 const segmentViewMode = ref("table");
 const transferViewMode = ref("table");
+const timeUnitOptions = [
+  { label: "15min", value: 15 },
+  { label: "30min", value: 30 },
+  { label: "60min", value: 60 },
+];
+const segmentTimeUnit = ref(60);
+const segmentTimeStep = computed(() => segmentTimeUnit.value / 60);
 const segmentTimeRange = ref([8, 18]);
 
 function formatHourLabel(hour) {
-  return `${hour.toString().padStart(2, "0")}:00`;
+  const totalMinutes = Math.round((Number(hour) || 0) * 60);
+  const safeMinutes = Math.max(0, Math.min(24 * 60 - 1, totalMinutes));
+  const hours = Math.floor(safeMinutes / 60);
+  const minutes = safeMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
+
+function alignHourToUnit(hour, unitMinutes = segmentTimeUnit.value) {
+  const stepMinutes = Math.max(15, Number(unitMinutes) || 60);
+  const totalMinutes = Math.round((Number(hour) || 0) * 60);
+  const alignedMinutes = Math.round(totalMinutes / stepMinutes) * stepMinutes;
+  return Number((alignedMinutes / 60).toFixed(4));
+}
+
+watch(segmentTimeUnit, (unit) => {
+  const minHour = 6;
+  const maxHour = 22;
+  const nextRange = segmentTimeRange.value.map((value) =>
+    Math.max(minHour, Math.min(maxHour, alignHourToUnit(value, unit)))
+  );
+  if (nextRange[1] < nextRange[0]) nextRange[1] = nextRange[0];
+  segmentTimeRange.value = nextRange;
+});
 
 function handleExportDetail() {
   if (proxy?.$message) {
@@ -1804,6 +2035,44 @@ function getRouteEndpointLabel(route, index) {
   return route?.routeName || `线路 ${index + 1}`;
 }
 
+function routeEndpointNames(route = {}) {
+  const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
+  return {
+    start: String(facilities[0]?.facilityName || ""),
+    end: String(facilities[facilities.length - 1]?.facilityName || ""),
+  };
+}
+
+function findReverseRoute(route = {}) {
+  if (!route || route.lineGroup) return null;
+  const currentKey = routeUniqueKey(route);
+  const displayName = selectedLineName.value || route.lineName || route.rawLineName || "";
+  const sourceRoutes = selectedLineName.value
+    ? selectedLineRoutes.value
+    : linesForDisplayName(displayName).flatMap((line) =>
+        (Array.isArray(line?.routes) ? line.routes : []).map((item) => withLineMeta(item, line))
+      );
+  const routes = sourceRoutes.filter((item) => !item.lineGroup && routeUniqueKey(item) !== currentKey);
+  if (!routes.length) return null;
+  const currentEndpoints = routeEndpointNames(route);
+  if (currentEndpoints.start && currentEndpoints.end) {
+    const reversed = routes.find((item) => {
+      const endpoints = routeEndpointNames(item);
+      return endpoints.start === currentEndpoints.end && endpoints.end === currentEndpoints.start;
+    });
+    if (reversed) return reversed;
+  }
+  return routes[0];
+}
+
+function clearReverseSelectionOutputs() {
+  selectedReverseRouteDetail.value = null;
+  selectedReverseRoutePanel.value = null;
+  if (runMonitorSelectedReverseLinePanel) runMonitorSelectedReverseLinePanel.value = null;
+  if (runMonitorSelectedReverseRouteDetail) runMonitorSelectedReverseRouteDetail.value = null;
+  if (runMonitorSelectedReverseRouteMapLinks) runMonitorSelectedReverseRouteMapLinks.value = [];
+}
+
 // 格式化秒数为 HH:mm
 function formatSecondsToTime(seconds) {
   if (seconds === undefined || seconds === null) return "--:--";
@@ -1919,7 +2188,7 @@ function routeStopStations(route) {
 }
 
 function updateSelectedRouteStops(route) {
-  if (runMonitorSimplifiedRight && !shouldRenderPfaRightPanel.value) {
+  if (runMonitorSimplifiedRight) {
     cleanUpSelectedRouteStops();
     return;
   }
@@ -2012,6 +2281,7 @@ async function handleLineChange(lineName) {
     activeRouteId.value = "";
     selectedRouteDetail.value = null;
     selectedRoutePanel.value = null;
+    clearReverseSelectionOutputs();
     updateLayers(null);
     return;
   }
@@ -2022,19 +2292,22 @@ async function handleLineChange(lineName) {
 }
 
 // 选择某条线路的某个方向
-async function loadRouteDetail(route) {
+async function loadRouteDetail(route, config = {}) {
   if (!route?.routeId) return route;
-  if (route.lineGroup) return loadLineGroupDetail(route);
+  if (route.lineGroup) return loadLineGroupDetail(route, config);
   const routeId = String(route.routeId);
   const key = routeUniqueKey(route);
   if (routeDetailCache.has(key)) {
     return routeDetailCache.get(key);
   }
-  const res = await getRouteDetail({
-    datasource: props.model,
-    lineId: route.lineId || "",
-    routeId: route.routeId,
-  });
+  const res = await getRouteDetail(
+    {
+      datasource: props.model,
+      lineId: route.lineId || "",
+      routeId: route.routeId,
+    },
+    { silentError: true, ...config },
+  );
   const detail = {
     ...route,
     ...(res.data || {}),
@@ -2047,11 +2320,11 @@ async function loadRouteDetail(route) {
   return detail;
 }
 
-async function loadLineGroupDetail(route) {
+async function loadLineGroupDetail(route, config = {}) {
   const key = routeUniqueKey(route);
   if (routeDetailCache.has(key)) return routeDetailCache.get(key);
   const childRoutes = Array.isArray(route?.childRoutes) ? route.childRoutes : [];
-  const childDetails = (await Promise.all(childRoutes.map((child) => loadRouteDetail(child))))
+  const childDetails = (await Promise.all(childRoutes.map((child) => loadRouteDetail(child, config))))
     .filter(Boolean);
   const detail = {
     ...route,
@@ -2063,7 +2336,7 @@ async function loadLineGroupDetail(route) {
   return detail;
 }
 
-async function loadRoutePanelDetail(route) {
+async function loadRoutePanelDetail(route, config = {}) {
   const routeId = String(route?.routeId || "");
   if (!routeId) return null;
   const key = routeUniqueKey(route);
@@ -2080,7 +2353,7 @@ async function loadRoutePanelDetail(route) {
     datasource: model,
     lineId: route.lineId || "",
     routeId,
-  }, { silentError: true })
+  }, { silentError: true, ...config })
     .then((res) => {
       const panel = res?.data && typeof res.data === "object" ? res.data : null;
       if (props.model === model && panel && Object.keys(panel).length) {
@@ -2089,7 +2362,10 @@ async function loadRoutePanelDetail(route) {
       }
       return null;
     })
-    .catch(() => null)
+    .catch((error) => {
+      if (isCanceledRequest(error)) return null;
+      return null;
+    })
     .finally(() => {
       routePanelDetailPromises.delete(key);
     });
@@ -2097,17 +2373,14 @@ async function loadRoutePanelDetail(route) {
   return promise;
 }
 
-async function loadSelectedRoutePanel(route) {
+async function loadSelectedRoutePanel(route, config = {}) {
   const key = routeUniqueKey(route);
   if (!key || !shouldLoadSelectedRoutePanel.value) return null;
-  const detailPanel = await loadRoutePanelDetail(route);
+  const detailPanel = await loadRoutePanelDetail(route, config);
   if (detailPanel) return detailPanel;
   if (!shouldRenderPfaRightPanel.value) return null;
   const panel = await ensureRoutePanelData();
-  const routePanel = panel?.routes?.[key]
-    || panel?.routes?.[String(route?.routeId || "")]
-    || findRoutePanelPayload(panel?.routes, route)
-    || null;
+  const routePanel = routePanelFromPayload(panel?.routes, route);
   if (routePanel) {
     routePanelDetailCache.set(key, routePanel);
   }
@@ -2118,7 +2391,12 @@ function ensureRoutePanelData() {
   if (routePanelData.value) return Promise.resolve(routePanelData.value);
   if (routePanelPromise) return routePanelPromise;
   const model = props.model;
-  routePanelPromise = getRoutePanel({ datasource: model }, { silentError: true })
+  routePanelAbortController?.abort();
+  routePanelAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  routePanelPromise = getRoutePanel(
+    { datasource: model },
+    { silentError: true, signal: routePanelAbortController?.signal },
+  )
     .then((res) => {
       const data = res.data || null;
       if (props.model === model && data?.routes) {
@@ -2126,9 +2404,13 @@ function ensureRoutePanelData() {
       }
       return data;
     })
-    .catch(() => null)
+    .catch((error) => {
+      if (isCanceledRequest(error)) return null;
+      return null;
+    })
     .finally(() => {
       routePanelPromise = null;
+      routePanelAbortController = null;
     });
   return routePanelPromise;
 }
@@ -2137,20 +2419,43 @@ async function handleSelectRoute(route) {
   const routeId = String(route?.routeId || "");
   if (!routeId) return;
   const key = routeUniqueKey(route);
+  const reverseRoute = findReverseRoute(route);
+  const request = nextSelectionSignal();
   activeRouteId.value = routeId;
   selectedRoutePanel.value = routePanelDetailCache.get(key) || null;
-  const [detail, panel] = await Promise.all([
-    loadRouteDetail(route),
-    loadSelectedRoutePanel(route),
-  ]);
-  if (String(activeRouteId.value) !== routeId) return;
-  selectedRouteDetail.value = detail;
-  if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
-  if (detail?.links && detail.links.length > 0) {
-    updateLayers(detail.links);
-    centerOnRoute(detail.links);
+  clearReverseSelectionOutputs();
+  try {
+    const [detail, panel, reverseDetail, reversePanel] = await Promise.all([
+      loadRouteDetail(route, { signal: request.signal }),
+      loadSelectedRoutePanel(route, { signal: request.signal }),
+      reverseRoute ? loadRouteDetail(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
+      reverseRoute ? loadSelectedRoutePanel(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
+    ]);
+    if (selectionRequestSeq !== request.seq || String(activeRouteId.value) !== routeId) return;
+    selectedRouteDetail.value = detail;
+    if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
+    selectedReverseRouteDetail.value = reverseDetail || null;
+    selectedReverseRoutePanel.value = reversePanel || null;
+    if (runMonitorSelectedReverseRouteDetail) {
+      runMonitorSelectedReverseRouteDetail.value = reverseDetail || null;
+    }
+    if (runMonitorSelectedReverseLinePanel) {
+      runMonitorSelectedReverseLinePanel.value = reversePanel || null;
+    }
+    if (runMonitorSelectedReverseRouteMapLinks) {
+      runMonitorSelectedReverseRouteMapLinks.value = Array.isArray(reverseDetail?.links) ? reverseDetail.links : [];
+    }
+    if (detail?.links && detail.links.length > 0) {
+      updateLayers(detail.links);
+      centerOnRoute(detail.links);
+    }
+    updateSelectedRouteStops(detail);
+  } catch (error) {
+    if (!isCanceledRequest(error)) {
+      selectedRouteDetail.value = null;
+      updateLayers(null);
+    }
   }
-  updateSelectedRouteStops(detail);
 }
 
 // 切换站点时
@@ -2160,6 +2465,7 @@ function handleStationChange(stationName) {
     activeMatchedRouteId.value = "";
     selectedRouteDetail.value = null;
     selectedRoutePanel.value = null;
+    clearReverseSelectionOutputs();
     updateLayers(null);
     return;
   }
@@ -2202,6 +2508,7 @@ function handleStationChange(stationName) {
   activeMatchedRouteId.value = "";
   selectedRouteDetail.value = null;
   selectedRoutePanel.value = null;
+  clearReverseSelectionOutputs();
   updateLayers(null); // 不要自动选中第一条线路
 }
 
@@ -2210,20 +2517,34 @@ async function handleSelectMatchedRoute(item) {
   const routeId = String(item?.routeId || "");
   if (!routeId) return;
   const key = routeUniqueKey(item);
+  const reverseRoute = findReverseRoute(item);
+  const request = nextSelectionSignal();
   activeMatchedRouteId.value = key;
   selectedRoutePanel.value = routePanelDetailCache.get(key) || null;
-  const [detail, panel] = await Promise.all([
-    loadRouteDetail(item),
-    loadSelectedRoutePanel(item),
-  ]);
-  if (String(activeMatchedRouteId.value) !== key) return;
-  selectedRouteDetail.value = detail;
-  if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
-  if (detail?.links) {
-    updateLayers(detail.links);
-    centerOnRoute(detail.links);
+  clearReverseSelectionOutputs();
+  try {
+    const [detail, panel, reverseDetail, reversePanel] = await Promise.all([
+      loadRouteDetail(item, { signal: request.signal }),
+      loadSelectedRoutePanel(item, { signal: request.signal }),
+      reverseRoute ? loadRouteDetail(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
+      reverseRoute ? loadSelectedRoutePanel(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
+    ]);
+    if (selectionRequestSeq !== request.seq || String(activeMatchedRouteId.value) !== key) return;
+    selectedRouteDetail.value = detail;
+    if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
+    selectedReverseRouteDetail.value = reverseDetail || null;
+    selectedReverseRoutePanel.value = reversePanel || null;
+    if (detail?.links) {
+      updateLayers(detail.links);
+      centerOnRoute(detail.links);
+    }
+    updateSelectedRouteStops(detail);
+  } catch (error) {
+    if (!isCanceledRequest(error)) {
+      selectedRouteDetail.value = null;
+      updateLayers(null);
+    }
   }
-  updateSelectedRouteStops(detail);
 }
 
 // 切换搜索模式时清空选项并还原路线
@@ -2235,6 +2556,7 @@ watch(searchMode, () => {
   matchedRoutes.value = [];
   selectedRouteDetail.value = null;
   selectedRoutePanel.value = null;
+  clearReverseSelectionOutputs();
   updateLayers(null);
 });
 
@@ -2242,13 +2564,14 @@ watch(searchMode, () => {
 async function loadAllLines() {
   const model = props.model;
   loading.value = true;
+  abortOtherModelDataRequests(model);
   routePanelData.value = null;
   selectedRoutePanel.value = null;
   if (!runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value) ensureRoutePanelData();
   try {
-    const lineRes = await getLineAll({ datasource: model });
+    const lineRes = await getCachedLineAll(model);
     if (props.model !== model) return;
-      const data = (lineRes.data || []).map((line) => ({
+      const data = (Array.isArray(lineRes) ? lineRes : []).map((line) => ({
         ...line,
         lineName: line?.lineName || line?.lineId || "未命名线路",
       }));
@@ -2258,8 +2581,8 @@ async function loadAllLines() {
         _BgRouteLayer.setTileSource(model, { tileRequest: getRouteTileBinary });
       }
       updateLayers(null);
-  } catch {
-    if (props.model === model) rawLines.value = [];
+  } catch (error) {
+    if (props.model === model && !isCanceledRequest(error)) rawLines.value = [];
   } finally {
     if (props.model === model) {
       loading.value = false;
@@ -2278,6 +2601,8 @@ onMounted(() => {
 
 watch(() => props.model, (newModel) => {
   if (newModel) {
+    selectionAbortController?.abort();
+    routePanelAbortController?.abort();
     routeDetailCache.clear();
     routePanelDetailCache.clear();
     routePanelDetailPromises.clear();
@@ -2289,14 +2614,18 @@ watch(() => props.model, (newModel) => {
     activeMatchedRouteId.value = "";
     matchedRoutes.value = [];
     if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
+    clearReverseSelectionOutputs();
     selectedRouteDetail.value = null;
     loadAllLines();
   }
 });
 
 onUnmounted(() => {
+  selectionAbortController?.abort();
+  routePanelAbortController?.abort();
   if (runMonitorSelectedRouteDetail) runMonitorSelectedRouteDetail.value = null;
   if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
+  clearReverseSelectionOutputs();
   _BgRouteLayer.dispose();
   _RouteLayer.dispose();
   cleanUpSelectedRouteStops();
@@ -2312,6 +2641,7 @@ function clearSelection() {
   selectedRouteDetail.value = null;
   selectedRoutePanel.value = null;
   if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
+  clearReverseSelectionOutputs();
   updateLayers(null);
   cleanUpSelectedRouteStops();
 }
@@ -2456,6 +2786,46 @@ defineExpose({
   background: var(--dm2-surface-sunken);
   border: 1px solid var(--dm2-line);
 }
+.pfa-route-sections .time-unit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm2-space-3);
+}
+.pfa-route-sections .time-unit-label {
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+}
+.pfa-route-sections .time-unit-selector {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface);
+}
+.pfa-route-sections .time-unit-btn {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: calc(var(--dm2-radius-sm) - 3px);
+  background: transparent;
+  color: var(--dm2-muted);
+  font-family: var(--dm2-font-num);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+  cursor: pointer;
+  transition: color var(--dm2-dur-fast) var(--dm2-ease),
+    background-color var(--dm2-dur-fast) var(--dm2-ease);
+}
+.pfa-route-sections .time-unit-btn:hover {
+  color: var(--dm2-ink-soft);
+}
+.pfa-route-sections .time-unit-btn.active {
+  background: var(--dm2-accent);
+  color: #fff;
+}
 .pfa-route-sections .time-range-header {
   display: flex;
   align-items: center;
@@ -2583,6 +2953,14 @@ defineExpose({
 }
 
 /* ② 站点乘降图 & ⑤ 关联线路图 */
+.pfa-route-sections .section-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--dm2-space-2);
+  min-width: 0;
+  flex-wrap: wrap;
+}
 .pfa-route-sections .chart-type-selector {
   display: flex;
   gap: 2px;
@@ -2610,56 +2988,208 @@ defineExpose({
   background: var(--dm2-accent);
   box-shadow: var(--dm2-accent-glow);
 }
-.pfa-route-sections .chart-container-wrapper,
-.pfa-route-sections .transfer-chart-wrapper {
-  height: 208px;
+.pfa-route-sections .chart-fullscreen-btn {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 9px;
+  border: 1px solid var(--dm2-line-strong);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface);
+  color: var(--dm2-ink-soft);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color var(--dm2-dur-fast) var(--dm2-ease),
+    color var(--dm2-dur-fast) var(--dm2-ease),
+    background-color var(--dm2-dur-fast) var(--dm2-ease);
+}
+.pfa-route-sections .chart-fullscreen-btn:hover,
+.pfa-route-sections .chart-fullscreen-btn:focus-visible {
+  border-color: rgba(21, 105, 222, 0.38);
+  background: rgba(21, 105, 222, 0.06);
+  color: var(--dm2-accent);
+}
+.pfa-route-sections .chart-fullscreen-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  background: var(--dm2-surface-sunken);
+}
+.pfa-route-sections .boarding-chart-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-4);
+}
+.pfa-route-sections .boarding-chart-panel {
+  min-height: 0;
+}
+.pfa-route-sections .boarding-chart-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm2-space-3);
+  margin-bottom: var(--dm2-space-2);
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+}
+.pfa-route-sections .boarding-chart-title span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--dm2-fw-medium);
+}
+.pfa-route-sections .chart-container-wrapper {
+  height: 248px;
   width: 100%;
+}
+.pfa-route-sections .transfer-analysis-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  gap: var(--dm2-space-3);
+  align-items: stretch;
+}
+.pfa-route-sections .boarding-chart-stack.has-dual {
+  gap: var(--dm2-space-3);
+}
+.pfa-route-sections .boarding-chart-stack.has-dual .chart-container-wrapper {
+  height: 158px;
+}
+.pfa-route-sections .transfer-chart-wrapper {
+  height: var(--transfer-chart-height, 220px);
+  min-height: 220px;
+  width: 100%;
+}
+.pfa-route-sections .transfer-meta-list {
+  min-width: 0;
+  height: var(--transfer-chart-height, 220px);
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface);
+  overflow: hidden;
+}
+.pfa-route-sections .transfer-meta-header,
+.pfa-route-sections .transfer-meta-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--dm2-line-faint);
+  color: var(--dm2-ink-soft);
+  font-size: var(--dm2-text-xs);
+}
+.pfa-route-sections .transfer-meta-header {
+  flex: 0 0 32px;
+  color: var(--dm2-muted);
+  font-weight: var(--dm2-fw-semibold);
+  background: var(--dm2-surface-sunken);
+}
+.pfa-route-sections .transfer-meta-row {
+  flex: 0 0 28px;
+  font-family: var(--dm2-font-num);
+  font-weight: var(--dm2-fw-medium);
+}
+.pfa-route-sections .transfer-meta-row:last-child {
+  border-bottom: 0;
 }
 .pfa-route-sections .chart_box {
   width: 100%;
   height: 100%;
 }
-/* 站点过多时乘降客流图拆成上下两行，需要更高的容器承载两张子图 */
-.pfa-route-sections .chart-container-wrapper.is-split {
-  height: 340px;
+.pfa-route-sections .boarding-alighting-bar-chart {
+  width: 100%;
+  height: 100%;
 }
 
-/* ③ 运营效益：发丝线网格的指标表（克制，无渐变 hero）*/
-.pfa-route-sections .efficiency-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  border: 1px solid var(--dm2-line);
-  border-radius: var(--dm2-radius-sm);
-  background: var(--dm2-line);
-  overflow: hidden;
+:global(.boarding-fullscreen-dialog) {
+  background: #f7fbff;
 }
-.pfa-route-sections .eff-card {
+:global(.boarding-fullscreen-dialog .el-dialog__header) {
+  margin-right: 0;
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid rgba(21, 105, 222, 0.12);
+}
+:global(.boarding-fullscreen-dialog .el-dialog__headerbtn) {
+  top: 16px;
+  right: 18px;
+}
+:global(.boarding-fullscreen-dialog .el-dialog__body) {
+  height: calc(100vh - 78px);
+  padding: 0;
+}
+.boarding-fullscreen-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 42px;
+}
+.boarding-fullscreen-kicker {
+  margin-bottom: 4px;
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+}
+.boarding-fullscreen-title {
+  color: var(--dm2-ink);
+  font-size: 18px;
+  font-weight: var(--dm2-fw-semibold);
+}
+.boarding-fullscreen-meta {
+  flex: 0 0 auto;
+  color: var(--dm2-accent);
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-semibold);
+}
+.boarding-fullscreen-body {
+  width: 100%;
+  height: 100%;
+  padding: 18px 24px 24px;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 18px;
+  overflow-y: auto;
+}
+.boarding-fullscreen-body.has-dual {
+  grid-template-rows: minmax(420px, 1fr) minmax(420px, 1fr);
+}
+.boarding-fullscreen-panel {
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--dm2-space-1);
-  padding: var(--dm2-space-3);
-  background: var(--dm2-surface);
 }
-.pfa-route-sections .eff-card:first-child {
-  grid-column: span 2;
-}
-.pfa-route-sections .eff-label {
-  font-size: var(--dm2-text-xs);
-  font-weight: var(--dm2-fw-medium);
+.boarding-fullscreen-chart-title {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 2px 8px;
   color: var(--dm2-muted);
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-semibold);
 }
-.pfa-route-sections .eff-value {
-  font-size: var(--dm2-text-lg);
-  font-weight: var(--dm2-fw-bold);
-  color: var(--dm2-ink);
-  font-family: var(--dm2-font-num);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+.boarding-fullscreen-chart-title span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--dm2-fw-medium);
 }
-.pfa-route-sections .eff-card:first-child .eff-value {
-  font-size: var(--dm2-text-title);
-  color: var(--dm2-accent-strong);
+.boarding-fullscreen-chart {
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* 分区右上角的轻量元信息（样本量等）*/

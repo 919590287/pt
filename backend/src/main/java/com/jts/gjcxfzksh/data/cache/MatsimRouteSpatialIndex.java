@@ -55,6 +55,9 @@ public final class MatsimRouteSpatialIndex {
             String startName,
             String endName
     ) {
+        String key() {
+            return routeKey(lineId, routeId);
+        }
     }
 
     private record LinkMeta(Link link, List<RouteMeta> routes) {
@@ -139,9 +142,9 @@ public final class MatsimRouteSpatialIndex {
                 );
                 if (distance > radius) continue;
                 for (RouteMeta route : item.routes()) {
-                    Match previous = matches.get(route.routeId());
+                    Match previous = matches.get(route.key());
                     if (previous == null || distance < previous.distance()) {
-                        matches.put(route.routeId(), new Match(route, distance, link));
+                        matches.put(route.key(), new Match(route, distance, link));
                     }
                 }
             }
@@ -163,6 +166,10 @@ public final class MatsimRouteSpatialIndex {
 
     private static String nonBlank(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static String routeKey(String lineId, String routeId) {
+        return nonBlank(lineId, "") + "::" + nonBlank(routeId, "");
     }
 
     private static double pointSegmentDistance(double px, double py, double ax, double ay, double bx, double by) {

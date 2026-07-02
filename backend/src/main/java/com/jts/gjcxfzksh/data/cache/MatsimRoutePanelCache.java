@@ -53,14 +53,14 @@ public final class MatsimRoutePanelCache {
     // v9: 地铁聚合改为按“规范化线路名”而非裸线路号，避免跨系统同号线被错误合并
     //     （佛山2/3号线≠广州2/3号线、南海/黄埔/海珠有轨电车1号线≠地铁1号线），同时仍合并同线分段（北段/东段/西段/知识城线），需重算缓存
     // v10: 客流画像输出真实 output plans 活动类型，并让地铁聚合线路继承画像统计，需重算缓存
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v10";
+    // v11: 关联换乘线路不再只输出前 12 个，供前端完整展示全部可换乘线路与 0 值补全。
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v11";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
     private static final int HOURS = 24;
     private static final int TRANSFER_WINDOW_SECONDS = 1800;
     private static final int LEADERBOARD_LIMIT = 50;
-    private static final int TRANSFER_LIMIT = 12;
     private static final Pattern CHINESE_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
             "(?i)(?:地铁|轨道|线路)?\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
     );
@@ -1064,7 +1064,6 @@ public final class MatsimRoutePanelCache {
             int totalTransfer = transfers.values().stream().mapToInt(TransferAccumulator::flow).sum();
             return transfers.values().stream()
                     .sorted(Comparator.comparingInt(TransferAccumulator::flow).reversed())
-                    .limit(TRANSFER_LIMIT)
                     .map(item -> item.toPayload(totalTransfer))
                     .toList();
         }

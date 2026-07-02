@@ -78,7 +78,7 @@ public class RouteDetailVO {
 //            info.departureInterval.add(departureRule.getBeginTime() + " - " + departureRule.getEndTime() + ", " + (departureRule.getSpaces() / 60) + "分");
 //        }
         info.facNum = route.getStops().size();
-        info.facDist = info.routeDist / info.facNum;
+        info.facDist = info.facNum == 0 ? 0.0 : info.routeDist / info.facNum;
         this.info = info;
     }
 

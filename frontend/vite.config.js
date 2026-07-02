@@ -45,6 +45,13 @@ export default defineConfig(({ mode, command }) => {
         "@": fileURLToPath(new URL("./src", import.meta.url)),
       },
     },
+    test: {
+      environment: "node",
+      globals: true,
+      include: ["src/**/*.test.js"],
+      clearMocks: true,
+      restoreMocks: true,
+    },
     css: {
       preprocessorOptions: {
         scss: {

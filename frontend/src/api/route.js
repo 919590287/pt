@@ -3,11 +3,12 @@ import request from "@/utils/request";
 // POST /pt/route/routeList
 // 接口ID：450702181
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-450702181
-export function getRouteList(data) {
+export function getRouteList(data, config = {}) {
   return request({
     url: `/pt/route/routeList`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
   })
 }
 
@@ -15,11 +16,12 @@ export function getRouteList(data) {
 // POST /pt/route/routeInfo
 // 接口ID：450702182
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-450702182
-export function getRouteInfo(data) {
+export function getRouteInfo(data, config = {}) {
   return request({
     url: `/pt/route/routeInfo`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
   })
 }
 
@@ -27,11 +29,12 @@ export function getRouteInfo(data) {
 // POST /pt/route/routeDetail
 // 接口ID：450702183
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-450702183
-export function getRouteDetail(data) {
+export function getRouteDetail(data, config = {}) {
   return request({
     url: `/pt/route/routeDetail`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
   })
 }
 
@@ -39,11 +42,12 @@ export function getRouteDetail(data) {
 // POST /pt/route/lineAll
 // 接口ID：450702184
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-450702184
-export function getLineAll(data) {
+export function getLineAll(data, config = {}) {
   return request({
     url: `/pt/route/lineAll`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
   })
 }
 
@@ -76,28 +80,31 @@ export function getRouteCandidates(data, config = {}) {
 
 // 线路瓦片
 // POST /pt/route/tile
-export function getRouteTile(data) {
+export function getRouteTile(data, config = {}) {
   return request({
     url: `/pt/route/tile`,
     method: 'POST',
-    data: data
+    data: data,
+    ...config
   })
 }
 
-export function getRouteTileBinary(data) {
+export function getRouteTileBinary(data, config = {}) {
   return request({
     url: `/pt/route/tile.bin`,
     method: 'POST',
     data: data,
-    responseType: 'arraybuffer'
+    responseType: 'arraybuffer',
+    ...config
   })
 }
 
-export function getRouteFullBinary(data) {
+export function getRouteFullBinary(data, config = {}) {
   return request({
     url: `/pt/route/full.bin`,
     method: 'POST',
     data: data,
-    responseType: 'arraybuffer'
+    responseType: 'arraybuffer',
+    ...config
   })
 }
