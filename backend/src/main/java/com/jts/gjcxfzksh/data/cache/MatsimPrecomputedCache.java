@@ -14,14 +14,12 @@ import com.jts.gjcxfzksh.data.entry.TileNetwork;
 import com.jts.gjcxfzksh.data.id.RouteId;
 import com.jts.gjcxfzksh.data.id.VehicleId;
 import com.jts.gjcxfzksh.utils.DistanceUtil;
+import com.jts.gjcxfzksh.utils.TransitMetrics;
 import lombok.extern.slf4j.Slf4j;
-import org.locationtech.jts.geom.Envelope;
-import org.locationtech.jts.index.strtree.STRtree;
 import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.api.core.v01.network.Network;
-import org.matsim.api.core.v01.population.Activity;
 import org.matsim.api.core.v01.population.Leg;
 import org.matsim.api.core.v01.population.Person;
 import org.matsim.api.core.v01.population.PlanElement;
@@ -32,8 +30,6 @@ import org.matsim.pt.transitSchedule.api.TransitLine;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitRouteStop;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
-import org.matsim.vehicles.Vehicle;
-import org.matsim.vehicles.VehicleType;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
@@ -64,7 +60,14 @@ import java.util.zip.GZIPOutputStream;
 @Slf4j
 public final class MatsimPrecomputedCache {
 
-    public static final String VISUAL_CACHE_VERSION = "visual-v8";
+    // v9: 统计口径修复（TransitMetrics 统一实现）——车站300m覆盖率语义反转修复、
+    //     车均日载客量只计上车、占位指标(ylklbl/dbczkl)移除、满载率统一口径，需重算缓存
+    // v10: 常住人口密度改为全体 agent 口径；新增 万人保有量(wrbyl)、真实口径的单班次载客量(dbczkl)，需重算缓存
+    // v11: 密度类指标面积回退用站点凸包估算（desc.json 缺失时原为除以 1）；
+    //      保有量/车均日载客量分母改用"高峰同时在营车辆数"车队估算，需重算缓存
+    // v12: 线路摘要(lines.json)新增抽稀后的真实路网走向 geometry，
+    //      前端全网线路图层按 network.xml 几何绘制（原为站点直线连接），需重算缓存
+    public static final String VISUAL_CACHE_VERSION = "visual-v12";
     private static final int VISUAL_TILE_ZOOM = 12;
     private static final int MIN_VISUAL_TILE_ZOOM = 8;
     private static final int ROUTE_DETAIL_SHARD_COUNT = 32;
@@ -170,7 +173,14 @@ public final class MatsimPrecomputedCache {
         }
     }
 
-    private static synchronized void ensureVisualCache(MatsimData data) {
+    private static void ensureVisualCache(MatsimData data) {
+        // per-model 锁：模型 A 构建期间不阻塞模型 B（原为类级 synchronized 全局锁）
+        synchronized (ModelBuildLocks.lockFor("visual", data)) {
+            ensureVisualCacheLocked(data);
+        }
+    }
+
+    private static void ensureVisualCacheLocked(MatsimData data) {
         if (isVisualCacheReady(data)) {
             return;
         }
@@ -228,29 +238,44 @@ public final class MatsimPrecomputedCache {
 
     private static Map<String, Object> buildInfo(MatsimData data) {
         Map<String, Object> result = new LinkedHashMap<>();
-        int area = Math.max(1, (int) data.getArea());
-        int personCount = data.getPersonTracks().stream().collect(Collectors.groupingBy(PTPersonTrack::getPersonId)).size();
-        result.put("czrkmd", personCount / area);
-
-        double networkLength = ptNetworkLength(data.getSchedule(), data.getNetwork());
-        result.put("gjxwmd", round2((networkLength / 1000.0) / area));
-
         Set<Coord> coords = data.getSchedule().getFacilities().values().stream()
                 .map(item -> (Coord) item.getCoord())
                 .collect(Collectors.toSet());
-        result.put("fgl_300", coverage300(coords, data.getPopulation()));
+        // 口径修正：常住人口取全体 agent 数（原实现只数公交乘客）；
+        // 面积在 desc.json 未提供时用站点凸包估算（原实现退化为除以 1）
+        double configuredArea = data.getArea();
+        Double areaKm2 = configuredArea > 1.0 ? configuredArea : TransitMetrics.serviceAreaKm2(coords);
+        int personCount = data.getPopulation() == null ? 0 : data.getPopulation().getPersons().size();
+        result.put("czrkmd", areaKm2 == null ? null : (int) Math.round(personCount / areaKm2));
+
+        double networkLength = ptNetworkLength(data.getSchedule(), data.getNetwork());
+        result.put("gjxwmd", areaKm2 == null ? null : round2((networkLength / 1000.0) / areaKm2));
+
+        result.put("fgl_300", TransitMetrics.coverageResult(
+                TransitMetrics.coverage300Percent(coords, data.getPopulation())));
         result.put("fxfdl", legTypeRate(data.getPopulation()));
 
-        int vehNum = Math.max(1, data.getPersonTracks().stream().collect(Collectors.groupingBy(PTPersonTrack::getVehicleId)).size());
+        Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = data.getPersonTracks().stream()
+                .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
         int boardings = (int) data.getPersonTracks().stream().filter(PTPersonTrack::getEnter).count();
-        int cjrzkl = data.getPersonTracks().size() / vehNum;
-        result.put("cjrzkl", cjrzkl);
-        result.put("dbczkl", cjrzkl);
+        // 万人保有量：标台数用"高峰同时在营车辆数"估算（GTFS 转换模型每班次一辆车，直接数车辆会放大一个数量级）
+        long fleetSize = TransitMetrics.peakConcurrentVehicles(data.getSchedule());
+        result.put("wrbyl", personCount == 0 || fleetSize == 0 ? null : round2(fleetSize / (personCount / 10000.0)));
+        // 车均日载客量 = 日客运总量(上车) / 保有量(车队峰值估算)
+        result.put("cjrzkl", fleetSize == 0 ? 0 : round2((double) boardings / fleetSize));
+        // 单班次载客量   人次/班 = 日客运总量(上车) / 日发班次总数
+        long departureTotal = 0;
+        for (TransitLine line : data.getSchedule().getTransitLines().values()) {
+            for (TransitRoute route : line.getRoutes().values()) {
+                departureTotal += route.getDepartures().size();
+            }
+        }
+        result.put("dbczkl", departureTotal == 0 ? null : round2((double) boardings / departureTotal));
+        // ylklbl(依赖客流比例)为占位实现，已移除，接入真实口径前不下发
         result.put("rcxcs", boardings);
-        result.put("ylklbl", 50.0);
         result.put("xlfzxxs", routeNoLC(data));
         result.put("xlcfxs", routeRC(data));
-        result.put("xlmzl", fullLoadRate(data));
+        result.put("xlmzl", round2(TransitMetrics.fullLoadRate(tracksByVehicle, data.getTv().getVehicles()) * 100.0));
 
         Map<String, Double> xlklqd = routePersonStrength(data);
         result.put("xlklqd", xlklqd.entrySet().stream()
@@ -263,7 +288,12 @@ public final class MatsimPrecomputedCache {
                 )));
         result.put("xlklqd_sum", round2(xlklqd.values().stream().mapToDouble(Double::doubleValue).sum()));
         result.put("yxsdb", runSpeed(data.getPopulation()));
-        result.put("pjhcsj", avgAwaitTime(data.getPopulation()));
+        double[] awaitByHour = TransitMetrics.avgAwaitTimeByHour(data.getPopulation());
+        double[] pjhcsj = new double[awaitByHour.length];
+        for (int i = 0; i < awaitByHour.length; i++) {
+            pjhcsj[i] = round2(awaitByHour[i]);
+        }
+        result.put("pjhcsj", pjhcsj);
         return result;
     }
 
@@ -305,6 +335,9 @@ public final class MatsimPrecomputedCache {
                     route.setFacilities(sourceRoute.getFacilities());
                     route.setDepartures(List.of());
                     route.setLinks(List.of());
+                    // 全量 links 体积过大不进摘要，但要保留抽稀后的真实路网走向，
+                    // 否则前端全网线路图层只能用站点坐标直线连接
+                    route.setGeometry(simplifiedRouteGeometry(sourceRoute.getLinks()));
                     routes.add(route);
                 }
             }
@@ -312,6 +345,96 @@ public final class MatsimPrecomputedCache {
             result.add(line);
         }
         return result;
+    }
+
+    /**
+     * 抽稀容差（米，Web Mercator 平面近似）。8m 在城市路网尺度下肉眼无差别，
+     * 可把每条线路几百个 link 端点压到百点以内，控制 lines.json 体积。
+     */
+    private static final double ROUTE_GEOMETRY_TOLERANCE_METERS = 8.0;
+
+    /**
+     * 由 link 序列生成抽稀后的线路走向折线（[x, y] 序列）。
+     */
+    private static List<double[]> simplifiedRouteGeometry(List<PTLink> links) {
+        if (links == null || links.isEmpty()) {
+            return List.of();
+        }
+        List<double[]> points = new ArrayList<>(links.size() + 1);
+        PTCoord first = links.getFirst().getFrom();
+        if (first != null) {
+            points.add(new double[]{first.getX(), first.getY()});
+        }
+        for (PTLink link : links) {
+            PTCoord to = link.getTo();
+            if (to == null) {
+                continue;
+            }
+            double[] point = new double[]{to.getX(), to.getY()};
+            double[] last = points.isEmpty() ? null : points.getLast();
+            if (last == null || Math.abs(last[0] - point[0]) > 0.01 || Math.abs(last[1] - point[1]) > 0.01) {
+                points.add(point);
+            }
+        }
+        return douglasPeucker(points, ROUTE_GEOMETRY_TOLERANCE_METERS);
+    }
+
+    /**
+     * Douglas-Peucker 抽稀（迭代实现，避免长线路递归过深）。
+     */
+    private static List<double[]> douglasPeucker(List<double[]> points, double tolerance) {
+        int count = points.size();
+        if (count <= 2) {
+            return points;
+        }
+        boolean[] keep = new boolean[count];
+        keep[0] = true;
+        keep[count - 1] = true;
+        double toleranceSq = tolerance * tolerance;
+        java.util.ArrayDeque<int[]> stack = new java.util.ArrayDeque<>();
+        stack.push(new int[]{0, count - 1});
+        while (!stack.isEmpty()) {
+            int[] range = stack.pop();
+            int start = range[0];
+            int end = range[1];
+            if (end - start < 2) {
+                continue;
+            }
+            double maxDistSq = -1;
+            int maxIndex = -1;
+            double[] a = points.get(start);
+            double[] b = points.get(end);
+            for (int i = start + 1; i < end; i++) {
+                double distSq = pointSegmentDistanceSq(points.get(i), a, b);
+                if (distSq > maxDistSq) {
+                    maxDistSq = distSq;
+                    maxIndex = i;
+                }
+            }
+            if (maxDistSq > toleranceSq && maxIndex > 0) {
+                keep[maxIndex] = true;
+                stack.push(new int[]{start, maxIndex});
+                stack.push(new int[]{maxIndex, end});
+            }
+        }
+        List<double[]> result = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            if (keep[i]) {
+                result.add(points.get(i));
+            }
+        }
+        return result;
+    }
+
+    private static double pointSegmentDistanceSq(double[] p, double[] a, double[] b) {
+        double dx = b[0] - a[0];
+        double dy = b[1] - a[1];
+        double lengthSq = dx * dx + dy * dy;
+        double t = lengthSq <= 0 ? 0 : ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / lengthSq;
+        t = Math.max(0, Math.min(1, t));
+        double px = a[0] + t * dx - p[0];
+        double py = a[1] + t * dy - p[1];
+        return px * px + py * py;
     }
 
     private static String lineMode(List<RouteDetailVO> routes) {
@@ -519,55 +642,6 @@ public final class MatsimPrecomputedCache {
                 ));
     }
 
-    private static double fullLoadRate(MatsimData data) {
-        Map<VehicleId, List<PTPersonTrack>> grouped = data.getPersonTracks().stream().collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
-        double capacity = 0.0;
-        double passengers = 0.0;
-        for (Map.Entry<VehicleId, List<PTPersonTrack>> entry : grouped.entrySet()) {
-            Vehicle vehicle = data.getTv().getVehicles().get(entry.getKey());
-            if (vehicle == null || vehicle.getType() == null) {
-                continue;
-            }
-            VehicleType type = vehicle.getType();
-            capacity += type.getCapacity().getSeats();
-            capacity += type.getCapacity().getStandingRoom();
-            passengers += entry.getValue().stream().filter(PTPersonTrack::getEnter).count();
-        }
-        return capacity == 0 ? 0 : round2((passengers / capacity) * 100.0);
-    }
-
-    private static double[] avgAwaitTime(Population population) {
-        double[][] hours = new double[24][2];
-        for (Person person : population.getPersons().values()) {
-            List<PlanElement> elements = person.getSelectedPlan().getPlanElements();
-            for (int i = 0; i < elements.size(); i++) {
-                PlanElement element = elements.get(i);
-                if (element instanceof Leg leg && Constant.ROUTE_MODE_PT.equals(leg.getMode())) {
-                    if (i < 2 || !leg.getDepartureTime().isDefined()) {
-                        continue;
-                    }
-                    PlanElement previous = elements.get(i - 2);
-                    if (!(previous instanceof Leg previousLeg)
-                            || !previousLeg.getDepartureTime().isDefined()
-                            || !previousLeg.getTravelTime().isDefined()) {
-                        continue;
-                    }
-                    double start = previousLeg.getDepartureTime().seconds() + previousLeg.getTravelTime().seconds();
-                    int hour = (int) (start / 3600);
-                    if (hour >= 0 && hour < 24) {
-                        hours[hour][0] += leg.getDepartureTime().seconds() - start;
-                        hours[hour][1]++;
-                    }
-                }
-            }
-        }
-        double[] result = new double[24];
-        for (int i = 0; i < 24; i++) {
-            result[i] = hours[i][1] == 0 ? 0.0 : round2(hours[i][0] / hours[i][1]);
-        }
-        return result;
-    }
-
     private static Map<String, Integer> legType(Population population) {
         Map<String, Integer> types = new HashMap<>();
         population.getPersons().values().forEach(person -> person.getSelectedPlan().getPlanElements().forEach(element -> {
@@ -588,47 +662,6 @@ public final class MatsimPrecomputedCache {
         BigDecimal total = BigDecimal.valueOf(count);
         types.forEach((mode, value) -> result.put(mode, new BigDecimal(value).divide(total, 2, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).doubleValue()));
         return result;
-    }
-
-    private static Map<String, Double> coverage300(Set<Coord> coords, Population population) {
-        Map<String, Double> coverage = new LinkedHashMap<>();
-        coverage.put("cover", 50.0);
-        coverage.put("notcover", 50.0);
-        if (coords == null || coords.isEmpty() || population == null || population.getPersons().isEmpty()) {
-            return coverage;
-        }
-        STRtree index = new STRtree();
-        for (Coord coord : coords) {
-            index.insert(new Envelope(coord.getX() - 300, coord.getX() + 300, coord.getY() - 300, coord.getY() + 300), coord);
-        }
-        index.build();
-        long total = population.getPersons().size();
-        long in = population.getPersons().values().parallelStream()
-                .filter(person -> personInCoverage(person, index))
-                .count();
-        double cover = round2((total - in) * 100.0 / total);
-        coverage.put("cover", cover);
-        coverage.put("notcover", round2(100.0 - cover));
-        return coverage;
-    }
-
-    private static boolean personInCoverage(Person person, STRtree index) {
-        for (PlanElement element : person.getSelectedPlan().getPlanElements()) {
-            if (element instanceof Activity act && act.getCoord() != null) {
-                Coord coord = act.getCoord();
-                Envelope env = new Envelope(coord.getX(), coord.getX(), coord.getY(), coord.getY());
-                @SuppressWarnings("unchecked")
-                List<Coord> nearStops = index.query(env);
-                for (Coord stop : nearStops) {
-                    double dx = stop.getX() - coord.getX();
-                    double dy = stop.getY() - coord.getY();
-                    if (dx * dx + dy * dy <= 300 * 300) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
     }
 
     private static Map<String, Double> readLinkFlows(String linkstatsPath) {
@@ -770,6 +803,27 @@ public final class MatsimPrecomputedCache {
         manifest.put("generatedAt", System.currentTimeMillis());
         sourceFingerprint(data, manifest);
         return manifest;
+    }
+
+    /**
+     * 基于缓存版本 + 源文件指纹（size/mtime，仅 stat 不读内容）的强校验标签，
+     * 供 tile.bin / full.bin 的 HTTP ETag 使用：源文件或口径版本变化 → 标签变化 → 浏览器缓存自动失效。
+     */
+    public static String visualCacheTag(MatsimData data) {
+        Map<String, Object> fingerprint = new LinkedHashMap<>();
+        fingerprint.put("cacheVersion", VISUAL_CACHE_VERSION);
+        sourceFingerprint(data, fingerprint);
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(fingerprint.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) {
+                hex.append(String.format("%02x", hash[i]));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(fingerprint.toString().hashCode());
+        }
     }
 
     private static void sourceFingerprint(MatsimData data, Map<String, Object> result) {

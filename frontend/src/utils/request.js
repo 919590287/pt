@@ -1,12 +1,8 @@
 import axios from "axios";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import { clearAuth, getToken } from "@/utils/auth";
+import { appendErrorLog } from "@/utils/errorLog";
 import { tansParams } from "./index";
-
-// 是否显示重新登录
-export let isRelogin = {
-  show: false,
-};
 
 axios.defaults.headers["Content-Type"] = "application/json;charset=utf-8";
 
@@ -23,6 +19,26 @@ const runtimeBaseApi =
 function showErrorMessage(config, message) {
   if (config?.silentError) return;
   ElMessage.error(message);
+}
+
+// 读取后端下发的链路追踪 ID（X-Trace-Id 响应头），便于前后端串联排查
+function getTraceId(headers) {
+  if (!headers) return "";
+  if (typeof headers.get === "function") {
+    return headers.get("x-trace-id") || headers.get("X-Trace-Id") || "";
+  }
+  return headers["x-trace-id"] || headers["X-Trace-Id"] || "";
+}
+
+// 请求错误统一上报：console.error + localStorage 环形日志（键 gj_error_log），traceId 存在时一并拼入
+function reportRequestError(message, { url = "", status, traceId = "", stack = "" } = {}) {
+  const parts = [message];
+  if (status != null) parts.push(`status=${status}`);
+  if (traceId) parts.push(`traceId=${traceId}`);
+  if (url) parts.push(`url=${url}`);
+  const summary = parts.join(" | ");
+  console.error(`[request] ${summary}`);
+  appendErrorLog({ type: "request", message: summary, stack });
 }
 
 function redirectToLogin() {
@@ -174,27 +190,14 @@ service.interceptors.response.use(
     if (res.request.responseType === "blob" || res.request.responseType === "arraybuffer") {
       return res;
     }
-    if (code === 402) {
-      if (!isRelogin.show) {
-        isRelogin.show = true;
-        ElMessageBox.alert("登录状态已过期，请重新登录", "系统提示", {
-          confirmButtonText: "确定",
-          callback: (action) => {
-            isRelogin.show = false;
-            redirectToLogin();
-          },
-        });
-      }
-      return Promise.reject("无效的会话，或者会话已过期，请重新登录");
-    } else if (code === 401) {
+    if (code === 401) {
       redirectToLogin();
       showErrorMessage(res.config, msg);
-      return Promise.reject(new Error(msg));
-    } else if (code === 500) {
-      showErrorMessage(res.config, msg);
+      reportRequestError(msg, { url: res.config?.url, status: code, traceId: getTraceId(res.headers) });
       return Promise.reject(new Error(msg));
     } else if (code !== 200) {
       showErrorMessage(res.config, msg);
+      reportRequestError(msg, { url: res.config?.url, status: code, traceId: getTraceId(res.headers) });
       return Promise.reject(new Error(msg));
     } else {
       return res.data;
@@ -202,14 +205,24 @@ service.interceptors.response.use(
   },
   (error) => {
     const message = normalizeErrorMessage(error);
+    const traceId = getTraceId(error?.response?.headers);
     if (error?.response?.status === 401) {
       redirectToLogin();
     }
     if (!axios.isCancel(error) && error?.message !== "canceled") {
       showErrorMessage(error?.config, message);
+      reportRequestError(message, {
+        url: error?.config?.url,
+        status: error?.response?.status,
+        traceId,
+        stack: error?.stack,
+      });
     }
     const normalizedError = new Error(message);
     normalizedError.cause = error;
+    if (traceId) {
+      normalizedError.traceId = traceId;
+    }
     return Promise.reject(normalizedError);
   },
 );

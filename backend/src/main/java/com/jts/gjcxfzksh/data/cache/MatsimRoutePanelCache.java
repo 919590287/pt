@@ -10,13 +10,17 @@ import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Network;
 import org.matsim.api.core.v01.population.Activity;
+import org.matsim.api.core.v01.population.Leg;
 import org.matsim.api.core.v01.population.Person;
+import org.matsim.api.core.v01.population.Plan;
 import org.matsim.api.core.v01.population.PlanElement;
 import org.matsim.api.core.v01.population.Population;
+import org.matsim.pt.routes.TransitPassengerRoute;
 import org.matsim.pt.transitSchedule.api.Departure;
 import org.matsim.pt.transitSchedule.api.TransitLine;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitRouteStop;
+import org.matsim.pt.transitSchedule.api.TransitStopFacility;
 import org.matsim.vehicles.Vehicle;
 import org.matsim.vehicles.VehicleType;
 
@@ -54,13 +58,25 @@ public final class MatsimRoutePanelCache {
     //     （佛山2/3号线≠广州2/3号线、南海/黄埔/海珠有轨电车1号线≠地铁1号线），同时仍合并同线分段（北段/东段/西段/知识城线），需重算缓存
     // v10: 客流画像输出真实 output plans 活动类型，并让地铁聚合线路继承画像统计，需重算缓存
     // v11: 关联换乘线路不再只输出前 12 个，供前端完整展示全部可换乘线路与 0 值补全。
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v11";
+    // v12: ①新增线路站间 OD 字段 stationOd（按人配对“上车→下车”，经纬度坐标，flow 降序，上限 500）；
+    //      ②客流画像活动口径改为“本次出行的出行目的活动”（selected plan 中 TransitPassengerRoute 匹配本 route，
+    //        取 leg 之后第一个非 interaction 活动，占比合计≈100%；找不到时退回全活动统计但仍过滤 interaction）；
+    //      ③换乘识别支持对向/邻近站台（两 facility 坐标相距 ≤200m 也视为同一换乘点）；
+    //      ④lineGroups 新增公交聚合（key=bus::lineId，上下行合并，单 route 也生成组），并为所有组补齐
+    //        transfers/stationOd 聚合；地铁组既有聚合键与合并行为不变。需重算缓存。
+    // v13: 换乘判定收紧为“同站换乘”（同 facility 或同站名，站名天然合并上下行对站）；
+    //      移除 v12 的 200m 邻近站台规则——它把步行可达的地铁/公交站都算成了直接换乘。需重算缓存。
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v13";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
     private static final int HOURS = 24;
     private static final int TRANSFER_WINDOW_SECONDS = 1800;
     private static final int LEADERBOARD_LIMIT = 50;
+    // 任务A：单条 route 的站间 OD 输出上限。
+    private static final int STATION_OD_LIMIT = 500;
+    // 项目统一投影为 epsg:3857（见 Datasource.ctf），经纬度输出用 Web Mercator 反算。
+    private static final double EARTH_RADIUS = 6378137.0;
     private static final Pattern CHINESE_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
             "(?i)(?:地铁|轨道|线路)?\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
     );
@@ -78,11 +94,15 @@ public final class MatsimRoutePanelCache {
     );
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
+    // 内存面板缓存条数：默认 4（原为 2，3 个模型轮流访问时每次都重新读 gz 解析数十 MB JSON）。
+    // 可用 -Dgjcxfzksh.panel-memory-cache-entries=N 按内存预算调整。
+    private static final int MEMORY_CACHE_MAX_ENTRIES =
+            Math.max(1, Integer.getInteger("gjcxfzksh.panel-memory-cache-entries", 4));
     private static final Map<String, Map<String, Object>> MEMORY_CACHE = Collections.synchronizedMap(
-            new LinkedHashMap<>(4, 0.75f, true) {
+            new LinkedHashMap<>(8, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
-                    return size() > 2;
+                    return size() > MEMORY_CACHE_MAX_ENTRIES;
                 }
             }
     );
@@ -120,6 +140,69 @@ public final class MatsimRoutePanelCache {
             log.warn("读取线路客流面板缓存失败: model={}, path={}", data.getName(), panelPath(data), e);
             return Map.of();
         }
+    }
+
+    // 与前端 index.vue 的 routeModeKey() 保持一致的地铁判定口径
+    private static final Pattern OVERALL_METRO_TEXT_PATTERN =
+            Pattern.compile("(metro|subway|rail|地铁|轨道)", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * “总体客流变化”卡片只需要 24×2 个数字，服务端直接聚合返回，
+     * 避免前端为 48 个数字下载并解析整个 routePanel 大 JSON。
+     */
+    public static Map<String, Object> readOverallFlow(MatsimData data) {
+        return overallFlowFromPanel(readRoutePanel(data));
+    }
+
+    static Map<String, Object> overallFlowFromPanel(Map<String, Object> panel) {
+        Object routesValue = panel.get("routes");
+        if (!(routesValue instanceof Map<?, ?> routes)) {
+            // generating / 读取失败：状态原样透传给前端
+            return panel;
+        }
+        double[] bus = new double[HOURS];
+        double[] metro = new double[HOURS];
+        for (Object value : routes.values()) {
+            if (!(value instanceof Map<?, ?> route)) {
+                continue;
+            }
+            Object hourly = route.get("hourlyFlow");
+            if (!(hourly instanceof List<?> values)) {
+                continue;
+            }
+            double[] target = isMetroRouteText(route) ? metro : bus;
+            int limit = Math.min(HOURS, values.size());
+            for (int i = 0; i < limit; i++) {
+                if (values.get(i) instanceof Number number) {
+                    target[i] += number.doubleValue();
+                }
+            }
+        }
+        Map<String, Object> hourlyByMode = new LinkedHashMap<>();
+        hourlyByMode.put("bus", toDoubleList(bus));
+        hourlyByMode.put("metro", toDoubleList(metro));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", "ready");
+        result.put("cacheVersion", ROUTE_PANEL_CACHE_VERSION);
+        result.put("hourlyByMode", hourlyByMode);
+        return result;
+    }
+
+    private static boolean isMetroRouteText(Map<?, ?> route) {
+        String text = String.valueOf(route.get("mode")) + ' '
+                + route.get("transportMode") + ' '
+                + route.get("lineName") + ' '
+                + route.get("routeName") + ' '
+                + route.get("lineId");
+        return OVERALL_METRO_TEXT_PATTERN.matcher(text).find();
+    }
+
+    private static List<Double> toDoubleList(double[] values) {
+        List<Double> result = new ArrayList<>(values.length);
+        for (double value : values) {
+            result.add(value);
+        }
+        return result;
     }
 
     public static Map<String, Object> readRoutePanelDetail(MatsimData data, String lineId, String routeId) {
@@ -181,7 +264,14 @@ public final class MatsimRoutePanelCache {
         }
     }
 
-    private static synchronized void ensureRoutePanelCache(MatsimData data) {
+    private static void ensureRoutePanelCache(MatsimData data) {
+        // per-model 锁：模型 A 构建期间不阻塞模型 B（原为类级 synchronized 全局锁）
+        synchronized (ModelBuildLocks.lockFor("route-panel", data)) {
+            ensureRoutePanelCacheLocked(data);
+        }
+    }
+
+    private static void ensureRoutePanelCacheLocked(MatsimData data) {
         if (isReady(data)) {
             return;
         }
@@ -219,14 +309,18 @@ public final class MatsimRoutePanelCache {
 
     private static Map<String, Object> buildPanel(MatsimData data) {
         Map<String, RoutePanelAccumulator> routes = buildRouteAccumulators(data);
+        // 换乘/OD 都是“人×记录”级热路径：facility 坐标与名称统一预建 map，避免逐条回查 schedule。
+        Map<String, FacilityGeo> facilityGeo = buildFacilityGeo(data);
         indexPassengerTracks(data.getPersonTracks(), routes);
         indexTransfers(data.getPersonTracks(), routes);
+        indexStationOd(data.getPersonTracks(), routes);
         Population population = data.getPopulation();
+        Map<String, Map<String, Integer>> tripPurposeByRoute = buildTripPurposeByRoute(population);
 
         Map<String, Integer> routeIdCounts = routeIdCounts(routes.values());
         Map<String, Object> routePayloads = new LinkedHashMap<>();
         for (RoutePanelAccumulator route : routes.values()) {
-            route.finish(population);
+            route.finish(population, tripPurposeByRoute, facilityGeo);
             routePayloads.put(route.payloadKey(routeIdCounts), route.toPayload());
         }
 
@@ -236,8 +330,87 @@ public final class MatsimRoutePanelCache {
         result.put("generatedAt", System.currentTimeMillis());
         result.put("summary", buildSummary(routes.values()));
         result.put("routes", routePayloads);
-        result.put("lineGroups", buildLineGroups(routes.values(), population));
+        result.put("lineGroups", buildLineGroups(routes.values(), population, facilityGeo));
         return result;
+    }
+
+    /** facilityId → 名称/平面坐标/经纬度（Web Mercator 反算），一次预建供换乘判定与 OD 输出复用。 */
+    private static Map<String, FacilityGeo> buildFacilityGeo(MatsimData data) {
+        Map<String, FacilityGeo> result = new HashMap<>();
+        for (Map.Entry<Id<TransitStopFacility>, TransitStopFacility> entry : data.getSchedule().getFacilities().entrySet()) {
+            String facilityId = entry.getKey().toString();
+            TransitStopFacility facility = entry.getValue();
+            Coord coord = facility.getCoord();
+            Double lon = null;
+            Double lat = null;
+            if (coord != null) {
+                double[] lonLat = mercatorToWgs84(coord.getX(), coord.getY());
+                lon = lonLat[0];
+                lat = lonLat[1];
+            }
+            result.put(facilityId, new FacilityGeo(nonBlank(facility.getName(), facilityId), coord, lon, lat));
+        }
+        return result;
+    }
+
+    // 与 BuildingServiceImpl.mercatorToWgs84 同公式：项目统一投影 epsg:3857 → WGS84 经纬度。
+    private static double[] mercatorToWgs84(double x, double y) {
+        double lon = Math.toDegrees(x / EARTH_RADIUS);
+        double lat = Math.toDegrees(2 * Math.atan(Math.exp(y / EARTH_RADIUS)) - Math.PI / 2);
+        return new double[]{lon, lat};
+    }
+
+    /**
+     * 任务B：一次遍历 population，统计每条 route 的“出行目的活动”：
+     * selected plan 中 PT leg（TransitPassengerRoute）之后第一个非 interaction 活动的类型，按 leg 计数一次。
+     */
+    private static Map<String, Map<String, Integer>> buildTripPurposeByRoute(Population population) {
+        Map<String, Map<String, Integer>> result = new HashMap<>();
+        if (population == null) {
+            return result;
+        }
+        for (Person person : population.getPersons().values()) {
+            Plan plan = person.getSelectedPlan();
+            if (plan == null) {
+                continue;
+            }
+            List<PlanElement> elements = plan.getPlanElements();
+            for (int i = 0; i < elements.size(); i++) {
+                if (!(elements.get(i) instanceof Leg leg) || !(leg.getRoute() instanceof TransitPassengerRoute ptRoute)) {
+                    continue;
+                }
+                String routeId = ptRoute.getRouteId() == null ? null : ptRoute.getRouteId().toString();
+                if (routeId == null) {
+                    continue;
+                }
+                String purpose = nextTripPurpose(elements, i);
+                if (purpose == null) {
+                    continue;
+                }
+                String lineId = ptRoute.getLineId() == null ? null : ptRoute.getLineId().toString();
+                result.computeIfAbsent(routeKey(lineId, routeId), ignored -> new LinkedHashMap<>())
+                        .merge(purpose, 1, Integer::sum);
+            }
+        }
+        return result;
+    }
+
+    /** leg 之后第一个非 interaction 活动的类型（小写）；找不到返回 null。 */
+    private static String nextTripPurpose(List<PlanElement> elements, int legIndex) {
+        for (int i = legIndex + 1; i < elements.size(); i++) {
+            if (elements.get(i) instanceof Activity activity && activity.getType() != null) {
+                String type = activity.getType().toLowerCase(Locale.ROOT);
+                if (!isInteractionActivity(type)) {
+                    return type;
+                }
+            }
+        }
+        return null;
+    }
+
+    // "pt interaction" / "car interaction" 等 interaction 类活动不算出行活动。
+    private static boolean isInteractionActivity(String lowerCaseType) {
+        return lowerCaseType != null && lowerCaseType.contains("interaction");
     }
 
     private static Map<String, RoutePanelAccumulator> buildRouteAccumulators(MatsimData data) {
@@ -276,17 +449,14 @@ public final class MatsimRoutePanelCache {
         }
     }
 
-    private static void indexTransfers(Collection<PTPersonTrack> tracks, Map<String, RoutePanelAccumulator> routes) {
+    private static void indexTransfers(
+            Collection<PTPersonTrack> tracks,
+            Map<String, RoutePanelAccumulator> routes
+    ) {
         if (tracks == null || tracks.isEmpty()) {
             return;
         }
-        Map<String, List<PTPersonTrack>> byPerson = new HashMap<>();
-        for (PTPersonTrack track : tracks) {
-            String personId = idString(track.getPersonId());
-            if (personId != null) {
-                byPerson.computeIfAbsent(personId, ignored -> new ArrayList<>()).add(track);
-            }
-        }
+        Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
 
         byPerson.values().parallelStream().forEach(personTracks -> {
             personTracks.sort(Comparator.comparingDouble(track -> track.getTime() == null ? 0.0 : track.getTime()));
@@ -313,6 +483,66 @@ public final class MatsimRoutePanelCache {
                 toRoute.addTransfer(fromRoute, idString(enter.getFacilityId()), hour);
             }
         });
+    }
+
+    private static Map<String, List<PTPersonTrack>> groupTracksByPerson(Collection<PTPersonTrack> tracks) {
+        Map<String, List<PTPersonTrack>> byPerson = new HashMap<>();
+        for (PTPersonTrack track : tracks) {
+            String personId = idString(track.getPersonId());
+            if (personId != null) {
+                byPerson.computeIfAbsent(personId, ignored -> new ArrayList<>()).add(track);
+            }
+        }
+        return byPerson;
+    }
+
+    /**
+     * 任务A：线路站间 OD。track 按人分组按时间排序，enter=true 记为“开口”，
+     * 其后同 route（优先同 departureId）的 enter=false 记录闭合为一次乘坐 fromFacility→toFacility。
+     */
+    private static void indexStationOd(Collection<PTPersonTrack> tracks, Map<String, RoutePanelAccumulator> routes) {
+        if (tracks == null || tracks.isEmpty()) {
+            return;
+        }
+        Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
+        byPerson.values().parallelStream().forEach(personTracks -> {
+            personTracks.sort(Comparator.comparingDouble(MatsimRoutePanelCache::safeTime));
+            PTPersonTrack boarding = null;
+            for (PTPersonTrack track : personTracks) {
+                if (Boolean.TRUE.equals(track.getEnter())) {
+                    // 新开口：上一个未闭合的上车记录（缺失下车事件）被覆盖。
+                    boarding = track;
+                    continue;
+                }
+                if (boarding == null) {
+                    continue;
+                }
+                if (sameRide(boarding, track)) {
+                    RoutePanelAccumulator route = routeForTrack(routes, boarding);
+                    if (route != null) {
+                        route.addStationOd(idString(boarding.getFacilityId()), idString(track.getFacilityId()));
+                    }
+                }
+                boarding = null;
+            }
+        });
+    }
+
+    // 同一次乘坐：同 route（lineId 存在时须一致）；优先同 departureId，departure 缺失时退化为同 route 即配对。
+    private static boolean sameRide(PTPersonTrack boarding, PTPersonTrack alighting) {
+        String boardRoute = idString(boarding.getRouteId());
+        String alightRoute = idString(alighting.getRouteId());
+        if (boardRoute == null || alightRoute == null || !boardRoute.equals(alightRoute)) {
+            return false;
+        }
+        String boardLine = idString(boarding.getLineId());
+        String alightLine = idString(alighting.getLineId());
+        if (boardLine != null && alightLine != null && !boardLine.equals(alightLine)) {
+            return false;
+        }
+        String boardDeparture = idString(boarding.getDepartureId());
+        String alightDeparture = idString(alighting.getDepartureId());
+        return boardDeparture == null || alightDeparture == null || boardDeparture.equals(alightDeparture);
     }
 
     private static RoutePanelAccumulator routeForTrack(Map<String, RoutePanelAccumulator> routes, PTPersonTrack track) {
@@ -351,6 +581,8 @@ public final class MatsimRoutePanelCache {
         if (leaveFacilityId != null && leaveFacilityId.equals(enterFacilityId)) {
             return true;
         }
+        // v13：仅“同站换乘”成立——同站名即可（站名合并上下行对站）；
+        // 不再按 200m 邻近坐标判定，避免把步行到附近地铁/公交站的行为算成直接换乘。
         String leaveStation = fromRoute.stationName(leaveFacilityId);
         String enterStation = toRoute.stationName(enterFacilityId);
         return !leaveStation.isBlank()
@@ -385,19 +617,24 @@ public final class MatsimRoutePanelCache {
         return summary;
     }
 
-    private static Map<String, Object> buildLineGroups(Collection<RoutePanelAccumulator> routes, Population population) {
+    private static Map<String, Object> buildLineGroups(
+            Collection<RoutePanelAccumulator> routes,
+            Population population,
+            Map<String, FacilityGeo> facilityGeo
+    ) {
         Map<String, LineGroupAccumulator> groups = new LinkedHashMap<>();
         for (RoutePanelAccumulator route : routes) {
-            if (!"subway".equals(route.mode)) {
-                continue;
-            }
-            String key = lineGroupKey(route);
-            groups.computeIfAbsent(key, ignored -> new LineGroupAccumulator(key, lineGroupName(route), route.mode))
+            // 任务D：地铁沿用既有聚合键（metro::规范化线路名，行为不变）；
+            // 公交新增按 lineId 聚合上下行（key=bus::lineId），只有一个 route 的线路同样生成组，前端统一走 group 口径。
+            boolean subway = "subway".equals(route.mode);
+            String key = subway ? lineGroupKey(route) : "bus::" + route.lineId;
+            String name = subway ? lineGroupName(route) : route.lineName;
+            groups.computeIfAbsent(key, ignored -> new LineGroupAccumulator(key, name, route.mode))
                     .add(route);
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         groups.forEach((key, group) -> {
-            group.finish(population);
+            group.finish(population, facilityGeo);
             payload.put(key, group.toPayload());
         });
         return payload;
@@ -765,9 +1002,169 @@ public final class MatsimRoutePanelCache {
     private static void collectActivityTypes(List<PlanElement> elements, Set<String> result) {
         for (PlanElement element : elements) {
             if (element instanceof Activity activity && activity.getType() != null) {
-                result.add(activity.getType().toLowerCase(Locale.ROOT));
+                String type = activity.getType().toLowerCase(Locale.ROOT);
+                // 任务B："pt interaction"/"car interaction" 等 interaction 类活动不算活动。
+                if (!isInteractionActivity(type)) {
+                    result.add(type);
+                }
             }
         }
+    }
+
+    /**
+     * 任务B：客流画像。出行者属性/出行目的两个维度保持既有互斥单选逻辑；
+     * 活动画像改为“本次出行的出行目的活动”计数（占比合计≈100%），
+     * 无出行目的活动时退回按乘客全活动统计（仍过滤 interaction）。
+     */
+    private static Map<String, Object> buildDemographicsPayload(
+            Population population,
+            Set<String> riderIds,
+            Map<String, Integer> tripPurposeCounts
+    ) {
+        if (population == null || riderIds.isEmpty()) {
+            Map<String, Object> empty = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
+            putActivityProfile(empty, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, Map.of());
+            return empty;
+        }
+        int total = 0;
+        int commuter = 0;
+        int student = 0;
+        int elderly = 0;
+        int shopping = 0;
+        int leisure = 0;
+        int other = 0;
+        Map<String, Integer> fallbackCounts = new LinkedHashMap<>();
+        for (String riderId : riderIds) {
+            Person person = population.getPersons().get(Id.create(riderId, Person.class));
+            if (person == null) {
+                continue;
+            }
+            total++;
+            Set<String> activities = activityTypes(person);
+            for (String activity : activities) {
+                if (activity != null && !activity.isBlank()) {
+                    fallbackCounts.merge(activity, 1, Integer::sum);
+                }
+            }
+            String attributes = allAttributeText(person);
+            Integer personAge = age(person);
+            boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
+                    || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
+            boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
+                    || hasToken(attributes, "student", "school", "university", "学生");
+            boolean isElderly = personAge != null && personAge >= 60
+                    || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
+            boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
+                    || hasToken(attributes, "shopping", "购物");
+            boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
+                    || hasToken(attributes, "leisure", "休闲", "娱乐");
+            // 客流画像分两个维度，各维度内互斥单选，保证每个维度的占比合计 ≤ 100%（前端用“其他”补足到 100%）。
+            // —— 维度一·出行者属性：老人 > 学生 > 成年(其他)。老人/学生互斥，剩余成年人由前端归入“其他”。
+            if (isElderly) {
+                elderly++;
+            } else if (isStudent) {
+                student++;
+            }
+            // —— 维度二·出行目的（取主要目的）：通勤 > 购物 > 休闲 > 其他。四类互斥，合计恰为 100%。
+            if (isCommuter) {
+                commuter++;
+            } else if (isShopping) {
+                shopping++;
+            } else if (isLeisure) {
+                leisure++;
+            } else {
+                other++;
+            }
+        }
+        Map<String, Object> payload = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
+        putActivityProfile(payload, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, fallbackCounts);
+        return payload;
+    }
+
+    private static void putActivityProfile(
+            Map<String, Object> payload,
+            Map<String, Integer> tripPurposeCounts,
+            Map<String, Integer> fallbackCounts
+    ) {
+        boolean fallback = tripPurposeCounts.isEmpty();
+        Map<String, Integer> activityCounts = fallback ? fallbackCounts : tripPurposeCounts;
+        payload.put("activitySource", fallback ? "all-activities-fallback" : "trip-purpose");
+        payload.put("activityTypes", activityPayloads(activityCounts));
+        payload.put("activityTypeRatios", activityRatioPayload(activityCounts));
+    }
+
+    private static Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
+            int shopping, int leisure, int other) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("riderCount", total);
+        payload.put("commuter", percent(commuter, total));
+        payload.put("student", percent(student, total));
+        payload.put("elderly", percent(elderly, total));
+        payload.put("shopping", percent(shopping, total));
+        payload.put("leisure", percent(leisure, total));
+        payload.put("other", percent(other, total));
+        payload.put("source", "population-attributes-and-activities");
+        return payload;
+    }
+
+    // 比例 = 类型计数 / 总计数 × 100（round2，总和≈100）。
+    private static List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts) {
+        int total = activityCounts.values().stream().mapToInt(Integer::intValue).sum();
+        return activityCounts.entrySet().stream()
+                .sorted((left, right) -> {
+                    int countCompare = Integer.compare(right.getValue(), left.getValue());
+                    return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
+                })
+                .map(entry -> {
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("key", entry.getKey());
+                    payload.put("label", entry.getKey());
+                    payload.put("count", entry.getValue());
+                    payload.put("ratio", percent(entry.getValue(), total));
+                    return payload;
+                })
+                .toList();
+    }
+
+    private static Map<String, Object> activityRatioPayload(Map<String, Integer> activityCounts) {
+        int total = activityCounts.values().stream().mapToInt(Integer::intValue).sum();
+        Map<String, Object> result = new LinkedHashMap<>();
+        activityCounts.entrySet().stream()
+                .sorted((left, right) -> {
+                    int countCompare = Integer.compare(right.getValue(), left.getValue());
+                    return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
+                })
+                .forEach(entry -> result.put(entry.getKey(), percent(entry.getValue(), total)));
+        return result;
+    }
+
+    /** 任务A：stationOd payload——flow 降序、只输出 flow>0、上限 {@link #STATION_OD_LIMIT} 条，坐标为经纬度。 */
+    private static List<Map<String, Object>> stationOdPayloads(
+            Collection<StationOdAccumulator> odFlows,
+            Map<String, FacilityGeo> facilityGeo
+    ) {
+        return odFlows.stream()
+                .filter(od -> od.flow > 0)
+                .sorted(Comparator.comparingInt((StationOdAccumulator od) -> od.flow).reversed()
+                        .thenComparing(od -> od.fromFacilityId)
+                        .thenComparing(od -> od.toFacilityId))
+                .limit(STATION_OD_LIMIT)
+                .map(od -> {
+                    FacilityGeo from = facilityGeo.get(od.fromFacilityId);
+                    FacilityGeo to = facilityGeo.get(od.toFacilityId);
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("fromFacilityId", od.fromFacilityId);
+                    payload.put("fromName", from == null ? od.fromFacilityId : from.name());
+                    payload.put("fromX", from == null ? null : from.lon());
+                    payload.put("fromY", from == null ? null : from.lat());
+                    payload.put("toFacilityId", od.toFacilityId);
+                    payload.put("toName", to == null ? od.toFacilityId : to.name());
+                    payload.put("toX", to == null ? null : to.lon());
+                    payload.put("toY", to == null ? null : to.lat());
+                    payload.put("flow", od.flow);
+                    return payload;
+                })
+                .toList();
     }
 
     private static Integer age(Person person) {
@@ -821,6 +1218,11 @@ public final class MatsimRoutePanelCache {
         private final int[] hourlyAlightings = new int[HOURS];
         private final int[] capacityByHour = new int[HOURS];
         private final List<SegmentFlowAccumulator> segments = new ArrayList<>();
+        // 任务A：本 route 的站间 OD（key=fromFacilityId + '\u0001' + toFacilityId）。
+        private final Map<String, StationOdAccumulator> stationOd = new HashMap<>();
+        private List<Map<String, Object>> stationOdPayload = List.of();
+        // 任务B：本 route 的出行目的活动计数（供 lineGroup 聚合复用）。
+        private Map<String, Integer> tripPurposeCounts = Map.of();
         private double capacityTotal = 0.0;
         private long totalBoardings = 0;
         private long totalAlightings = 0;
@@ -892,9 +1294,33 @@ public final class MatsimRoutePanelCache {
             transfer.flowByHour[hour]++;
         }
 
-        private void finish(Population population) {
+        // indexStationOd 按人并行配对，落到同一 route 时需要同步。
+        private synchronized void addStationOd(String fromFacilityId, String toFacilityId) {
+            if (fromFacilityId == null || toFacilityId == null || fromFacilityId.equals(toFacilityId)) {
+                return;
+            }
+            String key = fromFacilityId + '\u0001' + toFacilityId;
+            stationOd.computeIfAbsent(key, ignored -> new StationOdAccumulator(fromFacilityId, toFacilityId)).flow++;
+        }
+
+        private void finish(
+                Population population,
+                Map<String, Map<String, Integer>> tripPurposeByRoute,
+                Map<String, FacilityGeo> facilityGeo
+        ) {
             buildSegments();
-            buildDemographics(population);
+            this.tripPurposeCounts = resolveTripPurposeCounts(tripPurposeByRoute);
+            this.demographics = buildDemographicsPayload(population, riderIds, tripPurposeCounts);
+            this.stationOdPayload = stationOdPayloads(stationOd.values(), facilityGeo);
+        }
+
+        private Map<String, Integer> resolveTripPurposeCounts(Map<String, Map<String, Integer>> tripPurposeByRoute) {
+            Map<String, Integer> counts = tripPurposeByRoute.get(routeKey(lineId, routeId));
+            if (counts == null) {
+                // plans 中 TransitPassengerRoute 缺失 lineId 时的兜底键。
+                counts = tripPurposeByRoute.get(routeKey(null, routeId));
+            }
+            return counts == null ? Map.of() : counts;
         }
 
         private void buildSegments() {
@@ -926,96 +1352,6 @@ public final class MatsimRoutePanelCache {
             }
         }
 
-        private void buildDemographics(Population population) {
-            if (population == null || riderIds.isEmpty()) {
-                demographics = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
-                return;
-            }
-            int total = 0;
-            int commuter = 0;
-            int student = 0;
-            int elderly = 0;
-            int shopping = 0;
-            int leisure = 0;
-            int other = 0;
-            Map<String, Integer> activityCounts = new LinkedHashMap<>();
-            for (String riderId : riderIds) {
-                Person person = population.getPersons().get(Id.create(riderId, Person.class));
-                if (person == null) {
-                    continue;
-                }
-                total++;
-                Set<String> activities = activityTypes(person);
-                for (String activity : activities) {
-                    if (activity != null && !activity.isBlank()) {
-                        activityCounts.merge(activity, 1, Integer::sum);
-                    }
-                }
-                String attributes = allAttributeText(person);
-                Integer personAge = age(person);
-                boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
-                        || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
-                boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
-                        || hasToken(attributes, "student", "school", "university", "学生");
-                boolean isElderly = personAge != null && personAge >= 60
-                        || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
-                boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
-                        || hasToken(attributes, "shopping", "购物");
-                boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
-                        || hasToken(attributes, "leisure", "休闲", "娱乐");
-                // 客流画像分两个维度，各维度内互斥单选，保证每个维度的占比合计 ≤ 100%（前端用“其他”补足到 100%）。
-                // —— 维度一·出行者属性：老人 > 学生 > 成年(其他)。老人/学生互斥，剩余成年人由前端归入“其他”。
-                if (isElderly) {
-                    elderly++;
-                } else if (isStudent) {
-                    student++;
-                }
-                // —— 维度二·出行目的（取主要目的）：通勤 > 购物 > 休闲 > 其他。四类互斥，合计恰为 100%。
-                if (isCommuter) {
-                    commuter++;
-                } else if (isShopping) {
-                    shopping++;
-                } else if (isLeisure) {
-                    leisure++;
-                } else {
-                    other++;
-                }
-            }
-            demographics = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
-            demographics.put("activityTypes", activityPayloads(activityCounts, total));
-        }
-
-        private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
-                int shopping, int leisure, int other) {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("riderCount", total);
-            payload.put("commuter", percent(commuter, total));
-            payload.put("student", percent(student, total));
-            payload.put("elderly", percent(elderly, total));
-            payload.put("shopping", percent(shopping, total));
-            payload.put("leisure", percent(leisure, total));
-            payload.put("other", percent(other, total));
-            payload.put("source", "population-attributes-and-activities");
-            return payload;
-        }
-
-        private List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts, int total) {
-            return activityCounts.entrySet().stream()
-                    .sorted((left, right) -> {
-                        int countCompare = Integer.compare(right.getValue(), left.getValue());
-                        return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
-                    })
-                    .map(entry -> {
-                        Map<String, Object> payload = new LinkedHashMap<>();
-                        payload.put("key", entry.getKey());
-                        payload.put("label", entry.getKey());
-                        payload.put("count", entry.getValue());
-                        payload.put("ratio", percent(entry.getValue(), total));
-                        return payload;
-                    })
-                    .toList();
-        }
-
         private String payloadKey(Map<String, Integer> routeIdCounts) {
             return routeIdCounts.getOrDefault(routeId, 0) > 1
                     ? routeKey(lineId, routeId)
@@ -1040,6 +1376,7 @@ public final class MatsimRoutePanelCache {
             payload.put("segments", segments.stream().map(SegmentFlowAccumulator::toPayload).toList());
             payload.put("transfers", transferPayloads());
             payload.put("demographics", demographics);
+            payload.put("stationOd", stationOdPayload);
 
             Map<String, Object> metrics = new LinkedHashMap<>();
             metrics.put("routeDist", round2(routeDistance));
@@ -1138,6 +1475,11 @@ public final class MatsimRoutePanelCache {
         private final List<Map<String, Object>> segments = new ArrayList<>();
         private final Set<String> vehicleIds = new LinkedHashSet<>();
         private final Set<String> riderIds = new LinkedHashSet<>();
+        // 任务A/D：组内合并各子 route 的换乘、站间 OD 与出行目的活动计数。
+        private final Map<String, TransferAccumulator> transfers = new LinkedHashMap<>();
+        private final Map<String, StationOdAccumulator> stationOd = new LinkedHashMap<>();
+        private final Map<String, Integer> tripPurposeCounts = new LinkedHashMap<>();
+        private List<Map<String, Object>> stationOdPayload = List.of();
         private Map<String, Object> demographics = Map.of("riderCount", 0);
         private long totalBoardings = 0;
         private long totalAlightings = 0;
@@ -1186,97 +1528,26 @@ public final class MatsimRoutePanelCache {
                 payload.put("lineName", route.lineName);
                 segments.add(payload);
             }
-        }
-
-        private void finish(Population population) {
-            buildDemographics(population);
-        }
-
-        private void buildDemographics(Population population) {
-            if (population == null || riderIds.isEmpty()) {
-                demographics = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
-                return;
+            // 换乘聚合：同 key（对方 lineId::站名）小时流量相加。
+            for (Map.Entry<String, TransferAccumulator> entry : route.transfers.entrySet()) {
+                TransferAccumulator source = entry.getValue();
+                TransferAccumulator target = transfers.computeIfAbsent(entry.getKey(),
+                        ignored -> new TransferAccumulator(source.lineId, source.lineName, source.routeId, source.routeName, source.station));
+                addIntArray(target.flowByHour, source.flowByHour);
             }
-            int total = 0;
-            int commuter = 0;
-            int student = 0;
-            int elderly = 0;
-            int shopping = 0;
-            int leisure = 0;
-            int other = 0;
-            Map<String, Integer> activityCounts = new LinkedHashMap<>();
-            for (String riderId : riderIds) {
-                Person person = population.getPersons().get(Id.create(riderId, Person.class));
-                if (person == null) {
-                    continue;
-                }
-                total++;
-                Set<String> activities = activityTypes(person);
-                for (String activity : activities) {
-                    if (activity != null && !activity.isBlank()) {
-                        activityCounts.merge(activity, 1, Integer::sum);
-                    }
-                }
-                String attributes = allAttributeText(person);
-                Integer personAge = age(person);
-                boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
-                        || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
-                boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
-                        || hasToken(attributes, "student", "school", "university", "学生");
-                boolean isElderly = personAge != null && personAge >= 60
-                        || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
-                boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
-                        || hasToken(attributes, "shopping", "购物");
-                boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
-                        || hasToken(attributes, "leisure", "休闲", "娱乐");
-                if (isElderly) {
-                    elderly++;
-                } else if (isStudent) {
-                    student++;
-                }
-                if (isCommuter) {
-                    commuter++;
-                } else if (isShopping) {
-                    shopping++;
-                } else if (isLeisure) {
-                    leisure++;
-                } else {
-                    other++;
-                }
+            // 站间 OD 聚合：同站对流量相加。
+            for (Map.Entry<String, StationOdAccumulator> entry : route.stationOd.entrySet()) {
+                StationOdAccumulator source = entry.getValue();
+                stationOd.computeIfAbsent(entry.getKey(),
+                        ignored -> new StationOdAccumulator(source.fromFacilityId, source.toFacilityId)).flow += source.flow;
             }
-            demographics = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
-            demographics.put("activityTypes", activityPayloads(activityCounts, total));
+            // 出行目的活动计数聚合（route.finish 已先于 buildLineGroups 执行）。
+            route.tripPurposeCounts.forEach((type, count) -> tripPurposeCounts.merge(type, count, Integer::sum));
         }
 
-        private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
-                int shopping, int leisure, int other) {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("riderCount", total);
-            payload.put("commuter", percent(commuter, total));
-            payload.put("student", percent(student, total));
-            payload.put("elderly", percent(elderly, total));
-            payload.put("shopping", percent(shopping, total));
-            payload.put("leisure", percent(leisure, total));
-            payload.put("other", percent(other, total));
-            payload.put("source", "population-attributes-and-activities");
-            return payload;
-        }
-
-        private List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts, int total) {
-            return activityCounts.entrySet().stream()
-                    .sorted((left, right) -> {
-                        int countCompare = Integer.compare(right.getValue(), left.getValue());
-                        return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
-                    })
-                    .map(entry -> {
-                        Map<String, Object> payload = new LinkedHashMap<>();
-                        payload.put("key", entry.getKey());
-                        payload.put("label", entry.getKey());
-                        payload.put("count", entry.getValue());
-                        payload.put("ratio", percent(entry.getValue(), total));
-                        return payload;
-                    })
-                    .toList();
+        private void finish(Population population, Map<String, FacilityGeo> facilityGeo) {
+            demographics = buildDemographicsPayload(population, riderIds, tripPurposeCounts);
+            stationOdPayload = stationOdPayloads(stationOd.values(), facilityGeo);
         }
 
         private static void addIntArray(int[] target, int[] source) {
@@ -1306,8 +1577,9 @@ public final class MatsimRoutePanelCache {
             payload.put("capacityByHour", capacityByHour);
             payload.put("stationFlows", stationFlows.values().stream().map(StationFlowAccumulator::toPayload).toList());
             payload.put("segments", segments);
-            payload.put("transfers", List.of());
+            payload.put("transfers", transferPayloads());
             payload.put("demographics", demographics);
+            payload.put("stationOd", stationOdPayload);
 
             Map<String, Object> metrics = new LinkedHashMap<>();
             metrics.put("routeDist", round2(routeDistance));
@@ -1326,6 +1598,34 @@ public final class MatsimRoutePanelCache {
             metrics.put("perVehicleFlow", vehicles > 0 ? round2(totalBoardings / (double) vehicles) : 0.0);
             payload.put("metrics", metrics);
             return payload;
+        }
+
+        // 组视角的换乘：上下行/分段合并后，去往组内成员线路的记录属于组内乘续，不再算跨线换乘。
+        private List<Map<String, Object>> transferPayloads() {
+            List<TransferAccumulator> external = transfers.values().stream()
+                    .filter(transfer -> !sourceLineIds.contains(transfer.lineId))
+                    .toList();
+            int totalTransfer = external.stream().mapToInt(TransferAccumulator::flow).sum();
+            return external.stream()
+                    .sorted(Comparator.comparingInt(TransferAccumulator::flow).reversed())
+                    .map(item -> item.toPayload(totalTransfer))
+                    .toList();
+        }
+    }
+
+    /** facility 静态地理信息：名称、平面坐标（epsg:3857，供换乘距离判定）、经纬度（供 OD 输出）。 */
+    private record FacilityGeo(String name, Coord coord, Double lon, Double lat) {
+    }
+
+    /** 任务A：一个“上车站→下车站”对的全天客流。 */
+    private static final class StationOdAccumulator {
+        private final String fromFacilityId;
+        private final String toFacilityId;
+        private int flow = 0;
+
+        private StationOdAccumulator(String fromFacilityId, String toFacilityId) {
+            this.fromFacilityId = fromFacilityId;
+            this.toFacilityId = toFacilityId;
         }
     }
 

@@ -92,7 +92,10 @@
           <section v-if="!stationPanelUnavailable && pfaStationSection === 'boarding'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">站点乘降客流</span>
-              <span class="pfa-section-meta">上车 {{ stationBoardingSummary.boarding }} · 下车 {{ stationBoardingSummary.alighting }}</span>
+              <div class="pfa-section-actions">
+                <span class="pfa-section-meta">上车 {{ stationBoardingSummary.boarding }} · 下车 {{ stationBoardingSummary.alighting }}</span>
+                <el-button size="small" class="pfa-heatmap-btn" @click.stop="boardingHeatmapVisible = true">热力图</el-button>
+              </div>
             </div>
             <div class="chart-container-wrapper">
               <el-auto-resizer class="chart_box">
@@ -154,6 +157,19 @@
                 </template>
               </el-auto-resizer>
             </div>
+            <div class="od-curve-control">
+              <div class="od-curve-head">
+                <span class="od-curve-title">地图OD曲线</span>
+                <span class="pfa-section-meta">{{ odCurveDirectionLabel }}</span>
+              </div>
+              <ColorScaleControl
+                v-if="odCurveEntries.items.length"
+                v-model="odCurveScaleConfig"
+                :legend-title="odCurveLegendTitle"
+                :format-value="formatOdCurveLegendValue"
+              />
+              <div v-else class="pfa-empty">当前时段暂无可绘制的OD曲线</div>
+            </div>
           </section>
 
           <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'demographics'" class="pfa-section">
@@ -201,6 +217,13 @@
                   <span class="reachability-dot" :style="{ background: group.color }"></span>
                   <span>{{ group.label }}</span>
                   <strong>{{ group.count.toLocaleString() }}</strong>
+                  <el-switch
+                    class="reachability-level-switch"
+                    size="small"
+                    :model-value="reachabilityLevelVisibility[group.key] !== false"
+                    @change="(value) => setReachabilityLevelVisible(group.key, value)"
+                    @click.stop
+                  />
                 </div>
                 <div class="reachability-chip-list">
                   <span v-for="station in group.stations" :key="`${group.key}-${reachabilityStationKey(station)}`" class="reachability-chip" :style="{ borderColor: group.color, color: group.color }">
@@ -519,16 +542,51 @@
       </div>
     </div>
   </teleport>
+
+  <el-dialog
+    v-model="boardingHeatmapVisible"
+    class="station-heatmap-dialog"
+    modal-class="station-heatmap-overlay"
+    width="70%"
+    align-center
+    append-to-body
+    destroy-on-close
+    :lock-scroll="true"
+  >
+    <template #header>
+      <div class="station-heatmap-header">
+        <div>
+          <div class="station-heatmap-kicker">站点乘降热力图</div>
+          <div class="station-heatmap-title">{{ selectedStationName || '站点乘降分析' }}</div>
+        </div>
+        <span class="station-heatmap-meta">
+          {{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }} · 线路 × OD对端站
+        </span>
+      </div>
+    </template>
+    <div class="station-heatmap-body">
+      <VChart
+        v-if="boardingHeatmapData.hasData"
+        class="station-heatmap-chart"
+        :option="boardingHeatmapOption"
+        autoresize
+        :update-options="{ notMerge: true }"
+      />
+      <el-empty v-else description="当前时段暂无线路×OD客流数据" />
+    </div>
+  </el-dialog>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
 import { Location, Download } from "@element-plus/icons-vue";
-import { getStationPanel } from "@/api/facility";
-import { abortOtherModelDataRequests, getCachedLineAll } from "@/utils/modelDataCache.js";
+import { abortOtherModelDataRequests, getCachedLineAll, getCachedStationPanel } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
+import ColorScaleControl from "./ColorScaleControl.vue";
 import { StationLayer } from "../layers/StationLayer.js";
+import { buildFlowCurveFeatureCollection } from "../utils/flowCurves.js";
+import { classifyByPercent, createColorScaleConfig, resolveColorScale } from "@/utils/colorSchemes.js";
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { injectSync } from "@/utils";
 import { webMercatorToLngLat } from "@/mymap/index.js";
@@ -545,7 +603,8 @@ const stationPanelError = ref("");
 let stationPanelPromise = null;
 let stationPanelRetryTimer = null;
 let stationPanelRetryCount = 0;
-let stationPanelAbortController = null;
+// 组件卸载后不再写状态、不再安排重试（共享缓存请求本身可继续完成以便复用）
+let stationPanelDisposed = false;
 
 const selectedStationName = ref("");
 const selectedStationFacilityId = ref("");
@@ -589,6 +648,7 @@ watch(selectedStationName, (newStation) => {
     selectedReverseStationCoord.value = null;
     cleanUpSelectedStationRing();
     cleanUpReachabilityOverlay();
+    cleanUpOdCurveOverlay();
     restoreReachabilityStationFilter();
   }
 });
@@ -599,6 +659,7 @@ watch(activeDatavisualizationTab, (newTab) => {
   } else {
     cleanUpSelectedStationRing();
     cleanUpReachabilityOverlay();
+    cleanUpOdCurveOverlay();
     restoreReachabilityStationFilter();
   }
 });
@@ -1265,8 +1326,13 @@ const localReachabilityData = computed(() => {
 const SELECTED_STATION_RING_SOURCE_ID = "selected-station-ring-source";
 const SELECTED_STATION_RING_LAYER_ID = "selected-station-ring-layer";
 const REACHABILITY_SOURCE_ID = "station-reachability-source";
-const REACHABILITY_SHADOW_LAYER_ID = "station-reachability-shadow";
 const REACHABILITY_LAYER_PREFIX = "station-reachability-line";
+const REACHABILITY_LEVEL_KEYS = ["direct", "transfer1", "transfer2"];
+// 需求8：客流OD地图曲线（贝塞尔弧线 + 起点站名标签）
+const OD_CURVE_SOURCE_ID = "station-od-curve-source";
+const OD_CURVE_LAYER_ID = "station-od-curve-layer";
+const OD_CURVE_LABEL_SOURCE_ID = "station-od-curve-label-source";
+const OD_CURVE_LABEL_LAYER_ID = "station-od-curve-label-layer";
 const RM_SOURCE_STATIONS = "rm-bus-network-stations-source";
 const RM_LAYER_STATIONS = "rm-bus-network-stations";
 
@@ -1503,15 +1569,8 @@ const reachabilityVisibleStations = computed(() => {
     }
     return displayRangeStations.value;
   }
-  const originKey = localReachabilityData.value.originKey || stationCoordKeyFromStation(reachabilityOriginStation());
-  const visibleKeys = new Set(originKey ? [originKey] : []);
-  reachabilityGroups.value.forEach((group) => {
-    (Array.isArray(group.mapStations) ? group.mapStations : group.stations).forEach((station) => {
-      const key = reachabilityStationKey(station);
-      if (key) visibleKeys.add(key);
-    });
-  });
-  return displayRangeStations.value.filter((station) => visibleKeys.has(station.key || station.coordKey || stationCoordKeyFromStation(station)));
+  // 可达性：底图只保留出发站图标，三类可达站点由彩色圆点图层绘制（避免图标与圆点重叠）
+  return selectedOnlyStations.value;
 });
 
 function setRunMonitorStationSource(stations) {
@@ -1555,59 +1614,29 @@ function ensureReachabilityLayers() {
       data: emptyFeatureCollection(),
     });
   }
-  addMapLayer(map, {
-    id: REACHABILITY_SHADOW_LAYER_ID,
-    type: "line",
-    source: REACHABILITY_SOURCE_ID,
-    paint: {
-      "line-color": "rgba(248, 251, 255, 0.86)",
-      "line-width": [
-        "interpolate",
-        ["linear"],
-        ["zoom"],
-        9, 1.8,
-        13, 3.8,
-        16, 6.2
-      ],
-      "line-opacity": 0.62,
-      "line-blur": 1.1,
-    },
-    layout: {
-      "line-cap": "round",
-      "line-join": "round",
-    },
-  });
+  // 三类可达站点改为彩色圆点（与右侧面板分组颜色一致），置于顶层，不再绘制曲线
   reachabilityGroups.value.forEach((group) => {
     addMapLayer(map, {
       id: `${REACHABILITY_LAYER_PREFIX}-${group.key}`,
-      type: "line",
+      type: "circle",
       source: REACHABILITY_SOURCE_ID,
       filter: ["==", ["get", "level"], group.key],
       paint: {
-        "line-color": group.color,
-        "line-width": [
+        "circle-radius": [
           "interpolate",
           ["linear"],
           ["zoom"],
-          9, 1,
-          13, 2.2,
-          16, 3.6
+          9, 3,
+          12, 4.6,
+          15, 7,
         ],
-        "line-opacity": [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          9, 0.28,
-          13, 0.58,
-          16, 0.78
-        ],
-        "line-blur": 0.15,
+        "circle-color": group.color,
+        "circle-opacity": 0.95,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 1.4,
+        "circle-stroke-opacity": 0.95,
       },
-      layout: {
-        "line-cap": "round",
-        "line-join": "round",
-      },
-    });
+    }, null);
   });
   return map.getSource(REACHABILITY_SOURCE_ID);
 }
@@ -1632,11 +1661,12 @@ function reachabilityFeatureCollection() {
       const key = `${group.key}-${stationKey}`;
       if (emitted.has(key)) return;
       emitted.add(key);
+      // 三类可达站点画为圆点（不再从出发站拉曲线）
       features.push({
         type: "Feature",
         geometry: {
-          type: "LineString",
-          coordinates: [origin, target],
+          type: "Point",
+          coordinates: target,
         },
         properties: {
           level: group.key,
@@ -1663,18 +1693,155 @@ function renderReachabilityOverlay() {
   if (!source) return;
   const data = reachabilityFeatureCollection();
   source.setData(data);
+  applyReachabilityLevelVisibility();
 }
 
 function cleanUpReachabilityOverlay() {
   const map = MapRef.value?.map;
   restoreReachabilityStationFilter();
   if (!map) return;
-  ["direct", "transfer1", "transfer2"].forEach((key) => {
+  REACHABILITY_LEVEL_KEYS.forEach((key) => {
     const layerId = `${REACHABILITY_LAYER_PREFIX}-${key}`;
     if (map.getLayer(layerId)) map.removeLayer(layerId);
   });
-  if (map.getLayer(REACHABILITY_SHADOW_LAYER_ID)) map.removeLayer(REACHABILITY_SHADOW_LAYER_ID);
   if (map.getSource(REACHABILITY_SOURCE_ID)) map.removeSource(REACHABILITY_SOURCE_ID);
+}
+
+// —— 需求10：可达性分组显隐 ——
+function setReachabilityLevelVisible(key, visible) {
+  // 整值替换，遵循组件内 shallow 更新习惯
+  reachabilityLevelVisibility.value = { ...reachabilityLevelVisibility.value, [key]: Boolean(visible) };
+}
+
+function applyReachabilityLevelVisibility() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  REACHABILITY_LEVEL_KEYS.forEach((key) => {
+    const visible = reachabilityLevelVisibility.value[key] !== false;
+    const layerId = `${REACHABILITY_LAYER_PREFIX}-${key}`;
+    if (map.getLayer(layerId)) {
+      map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
+    }
+  });
+}
+
+// —— 需求8：客流OD地图曲线 ——
+function odCurveOverlayActive() {
+  return shouldRenderPfaRightPanel.value && pfaStationSection.value === "od" && Boolean(selectedStationName.value);
+}
+
+function ensureOdCurveLayers() {
+  const map = MapRef.value?.map;
+  if (!map) return false;
+  if (!map.getSource(OD_CURVE_SOURCE_ID)) {
+    map.addSource(OD_CURVE_SOURCE_ID, { type: "geojson", data: emptyFeatureCollection() });
+  }
+  if (!map.getSource(OD_CURVE_LABEL_SOURCE_ID)) {
+    map.addSource(OD_CURVE_LABEL_SOURCE_ID, { type: "geojson", data: emptyFeatureCollection() });
+  }
+  addMapLayer(map, {
+    id: OD_CURVE_LAYER_ID,
+    type: "line",
+    source: OD_CURVE_SOURCE_ID,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": ["coalesce", ["get", "color"], "#f03b20"],
+      "line-width": ["coalesce", ["get", "width"], 1.5],
+      "line-opacity": 0.82,
+      "line-blur": 0.2,
+    },
+  });
+  // 站名标签置于图层栈顶（不传 beforeId），避免被站点图标压住
+  addMapLayer(map, {
+    id: OD_CURVE_LABEL_LAYER_ID,
+    type: "symbol",
+    source: OD_CURVE_LABEL_SOURCE_ID,
+    layout: {
+      "text-field": ["coalesce", ["get", "stationName"], ""],
+      "text-size": 11,
+      "text-anchor": "left",
+      "text-offset": [0.55, 0],
+      "text-max-width": 12,
+      "text-padding": 2,
+    },
+    paint: {
+      "text-color": "#12304f",
+      "text-halo-color": "rgba(255, 255, 255, 0.95)",
+      "text-halo-width": 1.4,
+      "text-halo-blur": 0.3,
+    },
+  }, null);
+  return true;
+}
+
+function odCurveOverlayData() {
+  const empty = { curves: emptyFeatureCollection(), labels: emptyFeatureCollection() };
+  const items = odCurveEntries.value.items;
+  if (!items.length) return empty;
+  const selfCoord = stationLngLat(reachabilityOriginStation());
+  if (!selfCoord) return empty;
+  const inbound = odCurveEntries.value.direction === "inbound";
+  const maxFlow = odCurveMaxFlow.value;
+  const { colors, thresholds } = resolveColorScale(odCurveScaleConfig.value);
+  const maxClassIndex = Math.max(1, colors.length - 1);
+  const flows = [];
+  const labelFeatures = [];
+  items.forEach((item) => {
+    const remote = [item.lng, item.lat];
+    const classIndex = classifyByPercent(item.flow, maxFlow, thresholds);
+    // 线宽按档位 1.5px → 6px 插值
+    const width = Math.round((1.5 + (4.5 * classIndex) / maxClassIndex) * 10) / 10;
+    flows.push({
+      from: inbound ? remote : selfCoord,
+      to: inbound ? selfCoord : remote,
+      value: item.flow,
+      properties: {
+        color: colors[classIndex] || colors[colors.length - 1],
+        width,
+        stationName: item.name,
+        flow: item.flow,
+        direction: odCurveEntries.value.direction,
+      },
+    });
+    if (item.name) {
+      labelFeatures.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: remote },
+        properties: { stationName: item.name, flow: item.flow },
+      });
+    }
+  });
+  return {
+    curves: buildFlowCurveFeatureCollection(flows, { curvature: 0.22 }),
+    labels: { type: "FeatureCollection", features: labelFeatures },
+  };
+}
+
+function renderOdCurveOverlay() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  if (!odCurveOverlayActive()) {
+    cleanUpOdCurveOverlay();
+    return;
+  }
+  if (!ensureOdCurveLayers()) return;
+  const { curves, labels } = odCurveOverlayData();
+  map.getSource(OD_CURVE_SOURCE_ID)?.setData(curves);
+  map.getSource(OD_CURVE_LABEL_SOURCE_ID)?.setData(labels);
+}
+
+function cleanUpOdCurveOverlay() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  [OD_CURVE_LABEL_LAYER_ID, OD_CURVE_LAYER_ID].forEach((layerId) => {
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  });
+  [OD_CURVE_LABEL_SOURCE_ID, OD_CURVE_SOURCE_ID].forEach((sourceId) => {
+    if (map.getSource(sourceId)) map.removeSource(sourceId);
+  });
 }
 
 function normalizeStationSearchName(value = "") {
@@ -1857,6 +2024,7 @@ function clearStationPanelRetry() {
 }
 
 function scheduleStationPanelRetry(model) {
+  if (stationPanelDisposed) return;
   if (!model || props.model !== model || stationPanelData.value || stationPanelRetryTimer) return;
   if (stationPanelRetryCount >= 120) {
     stationPanelStatus.value = "error";
@@ -1886,16 +2054,13 @@ function ensureStationPanelData(options = {}) {
     clearStationPanelRetry();
     stationPanelRetryCount = 0;
   }
-  stationPanelAbortController?.abort();
-  stationPanelAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
   stationPanelStatus.value = "loading";
   stationPanelError.value = "";
-  stationPanelPromise = getStationPanel(
-    { datasource: model },
-    { silentError: true, signal: stationPanelAbortController?.signal },
-  )
-    .then((res) => {
-      const data = res.data || null;
+  // 整包站点客流面板改走共享缓存：按模型键控 + 并发去重，请求中止由 modelDataCache 统一管理；
+  // 后端生成中（status === "generating"）的结果不会入缓存，重试时会重新请求
+  stationPanelPromise = getCachedStationPanel(model)
+    .then((data) => {
+      if (stationPanelDisposed) return null;
       if (props.model === model && data?.stations) {
         stationPanelData.value = data;
         stationPanelStatus.value = "ready";
@@ -1909,7 +2074,7 @@ function ensureStationPanelData(options = {}) {
       return stationPanelData.value;
     })
     .catch((error) => {
-      if (isCanceledRequest(error)) return null;
+      if (isCanceledRequest(error) || stationPanelDisposed) return null;
       if (props.model === model) {
         stationPanelData.value = null;
         stationPanelStatus.value = "error";
@@ -1919,7 +2084,6 @@ function ensureStationPanelData(options = {}) {
     })
     .finally(() => {
       stationPanelPromise = null;
-      stationPanelAbortController = null;
     });
   return stationPanelPromise;
 }
@@ -1935,7 +2099,9 @@ async function loadAllData() {
   allMapStations.value = [];
   clearStationPanelRetry();
   stationPanelRetryCount = 0;
-  if (!runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value) ensureStationPanelData();
+  // 站点面板整包无条件预取：首次点站时右侧面板直接命中本地缓存，
+  // 不再让用户等整包下载（运行监测与客流分析共用 modelDataCache 的同一次请求）
+  ensureStationPanelData();
   try {
       const lineRes = await getCachedLineAll(model);
       if (props.model !== model) return;
@@ -2017,6 +2183,12 @@ function handleExportLeaderboard() {
 const activeDetailTab = ref("overview");
 const segmentTimeRange = ref([8, 18]);
 const odViewMode = ref("table");
+// 需求8：OD曲线分级色阶配置（ColorScaleControl v-model 整值替换）
+const odCurveScaleConfig = ref(createColorScaleConfig("ylorrd", 5));
+// 需求9：乘降热力图弹窗
+const boardingHeatmapVisible = ref(false);
+// 需求10：可达性分组显隐（整值替换更新）
+const reachabilityLevelVisibility = ref({ direct: true, transfer1: true, transfer2: true });
 
 function formatHourLabel(hour) {
   return `${hour.toString().padStart(2, "0")}:00`;
@@ -2322,6 +2494,221 @@ const odChartOption = computed(() => {
   };
 });
 
+// —— 需求8：客流OD地图曲线数据 ——
+// 优先展示 destination===本站（到站方向）；若无则回退 origin===本站（出站方向），面板注明方向。
+// 同一对端站多条线路合并为一条曲线（flow 求和），坐标缺失/流量为 0 的条目跳过（空值防护）。
+const odCurveEntries = computed(() => {
+  const selfName = normalizeStationSearchName(selectedStationName.value);
+  if (!selfName) return { direction: "inbound", items: [] };
+  const startHour = segmentTimeRange.value[0];
+  const endHour = segmentTimeRange.value[1];
+  const odRows = Array.isArray(currentStationPanel.value?.od) ? currentStationPanel.value.od : [];
+
+  const buildItems = (direction) => {
+    const inbound = direction === "inbound";
+    const merged = new Map();
+    odRows.forEach((item) => {
+      if (!item) return;
+      const selfSideName = inbound ? item.destination : item.origin;
+      if (normalizeStationSearchName(selfSideName) !== selfName) return;
+      const lng = Number(inbound ? item.originX : item.destinationX);
+      const lat = Number(inbound ? item.originY : item.destinationY);
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+      const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
+      if (flow <= 0) return;
+      const name = String((inbound ? item.origin : item.destination) || item.counterpart || "").trim();
+      const key = `${name}|${lng.toFixed(6)},${lat.toFixed(6)}`;
+      const existing = merged.get(key);
+      if (existing) {
+        existing.flow += flow;
+      } else {
+        merged.set(key, { name, lng, lat, flow });
+      }
+    });
+    return Array.from(merged.values()).sort((a, b) => b.flow - a.flow);
+  };
+
+  const inboundItems = buildItems("inbound");
+  if (inboundItems.length) return { direction: "inbound", items: inboundItems };
+  return { direction: "outbound", items: buildItems("outbound") };
+});
+
+const odCurveMaxFlow = computed(() =>
+  odCurveEntries.value.items.reduce((max, item) => Math.max(max, item.flow), 0)
+);
+
+const odCurveDirectionLabel = computed(() => {
+  if (!odCurveEntries.value.items.length) return "当前时段无OD曲线";
+  return odCurveEntries.value.direction === "inbound"
+    ? "展示方向：到站（来源站 → 本站）"
+    : "本站暂无到站OD，已展示出站方向（本站 → 目的站）";
+});
+
+const odCurveLegendTitle = computed(() =>
+  odCurveEntries.value.direction === "inbound" ? "到站OD客流" : "出站OD客流"
+);
+
+// 图例断点：百分比 → 人次
+function formatOdCurveLegendValue(percent) {
+  const flow = Math.round((toFiniteNumber(percent, 0) / 100) * odCurveMaxFlow.value);
+  return `${flow.toLocaleString()} 人次`;
+}
+
+// —— 需求9：站点乘降热力图（线路 × OD对端站） ——
+const boardingHeatmapData = computed(() => {
+  const startHour = segmentTimeRange.value[0];
+  const endHour = segmentTimeRange.value[1];
+  const selfName = normalizeStationSearchName(selectedStationName.value);
+  const odRows = Array.isArray(currentStationPanel.value?.od) ? currentStationPanel.value.od : [];
+
+  const lineTotals = new Map();
+  const counterpartTotals = new Map();
+  // 嵌套 Map 聚合，避免站名/线路名含分隔符的拼接歧义
+  const cellFlows = new Map();
+  odRows.forEach((item) => {
+    if (!item) return;
+    const lineName = String(item.lineName || "").trim() || "未知线路";
+    const counterpart = String(
+      item.counterpart
+      || (normalizeStationSearchName(item.destination) === selfName ? item.origin : item.destination)
+      || ""
+    ).trim();
+    if (!counterpart) return;
+    const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
+    if (flow <= 0) return;
+    lineTotals.set(lineName, (lineTotals.get(lineName) || 0) + flow);
+    counterpartTotals.set(counterpart, (counterpartTotals.get(counterpart) || 0) + flow);
+    if (!cellFlows.has(lineName)) cellFlows.set(lineName, new Map());
+    const row = cellFlows.get(lineName);
+    row.set(counterpart, (row.get(counterpart) || 0) + flow);
+  });
+
+  const lines = Array.from(lineTotals.entries()).sort((a, b) => b[1] - a[1]).map(([name]) => name);
+  // OD 对端站按客流取前 20
+  const counterparts = Array.from(counterpartTotals.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([name]) => name);
+  const counterpartIndex = new Map(counterparts.map((name, index) => [name, index]));
+
+  const cells = [];
+  let maxCellFlow = 0;
+  lines.forEach((lineName, xIndex) => {
+    const row = cellFlows.get(lineName);
+    if (!row) return;
+    row.forEach((flow, counterpart) => {
+      const yIndex = counterpartIndex.get(counterpart);
+      if (yIndex === undefined) return;
+      cells.push([xIndex, yIndex, flow]);
+      maxCellFlow = Math.max(maxCellFlow, flow);
+    });
+  });
+  return { lines, counterparts, cells, maxCellFlow, hasData: cells.length > 0 };
+});
+
+const boardingHeatmapOption = computed(() => {
+  const { lines, counterparts, cells, maxCellFlow } = boardingHeatmapData.value;
+  return {
+    backgroundColor: "transparent",
+    tooltip: {
+      position: "top",
+      backgroundColor: "rgba(30, 41, 59, 0.9)",
+      borderColor: "rgba(255, 255, 255, 0.15)",
+      textStyle: {
+        color: "#ffffff",
+        fontSize: 12
+      },
+      formatter: (params) => {
+        const [xIndex, yIndex, flow] = params?.value || [];
+        return `<div style="font-weight: bold; margin-bottom: 4px;">${lines[xIndex] || "未知线路"} × ${counterparts[yIndex] || "未知站点"}</div>
+          <div style="text-align: right;">${toFiniteNumber(flow, 0).toLocaleString()} 人次</div>`;
+      }
+    },
+    grid: {
+      left: "3%",
+      right: "6%",
+      top: "4%",
+      bottom: "20%",
+      containLabel: true
+    },
+    xAxis: {
+      type: "category",
+      data: lines,
+      splitArea: { show: true },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+        interval: 0,
+        rotate: lines.length > 8 ? 32 : 0
+      }
+    },
+    yAxis: {
+      type: "category",
+      data: counterparts,
+      splitArea: { show: true },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+        width: 150,
+        overflow: "truncate"
+      }
+    },
+    visualMap: {
+      type: "continuous",
+      min: 0,
+      max: Math.max(1, maxCellFlow),
+      calculable: true,
+      orient: "horizontal",
+      left: "center",
+      bottom: 4,
+      itemWidth: 12,
+      itemHeight: 160,
+      // 白→黄→橙→深红（OrRd），对齐用户指定的经典热力图配色
+      inRange: {
+        color: ["#fff7ec", "#fee8c8", "#fdd49e", "#fdbb84", "#fc8d59", "#ef6548", "#c7302b"]
+      },
+      textStyle: {
+        color: "#64748b",
+        fontSize: 11
+      }
+    },
+    series: [
+      {
+        name: "线路×OD客流",
+        type: "heatmap",
+        // 高值格子（≥55%最大值）文字用白色，低值用深棕，0 不显示数字
+        data: cells.map((cell) => {
+          const flow = toFiniteNumber(cell?.[2], 0);
+          if (flow >= Math.max(1, maxCellFlow) * 0.55) {
+            return { value: cell, label: { color: "#ffffff" } };
+          }
+          return cell;
+        }),
+        label: {
+          show: cells.length <= 120,
+          color: "#7a4a2b",
+          fontSize: 10,
+          formatter: (params) => {
+            const flow = toFiniteNumber(params?.value?.[2], 0);
+            return flow > 0 ? flow.toLocaleString() : "";
+          }
+        },
+        itemStyle: {
+          borderColor: "#ffffff",
+          borderWidth: 2,
+          borderRadius: 2
+        },
+        emphasis: {
+          itemStyle: {
+            shadowBlur: 8,
+            shadowColor: "rgba(15, 23, 42, 0.35)"
+          }
+        }
+      }
+    ]
+  };
+});
+
 // 可达性分析
 const reachabilityData = computed(() => {
   const reachability = currentStationPanel.value?.reachability || {};
@@ -2451,6 +2838,30 @@ watch(
   { immediate: false }
 );
 
+// 需求8：section/站点/面板数据/时段/色阶配置变化时刷新（或清理）OD曲线
+watch(
+  () => [
+    shouldRenderPfaRightPanel.value,
+    pfaStationSection.value,
+    selectedStationName.value,
+    selectedStationCoord.value,
+    currentStationPanel.value,
+    stationCoordIndex.value,
+    segmentTimeRange.value[0],
+    segmentTimeRange.value[1],
+    odCurveScaleConfig.value,
+  ],
+  () => {
+    nextTick(() => renderOdCurveOverlay());
+  },
+  { immediate: false }
+);
+
+// 需求10：分组显隐开关变化时应用到地图（曲线层 + 阴影层过滤）
+watch(reachabilityLevelVisibility, () => {
+  nextTick(() => applyReachabilityLevelVisibility());
+});
+
 onMounted(() => {
   if (props.model) {
     loadAllData();
@@ -2462,7 +2873,6 @@ onMounted(() => {
 
 watch(() => props.model, (newModel) => {
   if (newModel) {
-    stationPanelAbortController?.abort();
     clearStationPanelRetry();
     stationPanelRetryCount = 0;
     stationPanelData.value = null;
@@ -2478,16 +2888,18 @@ watch(() => props.model, (newModel) => {
     matchedRoutes.value = [];
     cleanUpSelectedStationRing();
     cleanUpReachabilityOverlay();
+    cleanUpOdCurveOverlay();
     loadAllData();
   }
 });
 
 onUnmounted(() => {
-  stationPanelAbortController?.abort();
+  stationPanelDisposed = true;
   clearStationPanelRetry();
   _StationLayer.dispose();
   cleanUpSelectedStationRing();
   cleanUpReachabilityOverlay();
+  cleanUpOdCurveOverlay();
   rightPanelHasContent.value = false;
 });
 
@@ -2502,6 +2914,7 @@ function clearSelection() {
   matchedRoutes.value = [];
   cleanUpSelectedStationRing();
   cleanUpReachabilityOverlay();
+  cleanUpOdCurveOverlay();
 }
 
 defineExpose({
@@ -4350,6 +4763,163 @@ defineExpose({
         color: #60758e;
       }
     }
+  }
+}
+
+/* —— 需求9：乘降热力图入口按钮 —— */
+.pfa-station-sections .pfa-section-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dm2-space-2);
+  min-width: 0;
+}
+
+.pfa-station-sections .pfa-heatmap-btn {
+  height: 22px;
+  padding: 0 10px;
+  font-size: var(--dm2-text-xs);
+  border-color: rgba(21, 105, 222, 0.35);
+  color: #1569de;
+  flex-shrink: 0;
+}
+
+/* —— 需求8：OD曲线控制区（色阶 + 图例 + 方向说明） —— */
+.pfa-station-sections .od-curve-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-2);
+  margin-top: var(--dm2-space-3);
+  padding: var(--dm2-space-3) var(--dm2-space-4);
+  border-radius: 8px;
+  background: var(--dm2-surface-sunken);
+  border: 1px solid var(--dm2-line);
+}
+
+.pfa-station-sections .od-curve-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm2-space-2);
+
+  .od-curve-title {
+    font-size: var(--dm2-text-sm);
+    font-weight: var(--dm2-fw-semibold);
+    color: var(--dm2-ink-soft);
+    white-space: nowrap;
+  }
+
+  .pfa-section-meta {
+    white-space: normal;
+    text-align: right;
+  }
+}
+
+/* —— 需求10：可达性分组显隐开关 —— */
+.reachability-list-head .reachability-level-switch {
+  flex-shrink: 0;
+  margin-left: var(--dm2-space-2);
+}
+</style>
+
+<style lang="scss">
+/* 需求9：热力图弹窗 append-to-body，样式需全局作用域。
+   注意：element.scss 按需引入时未包含 dialog.scss，el-dialog 无任何默认结构样式，
+   需自带宽度 / 居中 / 背景（同 XLZL.vue boarding-heatmap-dialog）。 */
+.station-heatmap-overlay .el-overlay-dialog {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.station-heatmap-dialog {
+  position: relative;
+  width: var(--el-dialog-width, 70%);
+  max-width: 1200px;
+  min-width: 560px;
+  margin: 0 auto;
+  background: #f7fbff;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
+  outline: none; /* 焦点陷阱聚焦容器时不显示浏览器默认焦点环 */
+
+  .el-dialog__header {
+    margin-right: 0;
+    padding: 14px 20px;
+    border-bottom: 1px solid rgba(21, 105, 222, 0.12);
+  }
+
+  .el-dialog__headerbtn {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: #64748b;
+    font-size: 18px;
+    cursor: pointer;
+
+    &:hover {
+      color: #1569de;
+    }
+  }
+
+  .el-dialog__body {
+    padding: 12px 20px 18px;
+  }
+}
+
+.station-heatmap-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 28px;
+
+  .station-heatmap-kicker {
+    font-size: 12px;
+    color: #667085;
+    margin-bottom: 2px;
+  }
+
+  .station-heatmap-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: #12304f;
+    line-height: 1.25;
+  }
+
+  .station-heatmap-meta {
+    font-size: 12px;
+    color: #1569de;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
+.station-heatmap-body {
+  height: 62vh;
+  min-height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  .station-heatmap-chart {
+    width: 100%;
+    height: 100%;
+  }
+
+  .el-empty {
+    margin: 0 auto;
   }
 }
 </style>

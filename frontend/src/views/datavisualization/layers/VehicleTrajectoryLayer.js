@@ -249,6 +249,11 @@ export class VehicleTrajectoryLayer extends Layer {
     this.segmentFrameRequests = new Set();
     this.frameBuffers = null;
     this.reusableFrame = null;
+    // 复用帧的内容版本号：每次原地重写 frameBuffers 内容时递增并盖到 __contentRev，
+    // 供 VehicleModelLayer.setVehicles 区分「播放推进（内容变了）」与「相机移动重复下发（内容没变）」。
+    this.frameContentRev = 0;
+    // 相机事件 rAF 合帧句柄：同一动画帧内多个 center/zoom/rotate/resize 只触发一次 renderVehicleLayer。
+    this.cameraRenderRafId = null;
     this.releaseWorkerFrameQueue = [];
     this.releaseWorkerFrameScheduled = false;
     this.worker = null;
@@ -682,6 +687,9 @@ export class VehicleTrajectoryLayer extends Layer {
 
   setReusableFrameCount(count) {
     if (!this.reusableFrame || !this.frameBuffers) return null;
+    // 复用帧对象不变但内容已被重写：递增版本号，确保模型层不会误走快速路径。
+    this.frameContentRev += 1;
+    this.reusableFrame.__contentRev = this.frameContentRev;
     this.reusableFrame.count = count;
     this.reusableFrame.xs = this.frameBuffers.xs;
     this.reusableFrame.ys = this.frameBuffers.ys;
@@ -798,11 +806,34 @@ export class VehicleTrajectoryLayer extends Layer {
       if (type === MAP_EVENT.UPDATE_CAMERA_ROTATE) {
         this.syncFollowOrbitFromMap();
       }
-      this.renderVehicleLayer();
+      this.scheduleCameraRender();
     }
     if (type === MAP_EVENT.HANDLE_CLICK_LEFT && this.activeCount() > 0) {
       this.tryFollowVehicleAtPoint(data);
     }
+  }
+
+  // 相机事件 rAF 合帧：拖拽/缩放时 MapLibre 会在同一动画帧内连发多个相机事件，
+  // 合并为下一动画帧执行一次 renderVehicleLayer，避免每个事件都触发 O(N) 车辆下发。
+  scheduleCameraRender() {
+    if (this.cameraRenderRafId != null) return;
+    if (typeof requestAnimationFrame !== "function") {
+      this.renderVehicleLayer();
+      return;
+    }
+    this.cameraRenderRafId = requestAnimationFrame(() => {
+      this.cameraRenderRafId = null;
+      if (this.isDisposed) return;
+      this.renderVehicleLayer();
+    });
+  }
+
+  cancelCameraRender() {
+    if (this.cameraRenderRafId == null) return;
+    if (typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.cameraRenderRafId);
+    }
+    this.cameraRenderRafId = null;
   }
 
   updatePaint() {
@@ -1003,6 +1034,8 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   renderVehicleLayer() {
+    // 直接渲染（播放推进/数据更新）已覆盖相机合帧的待办渲染，取消挂起的 rAF 避免重复执行。
+    this.cancelCameraRender();
     if (!this.map?.map) return;
     this.ensureModelLayer();
     this.clearDeckLayerOnce();
@@ -1291,6 +1324,7 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   dispose() {
+    this.cancelCameraRender();
     removeSharedDeckLayer(this.map, this.layerId);
     this.replaceActiveFrame(null);
     if (this.modelLayer) {

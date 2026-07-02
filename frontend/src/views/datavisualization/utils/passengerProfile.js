@@ -184,12 +184,24 @@ export function buildPassengerProfileGroups(demographics = {}) {
   if (total <= 0) return [];
 
   const groups = [];
-  const activityItems = activityItemsFromDemographics(demographics, total);
+  // 出行活动按“各类活动占全部活动的份额”统计（优先按 count，无 count 按占比值归一化），
+  // 保证各类相加恰为 100%，而不是逐类除以样本人数的“出现率”（一人多活动会使总和超 100%）
+  let activityItems = activityItemsFromDemographics(demographics, total);
   if (activityItems.length) {
+    const countSum = activityItems.reduce((sum, item) => sum + Math.max(0, toFiniteNumber(item.count, 0)), 0);
+    const valueSum = activityItems.reduce((sum, item) => sum + Math.max(0, toFiniteNumber(item.value, 0)), 0);
+    const useCount = countSum > 0;
+    const base = useCount ? countSum : valueSum;
+    if (base > 0) {
+      activityItems = normalizeDisplayPercents(activityItems.map((item) => ({
+        ...item,
+        value: (Math.max(0, toFiniteNumber(useCount ? item.count : item.value, 0)) * 100) / base,
+      })));
+    }
     groups.push({
       key: "activity-types",
       title: "出行活动",
-      sumLabel: "出现率",
+      sumLabel: "合计 100%",
       items: activityItems,
     });
   } else {

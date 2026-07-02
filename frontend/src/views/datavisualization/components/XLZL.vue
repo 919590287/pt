@@ -113,8 +113,12 @@
         <div class="ranking-title-container">
           <div class="header-actions-left">
             <div class="pfa-route-heading">
-              <span class="pfa-route-name">{{ currentSelectedRoute.lineName || currentSelectedRoute.info?.lineName || '线路客流分析' }}</span>
-              <span class="pfa-route-sub">{{ routeMetrics.stationCount }} · 全长 {{ routeMetrics.length }}</span>
+              <span class="pfa-route-name">{{ pfaRouteTitle }}</span>
+              <span v-if="pfaRouteEndpoints" class="pfa-route-endpoints">{{ pfaRouteEndpoints }}</span>
+              <span class="pfa-route-sub">
+                {{ routeMetrics.stationCount }} · 全长 {{ routeMetrics.length }}
+                <span v-if="mergedStatsActive" class="pfa-merged-badge">全线（上下行合并）</span>
+              </span>
             </div>
           </div>
           <div class="header-actions">
@@ -127,6 +131,23 @@
       </template>
       <template #body>
         <div class="pfa-route-sections">
+          <!-- 方向切换：两个方向分开统计与绘图，避免上下行混在一起
+               （客流画像为上下行合并统计、关联线路的同站换乘天然含对向站，均不提供切换） -->
+          <div v-if="panelDirectionRoutes.length > 1 && !['demographics', 'transfer'].includes(pfaLineSection)" class="panel-direction-section">
+            <span class="panel-direction-label">线路方向</span>
+            <div class="panel-direction-pills">
+              <button
+                v-for="(route, index) in panelDirectionRoutes"
+                :key="routeUniqueKey(route)"
+                type="button"
+                :class="['panel-direction-pill', isPanelDirectionActive(route) ? 'active' : '']"
+                @click="handlePanelDirectionSwitch(route)"
+              >
+                {{ getRouteEndpointLabel(route, index) }}
+              </button>
+            </div>
+          </div>
+
           <!-- 统计时段（仅断面 / 乘降 / 关联换乘按时段统计）-->
           <div v-if="['segments', 'boarding', 'transfer'].includes(pfaLineSection)" class="time-range-section">
             <div class="time-unit-row">
@@ -182,50 +203,64 @@
             </div>
           </section>
 
-          <!-- ② 站点分时段乘降（折线 / 柱状可切换） -->
+          <!-- ② 站点分时段乘降（折线 / 柱状可切换；图表点击即全屏） -->
           <section v-else-if="pfaLineSection === 'boarding'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">站点乘降客流（按所选时段）</span>
               <div class="section-actions">
                 <div class="chart-type-selector">
                   <div
-                    v-for="type in ['line', 'bar']"
+                    v-for="type in ['line', 'bar', 'heatmap']"
                     :key="type"
                     :class="['type-pill', boardingChartType === type ? 'active' : '']"
                     @click="boardingChartType = type"
                   >
-                    {{ type === 'line' ? '折线图' : '柱状图' }}
+                    {{ type === 'line' ? '折线图' : type === 'bar' ? '柱状图' : '热力图' }}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  class="chart-fullscreen-btn"
-                  :disabled="!currentSelectedRoute?.facilities?.length"
-                  title="全屏查看站点乘降客流"
-                  @click.stop="boardingFullscreenVisible = true"
-                >
-                  <el-icon><FullScreen /></el-icon>
-                  <span>全屏</span>
-                </button>
               </div>
             </div>
-            <div :class="['boarding-chart-stack', { 'has-dual': boardingChartPanels.length > 1 }]">
-              <div
-                v-for="chart in boardingChartPanels"
-                :key="chart.key"
-                class="boarding-chart-panel"
-              >
-                <div v-if="boardingChartPanels.length > 1" class="boarding-chart-title">
-                  <span>{{ chart.title }}</span>
-                  <span>{{ chart.subtitle }}</span>
+            <div class="boarding-chart-stack">
+              <div class="boarding-chart-panel">
+                <div class="boarding-chart-title">
+                  <span>{{ routeDirectionText(currentSelectedRoute) }}</span>
+                  <span class="boarding-chart-hint">点击图表全屏</span>
                 </div>
-                <div class="chart-container-wrapper">
+                <!-- 热力图并入图表类型切换：占用更高的容器避免被裁切 -->
+                <template v-if="boardingChartType === 'heatmap'">
+                  <div
+                    v-if="boardingHeatmapData.hasData"
+                    class="chart-container-wrapper boarding-heatmap-wrapper boarding-clickable-chart"
+                    :style="{ height: `${boardingHeatmapPanelHeight}px` }"
+                    title="点击全屏查看"
+                    @click="openBoardingHeatmapFullscreen"
+                  >
+                    <el-auto-resizer class="chart_box">
+                      <template #default="{ height, width }">
+                        <VChart
+                          v-if="width > 0 && height > 0"
+                          class="boarding-heatmap-panel-chart"
+                          :option="boardingHeatmapOption"
+                          autoresize
+                          :update-options="{ notMerge: true }"
+                        />
+                      </template>
+                    </el-auto-resizer>
+                  </div>
+                  <div v-else class="pfa-empty">当前时段暂无乘降数据</div>
+                </template>
+                <div
+                  v-else
+                  class="chart-container-wrapper boarding-clickable-chart"
+                  title="点击全屏查看"
+                  @click="openBoardingFullscreen"
+                >
                   <el-auto-resizer class="chart_box">
                     <template #default="{ height, width }">
                       <VChart
                         v-if="width > 0 && height > 0"
                         class="boarding-alighting-bar-chart"
-                        :option="chart.option"
+                        :option="boardingAlightingChartOption"
                         autoresize
                         :update-options="{ notMerge: true }"
                       />
@@ -240,7 +275,10 @@
           <section v-else-if="pfaLineSection === 'demographics'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">客流画像</span>
-              <span v-if="demographicsRiderCount" class="pfa-section-meta">样本 {{ demographicsRiderCount.toLocaleString() }} 人</span>
+              <span v-if="mergedStatsActive || demographicsRiderCount" class="pfa-section-meta">
+                <span v-if="mergedStatsActive" class="pfa-merged-badge">全线（上下行合并）</span>
+                <span v-if="demographicsRiderCount">样本 {{ demographicsRiderCount.toLocaleString() }} 人</span>
+              </span>
             </div>
             <div class="demo-groups">
               <div v-for="g in demographicsGroups" :key="g.key" class="demo-group">
@@ -269,6 +307,7 @@
           <section v-else-if="pfaLineSection === 'transfer'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">关联线路分析（直接换乘）</span>
+              <span v-if="mergedStatsActive" class="pfa-merged-badge">全线（上下行合并）</span>
             </div>
             <div
               class="transfer-analysis-layout"
@@ -365,6 +404,54 @@
     </div>
   </teleport>
 
+  <!-- 需求7：站间OD客流地图浮动图例（左下角，右上角齿轮可调色阶与阈值） -->
+  <teleport to="body">
+    <div v-if="showOdMapLegend" class="pfa-od-map-legend" aria-label="站间OD客流图例" @click.stop>
+      <Transition name="popover-fade">
+        <div
+          v-if="showOdScalePopover"
+          class="pfa-od-legend-popover"
+          role="dialog"
+          aria-modal="false"
+          aria-label="站间OD客流色阶设置"
+          @click.stop
+        >
+          <div class="pfa-od-legend-popover-title">站间OD客流色阶设置</div>
+          <ColorScaleControl
+            v-model="odFlowScale"
+            legend-title="站间OD客流"
+            :format-value="odFlowLegendFormat"
+            :show-legend="false"
+          />
+        </div>
+      </Transition>
+      <div class="pfa-od-legend-head">
+        <div class="pfa-od-legend-title">站间OD客流（人次）</div>
+        <button
+          type="button"
+          class="pfa-od-legend-gear"
+          title="设置站间OD客流色阶"
+          aria-label="设置站间OD客流色阶"
+          :aria-expanded="showOdScalePopover"
+          @click.stop="showOdScalePopover = !showOdScalePopover"
+        >
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </div>
+      <div v-for="(item, index) in odLegendItems" :key="index" class="pfa-od-legend-item">
+        <span class="pfa-od-legend-swatch" :style="{ background: item.color }"></span>
+        <span class="pfa-od-legend-label">{{ item.label }}</span>
+      </div>
+      <div class="pfa-od-legend-dirs">
+        <span><i class="pfa-od-dir-dot up"></i>上行站点</span>
+        <span><i class="pfa-od-dir-dot down"></i>下行站点</span>
+      </div>
+    </div>
+  </teleport>
+
   <el-dialog
     v-model="boardingFullscreenVisible"
     class="boarding-fullscreen-dialog"
@@ -378,43 +465,75 @@
         <div>
           <div class="boarding-fullscreen-kicker">站点乘降客流</div>
           <div class="boarding-fullscreen-title">
-            {{ currentSelectedRoute?.lineName || currentSelectedRoute?.info?.lineName || '线路客流分析' }}
+            {{ pfaRouteTitle }}
           </div>
         </div>
         <span class="boarding-fullscreen-meta">{{ formatHourLabel(segmentTimeRange[0]) }}-{{ formatHourLabel(segmentTimeRange[1]) }} · {{ segmentTimeUnit }}min</span>
       </div>
     </template>
-    <div :class="['boarding-fullscreen-body', { 'has-dual': boardingFullscreenPanels.length > 1 }]">
-      <section
-        v-for="chart in boardingFullscreenPanels"
-        :key="chart.key"
-        class="boarding-fullscreen-panel"
-      >
-        <div v-if="boardingFullscreenPanels.length > 1" class="boarding-fullscreen-chart-title">
-          <span>{{ chart.title }}</span>
-          <span>{{ chart.subtitle }}</span>
+    <div class="boarding-fullscreen-body">
+      <section class="boarding-fullscreen-panel">
+        <div class="boarding-fullscreen-chart-title">
+          <span>{{ routeDirectionText(currentSelectedRoute) }}</span>
         </div>
         <VChart
           class="boarding-fullscreen-chart"
-          :option="chart.option"
+          :option="boardingFullscreenChartOption"
           autoresize
           :update-options="{ notMerge: true }"
         />
       </section>
     </div>
   </el-dialog>
+
+  <el-dialog
+    v-model="boardingHeatmapVisible"
+    class="boarding-heatmap-dialog"
+    modal-class="boarding-heatmap-overlay"
+    fullscreen
+    append-to-body
+    destroy-on-close
+    :lock-scroll="true"
+  >
+    <template #header>
+      <div class="boarding-heatmap-header">
+        <div>
+          <div class="boarding-heatmap-kicker">乘降热力图</div>
+          <div class="boarding-heatmap-title">{{ pfaRouteTitle }}</div>
+          <div v-if="boardingHeatmapData.directionText" class="boarding-heatmap-subtitle">{{ boardingHeatmapData.directionText }}</div>
+        </div>
+        <span class="boarding-heatmap-meta">
+          {{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }} · {{ segmentTimeUnit }}min · 站点 × 时段（乘+降）
+        </span>
+      </div>
+    </template>
+    <div class="boarding-heatmap-body">
+      <VChart
+        v-if="boardingHeatmapData.hasData"
+        class="boarding-heatmap-chart"
+        :option="boardingHeatmapOption"
+        autoresize
+        :update-options="{ notMerge: true }"
+      />
+      <el-empty v-else description="当前时段暂无乘降数据" />
+    </div>
+  </el-dialog>
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick, unref } from "vue";
-import { Search, Location, Download, FullScreen } from "@element-plus/icons-vue";
-import { getRouteDetail, getRoutePanel, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
-import { abortOtherModelDataRequests, getCachedLineAll } from "@/utils/modelDataCache.js";
+import { ref, shallowRef, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick, unref } from "vue";
+import { Search, Location, Download } from "@element-plus/icons-vue";
+import { getRouteDetail, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
+import { abortOtherModelDataRequests, getCachedLineAll, getCachedRoutePanel } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
+import ColorScaleControl from "./ColorScaleControl.vue";
 import { RouteLayer } from "../layers/RouteLayer.js";
 import { emptyFeatureCollection, stationsToFeatureCollection } from "../layers/maplibreLayerUtils.js";
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
+import { buildFlowCurveFeatureCollection, emptyFlowCurveCollection } from "../utils/flowCurves.js";
+import { buildLegendItems, classifyByPercent, createColorScaleConfig, resolveColorScale } from "@/utils/colorSchemes.js";
+import { webMercatorToLngLat } from "@/mymap/index.js";
 import { injectSync } from "@/utils";
 
 const props = defineProps({
@@ -433,7 +552,6 @@ const selectedRoutePanel = ref(null);
 const selectedReverseRouteDetail = ref(null);
 const selectedReverseRoutePanel = ref(null);
 let routePanelPromise = null;
-let routePanelAbortController = null;
 let selectionAbortController = null;
 let selectionRequestSeq = 0;
 
@@ -442,7 +560,8 @@ const selectedStationName = ref("");
 const activeRouteId = ref("");
 const activeMatchedRouteId = ref("");
 const matchedRoutes = ref([]);
-const selectedRouteDetail = ref(null);
+// 线路详情（含全部 links）体量大且所有赋值点均为整值替换，用 shallowRef 避免深层代理
+const selectedRouteDetail = shallowRef(null);
 
 function isCanceledRequest(error) {
   return error?.message === "请求已取消"
@@ -478,6 +597,8 @@ const runMonitorSelectedLinePanel = inject("runMonitorSelectedLinePanel", null);
 const runMonitorSelectedLineName = inject("runMonitorSelectedLineName", null);
 const runMonitorSelectedRouteDetail = inject("runMonitorSelectedRouteDetail", null);
 const runMonitorSelectedRouteMapLinks = inject("runMonitorSelectedRouteMapLinks", null);
+// 当前方向每个站点的断面客流（取相邻断面的较大值），供地图空心圈描边取与线一致的分档色
+const runMonitorSelectedRouteStationFlows = inject("runMonitorSelectedRouteStationFlows", null);
 const runMonitorSelectedReverseLinePanel = inject("runMonitorSelectedReverseLinePanel", null);
 const runMonitorSelectedReverseRouteDetail = inject("runMonitorSelectedReverseRouteDetail", null);
 const runMonitorSelectedReverseRouteMapLinks = inject("runMonitorSelectedReverseRouteMapLinks", null);
@@ -530,6 +651,55 @@ const currentRoutePanel = computed(() => {
       || null;
   }
   return routePanelFromPayload(routePanelData.value?.routes, route);
+});
+
+// 需求12：单方向线路选中时，从 panel.lineGroups 找该线路的上下行合并组
+// （公交组 "bus::"+lineId；地铁方向回退到既有地铁聚合组键）。找不到则为 null，统计回退单方向 panel。
+const mergedLineGroupPanel = computed(() => {
+  const route = currentSelectedRoute.value;
+  if (!route || route.lineGroup) return null;
+  const groups = routePanelData.value?.lineGroups;
+  if (!groups || typeof groups !== "object") return null;
+  const lineId = String(route.lineId || "");
+  const busPanel = lineId ? groups[`bus::${lineId}`] : null;
+  if (busPanel) return busPanel;
+  const line = rawLines.value.find((item) => lineId && String(item?.lineId || "") === lineId)
+    || linesForDisplayName(selectedLineName.value || route.lineName)[0];
+  if (line && isMetroLine(line)) {
+    return groups[lineGroupKey(line)] || null;
+  }
+  return null;
+});
+
+// 统计类内容（指标 metrics / 客流画像 / 日客流量 / 关联线路）优先用全线合并口径；
+// 方向敏感内容（站点乘降、断面、站间OD）仍用 currentRoutePanel（单方向）。
+const statsPanel = computed(() => mergedLineGroupPanel.value || currentRoutePanel.value);
+const mergedStatsActive = computed(() =>
+  Boolean(mergedLineGroupPanel.value) || Boolean(currentSelectedRoute.value?.lineGroup)
+);
+
+// 需求1：右侧面板标题只显示纯线路名（lineName 为空才回退 lineId），起终点另起小字展示。
+const pfaRouteTitle = computed(() => {
+  const route = currentSelectedRoute.value || {};
+  const name = String(
+    route.lineName
+    || route.info?.lineName
+    || route.rawLineName
+    || selectedLineName.value
+    || ""
+  ).replace(/[（(][^（）()]*[）)]\s*$/, "").trim();
+  if (name) return name;
+  const lineId = String(route.lineId || "").trim();
+  return lineId || "线路客流分析";
+});
+
+const pfaRouteEndpoints = computed(() => {
+  const route = currentSelectedRoute.value || {};
+  if (route.lineGroup) return "";
+  const facilities = Array.isArray(route.facilities) ? route.facilities : [];
+  const start = facilities[0]?.facilityName || "";
+  const end = facilities[facilities.length - 1]?.facilityName || "";
+  return start && end ? `${start} - ${end}` : "";
 });
 
 function toFiniteNumber(value, fallback = 0) {
@@ -765,6 +935,19 @@ function sumHourRange(values, startHour, endHour) {
   return total;
 }
 
+// 小时数据按重叠比例分摊到子小时时段（15/30min 桶用），[startHour, endHour) 左闭右开
+function sumHourRangeProportional(values, startHour, endHour) {
+  if (!Array.isArray(values)) return 0;
+  const t0 = Math.max(0, Number(startHour) || 0);
+  const t1 = Math.min(24, Number(endHour) || 0);
+  let total = 0;
+  for (let hour = Math.floor(t0); hour < t1; hour++) {
+    const overlap = Math.min(hour + 1, t1) - Math.max(hour, t0);
+    if (overlap > 0) total += toFiniteNumber(values[hour], 0) * overlap;
+  }
+  return total;
+}
+
 function averageHourRange(values, startHour, endHour) {
   if (!Array.isArray(values)) return 0;
   const { start, end } = selectedHourBucketRange(startHour, endHour);
@@ -783,7 +966,8 @@ function averageHourRange(values, startHour, endHour) {
 const routeMetrics = computed(() => {
   const route = currentSelectedRoute.value || {};
   const info = route.info || {};
-  const panelMetrics = currentRoutePanel.value?.metrics || {};
+  // 需求12：指标优先取全线（上下行合并）组的 metrics
+  const panelMetrics = statsPanel.value?.metrics || {};
   const length = toFiniteNumber(panelMetrics.routeDist ?? info.routeDist, 0);
   // 整线（多服务模式合并）：后端 facNum 是按交路重复计数的虚高值，改用归并后的物理站点数。
   const stationCount = route.lineGroup
@@ -813,11 +997,12 @@ const routeMetrics = computed(() => {
   };
 });
 
+// 需求12：客流画像优先取全线（上下行合并）组的 demographics
 const demographicsGroups = computed(() => {
-  return buildPassengerProfileGroups(currentRoutePanel.value?.demographics || {});
+  return buildPassengerProfileGroups(statsPanel.value?.demographics || {});
 });
 const demographicsRiderCount = computed(() =>
-  passengerProfileRiderCount(currentRoutePanel.value?.demographics || {})
+  passengerProfileRiderCount(statsPanel.value?.demographics || {})
 );
 
 function verticalStationLabel(value) {
@@ -964,55 +1149,173 @@ function routeDirectionText(route = {}) {
   return start && end ? `${start} 至 ${end}` : route?.routeName || route?.lineName || "";
 }
 
-const hasReverseBoardingChart = computed(() => {
-  return Boolean(selectedReverseRouteDetail.value?.facilities?.length && selectedReverseRoutePanel.value);
-});
-
+// 乘降图表只画当前方向（方向切换在右侧面板顶部），点击图表进入全屏
 const boardingAlightingChartOption = computed(() => buildBoardingAlightingChartOption({
   route: currentSelectedRoute.value,
   panel: currentRoutePanel.value,
-  compact: hasReverseBoardingChart.value,
 }));
 
-const reverseBoardingAlightingChartOption = computed(() => buildBoardingAlightingChartOption({
-  route: selectedReverseRouteDetail.value,
-  panel: selectedReverseRoutePanel.value,
-  compact: true,
+const boardingFullscreenChartOption = computed(() => buildBoardingAlightingChartOption({
+  route: currentSelectedRoute.value,
+  panel: currentRoutePanel.value,
+  fullscreen: true,
 }));
 
-const boardingChartPanels = computed(() => {
-  const panels = [{
-    key: "primary",
-    title: "当前方向",
-    subtitle: routeDirectionText(currentSelectedRoute.value),
-    option: boardingAlightingChartOption.value,
-  }];
-  if (hasReverseBoardingChart.value) {
-    panels.push({
-      key: "reverse",
-      title: "对向线路",
-      subtitle: routeDirectionText(selectedReverseRouteDetail.value),
-      option: reverseBoardingAlightingChartOption.value,
-    });
-  }
-  return panels;
+function openBoardingFullscreen() {
+  if (!currentSelectedRoute.value?.facilities?.length) return;
+  boardingFullscreenVisible.value = true;
+}
+
+// —— 站点乘降热力图（图表类型切换项之一，跟随当前方向；点击图表全屏）——
+// 横轴=该方向线路站点（按站序），纵轴=统计时段（按统计时间单位分桶），格值=乘+降人数。
+const boardingHeatmapVisible = ref(false);
+
+function openBoardingHeatmapFullscreen() {
+  if (!boardingHeatmapData.value.hasData) return;
+  boardingHeatmapVisible.value = true;
+}
+
+// 内嵌热力图高度随时段桶数自适应（每行约 24px + 轴/色条边距），保证图不被裁切
+const boardingHeatmapPanelHeight = computed(() => {
+  const rows = boardingHeatmapData.value.bucketLabels?.length || 0;
+  return Math.max(280, Math.min(680, rows * 24 + 130));
 });
 
-const boardingFullscreenPanels = computed(() => {
-  return boardingChartPanels.value.map((panel) => ({
-    ...panel,
-    option: panel.key === "reverse"
-      ? buildBoardingAlightingChartOption({
-          route: selectedReverseRouteDetail.value,
-          panel: selectedReverseRoutePanel.value,
-          fullscreen: true,
-        })
-      : buildBoardingAlightingChartOption({
-          route: currentSelectedRoute.value,
-          panel: currentRoutePanel.value,
-          fullscreen: true,
+// 热力图矩阵：x=站点，y=统计时段（按统计时间单位分桶），值=乘+降
+const boardingHeatmapData = computed(() => {
+  const route = currentSelectedRoute.value || {};
+  const panel = currentRoutePanel.value;
+  const facilities = Array.isArray(route.facilities) ? route.facilities : [];
+  const stationNames = facilities.map((fac, index) => fac?.facilityName || `站点${index + 1}`);
+  const [startHour, endHour] = segmentTimeRange.value;
+  const unitHours = Math.max(0.25, (Number(segmentTimeUnit.value) || 60) / 60);
+  const stationFlowMap = stationFlowLookup(panel?.stationFlows);
+
+  const buckets = [];
+  for (let t = startHour; t < endHour - 1e-9; t += unitHours) {
+    const tEnd = Math.min(endHour, t + unitHours);
+    buckets.push({ start: t, end: tEnd, label: `${formatHourLabel(t)}-${formatHourLabel(tEnd)}` });
+  }
+
+  const cells = [];
+  let maxCellFlow = 0;
+  let totalFlow = 0;
+  facilities.forEach((fac, xIndex) => {
+    const flow = stationFlowMap.get(physicalStationKey(fac));
+    buckets.forEach((bucket, yIndex) => {
+      const boarding = Math.round(sumHourRangeProportional(flow?.boardingByHour, bucket.start, bucket.end));
+      const alighting = Math.round(sumHourRangeProportional(flow?.alightingByHour, bucket.start, bucket.end));
+      const total = boarding + alighting;
+      cells.push({ value: [xIndex, yIndex, total], boarding, alighting });
+      maxCellFlow = Math.max(maxCellFlow, total);
+      totalFlow += total;
+    });
+  });
+  return {
+    stationNames,
+    bucketLabels: buckets.map((bucket) => bucket.label),
+    cells,
+    maxCellFlow,
+    directionText: routeDirectionText(route),
+    hasData: Boolean(panel) && cells.length > 0 && totalFlow > 0,
+  };
+});
+
+const boardingHeatmapOption = computed(() => {
+  const { stationNames, bucketLabels, cells, maxCellFlow } = boardingHeatmapData.value;
+  const manyStations = stationNames.length > 8;
+  const safeMax = Math.max(1, maxCellFlow);
+  return {
+    backgroundColor: "transparent",
+    tooltip: {
+      position: "top",
+      backgroundColor: "rgba(30, 41, 59, 0.9)",
+      borderColor: "rgba(255, 255, 255, 0.15)",
+      textStyle: { color: "#ffffff", fontSize: 12 },
+      formatter: (params) => {
+        const [xIndex, yIndex, flow] = params?.value || [];
+        const boarding = toFiniteNumber(params?.data?.boarding, 0);
+        const alighting = toFiniteNumber(params?.data?.alighting, 0);
+        return `<div style="font-weight: bold; margin-bottom: 4px;">${stationNames[xIndex] || "未知站点"} · ${bucketLabels[yIndex] || ""}</div>
+          <div>乘 ${boarding.toLocaleString()} · 降 ${alighting.toLocaleString()}</div>
+          <div style="text-align: right; font-weight: bold;">合计 ${toFiniteNumber(flow, 0).toLocaleString()} 人次</div>`;
+      }
+    },
+    // 矩阵风格：右侧竖向色条，格子间白色描边
+    grid: {
+      left: "2%",
+      right: 58,
+      top: 8,
+      bottom: 8,
+      containLabel: true
+    },
+    xAxis: {
+      type: "category",
+      data: stationNames,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: {
+        color: "#64748b",
+        fontSize: 11,
+        interval: 0,
+        rotate: manyStations ? 45 : 0
+      }
+    },
+    yAxis: {
+      type: "category",
+      data: bucketLabels,
+      inverse: true, // 早时段在上
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 11 }
+    },
+    visualMap: {
+      type: "continuous",
+      min: 0,
+      max: safeMax,
+      calculable: true,
+      orient: "vertical",
+      right: 0,
+      top: "middle",
+      itemWidth: 14,
+      itemHeight: 220,
+      inRange: {
+        // 绿(少)→黄→红(多)，与满载率配色语义一致
+        color: ["#1a9850", "#66bd63", "#a6d96a", "#d9ef8b", "#fee08b", "#fdae61", "#f46d43", "#d73027"]
+      },
+      textStyle: { color: "#64748b", fontSize: 11 }
+    },
+    series: [
+      {
+        name: "站点乘降热力",
+        type: "heatmap",
+        // 两端深色格子（深绿/深红）改白色数值，中段浅色格子用深色数值
+        data: cells.map((cell) => {
+          const ratio = cell.value[2] / safeMax;
+          return ratio <= 0.18 || ratio >= 0.68
+            ? { ...cell, label: { color: "#ffffff" } }
+            : cell;
         }),
-  }));
+        label: {
+          show: cells.length <= 160,
+          color: "#3f4a3f",
+          fontSize: 10,
+          formatter: (params) => toFiniteNumber(params?.value?.[2], 0).toLocaleString()
+        },
+        itemStyle: {
+          borderColor: "#ffffff",
+          borderWidth: 2,
+          borderRadius: 2
+        },
+        emphasis: {
+          itemStyle: {
+            shadowBlur: 8,
+            shadowColor: "rgba(15, 23, 42, 0.35)"
+          }
+        }
+      }
+    ]
+  };
 });
 
 const boardingProfileChartOption = computed(() => {
@@ -1224,8 +1527,14 @@ function addTransferPanelRows(rows, panel) {
 
 function buildTransferRowsForRange() {
   const rows = baseTransferLineRows();
-  addTransferPanelRows(rows, currentRoutePanel.value);
-  addTransferPanelRows(rows, selectedReverseRoutePanel.value);
+  // 需求12：关联线路优先用全线合并组的 transfers（已含上下行），无组时回退双方向累加
+  const merged = mergedLineGroupPanel.value;
+  if (merged && Array.isArray(merged.transfers) && merged.transfers.length) {
+    addTransferPanelRows(rows, merged);
+  } else {
+    addTransferPanelRows(rows, currentRoutePanel.value);
+    addTransferPanelRows(rows, selectedReverseRoutePanel.value);
+  }
   const list = Array.from(rows.values());
   const total = list.reduce((sum, item) => sum + item.flow, 0);
   return list
@@ -1266,15 +1575,18 @@ const transferChartOption = computed(() => {
           </div>`;
       }
     },
+    // 像素级网格：顶部 32px 对齐右侧表头高度，每个类目带 28px 对齐表格行高，
+    // 线路名列固定 90px 且文本左对齐到面板最左边，消除左侧留白
     grid: {
-      left: "3%",
-      right: "4%",
-      bottom: "8%",
-      top: "5%",
-      containLabel: true
+      left: 90,
+      right: 12,
+      top: 32,
+      bottom: 0,
+      containLabel: false
     },
     xAxis: {
       type: "value",
+      position: "top",
       minInterval: 1,
       axisLine: {
         show: false
@@ -1291,6 +1603,7 @@ const transferChartOption = computed(() => {
       axisLabel: {
         color: "#64748b",
         fontSize: 10,
+        margin: 6,
         formatter: (value) => Math.round(Number(value) || 0)
       }
     },
@@ -1303,9 +1616,17 @@ const transferChartOption = computed(() => {
           color: "rgba(21, 105, 222, 0.15)"
         }
       },
+      axisTick: {
+        show: false
+      },
       axisLabel: {
         color: "#64748b",
-        fontSize: 11
+        fontSize: 11,
+        // 锚点移到 x=0（margin 抵消 grid.left）且左对齐：线路名从面板最左边排起
+        align: "left",
+        margin: 90,
+        width: 84,
+        overflow: "truncate"
       }
     },
     series: [
@@ -1337,9 +1658,10 @@ const transferTableData = computed(() => {
   return buildTransferRowsForRange();
 });
 
+// 32px 表头带 + 每行 28px，与右侧票价/发车间隔表逐行对齐（同 transferChartOption 的像素网格）
 const transferChartHeight = computed(() => {
   const rows = Math.max(transferTableData.value.length, 1);
-  return Math.max(220, rows * 28 + 44);
+  return rows * 28 + 32;
 });
 
 const { proxy } = getCurrentInstance() || {};
@@ -1351,7 +1673,8 @@ const boardingFullscreenVisible = ref(false);
 const passengerFlowChartOption = computed(() => {
   const isLine = activeChartType.value === "line";
   const hours = ["06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00"];
-  const hourlyFlow = currentRoutePanel.value?.hourlyFlow || [];
+  // 需求12：日客流量优先取全线（上下行合并）组的 hourlyFlow
+  const hourlyFlow = statsPanel.value?.hourlyFlow || [];
   const data = hours.map((_, index) => toFiniteNumber(hourlyFlow[index + 6], 0));
 
   const linearGradient = (proxy?.$echarts?.graphic?.LinearGradient) || function() { return null; };
@@ -1477,18 +1800,16 @@ watch(
       runMonitorSelectedLinePanel.value = currentRoutePanel.value || null;
     }
     if (runMonitorSelectedLineName) {
+      // 需求1：只上抛纯线路名（lineName 为空才回退 lineId），不再拼接（起点 - 终点）后缀
       const route = currentSelectedRoute.value || {};
-      const baseName = selectedLineName.value || route.lineName || route.routeName || route.lineId || "";
-      if (route.lineGroup) {
-        runMonitorSelectedLineName.value = baseName;
-        return;
-      }
-      const facilities = Array.isArray(route.facilities) ? route.facilities : [];
-      const startName = facilities[0]?.facilityName || "";
-      const endName = facilities[facilities.length - 1]?.facilityName || "";
-      runMonitorSelectedLineName.value = baseName && startName && endName
-        ? `${baseName}（${startName} - ${endName}）`
-        : baseName;
+      runMonitorSelectedLineName.value = String(
+        selectedLineName.value
+        || route.lineName
+        || route.info?.lineName
+        || route.rawLineName
+        || route.lineId
+        || ""
+      ).replace(/[（(][^（）()]*[）)]\s*$/, "").trim();
     }
   },
   { immediate: true },
@@ -1747,6 +2068,29 @@ function buildRouteFlowMapLinks(route, segments = []) {
   return buildSingleRouteFlowMapLinks(route, segments);
 }
 
+// 每个站点的断面客流 = 相邻两个断面的较大值（首末站取唯一相邻断面），
+// 与地图断面着色同一份数据，保证站点圈描边分档色与线一致
+function buildRouteStationFlows(route, segments = []) {
+  const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
+  if (!facilities.length) return [];
+  const flowByPair = segmentFlowByNamePair(segments);
+  const pairFlow = (fromIndex, toIndex, fallbackIndex) => {
+    const key = stationPairKeyOf(facilities[fromIndex]?.facilityName, facilities[toIndex]?.facilityName);
+    const flow = flowByPair.get(key);
+    return flow !== undefined ? flow : indexedSegmentFlow(segments, fallbackIndex);
+  };
+  return facilities.map((fac, index) => {
+    const prev = index > 0 ? pairFlow(index - 1, index, index - 1) : 0;
+    const next = index + 1 < facilities.length ? pairFlow(index, index + 1, index) : 0;
+    return {
+      facilityId: fac?.facilityId != null ? String(fac.facilityId) : "",
+      flow: Math.max(prev, next),
+    };
+  });
+}
+
+// selectedRouteDetail/currentRoutePanel/routeSegments 都只会整体替换引用（computed 重算或整值赋值），
+// 监听引用与标量键即可，去掉 deep 避免每次触发都遍历整条线路的 links/panel 大对象
 watch(
   () => [
     shouldRenderPfaRightPanel.value,
@@ -1763,13 +2107,260 @@ watch(
     if (!runMonitorSelectedRouteMapLinks) return;
     if (!shouldRenderPfaRightPanel.value || !currentSelectedRoute.value) {
       runMonitorSelectedRouteMapLinks.value = [];
+      if (runMonitorSelectedRouteStationFlows) runMonitorSelectedRouteStationFlows.value = [];
       return;
     }
     // 地图与右侧断面表使用同一份合并后的物理断面客流，保证配色与数值一致。
     runMonitorSelectedRouteMapLinks.value = buildRouteFlowMapLinks(currentSelectedRoute.value, routeSegments.value);
+    if (runMonitorSelectedRouteStationFlows) {
+      runMonitorSelectedRouteStationFlows.value = buildRouteStationFlows(currentSelectedRoute.value, routeSegments.value);
+    }
   },
-  { immediate: true, deep: true },
+  { immediate: true },
 );
+
+// —— 需求11配套：反向（下行）线路断面客流，供地图下行断面图层与上行同一套色阶着色 ——
+const reverseRouteSegments = computed(() => {
+  const panel = selectedReverseRoutePanel.value;
+  if (!Array.isArray(panel?.segments) || !panel.segments.length) return [];
+  const startHour = segmentTimeRange.value[0];
+  const endHour = segmentTimeRange.value[1];
+  return panel.segments.map((segment) => ({
+    name: segment.name,
+    flow: Math.round(sumHourRange(segment.flowByHour, startHour, endHour)),
+  }));
+});
+
+watch(
+  () => [
+    shouldRenderPfaRightPanel.value,
+    selectedReverseRouteDetail.value,
+    reverseRouteSegments.value,
+  ],
+  () => {
+    if (!runMonitorSelectedReverseRouteMapLinks) return;
+    const detail = selectedReverseRouteDetail.value;
+    const links = Array.isArray(detail?.links) ? detail.links : [];
+    if (!shouldRenderPfaRightPanel.value || !links.length || !reverseRouteSegments.value.length) {
+      runMonitorSelectedReverseRouteMapLinks.value = links;
+      return;
+    }
+    runMonitorSelectedReverseRouteMapLinks.value = buildRouteFlowMapLinks(detail, reverseRouteSegments.value);
+  },
+  { immediate: true },
+);
+
+// ===== 需求7：站点乘降 · 站间OD客流曲线（上行 + 下行同一色阶，黄→红弧线） =====
+const PFA_OD_CURVE_SOURCE_ID = "pfa-station-od-curve-source";
+const PFA_OD_CURVE_LAYER_ID = "pfa-station-od-curve-layer";
+const PFA_OD_STATION_SOURCE_ID = "pfa-station-od-station-source";
+const PFA_OD_STATION_LAYER_ID = "pfa-station-od-station-layer";
+const PFA_OD_STATION_LABEL_LAYER_ID = "pfa-station-od-station-label-layer";
+const PFA_OD_PRIMARY_COLOR = "#f97316"; // 与选中线路主线（上行）颜色一致
+const PFA_OD_REVERSE_COLOR = "#1569de"; // 与反向线路（下行）颜色一致
+const PFA_OD_MIN_WIDTH = 1.2;
+const PFA_OD_MAX_WIDTH = 6;
+
+// 站间OD色阶配置（独立于断面/线路色阶），调节入口在地图图例右上角齿轮
+const odFlowScale = ref(createColorScaleConfig("ylorrd", 5));
+const showOdScalePopover = ref(false);
+
+// 后端契约为经纬度；若拿到疑似 web mercator 坐标则兜底转换
+function odPointToLngLat(x, y) {
+  const numX = Number(x);
+  const numY = Number(y);
+  if (!Number.isFinite(numX) || !Number.isFinite(numY)) return null;
+  if (Math.abs(numX) <= 180 && Math.abs(numY) <= 90) return [numX, numY];
+  const converted = webMercatorToLngLat(numX, numY);
+  return Array.isArray(converted) && converted.length >= 2 && converted.every(Number.isFinite)
+    ? [converted[0], converted[1]]
+    : null;
+}
+
+// 站点乘降的地图改为复用断面客流展示（单方向断面着色+空心圈站点），OD 曲线图层暂不启用；
+// 置回 true 可恢复站间OD曲线与其左下角图例
+const PFA_OD_MAP_ENABLED = false;
+
+const stationOdFlows = computed(() => {
+  if (!PFA_OD_MAP_ENABLED || !shouldRenderPfaRightPanel.value || pfaLineSection.value !== "boarding" || !currentSelectedRoute.value) {
+    return [];
+  }
+  const flows = [];
+  const push = (panel, direction) => {
+    (Array.isArray(panel?.stationOd) ? panel.stationOd : []).forEach((od) => {
+      const from = odPointToLngLat(od?.fromX, od?.fromY);
+      const to = odPointToLngLat(od?.toX, od?.toY);
+      const value = Number(od?.flow);
+      if (!from || !to || !(value > 0)) return;
+      flows.push({
+        from,
+        to,
+        value,
+        direction,
+        fromName: String(od?.fromName || "").trim(),
+        toName: String(od?.toName || "").trim(),
+      });
+    });
+  };
+  push(currentRoutePanel.value, "up");
+  push(selectedReverseRoutePanel.value, "down");
+  return flows;
+});
+
+const maxStationOdFlow = computed(() =>
+  stationOdFlows.value.reduce((max, item) => Math.max(max, item.value), 0)
+);
+
+function odFlowLegendFormat(percent) {
+  const max = maxStationOdFlow.value;
+  if (!(max > 0)) return `${percent}%`;
+  return `${Math.round((Number(percent) / 100) * max).toLocaleString()} 人次`;
+}
+
+const odResolvedScale = computed(() => resolveColorScale(odFlowScale.value));
+const odLegendItems = computed(() =>
+  buildLegendItems(odResolvedScale.value.colors, odResolvedScale.value.thresholds, odFlowLegendFormat)
+);
+const showOdMapLegend = computed(() => stationOdFlows.value.length > 0);
+
+// 曲线 + 端点站 FeatureCollection：颜色/线宽按 flow 占最大OD的百分比分档
+const stationOdRender = computed(() => {
+  const flows = stationOdFlows.value;
+  if (!flows.length) {
+    return { curves: emptyFlowCurveCollection(), stations: emptyFeatureCollection() };
+  }
+  const { colors, thresholds } = odResolvedScale.value;
+  const maxFlow = maxStationOdFlow.value;
+  const widthForClass = (index) => (colors.length > 1
+    ? PFA_OD_MIN_WIDTH + ((PFA_OD_MAX_WIDTH - PFA_OD_MIN_WIDTH) * index) / (colors.length - 1)
+    : (PFA_OD_MIN_WIDTH + PFA_OD_MAX_WIDTH) / 2);
+  const curveInputs = flows.map((flow) => {
+    const classIndex = classifyByPercent(flow.value, maxFlow, thresholds);
+    return {
+      from: flow.from,
+      to: flow.to,
+      value: flow.value,
+      properties: {
+        color: colors[classIndex] || colors[colors.length - 1],
+        width: Number(widthForClass(classIndex).toFixed(2)),
+        direction: flow.direction,
+        fromName: flow.fromName,
+        toName: flow.toName,
+      },
+    };
+  });
+  // 低流量先画、高流量后画（叠在上层更醒目）
+  curveInputs.sort((a, b) => a.value - b.value);
+  const curves = buildFlowCurveFeatureCollection(curveInputs, { curvature: 0.22 });
+  const stationFeatures = new Map();
+  flows.forEach((flow) => {
+    [[flow.from, flow.fromName], [flow.to, flow.toName]].forEach(([coord, name]) => {
+      const label = String(name || "").trim();
+      if (!label || !Array.isArray(coord) || stationFeatures.has(label)) return;
+      stationFeatures.set(label, {
+        type: "Feature",
+        id: `od-station-${stationFeatures.size}`,
+        geometry: { type: "Point", coordinates: coord },
+        properties: {
+          name: label,
+          color: flow.direction === "down" ? PFA_OD_REVERSE_COLOR : PFA_OD_PRIMARY_COLOR,
+        },
+      });
+    });
+  });
+  return { curves, stations: { type: "FeatureCollection", features: Array.from(stationFeatures.values()) } };
+});
+
+// 幂等创建曲线/端点/站名图层
+function ensureStationOdLayers(map) {
+  if (!map.getSource(PFA_OD_CURVE_SOURCE_ID)) {
+    map.addSource(PFA_OD_CURVE_SOURCE_ID, { type: "geojson", data: emptyFlowCurveCollection() });
+  }
+  if (!map.getSource(PFA_OD_STATION_SOURCE_ID)) {
+    map.addSource(PFA_OD_STATION_SOURCE_ID, { type: "geojson", data: emptyFeatureCollection() });
+  }
+  if (!map.getLayer(PFA_OD_CURVE_LAYER_ID)) {
+    map.addLayer({
+      id: PFA_OD_CURVE_LAYER_ID,
+      type: "line",
+      source: PFA_OD_CURVE_SOURCE_ID,
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": ["get", "color"],
+        "line-width": ["get", "width"],
+        "line-opacity": 0.85,
+      },
+    });
+  }
+  if (!map.getLayer(PFA_OD_STATION_LAYER_ID)) {
+    // 需求6同款空心圈：填充透明，描边取所在方向线路颜色
+    map.addLayer({
+      id: PFA_OD_STATION_LAYER_ID,
+      type: "circle",
+      source: PFA_OD_STATION_SOURCE_ID,
+      paint: {
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2.6, 13, 4.6, 16, 7.5],
+        "circle-color": "#ffffff",
+        "circle-opacity": 0,
+        "circle-stroke-color": ["get", "color"],
+        "circle-stroke-width": 2,
+        "circle-stroke-opacity": 0.96,
+      },
+    });
+  }
+  if (!map.getLayer(PFA_OD_STATION_LABEL_LAYER_ID)) {
+    map.addLayer({
+      id: PFA_OD_STATION_LABEL_LAYER_ID,
+      type: "symbol",
+      source: PFA_OD_STATION_SOURCE_ID,
+      layout: {
+        "text-field": ["get", "name"],
+        "text-size": 11,
+        "text-anchor": "top",
+        "text-offset": [0, 0.7],
+        "text-max-width": 12,
+        "text-padding": 2,
+        "text-allow-overlap": false,
+      },
+      paint: {
+        "text-color": "#1f2937",
+        "text-halo-color": "rgba(255, 255, 255, 0.95)",
+        "text-halo-width": 1.4,
+        "text-halo-blur": 0.3,
+      },
+    });
+  }
+}
+
+function cleanUpStationOdLayers() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  [PFA_OD_STATION_LABEL_LAYER_ID, PFA_OD_STATION_LAYER_ID, PFA_OD_CURVE_LAYER_ID].forEach((layerId) => {
+    if (map.getLayer(layerId)) map.removeLayer(layerId);
+  });
+  [PFA_OD_STATION_SOURCE_ID, PFA_OD_CURVE_SOURCE_ID].forEach((sourceId) => {
+    if (map.getSource(sourceId)) map.removeSource(sourceId);
+  });
+}
+
+function updateStationOdMap() {
+  const map = MapRef.value?.map;
+  if (!map) return;
+  const { curves, stations } = stationOdRender.value;
+  // section 切走 / 换线路 / 数据缺失时清理曲线图层
+  if (!curves.features.length) {
+    cleanUpStationOdLayers();
+    return;
+  }
+  ensureStationOdLayers(map);
+  map.getSource(PFA_OD_CURVE_SOURCE_ID)?.setData(curves);
+  map.getSource(PFA_OD_STATION_SOURCE_ID)?.setData(stations);
+}
+
+// stationOdRender 为整体替换的 computed 引用，无需 deep
+watch([stationOdRender, () => MapRef.value?.map], () => {
+  updateStationOdMap();
+});
 
 const segmentChartOption = computed(() => {
   const linearGradient = (proxy?.$echarts?.graphic?.LinearGradient) || function() { return null; };
@@ -1930,7 +2521,8 @@ const _RouteLayer = new RouteLayer({
 
 const SELECTED_ROUTE_STOPS_SOURCE_ID = "selected-route-stops-source";
 const SELECTED_ROUTE_STOPS_LAYER_ID = "selected-route-stops-layer";
-const ROUTE_STROKE_COLOR = "#1569de";
+// 需求6：选中线路站点空心圈描边取当前方向线路颜色（上行主线橙，与 _RouteLayer 一致）
+const ROUTE_STROKE_COLOR = "#f97316";
 
 // 将图层添加到地图
 injectSync("MapRef").then((map) => {
@@ -2071,6 +2663,32 @@ function clearReverseSelectionOutputs() {
   if (runMonitorSelectedReverseLinePanel) runMonitorSelectedReverseLinePanel.value = null;
   if (runMonitorSelectedReverseRouteDetail) runMonitorSelectedReverseRouteDetail.value = null;
   if (runMonitorSelectedReverseRouteMapLinks) runMonitorSelectedReverseRouteMapLinks.value = [];
+}
+
+// —— 右侧面板方向切换：两个方向分开统计与绘图 ——
+// 线路搜索模式复用左侧的方向列表；站点搜索模式由当前方向 + 对向方向组成。
+const panelDirectionRoutes = computed(() => {
+  if (searchMode.value === "line") {
+    return selectedLineRoutes.value;
+  }
+  const current = currentSelectedRoute.value;
+  if (!current || current.lineGroup) return [];
+  const reverse = findReverseRoute(current);
+  return reverse ? [current, reverse] : [];
+});
+
+function isPanelDirectionActive(route) {
+  const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
+  return routeMatchesKey(route, targetId);
+}
+
+function handlePanelDirectionSwitch(route) {
+  if (!route || isPanelDirectionActive(route)) return;
+  if (searchMode.value === "line") {
+    handleSelectRoute(route);
+  } else {
+    handleSelectMatchedRoute(route);
+  }
 }
 
 // 格式化秒数为 HH:mm
@@ -2223,18 +2841,11 @@ function updateSelectedRouteStops(route) {
           16, 10,
           18, 14
         ],
+        // 需求6：空心圆圈——填充透明，仅保留与线路同色的描边
         "circle-color": "#ffffff",
+        "circle-opacity": 0,
         "circle-stroke-color": ROUTE_STROKE_COLOR,
-        "circle-stroke-width": [
-          "interpolate",
-          ["linear"],
-          ["zoom"],
-          10, 1,
-          13, 1.8,
-          16, 3.2,
-          18, 4.4
-        ],
-        "circle-opacity": 0.98,
+        "circle-stroke-width": 2,
         "circle-stroke-opacity": 0.98,
       }
     });
@@ -2347,6 +2958,13 @@ async function loadRoutePanelDetail(route, config = {}) {
     return groupPanel;
   }
   if (routePanelDetailCache.has(key)) return routePanelDetailCache.get(key);
+  // 整包 routePanel（线路着色已预取，含每条 route 的全量面板数据）就绪时直接本地取数，
+  // 右侧面板即点即出，不再为每次选中发 routePanelDetail 请求
+  const localPanel = routePanelFromPayload(routePanelData.value?.routes, route);
+  if (localPanel) {
+    routePanelDetailCache.set(key, localPanel);
+    return localPanel;
+  }
   if (routePanelDetailPromises.has(key)) return routePanelDetailPromises.get(key);
   const model = props.model;
   const promise = getRoutePanelDetail({
@@ -2391,14 +3009,10 @@ function ensureRoutePanelData() {
   if (routePanelData.value) return Promise.resolve(routePanelData.value);
   if (routePanelPromise) return routePanelPromise;
   const model = props.model;
-  routePanelAbortController?.abort();
-  routePanelAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
-  routePanelPromise = getRoutePanel(
-    { datasource: model },
-    { silentError: true, signal: routePanelAbortController?.signal },
-  )
-    .then((res) => {
-      const data = res.data || null;
+  // 整包客流面板改走共享缓存：与 index.vue 总体客流等消费点共用同一次下载，
+  // 请求中止由 modelDataCache 的 abortOtherModelDataRequests 统一管理
+  routePanelPromise = getCachedRoutePanel(model)
+    .then((data) => {
       if (props.model === model && data?.routes) {
         routePanelData.value = data;
       }
@@ -2410,7 +3024,6 @@ function ensureRoutePanelData() {
     })
     .finally(() => {
       routePanelPromise = null;
-      routePanelAbortController = null;
     });
   return routePanelPromise;
 }
@@ -2422,7 +3035,10 @@ async function handleSelectRoute(route) {
   const reverseRoute = findReverseRoute(route);
   const request = nextSelectionSignal();
   activeRouteId.value = routeId;
-  selectedRoutePanel.value = routePanelDetailCache.get(key) || null;
+  // 即时回显：命中本地缓存/整包时右侧面板同步上屏，不等待网络
+  selectedRoutePanel.value = routePanelDetailCache.get(key)
+    || routePanelFromPayload(routePanelData.value?.routes, route)
+    || null;
   clearReverseSelectionOutputs();
   try {
     const [detail, panel, reverseDetail, reversePanel] = await Promise.all([
@@ -2451,7 +3067,8 @@ async function handleSelectRoute(route) {
     }
     updateSelectedRouteStops(detail);
   } catch (error) {
-    if (!isCanceledRequest(error)) {
+    // 过期请求的失败不能清掉新选中线路的状态
+    if (!isCanceledRequest(error) && selectionRequestSeq === request.seq) {
       selectedRouteDetail.value = null;
       updateLayers(null);
     }
@@ -2475,19 +3092,14 @@ function handleStationChange(stationName) {
     if (line.routes) {
       line.routes.forEach(route => {
         if (route.facilities) {
-          const hasFac = route.facilities.some((fac) => fac.facilityName === stationName && runMonitorStationOptionFilter({
-            value: fac.facilityName,
-            label: fac.facilityName,
-            facilityId: fac.facilityId,
-            coord: fac.coord,
+          // 单次 find 同时完成命中判断与取站（原先 some+find 对每条 route 扫两遍）
+          const fac = route.facilities.find((item) => item.facilityName === stationName && runMonitorStationOptionFilter({
+            value: item.facilityName,
+            label: item.facilityName,
+            facilityId: item.facilityId,
+            coord: item.coord,
           }));
-          if (hasFac) {
-            const fac = route.facilities.find((item) => item.facilityName === stationName && runMonitorStationOptionFilter({
-              value: item.facilityName,
-              label: item.facilityName,
-              facilityId: item.facilityId,
-              coord: item.coord,
-            }));
+          if (fac) {
             matches.push({
               lineId: line.lineId,
               lineName: line.lineName,
@@ -2496,7 +3108,7 @@ function handleStationChange(stationName) {
               info: route.info,
               links: route.links,
               facilities: route.facilities,
-              stationCoord: fac ? fac.coord : null,
+              stationCoord: fac.coord || null,
             });
           }
         }
@@ -2520,7 +3132,10 @@ async function handleSelectMatchedRoute(item) {
   const reverseRoute = findReverseRoute(item);
   const request = nextSelectionSignal();
   activeMatchedRouteId.value = key;
-  selectedRoutePanel.value = routePanelDetailCache.get(key) || null;
+  // 即时回显：命中本地缓存/整包时右侧面板同步上屏，不等待网络
+  selectedRoutePanel.value = routePanelDetailCache.get(key)
+    || routePanelFromPayload(routePanelData.value?.routes, item)
+    || null;
   clearReverseSelectionOutputs();
   try {
     const [detail, panel, reverseDetail, reversePanel] = await Promise.all([
@@ -2540,7 +3155,8 @@ async function handleSelectMatchedRoute(item) {
     }
     updateSelectedRouteStops(detail);
   } catch (error) {
-    if (!isCanceledRequest(error)) {
+    // 过期请求的失败不能清掉新选中线路的状态
+    if (!isCanceledRequest(error) && selectionRequestSeq === request.seq) {
       selectedRouteDetail.value = null;
       updateLayers(null);
     }
@@ -2567,7 +3183,9 @@ async function loadAllLines() {
   abortOtherModelDataRequests(model);
   routePanelData.value = null;
   selectedRoutePanel.value = null;
-  if (!runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value) ensureRoutePanelData();
+  // 整包 routePanel 无条件预取（与 index.vue 线路着色共用同一次下载）：
+  // 选中线路时右侧面板直接本地取数，不再等 routePanelDetail 网络请求
+  ensureRoutePanelData();
   try {
     const lineRes = await getCachedLineAll(model);
     if (props.model !== model) return;
@@ -2602,7 +3220,6 @@ onMounted(() => {
 watch(() => props.model, (newModel) => {
   if (newModel) {
     selectionAbortController?.abort();
-    routePanelAbortController?.abort();
     routeDetailCache.clear();
     routePanelDetailCache.clear();
     routePanelDetailPromises.clear();
@@ -2622,13 +3239,13 @@ watch(() => props.model, (newModel) => {
 
 onUnmounted(() => {
   selectionAbortController?.abort();
-  routePanelAbortController?.abort();
   if (runMonitorSelectedRouteDetail) runMonitorSelectedRouteDetail.value = null;
   if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
   clearReverseSelectionOutputs();
   _BgRouteLayer.dispose();
   _RouteLayer.dispose();
   cleanUpSelectedRouteStops();
+  cleanUpStationOdLayers();
 });
 
 // 取消选中：清空选中线路与地图高亮（供 index.vue 点击空白处调用）
@@ -2721,6 +3338,30 @@ defineExpose({
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 需求1：起终点信息另起一行小字展示（标题只保留纯线路名） */
+.pfa-route-endpoints {
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-medium);
+  color: var(--dm2-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 需求12：全线（上下行合并）口径标注 */
+.pfa-merged-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  margin-left: 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(21, 105, 222, 0.28);
+  background: rgba(21, 105, 222, 0.08);
+  color: var(--dm2-accent, #1569de);
+  font-size: 10px;
+  font-weight: var(--dm2-fw-semibold, 600);
+  line-height: 1.5;
+  white-space: nowrap;
 }
 .pfa-route-sub {
   font-size: var(--dm2-text-xs);
@@ -3047,11 +3688,12 @@ defineExpose({
   height: 248px;
   width: 100%;
 }
+/* 需求4：第二列 112px 过窄导致错位，放宽为 minmax(110px,140px) 并按顶部对齐 */
 .pfa-route-sections .transfer-analysis-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 112px;
+  grid-template-columns: minmax(0, 1fr) minmax(110px, 140px);
   gap: var(--dm2-space-3);
-  align-items: stretch;
+  align-items: start;
 }
 .pfa-route-sections .boarding-chart-stack.has-dual {
   gap: var(--dm2-space-3);
@@ -3059,15 +3701,14 @@ defineExpose({
 .pfa-route-sections .boarding-chart-stack.has-dual .chart-container-wrapper {
   height: 158px;
 }
+/* 高度完全由行数驱动（32px 表头 + 每行 28px），不再设 220px 下限，避免两列被拉高后行错位 */
 .pfa-route-sections .transfer-chart-wrapper {
   height: var(--transfer-chart-height, 220px);
-  min-height: 220px;
   width: 100%;
 }
 .pfa-route-sections .transfer-meta-list {
   min-width: 0;
   height: var(--transfer-chart-height, 220px);
-  min-height: 220px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--dm2-line);
@@ -3101,6 +3742,14 @@ defineExpose({
 .pfa-route-sections .transfer-meta-row:last-child {
   border-bottom: 0;
 }
+/* 需求4：单元格防溢出，长文本省略而不是撑破列宽 */
+.pfa-route-sections .transfer-meta-header span,
+.pfa-route-sections .transfer-meta-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .pfa-route-sections .chart_box {
   width: 100%;
   height: 100%;
@@ -3108,6 +3757,206 @@ defineExpose({
 .pfa-route-sections .boarding-alighting-bar-chart {
   width: 100%;
   height: 100%;
+}
+
+/* 右侧面板方向切换 */
+.pfa-route-sections .panel-direction-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-2);
+  padding-bottom: var(--dm2-space-2);
+  border-bottom: 1px dashed var(--dm2-line);
+}
+.pfa-route-sections .panel-direction-label {
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+}
+.pfa-route-sections .panel-direction-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dm2-space-2);
+}
+.pfa-route-sections .panel-direction-pill {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--dm2-line-strong);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface);
+  color: var(--dm2-ink-soft);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-medium);
+  line-height: 1.2;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color var(--dm2-dur-fast) var(--dm2-ease),
+    color var(--dm2-dur-fast) var(--dm2-ease),
+    background-color var(--dm2-dur-fast) var(--dm2-ease);
+}
+.pfa-route-sections .panel-direction-pill:hover {
+  border-color: rgba(21, 105, 222, 0.38);
+  color: var(--dm2-accent);
+}
+.pfa-route-sections .panel-direction-pill.active {
+  color: #fff;
+  background: var(--dm2-accent);
+  border-color: var(--dm2-accent);
+  box-shadow: var(--dm2-accent-glow);
+}
+
+/* 点击全屏的图表容器 */
+.pfa-route-sections .boarding-clickable-chart {
+  cursor: zoom-in;
+  border-radius: var(--dm2-radius-sm);
+  transition: box-shadow var(--dm2-dur-fast) var(--dm2-ease);
+}
+.pfa-route-sections .boarding-clickable-chart:hover {
+  box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.28);
+}
+.pfa-route-sections .boarding-chart-hint {
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-medium);
+}
+
+/* 图表类型切到“热力图”时的容器：比折线/柱状更高，容纳倾斜站名 + visualMap，不再被裁切 */
+.pfa-route-sections .boarding-heatmap-wrapper {
+  height: 330px;
+}
+.pfa-route-sections .boarding-heatmap-panel-chart {
+  width: 100%;
+  height: 100%;
+}
+
+/* 需求7：站间OD地图浮动图例（左下角，避开左侧栏与地图控件） */
+.pfa-od-map-legend {
+  position: fixed;
+  left: calc(276px * var(--app-layout-scale, 1));
+  bottom: 20px;
+  z-index: calc(var(--z-panel, 1300) + 10);
+  min-width: 148px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border: 1px solid var(--dm2-line, rgba(21, 105, 222, 0.16));
+  border-radius: 10px;
+  background: var(--app-panel-bg, rgba(255, 255, 255, 0.94));
+  box-shadow: 0 8px 24px rgba(13, 38, 76, 0.16);
+  font-size: 11px;
+  color: #475467;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* 图例可交互（齿轮调节色阶），并拦截点击避免穿透到地图触发选线跳转 */
+  pointer-events: auto;
+}
+.pfa-od-legend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.pfa-od-legend-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #344054;
+}
+.pfa-od-legend-gear {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(21, 105, 222, 0.22);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #475467;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+.pfa-od-legend-gear:hover,
+.pfa-od-legend-gear:focus-visible {
+  color: #1569de;
+  border-color: rgba(21, 105, 222, 0.45);
+  background: rgba(21, 105, 222, 0.08);
+}
+.pfa-od-legend-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  width: 264px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid rgba(21, 105, 222, 0.18);
+  border-radius: 10px;
+  background: var(--app-panel-bg, rgba(255, 255, 255, 0.97));
+  box-shadow: 0 12px 32px rgba(13, 38, 76, 0.22);
+}
+.pfa-od-legend-popover-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #344054;
+  margin-bottom: 8px;
+}
+.popover-fade-enter-active,
+.popover-fade-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.popover-fade-enter-from,
+.popover-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.pfa-od-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pfa-od-legend-swatch {
+  width: 22px;
+  height: 6px;
+  border-radius: 3px;
+  flex: none;
+}
+.pfa-od-legend-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pfa-od-legend-dirs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(21, 105, 222, 0.2);
+  color: #667085;
+}
+.pfa-od-legend-dirs span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.pfa-od-dir-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: transparent;
+  box-sizing: border-box;
+}
+.pfa-od-dir-dot.up {
+  border-color: #f97316;
+}
+.pfa-od-dir-dot.down {
+  border-color: #1569de;
 }
 
 :global(.boarding-fullscreen-dialog) {
@@ -3190,6 +4039,100 @@ defineExpose({
   width: 100%;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* 站点乘降热力图弹窗（append-to-body，Element 内部结构用 :global）。
+   注意：element.scss 按需引入时未包含 dialog.scss，el-dialog 无任何默认结构样式，
+   需自带宽度 / 居中 / 背景（同 boarding-fullscreen-dialog 自带背景的原因）。 */
+:global(.boarding-heatmap-overlay .el-overlay-dialog) {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+:global(.boarding-heatmap-dialog) {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  background: #f7fbff;
+  border-radius: 0;
+  overflow: hidden;
+  outline: none; /* 焦点陷阱聚焦容器时不显示浏览器默认焦点环 */
+}
+:global(.boarding-heatmap-dialog .el-dialog__header) {
+  margin-right: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(21, 105, 222, 0.12);
+}
+:global(.boarding-heatmap-dialog .el-dialog__headerbtn) {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 18px;
+  cursor: pointer;
+}
+:global(.boarding-heatmap-dialog .el-dialog__headerbtn:hover) {
+  color: #1569de;
+}
+:global(.boarding-heatmap-dialog .el-dialog__body) {
+  padding: 12px 20px 18px;
+}
+.boarding-heatmap-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 28px;
+}
+.boarding-heatmap-kicker {
+  margin-bottom: 2px;
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+}
+.boarding-heatmap-title {
+  color: var(--dm2-ink);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+.boarding-heatmap-subtitle {
+  margin-top: 2px;
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+}
+.boarding-heatmap-meta {
+  flex: 0 0 auto;
+  color: var(--dm2-accent);
+  font-size: var(--dm2-text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.boarding-heatmap-body {
+  height: calc(100vh - 110px);
+  min-height: 340px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.boarding-heatmap-body .boarding-heatmap-chart {
+  width: 100%;
+  height: 100%;
+}
+.boarding-heatmap-body .el-empty {
+  margin: 0 auto;
 }
 
 /* 分区右上角的轻量元信息（样本量等）*/

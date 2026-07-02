@@ -21,6 +21,7 @@ MATSIM_CACHE_BUILD_THREADS="${MATSIM_CACHE_BUILD_THREADS:-0}"
 GJCXFZKSH_EVENTS_WORKERS="${GJCXFZKSH_EVENTS_WORKERS:-}"
 GJCXFZKSH_EVENTS_PIGZ_THREADS="${GJCXFZKSH_EVENTS_PIGZ_THREADS:-}"
 GJCXFZKSH_EVENTS_PIGZ_ENABLED="${GJCXFZKSH_EVENTS_PIGZ_ENABLED:-}"
+CORS_ALLOWED_ORIGINS="${CORS_ALLOWED_ORIGINS:-}"
 JAVA_OPTS="${JAVA_OPTS:--Xms2g -Xmx8g}"
 FRONTEND_INSTALL="${FRONTEND_INSTALL:-auto}"
 VITE_MODE="${VITE_MODE:-production}"
@@ -314,6 +315,7 @@ exec $(sh_escape "$JAVA_CMD") $JAVA_OPTS -jar $(sh_escape "$jar_file") \\
   --matsim.cache=$(sh_escape "$MATSIM_CACHE") \\
   --matsim.large-model-threshold-bytes=$(sh_escape "$MATSIM_LARGE_MODEL_THRESHOLD_BYTES") \\
   --matsim.cache-build-threads=$(sh_escape "$MATSIM_CACHE_BUILD_THREADS") \\
+  --cors.allowed-origins=$(sh_escape "$CORS_ALLOWED_ORIGINS") \\
   > $(sh_escape "$LOG_DIR/backend-console.log") 2>&1
 EOF
   chmod +x "$script_file"

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 对向选中站点：蓝色（#1569de，与对向线路同色）靶心圈，样式同橙色高亮站点。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <circle cx="48" cy="48" r="42" fill="#ffffff" fill-opacity="0.95"/>
+  <circle cx="48" cy="48" r="31" fill="#ffffff" stroke="#1569de" stroke-width="11"/>
+  <circle cx="48" cy="48" r="12" fill="#1569de"/>
+</svg>

@@ -2,6 +2,7 @@ package com.jts.gjcxfzksh.api.service.impl;
 
 import com.jts.gjcxfzksh.api.common.DatasourceService;
 import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
+import com.jts.gjcxfzksh.api.model.params.StationInfoParam;
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.api.model.vo.FacilityVO;
 import com.jts.gjcxfzksh.api.service.FacilityService;
@@ -41,5 +42,10 @@ public class FacilityServiceImpl extends DatasourceService implements FacilitySe
     @Override
     public Map<String, Object> stationPanel(DatasourceParam param) {
         return MatsimStationPanelCache.readStationPanel(matsim_data(param));
+    }
+
+    @Override
+    public Map<String, Object> stationPanelDetail(StationInfoParam param) {
+        return MatsimStationPanelCache.readStationPanelDetail(matsim_data(param), param.getStationName());
     }
 }

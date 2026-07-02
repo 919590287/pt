@@ -27,6 +27,11 @@ public class RouteDetailVO {
     private List<PTLink> links = new ArrayList<>();
     private List<FacilityVO> facilities = new ArrayList<>();
     private List<DepartureVO> departures = new ArrayList<>();
+    /**
+     * 抽稀后的线路走向折线（[x, y] Web Mercator 序列，来源于 network.xml link 序列）。
+     * 仅线路总览（lineAll 摘要）填充，供前端全网线路图层按真实路网几何绘制；详情接口用 links。
+     */
+    private List<double[]> geometry;
 
     public RouteDetailVO() {
     }

@@ -469,6 +469,9 @@ export class NetworkLayer extends Layer {
       : FLOW_STYLE_STOPS;
     this.color = colorToCss(opt.color ?? 0x1f78b4);
     this.opacity = opt.opacity ?? 1;
+    // flowControl 图层默认随缩放/密度降透明度（全网底图防糊）；
+    // 单条选中线路的断面图层应保持实色，传 zoomFadeOpacity:false 关闭衰减
+    this.zoomFadeOpacity = opt.zoomFadeOpacity !== false;
     this.layerId = `network-line-${this.id}`;
     this.tileMode = false;
     this.tileZoom = opt.tileZoom || TILE_ZOOM;
@@ -920,7 +923,7 @@ export class NetworkLayer extends Layer {
 
   currentLineOpacity() {
     const baseOpacity = Math.max(0, Math.min(1, Number(this.opacity) || 1));
-    if (!this.flowControl) return baseOpacity;
+    if (!this.flowControl || !this.zoomFadeOpacity) return baseOpacity;
     const zoom = Number(this.map?.zoom);
     if (!Number.isFinite(zoom)) return baseOpacity;
     const zoomOpacity = interpolate(zoom, [

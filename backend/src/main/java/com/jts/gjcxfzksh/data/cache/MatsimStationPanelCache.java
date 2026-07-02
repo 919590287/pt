@@ -7,9 +7,12 @@ import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.population.Activity;
+import org.matsim.api.core.v01.population.Leg;
 import org.matsim.api.core.v01.population.Person;
+import org.matsim.api.core.v01.population.Plan;
 import org.matsim.api.core.v01.population.PlanElement;
 import org.matsim.api.core.v01.population.Population;
+import org.matsim.pt.routes.TransitPassengerRoute;
 import org.matsim.pt.transitSchedule.api.TransitLine;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitRouteStop;
@@ -46,7 +49,11 @@ public final class MatsimStationPanelCache {
     // v10: 客流画像活动类型优先读取 selected plan，避免把未采用的备选计划算入当前客流。
     // v11: routeId 不再假设全局唯一，站点面板内部线路索引改用 lineId::routeId；读取增加受限内存 LRU。
     // v12: 增加 facility 级小时上下车统计，用于前端区分道路两侧同名站点。
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v12";
+    // v13: ①客流画像活动口径改为“在该站上车者本次出行的出行目的活动”（selected plan 中 TransitPassengerRoute
+    //        的 accessStopId 属于本站 facilityIds，取 leg 之后第一个非 interaction 活动，占比合计≈100%；
+    //        找不到时退回全活动统计但仍过滤 interaction）；
+    //      ②od 数组上限 12→60，并新增 originX/originY/destinationX/destinationY（经纬度，Web Mercator 反算）。需重算缓存。
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v13";
 
     // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
     // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
@@ -56,8 +63,11 @@ public final class MatsimStationPanelCache {
     private static final String MANIFEST_FILE = "manifest.json";
     private static final int HOURS = 24;
     private static final int LEADERBOARD_LIMIT = 50;
-    private static final int OD_LIMIT = 12;
+    // v13: 12 → 60，前端需要更完整的站点 OD 列表。
+    private static final int OD_LIMIT = 60;
     private static final int REACHABILITY_STATION_LIMIT = 80;
+    // 项目统一投影为 epsg:3857（见 Datasource.ctf），经纬度输出用 Web Mercator 反算。
+    private static final double EARTH_RADIUS = 6378137.0;
     private static final Pattern CHINESE_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
             "(?i)(?:地铁|轨道|线路)?\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
     );
@@ -99,6 +109,44 @@ public final class MatsimStationPanelCache {
         }
     }
 
+    /**
+     * 单站点明细：对齐 route 侧 routePanelDetail 模式，前端选中站点无需下载全城 stations 整包。
+     */
+    public static Map<String, Object> readStationPanelDetail(MatsimData data, String stationName) {
+        return stationDetailFromPanel(readStationPanel(data), stationName);
+    }
+
+    static Map<String, Object> stationDetailFromPanel(Map<String, Object> panel, String stationName) {
+        if (stationName == null || stationName.isBlank()) {
+            return Map.of();
+        }
+        Object stationsValue = panel.get("stations");
+        if (!(stationsValue instanceof Map<?, ?> stations)) {
+            // generating / 读取失败：状态原样透传给前端
+            return panel;
+        }
+        Object station = stations.get(stationName);
+        if (station == null) {
+            String target = normalizeStationName(stationName);
+            for (Map.Entry<?, ?> entry : stations.entrySet()) {
+                if (normalizeStationName(String.valueOf(entry.getKey())).equals(target)) {
+                    station = entry.getValue();
+                    break;
+                }
+            }
+        }
+        if (!(station instanceof Map<?, ?> stationMap)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        stationMap.forEach((key, value) -> result.put(String.valueOf(key), value));
+        return result;
+    }
+
+    private static String normalizeStationName(String name) {
+        return name == null ? "" : name.replaceAll("\\s+", "").toLowerCase();
+    }
+
     private static Map<String, Object> loadPanel(MatsimData data) {
         String cacheKey = panelPath(data).toAbsolutePath().normalize().toString();
         Map<String, Object> cached = MEMORY_CACHE.get(cacheKey);
@@ -116,7 +164,14 @@ public final class MatsimStationPanelCache {
         }
     }
 
-    private static synchronized void ensureStationPanelCache(MatsimData data) {
+    private static void ensureStationPanelCache(MatsimData data) {
+        // per-model 锁：模型 A 构建期间不阻塞模型 B（原为类级 synchronized 全局锁）
+        synchronized (ModelBuildLocks.lockFor("station-panel", data)) {
+            ensureStationPanelCacheLocked(data);
+        }
+    }
+
+    private static void ensureStationPanelCacheLocked(MatsimData data) {
         if (isReady(data)) {
             return;
         }
@@ -160,12 +215,16 @@ public final class MatsimStationPanelCache {
         indexPassengerTracks(data.getPersonTracks(), stations, index);
         indexStationOd(data.getPersonTracks(), stations, index);
         indexReachability(stations, index);
-        stations.values().forEach(station -> station.finish(data.getPopulation()));
+        // 任务B：按上车站（accessStopId）预统计“本次出行的出行目的活动”，一次遍历 population。
+        Map<String, Map<String, Integer>> tripPurposeByAccessStop = buildTripPurposeByAccessStop(data.getPopulation());
+        stations.values().forEach(station -> station.finish(data.getPopulation(), tripPurposeByAccessStop));
 
+        // 站名 → 经纬度（同名 facility 坐标取质心后 Web Mercator 反算），供 od 数组输出起讫点坐标。
+        Map<String, double[]> stationLonLat = buildStationLonLat(index);
         Map<String, Object> stationPayloads = new LinkedHashMap<>();
         stations.values().stream()
                 .sorted(Comparator.comparing(station -> station.stationName, String::compareToIgnoreCase))
-                .forEach(station -> stationPayloads.put(station.stationName, station.toPayload()));
+                .forEach(station -> stationPayloads.put(station.stationName, station.toPayload(stationLonLat)));
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "ready");
@@ -281,7 +340,9 @@ public final class MatsimStationPanelCache {
                 String destination = index.stationName(idString(track.getFacilityId()));
                 if (!origin.equals(destination)) {
                     int hour = hourOf(safeTime(openBoarding));
-                    RouteMeta route = index.routes.get(idString(openBoarding.getRouteId()));
+                    // v11 起 routes 以 lineId::routeId 为键，必须带 lineId 查找；
+                    // 旧实现用裸 routeId 恒查空，导致 od 记录的线路信息全部丢失。
+                    RouteMeta route = index.routeFor(idString(openBoarding.getLineId()), idString(openBoarding.getRouteId()));
                     stations.computeIfAbsent(origin, StationPanelAccumulator::new).addOd(origin, destination, route, hour);
                     stations.computeIfAbsent(destination, StationPanelAccumulator::new).addOd(origin, destination, route, hour);
                 }
@@ -686,9 +747,215 @@ public final class MatsimStationPanelCache {
     private static void collectActivityTypes(List<PlanElement> elements, Set<String> result) {
         for (PlanElement element : elements) {
             if (element instanceof Activity activity && activity.getType() != null) {
-                result.add(activity.getType().toLowerCase(Locale.ROOT));
+                String type = activity.getType().toLowerCase(Locale.ROOT);
+                // 任务B："pt interaction"/"car interaction" 等 interaction 类活动不算活动。
+                if (!isInteractionActivity(type)) {
+                    result.add(type);
+                }
             }
         }
+    }
+
+    // "pt interaction" / "car interaction" 等 interaction 类活动不算出行活动。
+    private static boolean isInteractionActivity(String lowerCaseType) {
+        return lowerCaseType != null && lowerCaseType.contains("interaction");
+    }
+
+    /**
+     * 任务B：一次遍历 population，统计每个上车站（accessStopId）的“出行目的活动”：
+     * selected plan 中 PT leg（TransitPassengerRoute）之后第一个非 interaction 活动的类型，按 leg 计数一次。
+     */
+    private static Map<String, Map<String, Integer>> buildTripPurposeByAccessStop(Population population) {
+        Map<String, Map<String, Integer>> result = new HashMap<>();
+        if (population == null) {
+            return result;
+        }
+        for (Person person : population.getPersons().values()) {
+            Plan plan = person.getSelectedPlan();
+            if (plan == null) {
+                continue;
+            }
+            List<PlanElement> elements = plan.getPlanElements();
+            for (int i = 0; i < elements.size(); i++) {
+                if (!(elements.get(i) instanceof Leg leg) || !(leg.getRoute() instanceof TransitPassengerRoute ptRoute)) {
+                    continue;
+                }
+                String accessStopId = ptRoute.getAccessStopId() == null ? null : ptRoute.getAccessStopId().toString();
+                if (accessStopId == null) {
+                    continue;
+                }
+                String purpose = nextTripPurpose(elements, i);
+                if (purpose == null) {
+                    continue;
+                }
+                result.computeIfAbsent(accessStopId, ignored -> new LinkedHashMap<>())
+                        .merge(purpose, 1, Integer::sum);
+            }
+        }
+        return result;
+    }
+
+    /** leg 之后第一个非 interaction 活动的类型（小写）；找不到返回 null。 */
+    private static String nextTripPurpose(List<PlanElement> elements, int legIndex) {
+        for (int i = legIndex + 1; i < elements.size(); i++) {
+            if (elements.get(i) instanceof Activity activity && activity.getType() != null) {
+                String type = activity.getType().toLowerCase(Locale.ROOT);
+                if (!isInteractionActivity(type)) {
+                    return type;
+                }
+            }
+        }
+        return null;
+    }
+
+    // 与 BuildingServiceImpl.mercatorToWgs84 同公式：项目统一投影 epsg:3857 → WGS84 经纬度。
+    private static double[] mercatorToWgs84(double x, double y) {
+        double lon = Math.toDegrees(x / EARTH_RADIUS);
+        double lat = Math.toDegrees(2 * Math.atan(Math.exp(y / EARTH_RADIUS)) - Math.PI / 2);
+        return new double[]{lon, lat};
+    }
+
+    /** 站名 → [lon, lat]：同名 facility 平面坐标取质心后反算经纬度。 */
+    private static Map<String, double[]> buildStationLonLat(StationNetworkIndex index) {
+        Map<String, double[]> sums = new HashMap<>();
+        for (Map.Entry<String, String> entry : index.facilityToName.entrySet()) {
+            double[] coord = index.facilityToCoord.get(entry.getKey());
+            if (coord == null) {
+                continue;
+            }
+            double[] sum = sums.computeIfAbsent(entry.getValue(), ignored -> new double[3]);
+            sum[0] += coord[0];
+            sum[1] += coord[1];
+            sum[2]++;
+        }
+        Map<String, double[]> result = new HashMap<>();
+        sums.forEach((name, sum) -> result.put(name, mercatorToWgs84(sum[0] / sum[2], sum[1] / sum[2])));
+        return result;
+    }
+
+    /**
+     * 任务B：客流画像（与 MatsimRoutePanelCache 同口径）。出行者属性/出行目的两个维度保持既有互斥单选逻辑；
+     * 活动画像改为“在该站上车者本次出行的出行目的活动”计数（占比合计≈100%），
+     * 无出行目的活动时退回按乘客全活动统计（仍过滤 interaction）。
+     */
+    private static Map<String, Object> buildDemographicsPayload(
+            Population population,
+            Set<String> riderIds,
+            Map<String, Integer> tripPurposeCounts
+    ) {
+        if (population == null || riderIds.isEmpty()) {
+            Map<String, Object> empty = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
+            putActivityProfile(empty, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, Map.of());
+            return empty;
+        }
+        int total = 0;
+        int commuter = 0;
+        int student = 0;
+        int elderly = 0;
+        int shopping = 0;
+        int leisure = 0;
+        int other = 0;
+        Map<String, Integer> fallbackCounts = new LinkedHashMap<>();
+        for (String riderId : riderIds) {
+            Person person = population.getPersons().get(Id.create(riderId, Person.class));
+            if (person == null) {
+                continue;
+            }
+            total++;
+            Set<String> activities = activityTypes(person);
+            for (String activity : activities) {
+                if (activity != null && !activity.isBlank()) {
+                    fallbackCounts.merge(activity, 1, Integer::sum);
+                }
+            }
+            String attributes = allAttributeText(person);
+            Integer personAge = age(person);
+            boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
+                    || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
+            boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
+                    || hasToken(attributes, "student", "school", "university", "学生");
+            boolean isElderly = personAge != null && personAge >= 60
+                    || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
+            boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
+                    || hasToken(attributes, "shopping", "购物");
+            boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
+                    || hasToken(attributes, "leisure", "休闲", "娱乐");
+            // 两个维度互斥单选：出行者属性（老人 > 学生），出行目的（通勤 > 购物 > 休闲 > 其他）。
+            if (isElderly) {
+                elderly++;
+            } else if (isStudent) {
+                student++;
+            }
+            if (isCommuter) {
+                commuter++;
+            } else if (isShopping) {
+                shopping++;
+            } else if (isLeisure) {
+                leisure++;
+            } else {
+                other++;
+            }
+        }
+        Map<String, Object> payload = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
+        putActivityProfile(payload, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, fallbackCounts);
+        return payload;
+    }
+
+    private static void putActivityProfile(
+            Map<String, Object> payload,
+            Map<String, Integer> tripPurposeCounts,
+            Map<String, Integer> fallbackCounts
+    ) {
+        boolean fallback = tripPurposeCounts.isEmpty();
+        Map<String, Integer> activityCounts = fallback ? fallbackCounts : tripPurposeCounts;
+        payload.put("activitySource", fallback ? "all-activities-fallback" : "trip-purpose");
+        payload.put("activityTypes", activityPayloads(activityCounts));
+        payload.put("activityTypeRatios", activityRatioPayload(activityCounts));
+    }
+
+    private static Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
+            int shopping, int leisure, int other) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("riderCount", total);
+        payload.put("commuter", percent(commuter, total));
+        payload.put("student", percent(student, total));
+        payload.put("elderly", percent(elderly, total));
+        payload.put("shopping", percent(shopping, total));
+        payload.put("leisure", percent(leisure, total));
+        payload.put("other", percent(other, total));
+        payload.put("source", "population-attributes-and-activities");
+        return payload;
+    }
+
+    // 比例 = 类型计数 / 总计数 × 100（round2，总和≈100）。
+    private static List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts) {
+        int total = activityCounts.values().stream().mapToInt(Integer::intValue).sum();
+        return activityCounts.entrySet().stream()
+                .sorted((left, right) -> {
+                    int countCompare = Integer.compare(right.getValue(), left.getValue());
+                    return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
+                })
+                .map(entry -> {
+                    Map<String, Object> payload = new LinkedHashMap<>();
+                    payload.put("key", entry.getKey());
+                    payload.put("label", entry.getKey());
+                    payload.put("count", entry.getValue());
+                    payload.put("ratio", percent(entry.getValue(), total));
+                    return payload;
+                })
+                .toList();
+    }
+
+    private static Map<String, Object> activityRatioPayload(Map<String, Integer> activityCounts) {
+        int total = activityCounts.values().stream().mapToInt(Integer::intValue).sum();
+        Map<String, Object> result = new LinkedHashMap<>();
+        activityCounts.entrySet().stream()
+                .sorted((left, right) -> {
+                    int countCompare = Integer.compare(right.getValue(), left.getValue());
+                    return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
+                })
+                .forEach(entry -> result.put(entry.getKey(), percent(entry.getValue(), total)));
+        return result;
     }
 
     private static Integer age(Person person) {
@@ -752,6 +1019,31 @@ public final class MatsimStationPanelCache {
                 return "unknown";
             }
             return nonBlank(facilityToName.get(facilityId), facilityId);
+        }
+
+        /**
+         * 按 lineId+routeId 查线路元数据；lineId 缺失时退化为全表扫 routeId（仅唯一匹配才返回，避免歧义）。
+         */
+        private RouteMeta routeFor(String lineId, String routeId) {
+            if (routeId == null || routeId.isBlank()) {
+                return null;
+            }
+            if (lineId != null && !lineId.isBlank()) {
+                RouteMeta meta = routes.get(routeKey(lineId, routeId));
+                if (meta != null) {
+                    return meta;
+                }
+            }
+            RouteMeta match = null;
+            for (RouteMeta meta : routes.values()) {
+                if (routeId.equals(meta.routeId)) {
+                    if (match != null) {
+                        return null;
+                    }
+                    match = meta;
+                }
+            }
+            return match;
         }
 
         // 同名设施按邻近度单链聚类成换乘点：相距 ≤ radius 视为同一物理点，远离则拆成 name#0 / name#1 …
@@ -962,95 +1254,16 @@ public final class MatsimStationPanelCache {
             this.transfer2Reachable = transfer2.size();
         }
 
-        private void finish(Population population) {
-            buildDemographics(population);
-        }
-
-        private void buildDemographics(Population population) {
-            if (population == null || riderIds.isEmpty()) {
-                demographics = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
-                return;
-            }
-            int total = 0;
-            int commuter = 0;
-            int student = 0;
-            int elderly = 0;
-            int shopping = 0;
-            int leisure = 0;
-            int other = 0;
-            Map<String, Integer> activityCounts = new LinkedHashMap<>();
-            for (String riderId : riderIds) {
-                Person person = population.getPersons().get(Id.create(riderId, Person.class));
-                if (person == null) {
-                    continue;
-                }
-                total++;
-                Set<String> activities = activityTypes(person);
-                for (String activity : activities) {
-                    if (activity != null && !activity.isBlank()) {
-                        activityCounts.merge(activity, 1, Integer::sum);
-                    }
-                }
-                String attributes = allAttributeText(person);
-                Integer personAge = age(person);
-                boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
-                        || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
-                boolean isStudent = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
-                        || hasToken(attributes, "student", "school", "university", "学生");
-                boolean isElderly = personAge != null && personAge >= 60
-                        || hasToken(attributes, "elderly", "retired", "senior", "老人", "退休");
-                boolean isShopping = hasActivity(activities, "shop", "mall", "market", "购物", "买")
-                        || hasToken(attributes, "shopping", "购物");
-                boolean isLeisure = hasActivity(activities, "leisure", "recreation", "social", "sport", "entertain", "eat", "dining", "休闲", "娱乐", "餐", "运动", "社交")
-                        || hasToken(attributes, "leisure", "休闲", "娱乐");
-                if (isElderly) {
-                    elderly++;
-                } else if (isStudent) {
-                    student++;
-                }
-                if (isCommuter) {
-                    commuter++;
-                } else if (isShopping) {
-                    shopping++;
-                } else if (isLeisure) {
-                    leisure++;
-                } else {
-                    other++;
+        private void finish(Population population, Map<String, Map<String, Integer>> tripPurposeByAccessStop) {
+            // 任务B：站点画像=在该站上车的人本次出行的出行目的活动。合并本站各 facility（上车站）上的计数。
+            Map<String, Integer> tripPurposeCounts = new LinkedHashMap<>();
+            for (String facilityId : facilityIds) {
+                Map<String, Integer> byStop = tripPurposeByAccessStop.get(facilityId);
+                if (byStop != null) {
+                    byStop.forEach((type, count) -> tripPurposeCounts.merge(type, count, Integer::sum));
                 }
             }
-            demographics = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
-            demographics.put("activityTypes", activityPayloads(activityCounts, total));
-        }
-
-        private Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
-                int shopping, int leisure, int other) {
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("riderCount", total);
-            payload.put("commuter", percent(commuter, total));
-            payload.put("student", percent(student, total));
-            payload.put("elderly", percent(elderly, total));
-            payload.put("shopping", percent(shopping, total));
-            payload.put("leisure", percent(leisure, total));
-            payload.put("other", percent(other, total));
-            payload.put("source", "population-attributes-and-activities");
-            return payload;
-        }
-
-        private List<Map<String, Object>> activityPayloads(Map<String, Integer> activityCounts, int total) {
-            return activityCounts.entrySet().stream()
-                    .sorted((left, right) -> {
-                        int countCompare = Integer.compare(right.getValue(), left.getValue());
-                        return countCompare != 0 ? countCompare : left.getKey().compareToIgnoreCase(right.getKey());
-                    })
-                    .map(entry -> {
-                        Map<String, Object> payload = new LinkedHashMap<>();
-                        payload.put("key", entry.getKey());
-                        payload.put("label", entry.getKey());
-                        payload.put("count", entry.getValue());
-                        payload.put("ratio", percent(entry.getValue(), total));
-                        return payload;
-                    })
-                    .toList();
+            demographics = buildDemographicsPayload(population, riderIds, tripPurposeCounts);
         }
 
         private String mode() {
@@ -1100,7 +1313,7 @@ public final class MatsimStationPanelCache {
             return prefix + String.join("/", lineNames) + suffix;
         }
 
-        private Map<String, Object> toPayload() {
+        private Map<String, Object> toPayload(Map<String, double[]> stationLonLat) {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("stationName", stationName);
             payload.put("facilityIds", facilityIds);
@@ -1119,7 +1332,7 @@ public final class MatsimStationPanelCache {
                     .sorted(Comparator.comparing(route -> route.lineName))
                     .map(RouteMeta::toPayload)
                     .toList());
-            payload.put("od", odPayloads());
+            payload.put("od", odPayloads(stationLonLat));
 
             Map<String, Object> reachability = new LinkedHashMap<>();
             reachability.put("direct", directReachable);
@@ -1156,12 +1369,12 @@ public final class MatsimStationPanelCache {
             return payload;
         }
 
-        private List<Map<String, Object>> odPayloads() {
+        private List<Map<String, Object>> odPayloads(Map<String, double[]> stationLonLat) {
             int totalFlow = od.values().stream().mapToInt(OdAccumulator::flow).sum();
             return od.values().stream()
                     .sorted(Comparator.comparingInt(OdAccumulator::flow).reversed())
                     .limit(OD_LIMIT)
-                    .map(item -> item.toPayload(stationName, totalFlow))
+                    .map(item -> item.toPayload(stationName, totalFlow, stationLonLat))
                     .toList();
         }
     }
@@ -1252,10 +1465,17 @@ public final class MatsimStationPanelCache {
             return intSum(flowByHour);
         }
 
-        private Map<String, Object> toPayload(String stationName, int totalFlow) {
+        private Map<String, Object> toPayload(String stationName, int totalFlow, Map<String, double[]> stationLonLat) {
+            double[] originLonLat = stationLonLat.get(origin);
+            double[] destinationLonLat = stationLonLat.get(destination);
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("origin", origin);
+            // v13: 起讫点经纬度（Web Mercator 反算，站名下多 facility 取质心）。
+            payload.put("originX", originLonLat == null ? null : originLonLat[0]);
+            payload.put("originY", originLonLat == null ? null : originLonLat[1]);
             payload.put("destination", destination);
+            payload.put("destinationX", destinationLonLat == null ? null : destinationLonLat[0]);
+            payload.put("destinationY", destinationLonLat == null ? null : destinationLonLat[1]);
             payload.put("counterpart", stationName.equals(origin) ? destination : origin);
             payload.put("routeId", routeId);
             payload.put("lineName", lineName);

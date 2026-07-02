@@ -37,6 +37,12 @@ public class PTDataController {
         return AjaxResult.ok(service.info(param));
     }
 
+    @Operation(summary = "体检评估指标(全市口径)")
+    @PostMapping("/evaluation")
+    public AjaxResult evaluation(@RequestBody DatasourceParam param) {
+        return AjaxResult.ok(service.evaluation(param));
+    }
+
     @Operation(summary = "中心的坐标")
     @PostMapping("/center")
     public AjaxResult center(@RequestBody DatasourceParam param) {
@@ -80,8 +86,9 @@ public class PTDataController {
 
         // 分块内容对固定 events 永不改变：强校验 ETag + immutable 长缓存，
         // 让浏览器/SW 在 max-age 内直接命中本地、不再回源；命中 If-None-Match 时回 304 空体。
+        // cachePrivate：该资源需鉴权，禁止中间共享缓存存储；浏览器/SW/IndexedDB 缓存不受影响。
         String etag = service.trajectoryChunkTag(param, start);
-        CacheControl immutableCache = CacheControl.maxAge(365, TimeUnit.DAYS).cachePublic().immutable();
+        CacheControl immutableCache = CacheControl.maxAge(365, TimeUnit.DAYS).cachePrivate().immutable();
         if (etagMatches(etag, ifNoneMatch)) {
             return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
                     .eTag(etag)

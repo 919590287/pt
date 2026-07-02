@@ -91,8 +91,9 @@
           <!-- 单班次载客量(人次/班) -->
           <div class="row1 item1" v-if="isChildrenShow(list[0]?.children?.[6])">
             <div class="title">单班次载客量</div>
-            <div class="num">{{ detail?.dbczkl || 0 }}</div>
-            <div class="unit">人次/班</div>
+            <!-- 后端占位实现已移除：字段缺失时明确显示“暂未接入”，避免把占位值当真实指标 -->
+            <div class="num" :style="detail?.dbczkl == null ? 'font-size: 24px' : ''">{{ detail?.dbczkl ?? "暂未接入" }}</div>
+            <div class="unit" v-if="detail?.dbczkl != null">人次/班</div>
             <div class="icon-badge">
               <LDRKICON class="icon"></LDRKICON>
             </div>
@@ -120,9 +121,10 @@
           <!--依赖客流比例(%) -->
           <div class="row1 item1" v-if="isChildrenShow(list[1]?.children?.[0])">
             <div class="title">依赖客流比例</div>
-            <div class="num" style="font-size: 40px">
-              <span>{{ detail?.ylklbl || 0 }}</span>
-              <span class="unit">%</span>
+            <!-- 后端硬编码 50 的占位值已移除：字段缺失时明确显示“暂未接入” -->
+            <div class="num" :style="detail?.ylklbl == null ? 'font-size: 24px' : 'font-size: 40px'">
+              <span>{{ detail?.ylklbl ?? "暂未接入" }}</span>
+              <span class="unit" v-if="detail?.ylklbl != null">%</span>
             </div>
             <div class="icon"></div>
           </div>

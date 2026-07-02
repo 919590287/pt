@@ -11,6 +11,7 @@
 
 <script setup>
 import { onBeforeUnmount, onMounted } from "vue";
+import { bindBrowserGestureGuard, unbindBrowserGestureGuard } from "@/utils/browserGestureGuard.js";
 
 const isCached = ["MapLayout"];
 
@@ -51,10 +52,13 @@ onMounted(() => {
   updateLayoutScale();
   window.addEventListener("resize", updateLayoutScale, { passive: true });
   window.visualViewport?.addEventListener("resize", updateLayoutScale, { passive: true });
+  // 全局屏蔽浏览器手势（右键拖动手势/横扫前进后退/捏合缩放页面），避免与地图右键拖动冲突
+  bindBrowserGestureGuard();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", updateLayoutScale);
   window.visualViewport?.removeEventListener("resize", updateLayoutScale);
+  unbindBrowserGestureGuard();
 });
 </script>

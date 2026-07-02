@@ -53,6 +53,24 @@ public class Datasource {
         thread.setDaemon(true);
         return thread;
     });
+    // 缓存预热完成后的追加预计算钩子（如体检评估指标），由业务服务在启动时注册，
+    // 避免 data 包反向依赖 api.service 实现类
+    private static final List<java.util.function.Consumer<MatsimData>> cacheWarmupHooks =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    public static void registerCacheWarmupHook(java.util.function.Consumer<MatsimData> hook) {
+        cacheWarmupHooks.add(hook);
+    }
+
+    private static void runCacheWarmupHooks(MatsimData data) {
+        for (java.util.function.Consumer<MatsimData> hook : cacheWarmupHooks) {
+            try {
+                hook.accept(data);
+            } catch (Exception e) {
+                log.warn("缓存预热钩子执行失败: model={}, error={}", data.getName(), e.getMessage());
+            }
+        }
+    }
 
     public static Database data(String name) {
         Database data = dataMap.get(name);
@@ -157,7 +175,11 @@ public class Datasource {
         load(scheme, currentLoadVersion(scheme.getName()), false);
     }
 
-    private static long currentLoadVersion(String name) {
+    /**
+     * 模型加载版本号：unload/重载时递增。
+     * 供派生数据缓存（如 full.bin 二进制线网）做版本键，避免模型重载后继续下发陈旧字节。
+     */
+    public static long currentLoadVersion(String name) {
         return loadVersionMap.getOrDefault(name, 0L);
     }
 
@@ -194,6 +216,11 @@ public class Datasource {
             status = setStatus(scheme.getName(), "ready", "模型基础数据已加载，缓存将在后台生成", true, false);
             status.setStartedAt(startTime);
             status.setFinishedAt(endTime);
+            // 磁盘缓存齐全时 ModelCacheManager 不再执行 buildCaches，
+            // personTracks 等内存态数据与体检评估预计算要在加载路径补齐（轻量缓存读取，不解析 events）
+            if (MatsimAnalysisCache.preloadPersonTracksIfReady(data)) {
+                runCacheWarmupHooks(data);
+            }
         } catch (RuntimeException e) {
             if (!cancelable || !isStaleLoad(name, expectedVersion)) {
                 loadStatusMap.put(scheme.getName(), false);
@@ -248,6 +275,9 @@ public class Datasource {
             if (!data.isLargeModel()) {
                 MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
             }
+            // personTracks 此时已就绪（小模型来自 events 解析，大模型来自轨迹缓存），
+            // 在同一后台线程里完成体检评估等追加预计算，前端进页面即可直接命中
+            runCacheWarmupHooks(data);
         } catch (Exception e) {
             log.error("event加载失败: {}", e.getMessage());
             throw new RuntimeException(e);

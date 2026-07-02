@@ -1152,6 +1152,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  // 递增请求序号，使在途的轨迹/分块请求回调全部失效，
+  // 避免卸载后异步回调继续写入已销毁组件的 ref 状态。
+  loadSeq += 1;
+  chunkSeq += 1;
   stopPlayback();
   stopPolling();
   cancelSeekChunkLoad();

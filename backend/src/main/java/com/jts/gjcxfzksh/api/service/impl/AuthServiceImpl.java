@@ -6,21 +6,35 @@ import com.jts.gjcxfzksh.api.service.AuthService;
 import com.jts.gjcxfzksh.config.MatsimConfig;
 import com.jts.gjcxfzksh.exception.BusinessException;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import jakarta.annotation.Resource;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.Base64;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
+/**
+ * 用户/会话存储：启动时一次性加载进内存，读路径（每请求 resolveUsername）零磁盘 I/O、零全局锁；
+ * 仅写操作（注册/登录/改名/登出）串行落盘（临时文件 + 原子替换）。
+ * 注意：内存态为单一事实来源，文件仅做持久化，该方案仅适用于当前单实例部署架构。
+ */
+@Slf4j
 @Service
 public class AuthServiceImpl implements AuthService {
 
@@ -28,169 +42,257 @@ public class AuthServiceImpl implements AuthService {
     private static final Pattern USERNAME_PATTERN = Pattern.compile("^[\\p{L}\\p{N}_.-]{2,32}$");
     private static final String STORE_FILE = ".gjcxfzksh-users.json";
 
+    // PBKDF2 参数（OWASP 密码存储建议量级）；旧格式（单轮 SHA-256）登录成功后透明重哈希升级
+    private static final String PBKDF2_PREFIX = "pbkdf2";
+    private static final String PBKDF2_ALGORITHM = "PBKDF2WithHmacSHA256";
+    private static final int PBKDF2_ITERATIONS = 210_000;
+    private static final int PBKDF2_KEY_BITS = 256;
+
+    // 登录失败限速：同一用户名窗口期内失败次数超限后暂时拒绝，防在线暴力破解
+    private static final int MAX_LOGIN_FAILURES = 5;
+    private static final long LOGIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
+
     private final SecureRandom secureRandom = new SecureRandom();
+    private final ConcurrentMap<String, FailureWindow> loginFailures = new ConcurrentHashMap<>();
+
+    private final ConcurrentMap<String, UserRecord> users = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, SessionRecord> sessions = new ConcurrentHashMap<>();
+    // 单一写入口：所有内存变更 + 落盘经由该锁，保证内存态与文件态一致
+    private final Object writeLock = new Object();
+    // 读路径上发现的过期会话只改内存并置脏，由定时任务统一落盘，避免请求内写文件
+    private final AtomicBoolean dirty = new AtomicBoolean(false);
 
     @Resource
     private MatsimConfig matsimConfig;
 
     @PostConstruct
-    public void ensureDefaultFolders() {
+    public void loadStoreIntoMemory() {
         try {
             Files.createDirectories(dataRoot());
         } catch (IOException e) {
             throw new BusinessException("初始化用户目录失败", e);
         }
+        AuthStore store = readStoreFile();
+        users.putAll(store.users);
+        sessions.putAll(store.sessions);
+        log.info("用户存储已加载进内存: users={}, sessions={}", users.size(), sessions.size());
     }
 
     @Override
-    public synchronized AuthVO register(String username, String password) {
+    public AuthVO register(String username, String password) {
         String normalizedUsername = normalizeUsername(username);
         validatePassword(password);
-        AuthStore store = loadStore();
-        if (store.users.containsKey(normalizedUsername)) {
-            throw new BusinessException("用户名已存在");
+        synchronized (writeLock) {
+            if (users.containsKey(normalizedUsername)) {
+                throw new BusinessException("用户名已存在");
+            }
+            UserRecord user = new UserRecord();
+            long now = System.currentTimeMillis();
+            user.username = normalizedUsername;
+            user.passwordHash = createPasswordHash(password);
+            user.createdAt = now;
+            user.updatedAt = now;
+            user.lastLoginAt = now;
+            users.put(normalizedUsername, user);
+            ensureUserFolder(normalizedUsername);
+            matsimConfig.init();
+            AuthVO auth = createSession(normalizedUsername, now);
+            persist();
+            return auth;
         }
-
-        UserRecord user = new UserRecord();
-        long now = System.currentTimeMillis();
-        user.username = normalizedUsername;
-        user.passwordHash = createPasswordHash(password);
-        user.createdAt = now;
-        user.updatedAt = now;
-        user.lastLoginAt = now;
-        store.users.put(normalizedUsername, user);
-        ensureUserFolder(normalizedUsername);
-        matsimConfig.init();
-        AuthVO auth = createSession(store, normalizedUsername, now);
-        saveStore(store);
-        return auth;
     }
 
     @Override
-    public synchronized AuthVO login(String username, String password) {
+    public AuthVO login(String username, String password) {
         String normalizedUsername = normalizeUsername(username);
         validatePassword(password);
-        AuthStore store = loadStore();
-        UserRecord user = store.users.get(normalizedUsername);
-        if (user == null || !verifyPassword(password, user.passwordHash)) {
-            throw new BusinessException("用户名或密码错误");
+        checkLoginRateLimit(normalizedUsername);
+        synchronized (writeLock) {
+            UserRecord user = users.get(normalizedUsername);
+            if (user == null || !verifyPassword(password, user.passwordHash)) {
+                recordLoginFailure(normalizedUsername);
+                throw new BusinessException("用户名或密码错误");
+            }
+            loginFailures.remove(normalizedUsername);
+            long now = System.currentTimeMillis();
+            if (isLegacyHash(user.passwordHash)) {
+                // 旧的单轮 SHA-256 哈希验证通过后透明升级为 PBKDF2
+                user.passwordHash = createPasswordHash(password);
+            }
+            user.lastLoginAt = now;
+            user.updatedAt = now;
+            ensureUserFolder(normalizedUsername);
+            matsimConfig.init();
+            AuthVO auth = createSession(normalizedUsername, now);
+            persist();
+            return auth;
         }
-
-        long now = System.currentTimeMillis();
-        user.lastLoginAt = now;
-        user.updatedAt = now;
-        ensureUserFolder(normalizedUsername);
-        matsimConfig.init();
-        AuthVO auth = createSession(store, normalizedUsername, now);
-        saveStore(store);
-        return auth;
     }
 
     @Override
-    public synchronized AuthVO resetPassword(String username, String newPassword) {
+    public AuthVO resetPassword(String username, String newPassword) {
         String normalizedUsername = normalizeUsername(username);
         validatePassword(newPassword);
-        AuthStore store = loadStore();
-        UserRecord user = store.users.get(normalizedUsername);
-        if (user == null) {
-            throw new BusinessException("用户不存在");
-        }
-
-        long now = System.currentTimeMillis();
-        user.passwordHash = createPasswordHash(newPassword);
-        user.lastLoginAt = now;
-        user.updatedAt = now;
-        ensureUserFolder(normalizedUsername);
-        matsimConfig.init();
-        AuthVO auth = createSession(store, normalizedUsername, now);
-        saveStore(store);
-        return auth;
-    }
-
-    @Override
-    public synchronized AuthVO profile(String token) {
-        AuthStore store = loadStore();
-        SessionRecord session = requireSession(store, token);
-        UserRecord user = store.users.get(session.username);
-        if (user == null) {
-            throw new BusinessException("用户不存在");
-        }
-        return toAuthVO(token, session, user);
-    }
-
-    @Override
-    public synchronized AuthVO rename(String token, String username) {
-        String newUsername = normalizeUsername(username);
-        AuthStore store = loadStore();
-        SessionRecord session = requireSession(store, token);
-        String oldUsername = session.username;
-        if (oldUsername.equals(newUsername)) {
-            return profile(token);
-        }
-        if (store.users.containsKey(newUsername)) {
-            throw new BusinessException("用户名已存在");
-        }
-
-        UserRecord user = store.users.remove(oldUsername);
-        if (user == null) {
-            throw new BusinessException("用户不存在");
-        }
-
-        matsimConfig.renameUserFolders(oldUsername, newUsername);
-        long now = System.currentTimeMillis();
-        user.username = newUsername;
-        user.updatedAt = now;
-        store.users.put(newUsername, user);
-        for (SessionRecord item : store.sessions.values()) {
-            if (oldUsername.equals(item.username)) {
-                item.username = newUsername;
+        synchronized (writeLock) {
+            UserRecord user = users.get(normalizedUsername);
+            if (user == null) {
+                throw new BusinessException("用户不存在");
             }
+            long now = System.currentTimeMillis();
+            user.passwordHash = createPasswordHash(newPassword);
+            user.lastLoginAt = now;
+            user.updatedAt = now;
+            ensureUserFolder(normalizedUsername);
+            matsimConfig.init();
+            AuthVO auth = createSession(normalizedUsername, now);
+            persist();
+            return auth;
         }
-        saveStore(store);
-        matsimConfig.init();
+    }
+
+    @Override
+    public AuthVO profile(String token) {
+        SessionRecord session = requireSession(token);
+        UserRecord user = users.get(session.username);
+        if (user == null) {
+            throw new BusinessException("用户不存在");
+        }
         return toAuthVO(token, session, user);
     }
 
     @Override
-    public synchronized void logout(String token) {
+    public AuthVO rename(String token, String username) {
+        String newUsername = normalizeUsername(username);
+        synchronized (writeLock) {
+            SessionRecord session = requireSession(token);
+            String oldUsername = session.username;
+            if (oldUsername.equals(newUsername)) {
+                return profile(token);
+            }
+            if (users.containsKey(newUsername)) {
+                throw new BusinessException("用户名已存在");
+            }
+            UserRecord user = users.remove(oldUsername);
+            if (user == null) {
+                throw new BusinessException("用户不存在");
+            }
+            matsimConfig.renameUserFolders(oldUsername, newUsername);
+            long now = System.currentTimeMillis();
+            user.username = newUsername;
+            user.updatedAt = now;
+            users.put(newUsername, user);
+            for (SessionRecord item : sessions.values()) {
+                if (oldUsername.equals(item.username)) {
+                    item.username = newUsername;
+                }
+            }
+            persist();
+            matsimConfig.init();
+            return toAuthVO(token, session, user);
+        }
+    }
+
+    @Override
+    public void logout(String token) {
         if (token == null || token.isBlank()) {
             return;
         }
-        AuthStore store = loadStore();
-        store.sessions.remove(token);
-        saveStore(store);
+        synchronized (writeLock) {
+            if (sessions.remove(token) != null) {
+                persist();
+            }
+        }
     }
 
+    /**
+     * 每请求热点路径：纯内存查询，无锁、无磁盘 I/O、无目录检查。
+     */
     @Override
-    public synchronized String resolveUsername(String token) {
+    public String resolveUsername(String token) {
         if (token == null || token.isBlank()) {
             return null;
         }
-        AuthStore store = loadStore();
-        SessionRecord session = store.sessions.get(token);
+        SessionRecord session = sessions.get(token);
         if (session == null) {
             return null;
         }
-        long now = System.currentTimeMillis();
-        if (session.expiresAt < now || !store.users.containsKey(session.username)) {
-            store.sessions.remove(token);
-            saveStore(store);
+        if (session.expiresAt < System.currentTimeMillis() || !users.containsKey(session.username)) {
+            sessions.remove(token);
+            dirty.set(true);
             return null;
         }
-        ensureUserFolder(session.username);
         return session.username;
     }
 
-    private AuthVO createSession(AuthStore store, String username, long now) {
-        cleanupExpiredSessions(store, now);
+    /**
+     * 过期会话清理与脏数据落盘移出请求路径，由定时任务统一处理。
+     */
+    @Scheduled(fixedDelay = 10 * 60 * 1000, initialDelay = 10 * 60 * 1000)
+    public void cleanupExpiredSessions() {
+        long now = System.currentTimeMillis();
+        boolean removed = sessions.values().removeIf(session -> session.expiresAt < now);
+        if (removed) {
+            dirty.set(true);
+        }
+        flushIfDirty();
+    }
+
+    @PreDestroy
+    public void flushIfDirty() {
+        if (dirty.get()) {
+            synchronized (writeLock) {
+                if (dirty.get()) {
+                    persist();
+                }
+            }
+        }
+    }
+
+    private void checkLoginRateLimit(String username) {
+        FailureWindow window = loginFailures.get(username);
+        if (window == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - window.firstFailureAt > LOGIN_FAILURE_WINDOW_MS) {
+            loginFailures.remove(username, window);
+            return;
+        }
+        if (window.count.get() >= MAX_LOGIN_FAILURES) {
+            throw new BusinessException("登录失败次数过多，请10分钟后再试");
+        }
+    }
+
+    private void recordLoginFailure(String username) {
+        long now = System.currentTimeMillis();
+        FailureWindow window = loginFailures.compute(username, (key, existing) -> {
+            if (existing == null || now - existing.firstFailureAt > LOGIN_FAILURE_WINDOW_MS) {
+                return new FailureWindow(now);
+            }
+            return existing;
+        });
+        window.count.incrementAndGet();
+    }
+
+    private static class FailureWindow {
+        final long firstFailureAt;
+        final java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger();
+
+        FailureWindow(long firstFailureAt) {
+            this.firstFailureAt = firstFailureAt;
+        }
+    }
+
+    private AuthVO createSession(String username, long now) {
+        sessions.values().removeIf(session -> session.expiresAt < now);
         String token = createToken();
         SessionRecord session = new SessionRecord();
         session.token = token;
         session.username = username;
         session.issuedAt = now;
         session.expiresAt = now + SESSION_TTL;
-        store.sessions.put(token, session);
-        UserRecord user = store.users.get(username);
+        sessions.put(token, session);
+        UserRecord user = users.get(username);
         return toAuthVO(token, session, user);
     }
 
@@ -198,25 +300,16 @@ public class AuthServiceImpl implements AuthService {
         return new AuthVO(token, session.username, session.expiresAt, user == null ? 0 : user.lastLoginAt);
     }
 
-    private SessionRecord requireSession(AuthStore store, String token) {
+    private SessionRecord requireSession(String token) {
         String username = resolveUsername(token);
         if (username == null) {
             throw new BusinessException("登录状态已过期，请重新登录");
         }
-        SessionRecord session = store.sessions.get(token);
+        SessionRecord session = sessions.get(token);
         if (session == null) {
             throw new BusinessException("登录状态已过期，请重新登录");
         }
         return session;
-    }
-
-    private void cleanupExpiredSessions(AuthStore store, long now) {
-        Iterator<Map.Entry<String, SessionRecord>> iterator = store.sessions.entrySet().iterator();
-        while (iterator.hasNext()) {
-            if (iterator.next().getValue().expiresAt < now) {
-                iterator.remove();
-            }
-        }
     }
 
     private String normalizeUsername(String username) {
@@ -250,25 +343,61 @@ public class AuthServiceImpl implements AuthService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private String createPasswordHash(String password) {
+    String createPasswordHash(String password) {
         byte[] salt = new byte[16];
         secureRandom.nextBytes(salt);
-        byte[] hash = digest(salt, password);
-        return Base64.getEncoder().encodeToString(salt) + "$" + Base64.getEncoder().encodeToString(hash);
+        byte[] hash = pbkdf2(password, salt, PBKDF2_ITERATIONS);
+        return PBKDF2_PREFIX
+                + "$" + PBKDF2_ITERATIONS
+                + "$" + Base64.getEncoder().encodeToString(salt)
+                + "$" + Base64.getEncoder().encodeToString(hash);
     }
 
-    private boolean verifyPassword(String password, String storedHash) {
+    boolean verifyPassword(String password, String storedHash) {
         if (storedHash == null || !storedHash.contains("$")) {
             return false;
         }
+        if (!isLegacyHash(storedHash)) {
+            String[] parts = storedHash.split("\\$");
+            if (parts.length != 4) {
+                return false;
+            }
+            try {
+                int iterations = Integer.parseInt(parts[1]);
+                byte[] salt = Base64.getDecoder().decode(parts[2]);
+                byte[] expected = Base64.getDecoder().decode(parts[3]);
+                byte[] actual = pbkdf2(password, salt, iterations);
+                return MessageDigest.isEqual(expected, actual);
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
+        }
+        // 旧格式: base64(salt)$base64(sha256(salt||password))
         String[] parts = storedHash.split("\\$", 2);
-        byte[] salt = Base64.getDecoder().decode(parts[0]);
-        byte[] expected = Base64.getDecoder().decode(parts[1]);
-        byte[] actual = digest(salt, password);
-        return MessageDigest.isEqual(expected, actual);
+        try {
+            byte[] salt = Base64.getDecoder().decode(parts[0]);
+            byte[] expected = Base64.getDecoder().decode(parts[1]);
+            byte[] actual = legacyDigest(salt, password);
+            return MessageDigest.isEqual(expected, actual);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 
-    private byte[] digest(byte[] salt, String password) {
+    static boolean isLegacyHash(String storedHash) {
+        return storedHash == null || !storedHash.startsWith(PBKDF2_PREFIX + "$");
+    }
+
+    private byte[] pbkdf2(String password, byte[] salt, int iterations) {
+        try {
+            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, iterations, PBKDF2_KEY_BITS);
+            return SecretKeyFactory.getInstance(PBKDF2_ALGORITHM).generateSecret(spec).getEncoded();
+        } catch (Exception e) {
+            throw new BusinessException("密码处理失败", e);
+        }
+    }
+
+    private byte[] legacyDigest(byte[] salt, String password) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.update(salt);
@@ -278,7 +407,7 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
-    private AuthStore loadStore() {
+    private AuthStore readStoreFile() {
         Path path = storePath();
         try {
             if (!Files.exists(path)) {
@@ -292,10 +421,25 @@ public class AuthServiceImpl implements AuthService {
         }
     }
 
-    private void saveStore(AuthStore store) {
+    /**
+     * 写时快照 + 临时文件原子替换，避免写一半崩溃损坏存储文件。调用方需持有 writeLock。
+     */
+    private void persist() {
+        AuthStore snapshot = new AuthStore();
+        snapshot.users = new LinkedHashMap<>(users);
+        snapshot.sessions = new LinkedHashMap<>(sessions);
         try {
             Files.createDirectories(dataRoot());
-            Files.writeString(storePath(), JSON.toJSONString(store.normalize()), StandardCharsets.UTF_8);
+            Path target = storePath();
+            Path temp = target.resolveSibling(target.getFileName() + ".tmp");
+            Files.writeString(temp, JSON.toJSONString(snapshot), StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                // 部分文件系统（如 FAT 格式的 U 盘）不支持原子移动，降级为普通替换
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            dirty.set(false);
         } catch (IOException e) {
             throw new BusinessException("保存用户数据失败", e);
         }

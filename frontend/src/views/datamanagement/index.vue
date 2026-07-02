@@ -2131,7 +2131,9 @@ function lineOpacityPaint() {
     }
     return 0.7;
   }
-  return ["match", ["to-string", ["get", "_lineKey"]], keys, 0.1, 0.18];
+  // 选中线路后底图线网整体隐藏：选中线路由橙色高亮图层绘制，其余线路不再淡化保留
+  // （opacity=0 不影响 queryRenderedFeatures 命中测试，仍可点选切换线路）
+  return 0;
 }
 
 function stationOpacityPaint() {
@@ -2139,9 +2141,9 @@ function stationOpacityPaint() {
   if (stationId) {
     return ["case", ["==", ["get", "_stationKey"], stationId], 0, 0.24];
   }
-  const routeStationKeys = selectedRouteStationKeys();
-  if (routeStationKeys.length) {
-    return ["match", ["to-string", ["get", "_stationKey"]], routeStationKeys, 0, 0.2];
+  if (selectedRoute.value && activeKey.value !== "update_line") {
+    // 选中线路后底图站点整体隐藏：线路自身站点由高亮图层（LAYER_ROUTE_STATION_SELECTED）绘制
+    return 0;
   }
   return 0.96;
 }
@@ -5839,6 +5841,9 @@ function clearSelectionState() {
   closeLineRoutePicker();
   pendingMoveTarget.value = null;
   pendingAddDataset.value = "";
+  // 选中线路时底图线网/站点/站名整体隐藏，取消选中必须同步恢复
+  updateStationSelectionLayers();
+  updateBaseLineOpacity();
 }
 
 function updateStationSelectionLayers() {
@@ -5852,6 +5857,16 @@ function updateStationSelectionLayers() {
   if (map.getLayer(LAYER_STATIONS)) {
     map.setPaintProperty(LAYER_STATIONS, "icon-opacity", stationOpacityPaint());
   }
+  // 选中线路后：底图站名一并隐藏（线路自身站名由 LAYER_ROUTE_STATION_LABELS 高亮图层绘制）
+  if (map.getLayer(LAYER_STATION_LABELS)) {
+    map.setPaintProperty(
+      LAYER_STATION_LABELS,
+      "text-opacity",
+      selectedRoute.value && activeKey.value !== "update_line"
+        ? 0
+        : ["interpolate", ["linear"], ["zoom"], 8, 0.72, 11, 0.92, 14, 1],
+    );
+  }
 }
 
 function updateSelectedRouteStationsLayer() {
@@ -5863,12 +5878,6 @@ function updateSelectedRouteStationsLayer() {
     return;
   }
   source.setData({ type: "FeatureCollection", features: selectedRouteStationFeatures() });
-}
-
-function selectedRouteStationKeys() {
-  return selectedRouteStationFeatures()
-    .map((feature) => String(feature?.properties?._stationKey || stationFeatureKey(feature) || ""))
-    .filter(Boolean);
 }
 
 function selectedRouteStationFeatures() {

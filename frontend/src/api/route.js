@@ -60,6 +60,18 @@ export function getRoutePanel(data, config = {}) {
   })
 }
 
+// 总体客流变化（按 bus/metro 聚合的 24 小时客流，轻量接口，替代整包 routePanel）
+// POST /pt/route/overallFlow
+// data = { status: "ready"|"generating", hourlyByMode: { bus: number[24], metro: number[24] } }
+export function getOverallFlow(data, config = {}) {
+  return request({
+    url: `/pt/route/overallFlow`,
+    method: 'POST',
+    data: data,
+    ...config
+  })
+}
+
 export function getRoutePanelDetail(data, config = {}) {
   return request({
     url: `/pt/route/routePanelDetail`,
@@ -89,11 +101,12 @@ export function getRouteTile(data, config = {}) {
   })
 }
 
+// GET + ETag/immutable：瓦片内容对固定模型不变，二次访问命中浏览器缓存/304
 export function getRouteTileBinary(data, config = {}) {
   return request({
     url: `/pt/route/tile.bin`,
-    method: 'POST',
-    data: data,
+    method: 'GET',
+    params: data,
     responseType: 'arraybuffer',
     ...config
   })
@@ -102,8 +115,8 @@ export function getRouteTileBinary(data, config = {}) {
 export function getRouteFullBinary(data, config = {}) {
   return request({
     url: `/pt/route/full.bin`,
-    method: 'POST',
-    data: data,
+    method: 'GET',
+    params: data,
     responseType: 'arraybuffer',
     ...config
   })

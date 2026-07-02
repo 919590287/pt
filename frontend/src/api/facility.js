@@ -21,3 +21,15 @@ export function getStationPanel(data, config = {}) {
     ...config
   })
 }
+
+// 单个站点客流面板（与 stationPanel 返回的 stations[stationName] 同构）
+// POST /pt/facility/stationPanelDetail，body { datasource, stationName }
+// 未就绪时 data = { status: "generating" }；找不到时 data = {}
+export function getStationPanelDetail(data, config = {}) {
+  return request({
+    url: `/pt/facility/stationPanelDetail`,
+    method: 'POST',
+    data: data,
+    ...config
+  })
+}

@@ -23,6 +23,7 @@ import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.*;
 import com.jts.gjcxfzksh.exception.BusinessException;
 import com.jts.gjcxfzksh.utils.DistanceUtil;
+import com.jts.gjcxfzksh.utils.TransitMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
@@ -35,8 +36,6 @@ import org.matsim.core.network.NetworkUtils;
 import org.matsim.core.population.routes.NetworkRoute;
 import org.matsim.pt.routes.TransitPassengerRoute;
 import org.matsim.pt.transitSchedule.api.*;
-import org.matsim.vehicles.Vehicle;
-import org.matsim.vehicles.VehicleType;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -112,8 +111,11 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         }
         Network network = matsim_data.getNetwork();
         Map<String, Object> result = new HashMap<>();
-        // 日出行人次
-        long rcxrc = matsim_data.getPersonTracks().stream().filter(PTPersonTrack::getEnter).count();
+        // 日出行人次（仅统计该线路的上车人次，而非全网总量）
+        RouteId currentRouteId = RouteId.create(transitRoute.getId());
+        long rcxrc = matsim_data.getPersonTracks().stream()
+                .filter(track -> Boolean.TRUE.equals(track.getEnter()) && currentRouteId.equals(track.getRouteId()))
+                .count();
         result.put("rcxrc", rcxrc);
         // 非直线系数
         double fzxxs = routeNoLC(transitRoute, network);
@@ -188,6 +190,11 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public Map<String, Object> routePanelDetail(RouteInfoParam param) {
         return MatsimRoutePanelCache.readRoutePanelDetail(matsim_data(param), param.getLineId(), param.getRouteId());
+    }
+
+    @Override
+    public Map<String, Object> overallFlow(DatasourceParam param) {
+        return MatsimRoutePanelCache.readOverallFlow(matsim_data(param));
     }
 
     @Override
@@ -384,30 +391,16 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     }
 
     /**
-     * 满载率
+     * 满载率：统一走指标口径层（上车人次/静态容量，输出小数）。
+     * 原实现分子未过滤上车记录（上下车双计，人数约翻倍），已修正。
      */
     private double fullLoadRate(TransitRoute transitRoute, MatsimData matsim_data) {
-        Map<VehicleId, List<PTPersonTrack>> person = matsim_data.getPersonTracks().stream().collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
+        Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = matsim_data.getPersonTracks().stream()
+                .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
         List<VehicleId> vehicleIds = new ArrayList<>();
-        transitRoute.getDepartures().forEach((departureId, departure) -> {
-            vehicleIds.add(VehicleId.create(departure.getVehicleId()));
-        });
-        Map<Id<Vehicle>, Vehicle> vehicleMap = matsim_data.getTv().getVehicles();
-        double vehCount = 0.;
-        double personCount = 0.;
-        for (VehicleId vehId : vehicleIds) {
-            Vehicle vehicle = vehicleMap.get(vehId);
-            if (vehicle == null || vehicle.getType() == null || vehicle.getType().getCapacity() == null) {
-                continue;
-            }
-            VehicleType vehicleType = vehicle.getType();
-            List<PTPersonTrack> list = person.get(vehId);
-            personCount += list == null ? 0 : list.size();
-            vehCount += vehicleType.getCapacity().getStandingRoom();
-            vehCount += vehicleType.getCapacity().getSeats();
-        }
-
-        return vehCount <= 0 ? 0.0 : personCount / vehCount;
+        transitRoute.getDepartures().forEach((departureId, departure) ->
+                vehicleIds.add(VehicleId.create(departure.getVehicleId())));
+        return TransitMetrics.fullLoadRate(vehicleIds, tracksByVehicle, matsim_data.getTv().getVehicles());
     }
 
     /**

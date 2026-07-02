@@ -2,6 +2,7 @@ package com.jts.gjcxfzksh.api.controller;
 
 import com.jts.gjcxfzksh.api.common.AjaxResult;
 import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
+import com.jts.gjcxfzksh.api.model.params.StationInfoParam;
 import com.jts.gjcxfzksh.api.service.FacilityService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -29,6 +30,12 @@ public class FacilityController {
     @PostMapping("/stationPanel")
     public AjaxResult stationPanel(@RequestBody DatasourceParam param) {
         return AjaxResult.ok(facilityService.stationPanel(param));
+    }
+
+    @Operation(summary = "单站点客流面板明细")
+    @PostMapping("/stationPanelDetail")
+    public AjaxResult stationPanelDetail(@RequestBody StationInfoParam param) {
+        return AjaxResult.ok(facilityService.stationPanelDetail(param));
     }
 
 }

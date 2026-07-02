@@ -35,6 +35,11 @@ public interface RouteService {
 
     Map<String, Object> routePanelDetail(RouteInfoParam param);
 
+    /**
+     * 总体客流变化（24 小时 × 交通方式）服务端聚合
+     */
+    Map<String, Object> overallFlow(DatasourceParam param);
+
     List<RoutePickVO> routeCandidates(RoutePickParam param);
 
     List<PTLink> routeTile(TileNetworkParam param);

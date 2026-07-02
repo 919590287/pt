@@ -56,7 +56,7 @@ class PTDataControllerCacheContractTest {
                 .andExpect(header().string(HttpHeaders.ETAG, "\"trajectory-v8-model-300\""))
                 .andExpect(header().string(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_OCTET_STREAM_VALUE))
                 .andExpect(header().longValue(HttpHeaders.CONTENT_LENGTH, payload.length))
-                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "max-age=31536000, public, immutable"))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "max-age=31536000, private, immutable"))
                 .andReturn()
                 .getResponse()
                 .getContentAsByteArray();
@@ -78,7 +78,7 @@ class PTDataControllerCacheContractTest {
                         .header(HttpHeaders.IF_NONE_MATCH, "\"other\", \"trajectory-v8-model-0\""))
                 .andExpect(status().isNotModified())
                 .andExpect(header().string(HttpHeaders.ETAG, "\"trajectory-v8-model-0\""))
-                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "max-age=31536000, public, immutable"));
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "max-age=31536000, private, immutable"));
 
         verify(service, never()).trajectoryChunkBinaryPath(any(DatasourceParam.class), eq(0));
         verify(service, never()).trajectoryChunkBinary(any(DatasourceParam.class), eq(0));

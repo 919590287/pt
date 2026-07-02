@@ -13,11 +13,12 @@ export function getTileNetwork(data) {
   })
 }
 
+// GET + ETag/immutable：瓦片内容对固定模型不变，二次访问命中浏览器缓存/304
 export function getTileNetworkBinary(data) {
   return request({
     url: `/pt/network/tile.bin`,
-    method: 'POST',
-    data: data,
+    method: 'GET',
+    params: data,
     responseType: 'arraybuffer'
   })
 }
@@ -25,8 +26,8 @@ export function getTileNetworkBinary(data) {
 export function getFullNetworkBinary(data) {
   return request({
     url: `/pt/network/full.bin`,
-    method: 'POST',
-    data: data,
+    method: 'GET',
+    params: data,
     responseType: 'arraybuffer'
   })
 }

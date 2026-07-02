@@ -543,6 +543,18 @@ public final class MatsimAnalysisCache {
                 + "\"";
     }
 
+    /**
+     * 磁盘轻量缓存已就绪时把 personTracks 装入内存（不解析 events，缓存缺失直接返回 false）。
+     * 供模型加载路径使用：磁盘缓存齐全时 ModelCacheManager 不会再跑 buildCaches，
+     * 内存态 personTracks 需要在这里补齐，否则依赖它的接口（如体检评估）会一直"生成中"。
+     */
+    public static boolean preloadPersonTracksIfReady(MatsimData data) {
+        if (data.getPersonTracks() != null && !data.getPersonTracks().isEmpty()) {
+            return true;
+        }
+        return loadPersonTracksFromCache(data);
+    }
+
     private static boolean loadPersonTracksFromCache(MatsimData data) {
         if (!isPersonTracksCacheReady(data)) {
             return false;

@@ -9,6 +9,12 @@ import java.util.Map;
 public interface PTDataService {
 
     Map<String, Object> info(DatasourceParam param);
+
+    /**
+     * 体检评估指标（全市口径，对齐评估指标表）
+     */
+    Map<String, Object> evaluation(DatasourceParam param);
+
     PTCoord center(DatasourceParam param);
     Map<String, Object> trajectory(DatasourceParam param);
     Map<String, Object> trajectoryChunk(DatasourceParam param, int start);

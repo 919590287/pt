@@ -44,6 +44,16 @@ const VEHICLE_MODEL_CONFIG = {
   },
 };
 
+// 渲染像素比：优先读取 runtime-config 的 mapPixelRatio 降级开关（clamp 到 [1, 2]），
+// 未配置时保持默认行为 min(devicePixelRatio, 2)。
+function rendererPixelRatio() {
+  const configured = typeof window !== "undefined" ? Number(window.APP_CONFIG?.mapPixelRatio) : NaN;
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1, Math.min(2, configured));
+  }
+  return Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 2);
+}
+
 function nextCapacity(count) {
   let capacity = MIN_INSTANCE_CAPACITY;
   while (capacity < count) {
@@ -571,6 +581,8 @@ export class VehicleModelLayer {
     this.trajectoryTime = 0;
     this.vehicles = [];
     this.vehicleFrame = null;
+    // 当前帧的内容版本号（帧对象被原地复用重写时由上游递增），用于 setVehicles 快速路径判定。
+    this.vehicleFrameRev = null;
     this.templates = new Map();
     this.meshGroups = new Map();
     this.materials = new Set();
@@ -583,7 +595,11 @@ export class VehicleModelLayer {
     this.lastDebugPublishAt = 0;
     this.lastRenderDebugAt = 0;
     this.displayState = new Map();
-    this.displayStateSeen = new Set();
+    // 平滑状态存活标记：每轮 updateInstances 递增，状态对象原地写入 seen，
+    // 替代原先每帧向 Set 写入 key 的做法（零分配）。
+    this.displayStateStamp = 0;
+    // 最近一次完整重写时的平滑开关状态：zoom 跨越 SMOOTH_MIN_ZOOM 时禁用快速路径，保证阈值切换行为不变。
+    this.lastUseSmoothing = false;
     this.lastInstanceUpdateAt = 0;
   }
 
@@ -604,7 +620,7 @@ export class VehicleModelLayer {
     this.renderer.autoClearDepth = false;
     this.renderer.autoClearStencil = false;
     this.renderer.shadowMap.enabled = false;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(rendererPixelRatio());
     if ("outputColorSpace" in this.renderer && THREE.SRGBColorSpace) {
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     }
@@ -706,11 +722,34 @@ export class VehicleModelLayer {
   }
 
   setVehicles(vehicles = []) {
-    if (vehicles?.kind === "vehicle-frame" || vehicles?.kind === "vehicle-segment-frame") {
+    const isFrame = vehicles?.kind === "vehicle-frame" || vehicles?.kind === "vehicle-segment-frame";
+    // 快速路径：相机移动（平移/缩放/旋转/resize）会重复下发同一帧对象。
+    // 若帧对象与内容版本号都未变化、且原点无需 rebase（chooseOrigin 返回 false），
+    // 实例缓冲内容不会有任何差异，直接触发重绘即可，跳过 O(N) 的全量重写与 GPU 上传。
+    // 播放推进/数据重载/可见性切换会产生新帧对象或递增 __contentRev；原点 rebase 时
+    // chooseOrigin 返回 true（并已更新 modelMatrix），仍走下方完整重写。
+    const zoomNow = Number(this.mapWrapper?.zoom);
+    const useSmoothingNow = Number.isFinite(zoomNow) && zoomNow >= SMOOTH_MIN_ZOOM;
+    if (
+      isFrame &&
+      this.ready &&
+      this.originReady &&
+      vehicles === this.vehicleFrame &&
+      vehicles.__contentRev === this.vehicleFrameRev &&
+      (vehicles.kind !== "vehicle-frame" || useSmoothingNow === this.lastUseSmoothing) &&
+      !this.chooseOrigin()
+    ) {
+      this.publishDebug();
+      this.map?.triggerRepaint?.();
+      return;
+    }
+    if (isFrame) {
       this.vehicleFrame = vehicles;
+      this.vehicleFrameRev = vehicles.__contentRev;
       this.vehicles = [];
     } else {
       this.vehicleFrame = null;
+      this.vehicleFrameRev = null;
       this.vehicles = Array.isArray(vehicles) ? vehicles : [];
     }
     if (this.activeTotal() <= 0) {
@@ -997,30 +1036,39 @@ export class VehicleModelLayer {
   }
 
   smoothVehicleState(key, targetX, targetY, targetAngle, now, dt) {
-    this.displayStateSeen.add(key);
     const zoom = Number(this.mapWrapper?.zoom);
     const previous = this.displayState.get(key);
-    const target = {
-      x: Number(targetX),
-      y: Number(targetY),
-      angle: normalizeAngleDegrees(targetAngle),
-      updatedAt: now,
-    };
+    const tx = Number(targetX);
+    const ty = Number(targetY);
+    const tAngle = normalizeAngleDegrees(targetAngle);
+    // 仅在新 key 首次出现时分配状态对象，后续每帧原地复用，避免每车每帧 new 对象 + Map 写入。
+    let state = previous;
+    if (!state) {
+      state = { x: NaN, y: NaN, angle: 0, updatedAt: 0, seen: 0 };
+      this.displayState.set(key, state);
+    }
+    state.seen = this.displayStateStamp;
     if (
       !previous ||
-      !Number.isFinite(previous.x) ||
-      !Number.isFinite(previous.y) ||
+      !Number.isFinite(state.x) ||
+      !Number.isFinite(state.y) ||
       !Number.isFinite(zoom) ||
       zoom < SMOOTH_MIN_ZOOM
     ) {
-      this.displayState.set(key, target);
-      return target;
+      state.x = tx;
+      state.y = ty;
+      state.angle = tAngle;
+      state.updatedAt = now;
+      return state;
     }
 
-    const distance = Math.hypot(target.x - previous.x, target.y - previous.y);
+    const distance = Math.hypot(tx - state.x, ty - state.y);
     if (!Number.isFinite(distance) || distance > SMOOTH_SNAP_METERS || dt <= 0 || dt > 180) {
-      this.displayState.set(key, target);
-      return target;
+      state.x = tx;
+      state.y = ty;
+      state.angle = tAngle;
+      state.updatedAt = now;
+      return state;
     }
 
     const zoomFactor = clamp((zoom - SMOOTH_MIN_ZOOM) / 3.4, 0, 1);
@@ -1031,24 +1079,20 @@ export class VehicleModelLayer {
     }
     alpha = clamp(alpha, 0.18, 0.92);
 
-    const next = {
-      x: previous.x + (target.x - previous.x) * alpha,
-      y: previous.y + (target.y - previous.y) * alpha,
-      angle: lerpAngleDegrees(previous.angle, target.angle, Math.min(1, alpha * 1.25)),
-      updatedAt: now,
-    };
-    this.displayState.set(key, next);
-    return next;
+    state.x = state.x + (tx - state.x) * alpha;
+    state.y = state.y + (ty - state.y) * alpha;
+    state.angle = lerpAngleDegrees(state.angle, tAngle, Math.min(1, alpha * 1.25));
+    state.updatedAt = now;
+    return state;
   }
 
   pruneDisplayState() {
     if (!this.displayState.size) return;
-    for (const key of this.displayState.keys()) {
-      if (!this.displayStateSeen.has(key)) {
+    for (const [key, state] of this.displayState) {
+      if (state.seen !== this.displayStateStamp) {
         this.displayState.delete(key);
       }
     }
-    this.displayStateSeen.clear();
   }
 
   disposeMeshGroup(group) {
@@ -1305,11 +1349,11 @@ export class VehicleModelLayer {
     this.lastInstanceUpdateAt = now;
     const zoom = Number(this.mapWrapper?.zoom);
     const useSmoothing = Number.isFinite(zoom) && zoom >= SMOOTH_MIN_ZOOM;
+    this.lastUseSmoothing = useSmoothing;
     if (useSmoothing) {
-      this.displayStateSeen.clear();
+      this.displayStateStamp += 1;
     } else if (this.displayState.size) {
       this.displayState.clear();
-      this.displayStateSeen.clear();
     }
 
     const groups = new Map();
