@@ -44,3 +44,9 @@ matsim:
   cache-build-threads: 0
   # 轨迹缓存构建并发数；默认1（磁盘友好），多模型并行构建可调大。
   trajectory-build-threads: 1
+
+optimization:
+  # 线网优化 MATSim 子进程最大堆内存（切分后的小场景通常 4-8g 足够）
+  runner-xmx: 8g
+  # 生成+运行任务并发数（每个任务顺序跑两个 MATSim，谨慎调大）
+  run-concurrency: 1

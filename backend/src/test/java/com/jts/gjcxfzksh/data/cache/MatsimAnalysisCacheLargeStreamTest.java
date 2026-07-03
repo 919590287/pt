@@ -283,6 +283,7 @@ class MatsimAnalysisCacheLargeStreamTest {
         data.setScenario(buildDuplicateRouteIdScenario());
         data.setPersonTracks(new LinkedHashSet<>(Set.of(
                 track("person-bus", "bus-line", "shared", "bus1", "bus-dep", "bus-stop-1", true, 8.0),
+                track("person-bus", "bus-line", "shared", "bus1", "bus-dep", "bus-stop-2", false, 68.0),
                 track("person-metro", "metro-line", "shared", "metro1", "metro-dep", "metro-stop-1", true, 9.0)
         )));
 
@@ -295,6 +296,15 @@ class MatsimAnalysisCacheLargeStreamTest {
                 route instanceof Map<?, ?> item
                         && "bus-line".equals(item.get("lineId"))
                         && "shared".equals(item.get("routeId"))));
+
+        // od 必须按 lineId::routeId 解析线路：routeId "shared" 同时属于公交与地铁，裸 routeId 查找会得到空线路信息
+        List<?> od = (List<?>) busStop.get("od");
+        assertTrue(od.stream().anyMatch(entry ->
+                entry instanceof Map<?, ?> item
+                        && "bus-stop-1".equals(item.get("origin"))
+                        && "bus-stop-2".equals(item.get("destination"))
+                        && "shared".equals(item.get("routeId"))
+                        && "公交快线".equals(item.get("lineName"))));
 
         Path panelPath = cache.resolve(MatsimStationPanelCache.STATION_PANEL_CACHE_VERSION).resolve("station-panel.json.gz");
         Files.writeString(panelPath, "not gzip", StandardCharsets.UTF_8);

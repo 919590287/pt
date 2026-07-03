@@ -61,6 +61,8 @@ public class SchemeServiceImpl implements SchemeService {
                 vo.setDefault(Boolean.TRUE.equals(scheme.getDesc().get_default()));
                 vo.setDetail(scheme.getDesc().getDetail());
                 vo.setScale(scheme.getDesc().getScale());
+                vo.setCuttable(hasOutputPlans(scheme));
+                vo.setOptimization(scheme.getDesc().getOptimization());
                 modelList.add(vo);
             }
         });
@@ -107,6 +109,20 @@ public class SchemeServiceImpl implements SchemeService {
         }
         modelCacheManager.enqueue(scheme);
         return true;
+    }
+
+    /**
+     * 是否可作为线网优化母本：output 顶层存在 plans 文件（切分依赖 routed output_plans）。
+     */
+    private boolean hasOutputPlans(Scheme scheme) {
+        try {
+            java.io.File output = new java.io.File(scheme.getOutput());
+            java.io.File[] files = output.listFiles(f -> f.isFile() && !f.getName().startsWith(".")
+                    && f.getName().contains("plans"));
+            return files != null && files.length > 0;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private Scheme findAccessibleScheme(String username, String name) {

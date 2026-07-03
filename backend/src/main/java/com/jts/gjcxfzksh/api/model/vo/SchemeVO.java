@@ -66,4 +66,10 @@ public class SchemeVO {
 
     private double scale = 1.0;
 
+    @Schema(description = "是否可作为线网优化的母本模型（output 含 plans）")
+    private boolean cuttable;
+
+    @Schema(description = "线网优化元数据（desc.json optimization 透传，非优化生成的模型为 null）")
+    private java.util.Map<String, Object> optimization;
+
 }

@@ -81,6 +81,11 @@ public class Scheme {
         private Boolean _default = false;
         private double scale = 1.0;
         private double area = 1.0;
+        /**
+         * 线网优化元数据（kind/pairId/parentModel/regionPolygon 等），
+         * 由 ModelRegistryService 写入，非优化生成的模型为 null。
+         */
+        private java.util.Map<String, Object> optimization;
     }
 
 }
