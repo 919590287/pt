@@ -762,7 +762,7 @@ import { getSchemeList, getModelList, loadModel, unloadModel } from "@/api/schem
 import { dataCenter } from "@/api/data.js";
 import { getOverallFlow, getRouteCandidates, getRouteDetail, getRouteTileBinary } from "@/api/route.js";
 import { useModelSelectionStore } from "@/stores/modelSelection.js";
-import { abortOtherModelDataRequests, getCachedFacilityAll, getCachedLineAll, getCachedRoutePanel, getCachedStationPanel, peekCachedRoutePanel } from "@/utils/modelDataCache.js";
+import { abortOtherModelDataRequests, getCachedFacilityAll, getCachedLineAll, getCachedRoutePanel, getCachedStationPanel, peekCachedRoutePanel, warmModelInteractionCache } from "@/utils/modelDataCache.js";
 import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
 import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
 import {
@@ -867,6 +867,7 @@ let modelRequestSeq = 0;
 let centerRequestSeq = 0;
 let modelLoadSeq = 0;
 let backgroundTaskSeq = 0;
+let interactionCacheSeq = 0;
 const selectModel = computed(() => {
   if (!isSimulationMode.value) return null;
   const item = modelList.value?.find((item) => item.name === datebase.value.model);
@@ -875,7 +876,21 @@ const selectModel = computed(() => {
 });
 const backgroundTaskModel = computed(() => modelList.value?.find((item) => item.name === backgroundModelName.value));
 const isModelReadyForView = (item) => Boolean(item?.loadStatus && item?.cacheStatus === "ready");
-const isModelReady = computed(() => isModelReadyForView(selectModel.value));
+const isBackendModelReady = computed(() => isModelReadyForView(selectModel.value));
+const interactionCacheModel = ref("");
+const interactionCacheStatus = ref("idle");
+const interactionCacheMessage = ref("");
+const interactionCacheError = ref("");
+const isInteractionCacheReady = computed(() => (
+  !selectModel.value?.name
+  || (interactionCacheModel.value === selectModel.value.name && interactionCacheStatus.value === "ready")
+));
+const isInteractionCacheLoading = computed(() => (
+  isBackendModelReady.value
+  && Boolean(selectModel.value?.name)
+  && !isInteractionCacheReady.value
+));
+const isModelReady = computed(() => isBackendModelReady.value && isInteractionCacheReady.value);
 const backgroundTaskVisible = computed(() => Boolean(
   isSimulationMode.value
   && backgroundTaskModel.value
@@ -890,6 +905,7 @@ const fullScreenLoadingVisible = computed(() => (
 const modelLoadingDialogVisible = computed(() => fullScreenLoadingVisible.value && !modelLoadingDismissed.value);
 const modelLoadingNotice = computed(() => {
   if (!selectModel.value) return "模型状态正在检查，请稍后。";
+  if (isInteractionCacheLoading.value) return `“${getModelLabel(selectModel.value)}”正在预热客流交互缓存，请稍后。`;
   return `“${getModelLabel(selectModel.value)}”开始后台加载，请稍后。`;
 });
 const modelLoadingKey = computed(() => `${dataSourceMode.value}:${datebase.value.scheme || ""}:${selectModel.value?.name || ""}:${selectModel.value?.loadStage || ""}:${selectModel.value?.cacheStatus || ""}`);
@@ -903,6 +919,7 @@ const backgroundTaskTitle = computed(() => {
 const backgroundTaskMessage = computed(() => modelProgressMessage(backgroundTaskModel.value));
 
 function modelProgressPercent(item) {
+  if (isInteractionCacheLoading.value) return 96;
   if (isModelReadyForView(item)) return 100;
   if (item?.loadStage === "loading_config") return item?.cacheStatus === "ready" ? 35 : 12;
   if (item?.loadStage === "queued") return 8;
@@ -924,12 +941,15 @@ const cacheEtaSeconds = computed(() => Number(selectModel.value?.cacheEtaSeconds
 const cacheLoadingTitle = computed(() => {
   if (!selectModel.value) return "正在检查模型缓存";
   if (selectModel.value?.loadStage === "failed" || selectModel.value?.cacheStatus === "failed") return "加载失败";
+  if (isInteractionCacheLoading.value) return "正在加载客流交互缓存";
   if (!selectModel.value?.loadStatus) return "正在加载模型基础数据";
   return "正在生成模型缓存";
 });
 const cacheLoadingMessage = computed(() => (
-  (!selectModel.value && isLoadingSchemes.value ? "正在读取可用方案" : "")
+  (isInteractionCacheLoading.value ? (interactionCacheMessage.value || "正在预热线路、站点与客流面板数据") : "")
+  || (!selectModel.value && isLoadingSchemes.value ? "正在读取可用方案" : "")
   || (!selectModel.value && isLoadingModels.value ? "正在读取模型列表" : "")
+  || interactionCacheError.value
   || selectModel.value?.cacheProgressMessage
   || selectModel.value?.cacheMessage
   || selectModel.value?.loadMessage
@@ -1001,6 +1021,34 @@ function canStartModel(item) {
   return item.loadStage !== "queued" && item.loadStage !== "loading_config" && item.cacheStatus !== "queued" && item.cacheStatus !== "building";
 }
 
+async function ensureInteractionCacheForModel(modelName) {
+  const key = String(modelName || "");
+  if (!key) {
+    interactionCacheModel.value = "";
+    interactionCacheStatus.value = "idle";
+    interactionCacheMessage.value = "";
+    interactionCacheError.value = "";
+    return;
+  }
+  if (interactionCacheModel.value === key && interactionCacheStatus.value === "ready") return;
+  const seq = ++interactionCacheSeq;
+  interactionCacheModel.value = key;
+  interactionCacheStatus.value = "loading";
+  interactionCacheError.value = "";
+  interactionCacheMessage.value = "正在预热线路、站点与客流面板数据";
+  try {
+    await warmModelInteractionCache(key, { includeStationPanel: props.mode === "pfa" });
+    if (seq !== interactionCacheSeq || datebase.value.model !== key) return;
+    interactionCacheStatus.value = "ready";
+    interactionCacheMessage.value = "客流交互缓存已就绪";
+  } catch (error) {
+    if (seq !== interactionCacheSeq || datebase.value.model !== key) return;
+    interactionCacheStatus.value = "ready";
+    interactionCacheError.value = error?.message || "客流交互缓存预热失败，已降级为按需加载";
+    loadError.value = interactionCacheError.value;
+  }
+}
+
 function pickReadyModel(list, excludedName = "") {
   return (Array.isArray(list) ? list : []).find((item) => item.name !== excludedName && isModelReadyForView(item)) || null;
 }
@@ -1061,6 +1109,8 @@ async function startBackgroundModelLoad(item, switchOnReady) {
   try {
     const readyItem = await waitForModelReady(item.name, () => seq === backgroundTaskSeq && backgroundModelName.value === item.name, { publishProgress: false });
     if (!readyItem || seq !== backgroundTaskSeq) return;
+    await warmModelInteractionCache(item.name, { includeStationPanel: props.mode === "pfa" });
+    if (seq !== backgroundTaskSeq) return;
     if (backgroundSwitchOnReady.value) {
       setActiveModel(item.name);
       ElMessage.success("模型已加载完成，已切换");
@@ -1163,6 +1213,20 @@ watch(
   ensureSelectedModelReady,
 );
 watch(
+  [() => selectModel.value?.name, isBackendModelReady],
+  ([modelName]) => {
+    if (!modelName || !isBackendModelReady.value) {
+      interactionCacheModel.value = modelName || "";
+      interactionCacheStatus.value = modelName ? "idle" : "ready";
+      interactionCacheMessage.value = "";
+      interactionCacheError.value = "";
+      return;
+    }
+    ensureInteractionCacheForModel(modelName);
+  },
+  { immediate: true },
+);
+watch(
   [dataSourceMode, () => datebase.value.scheme, () => datebase.value.model],
   () => {
     modelSelectionStore.setSelection(MODEL_SELECTION_KEY, {
@@ -1201,7 +1265,7 @@ async function ensureSelectedModelReady() {
   if (!datebase.value.model) return;
   const seq = ++modelLoadSeq;
   try {
-    if (selectModel.value && !isModelReady.value) {
+    if (selectModel.value && !isBackendModelReady.value) {
       await loadModel({ name: datebase.value.model });
       await waitForModelReady(datebase.value.model, () => seq === modelLoadSeq && datebase.value.model === selectModel.value?.name);
     }
@@ -1595,6 +1659,7 @@ watch(
   [() => selectModel.value?.name, isModelReady],
   () => {
     if (isModelReady.value) {
+      setMapCenter();
       nextTick(() => syncPersistentRightPanel());
     }
   },
@@ -2883,6 +2948,7 @@ let busNetworkCollections = {
   lines: emptyFeatureCollection(),
   stations: emptyFeatureCollection(),
 };
+let busNetworkIndexes = createEmptyBusNetworkIndexes();
 
 const busNetworkLineWidth = computed(() => Math.max(0.1, Math.min(2, Number(lineWidth.value) || 1.2)));
 const busNetworkHitLineWidth = computed(() => Math.max(12, busNetworkLineWidth.value * 4));
@@ -3603,19 +3669,9 @@ function selectedRouteFacilities() {
   const targetRouteId = String(selectedRouteDetail.value?.routeId || "");
   const targetKey = String(selectedLineKey.value || "");
   if (!targetRouteId && !targetKey) return [];
-  for (const line of busNetworkRawLines) {
-    const lineId = String(line?.lineId || "");
-    const routes = Array.isArray(line?.routes) ? line.routes : [];
-    for (let index = 0; index < routes.length; index += 1) {
-      const route = routes[index];
-      const routeId = String(route?.routeId || "");
-      const routeKey = `${lineId}-${routeId || index}`;
-      if ((targetRouteId && routeId === targetRouteId) || (targetKey && routeKey === targetKey)) {
-        return Array.isArray(route?.facilities) ? route.facilities : [];
-      }
-    }
-  }
-  return [];
+  return (targetRouteId && busNetworkIndexes.routeFacilitiesByRouteId.get(targetRouteId))
+    || (targetKey && busNetworkIndexes.routeFacilitiesByKey.get(targetKey))
+    || [];
 }
 
 function selectedLineStationFilterExpression() {
@@ -4015,6 +4071,7 @@ async function loadBusNetwork() {
       lines: buildModelLineFeatureCollection(lines),
       stations: buildModelStationFeatureCollection(facilities, collectMetroFacilityKeys(lines)),
     };
+    busNetworkIndexes = buildBusNetworkIndexes(lines, busNetworkCollections);
     const map = MapRef.value?.map;
     if (!map) return;
     ensureBusNetworkSource(map, RM_SOURCE_LINES, busNetworkCollections.lines);
@@ -4048,7 +4105,8 @@ function ensureMonitorBusRouteLayer() {
     zIndex: 999,
     lineWidth: Math.max(4, busNetworkLineWidth.value + 3.6) * 2.2 * 10,
     fixedPixelWidth: true,
-    workerEnabled: false,
+    workerEnabled: true,
+    continuousPath: false,
     flowControl: false,
     color: 0xfacc15,
     opacity: 0.42,
@@ -4057,7 +4115,8 @@ function ensureMonitorBusRouteLayer() {
     zIndex: 1000,
     lineWidth: Math.max(4, busNetworkLineWidth.value + 3.6) * 10,
     fixedPixelWidth: true,
-    workerEnabled: false,
+    workerEnabled: true,
+    continuousPath: false,
     flowControl: false,
     color: 0xf97316,
     opacity: 0.95,
@@ -4066,7 +4125,8 @@ function ensureMonitorBusRouteLayer() {
     zIndex: 999.4,
     lineWidth: Math.max(4, busNetworkLineWidth.value + 3.6) * 2.2 * 10,
     fixedPixelWidth: true,
-    workerEnabled: false,
+    workerEnabled: true,
+    continuousPath: false,
     flowControl: false,
     color: 0x1569de,
     opacity: 0.3,
@@ -4075,7 +4135,8 @@ function ensureMonitorBusRouteLayer() {
     zIndex: 999.5,
     lineWidth: Math.max(4, busNetworkLineWidth.value + 3.6) * 10,
     fixedPixelWidth: true,
-    workerEnabled: false,
+    workerEnabled: true,
+    continuousPath: false,
     flowControl: false,
     color: 0x1569de,
     opacity: 0.88,
@@ -4491,32 +4552,74 @@ function normalizeMonitorFeatureName(value = "") {
     .toLowerCase();
 }
 
+function createEmptyBusNetworkIndexes() {
+  return {
+    lineFeatureByKey: new Map(),
+    lineFeatureByRouteId: new Map(),
+    lineFeaturesByName: new Map(),
+    stationFeatureByKey: new Map(),
+    stationFeaturesByName: new Map(),
+    routeFacilitiesByKey: new Map(),
+    routeFacilitiesByRouteId: new Map(),
+  };
+}
+
+function addIndexedList(map, key, value) {
+  const text = String(key || "");
+  if (!text) return;
+  const list = map.get(text);
+  if (list) list.push(value);
+  else map.set(text, [value]);
+}
+
+function buildBusNetworkIndexes(lines = [], collections = busNetworkCollections) {
+  const indexes = createEmptyBusNetworkIndexes();
+  for (const feature of collections?.lines?.features || []) {
+    const props = feature?.properties || {};
+    const key = String(props._lineKey || feature?.id || "");
+    const routeId = String(props.routeId ?? props.route_id ?? "");
+    if (key) indexes.lineFeatureByKey.set(key, feature);
+    if (routeId && !indexes.lineFeatureByRouteId.has(routeId)) indexes.lineFeatureByRouteId.set(routeId, feature);
+    [props.lineName, props.lineId, busLineName(props)].forEach((name) => {
+      addIndexedList(indexes.lineFeaturesByName, normalizeMonitorFeatureName(name), feature);
+    });
+  }
+  for (const feature of collections?.stations?.features || []) {
+    const props = feature?.properties || {};
+    const key = String(props._stationKey || feature?.id || "");
+    if (key) indexes.stationFeatureByKey.set(key, feature);
+    addIndexedList(indexes.stationFeaturesByName, normalizeMonitorFeatureName(busStationName(props)), feature);
+  }
+  for (const line of Array.isArray(lines) ? lines : []) {
+    const lineId = String(line?.lineId || "");
+    const routes = Array.isArray(line?.routes) ? line.routes : [];
+    routes.forEach((route, index) => {
+      const routeId = String(route?.routeId || "");
+      const routeKey = `${lineId}-${routeId || index}`;
+      const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
+      if (routeKey) indexes.routeFacilitiesByKey.set(routeKey, facilities);
+      if (routeId && !indexes.routeFacilitiesByRouteId.has(routeId)) indexes.routeFacilitiesByRouteId.set(routeId, facilities);
+    });
+  }
+  return indexes;
+}
+
 function modelLineFeatureByName(lineName) {
   const target = normalizeMonitorFeatureName(lineName);
   if (!target) return null;
-  const features = busNetworkCollections.lines?.features || [];
-  return features.find((feature) => {
-    const properties = feature?.properties || {};
-    return [properties.lineName, properties.lineId, busLineName(properties)]
-      .some((value) => normalizeMonitorFeatureName(value) === target);
-  }) || null;
+  return busNetworkIndexes.lineFeaturesByName.get(target)?.[0] || null;
 }
 
 function modelLineFeatureByRouteId(routeId) {
   const target = String(routeId ?? "");
   if (!target) return null;
-  return (busNetworkCollections.lines?.features || []).find((feature) => {
-    const properties = feature?.properties || {};
-    return String(properties.routeId ?? properties.route_id ?? "") === target;
-  }) || null;
+  return busNetworkIndexes.lineFeatureByRouteId.get(target) || null;
 }
 
 function modelStationFeatureByName(stationName) {
   const target = normalizeMonitorFeatureName(stationName);
   if (!target) return null;
-  const matches = (busNetworkCollections.stations?.features || []).filter((feature) => (
-    normalizeMonitorFeatureName(busStationName(feature?.properties || {})) === target
-  ));
+  const matches = busNetworkIndexes.stationFeaturesByName.get(target) || [];
   return matches.find((feature) => !activeDisplayRangeContext.value || lngLatInDisplayRange(feature?.geometry?.coordinates))
     || matches[0]
     || null;
@@ -4561,12 +4664,11 @@ function pairedStationFeature(feature) {
   const targetName = normalizeMonitorFeatureName(busStationName(sourceProps));
   const sourceKey = String(sourceProps._stationKey || feature?.id || "");
   if (!targetName) return null;
-  return (busNetworkCollections.stations?.features || [])
+  return (busNetworkIndexes.stationFeaturesByName.get(targetName) || [])
     .filter((candidate) => {
       const props = candidate?.properties || {};
       const key = String(props._stationKey || candidate?.id || "");
       if (!key || key === sourceKey) return false;
-      if (normalizeMonitorFeatureName(busStationName(props)) !== targetName) return false;
       return !activeDisplayRangeContext.value || lngLatInDisplayRange(candidate?.geometry?.coordinates);
     })
     .sort((left, right) => stationFeatureDistance(feature, left) - stationFeatureDistance(feature, right))[0] || null;
@@ -4626,10 +4728,7 @@ function fullBusLineFeature(feature) {
   const properties = feature.properties || {};
   const key = String(properties._lineKey || feature.id || "");
   if (!key) return feature;
-  return busNetworkCollections.lines.features.find((item) => {
-    const itemKey = String(item?.properties?._lineKey || item?.id || "");
-    return itemKey === key;
-  }) || feature;
+  return busNetworkIndexes.lineFeatureByKey.get(key) || feature;
 }
 
 function routeOptionFromFeature(feature) {
@@ -4837,27 +4936,30 @@ async function openLineRoutePicker(point, webMercatorXY, lngLat, domEvent) {
     return;
   }
   const requestSeq = ++routePickRequestSeq;
-  let routes = [];
+  const localHit = fallbackRouteOptions(point, lngLat);
+  let routes = collapseMetroRouteOptions(localHit.routes.filter(routeOptionMatchesMode));
   let segmentLinks = [];
-  try {
-    const res = await getRouteCandidates({
-      datasource: selectModel.value.name,
-      x: Number(webMercatorXY[0]),
-      y: Number(webMercatorXY[1]),
-      radiusMeters: routePickRadiusMeters(point),
-      limit: 50,
-    }, { silentError: true });
-    if (requestSeq !== routePickRequestSeq) return;
-    const candidates = Array.isArray(res?.data) ? res.data : [];
-    routes = collapseMetroRouteOptions(
-      dedupeRouteOptions(candidates.map(routeOptionFromCandidate)).filter(routeOptionMatchesMode),
-    );
-    segmentLinks = routes[0]?.segmentLinks || [];
-  } catch {
-    if (requestSeq !== routePickRequestSeq) return;
-    const fallback = fallbackRouteOptions(point, lngLat);
-    routes = collapseMetroRouteOptions(fallback.routes.filter(routeOptionMatchesMode));
-    segmentLinks = [];
+
+  if (!routes.length) {
+    try {
+      const res = await getRouteCandidates({
+        datasource: selectModel.value.name,
+        x: Number(webMercatorXY[0]),
+        y: Number(webMercatorXY[1]),
+        radiusMeters: routePickRadiusMeters(point),
+        limit: 50,
+      }, { silentError: true });
+      if (requestSeq !== routePickRequestSeq) return;
+      const candidates = Array.isArray(res?.data) ? res.data : [];
+      routes = collapseMetroRouteOptions(
+        dedupeRouteOptions(candidates.map(routeOptionFromCandidate)).filter(routeOptionMatchesMode),
+      );
+      segmentLinks = routes[0]?.segmentLinks || [];
+    } catch {
+      if (requestSeq !== routePickRequestSeq) return;
+      routes = [];
+      segmentLinks = [];
+    }
   }
   if (!routes.length) {
     closeLineRoutePicker();
@@ -5084,6 +5186,7 @@ function clearBusNetworkLayers() {
     lines: emptyFeatureCollection(),
     stations: emptyFeatureCollection(),
   };
+  busNetworkIndexes = createEmptyBusNetworkIndexes();
   busNetworkRawLines = [];
   busNetworkRawFacilities = [];
   busNetworkRevision.value += 1;

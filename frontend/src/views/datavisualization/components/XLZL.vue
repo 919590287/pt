@@ -555,6 +555,8 @@ const selectedReverseRoutePanel = ref(null);
 let routePanelPromise = null;
 let selectionAbortController = null;
 let selectionRequestSeq = 0;
+const routeFlowMapCache = new Map();
+const ROUTE_FLOW_MAP_CACHE_LIMIT = 240;
 
 const selectedLineName = ref("");
 const selectedStationName = ref("");
@@ -626,13 +628,9 @@ const currentSelectedRoute = computed(() => {
       if (match) return withLineMeta(match, line);
     }
   }
-  for (const line of rawLines.value) {
-    if (line.routes) {
-      const match = line.routes.find(r => String(r.routeId) === String(targetId));
-      if (match) return withLineMeta(match, line);
-    }
-  }
-  return null;
+  return rawLineIndexes.value.routeByKey.get(String(targetId))
+    || rawLineIndexes.value.routeById.get(String(targetId))
+    || null;
 });
 
 // 右侧窄面板最多显示约这么多站名，其余站点仍参与图表统计。
@@ -664,7 +662,7 @@ const mergedLineGroupPanel = computed(() => {
   const lineId = String(route.lineId || "");
   const busPanel = lineId ? groups[`bus::${lineId}`] : null;
   if (busPanel) return busPanel;
-  const line = rawLines.value.find((item) => lineId && String(item?.lineId || "") === lineId)
+  const line = (lineId ? rawLineIndexes.value.lineById.get(lineId) : null)
     || linesForDisplayName(selectedLineName.value || route.lineName)[0];
   if (line && isMetroLine(line)) {
     return groups[lineGroupKey(line)] || null;
@@ -766,10 +764,40 @@ function lineDisplayName(line = {}) {
   return canonical || line.lineName || line.lineId || "未命名线路";
 }
 
+function addLineIndex(map, key, line) {
+  const text = normalizeLineSearchName(key);
+  if (!text) return;
+  const list = map.get(text);
+  if (list) list.push(line);
+  else map.set(text, [line]);
+}
+
+const rawLineIndexes = computed(() => {
+  const linesByName = new Map();
+  const lineById = new Map();
+  const routeByKey = new Map();
+  const routeById = new Map();
+  for (const line of rawLines.value) {
+    const lineId = String(line?.lineId || "");
+    if (lineId && !lineById.has(lineId)) lineById.set(lineId, line);
+    addLineIndex(linesByName, lineDisplayName(line), line);
+    addLineIndex(linesByName, line.lineName, line);
+    addLineIndex(linesByName, line.lineId, line);
+    for (const route of Array.isArray(line?.routes) ? line.routes : []) {
+      const item = withLineMeta(route, line);
+      const key = routeUniqueKey(item);
+      if (key) routeByKey.set(key, item);
+      const routeId = String(item.routeId || "");
+      if (routeId && !routeById.has(routeId)) routeById.set(routeId, item);
+    }
+  }
+  return { linesByName, lineById, routeByKey, routeById };
+});
+
 function linesForDisplayName(displayName) {
   const target = normalizeLineSearchName(displayName);
   if (!target) return [];
-  return rawLines.value.filter((line) => normalizeLineSearchName(lineDisplayName(line)) === target);
+  return rawLineIndexes.value.linesByName.get(target) || [];
 }
 
 // 物理站点键：地铁整线由多种服务模式（区间车/交路）组成，同一物理站在不同模式下
@@ -1907,6 +1935,37 @@ function pointToLinkDistanceSq(coord, link) {
   return ox * ox + oy * oy;
 }
 
+function coordIndexKey(coord) {
+  const x = Number(coord?.x);
+  const y = Number(coord?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return "";
+  return `${Math.round(x * 100)}:${Math.round(y * 100)}`;
+}
+
+function addEndpointIndex(index, coord, linkIndex) {
+  const key = coordIndexKey(coord);
+  if (!key) return;
+  const list = index.get(key);
+  if (list) list.push(linkIndex);
+  else index.set(key, [linkIndex]);
+}
+
+function buildRouteLinkEndpointIndex(links = []) {
+  const index = new Map();
+  links.forEach((link, linkIndex) => {
+    addEndpointIndex(index, link?.from, linkIndex);
+    addEndpointIndex(index, link?.to, linkIndex);
+  });
+  return index;
+}
+
+function endpointRouteLinkIndex(endpointIndex, coord, startIndex = 0) {
+  const list = endpointIndex.get(coordIndexKey(coord));
+  if (!list?.length) return -1;
+  const start = Math.max(0, Number(startIndex) || 0);
+  return list.find((index) => index >= start) ?? list[list.length - 1];
+}
+
 function nearestRouteLinkIndex(links, coord, startIndex = 0) {
   if (!coord || !Array.isArray(links) || !links.length) return -1;
   let bestIndex = -1;
@@ -1957,6 +2016,7 @@ function buildSingleRouteFlowMapLinks(route, segments = []) {
   if (facilities.length < 2) return mapSegmentFlowsByLinkOrder(links, segments);
 
   const result = links.map((link) => ({ ...link, flow: 0 }));
+  const endpointIndex = buildRouteLinkEndpointIndex(links);
   let mappedCount = 0;
   let cursor = 0;
   for (let i = 0; i + 1 < facilities.length; i++) {
@@ -1964,8 +2024,10 @@ function buildSingleRouteFlowMapLinks(route, segments = []) {
     const toFac = facilities[i + 1];
     const fromCoord = fromFac?.coord || fromFac;
     const toCoord = toFac?.coord || toFac;
-    const fromIndex = nearestRouteLinkIndex(links, fromCoord, cursor);
-    const toIndex = nearestRouteLinkIndex(links, toCoord, Math.max(cursor, fromIndex));
+    let fromIndex = endpointRouteLinkIndex(endpointIndex, fromCoord, cursor);
+    if (fromIndex < 0) fromIndex = nearestRouteLinkIndex(links, fromCoord, cursor);
+    let toIndex = endpointRouteLinkIndex(endpointIndex, toCoord, Math.max(cursor, fromIndex));
+    if (toIndex < 0) toIndex = nearestRouteLinkIndex(links, toCoord, Math.max(cursor, fromIndex));
     if (fromIndex < 0 || toIndex < 0) continue;
     const start = Math.min(fromIndex, toIndex);
     const end = Math.max(fromIndex, toIndex);
@@ -1981,13 +2043,52 @@ function buildSingleRouteFlowMapLinks(route, segments = []) {
   return mappedCount > 0 ? result : mapSegmentFlowsByLinkOrder(links, segments);
 }
 
+function routeFlowMapCacheKey(route, segments = []) {
+  const segmentList = Array.isArray(segments) ? segments : [];
+  const routeKey = routeUniqueKey(route);
+  let linkCount = Array.isArray(route?.links) ? route.links.length : 0;
+  let facilityCount = Array.isArray(route?.facilities) ? route.facilities.length : 0;
+  if (route?.lineGroup && Array.isArray(route.childRoutes)) {
+    linkCount = 0;
+    facilityCount = 0;
+    route.childRoutes.forEach((child) => {
+      linkCount += Array.isArray(child?.links) ? child.links.length : 0;
+      facilityCount += Array.isArray(child?.facilities) ? child.facilities.length : 0;
+    });
+  }
+  let flowChecksum = 0;
+  for (const segment of segmentList) {
+    flowChecksum += Math.round(Number(segment?.flow) || 0);
+  }
+  return [
+    routeKey,
+    linkCount,
+    facilityCount,
+    segmentList.length,
+    segmentTimeRange.value[0],
+    segmentTimeRange.value[1],
+    flowChecksum,
+  ].join(":");
+}
+
+function rememberRouteFlowMap(key, links) {
+  if (!key) return links;
+  if (routeFlowMapCache.size >= ROUTE_FLOW_MAP_CACHE_LIMIT) {
+    routeFlowMapCache.clear();
+  }
+  routeFlowMapCache.set(key, links);
+  return links;
+}
+
 function buildRouteFlowMapLinks(route, segments = []) {
+  const cacheKey = routeFlowMapCacheKey(route, segments);
+  if (routeFlowMapCache.has(cacheKey)) return routeFlowMapCache.get(cacheKey);
   // 整线：各子路线（方向/交路）都按同一份合并后的物理断面客流着色，避免按单交路客流偏小而配色失真。
   if (route?.lineGroup && Array.isArray(route.childRoutes) && route.childRoutes.length) {
     const mapped = route.childRoutes.flatMap((childRoute) => buildSingleRouteFlowMapLinks(childRoute, segments));
-    if (mapped.length) return mapped;
+    if (mapped.length) return rememberRouteFlowMap(cacheKey, mapped);
   }
-  return buildSingleRouteFlowMapLinks(route, segments);
+  return rememberRouteFlowMap(cacheKey, buildSingleRouteFlowMapLinks(route, segments));
 }
 
 // 每个站点的断面客流 = 相邻两个断面的较大值（首末站取唯一相邻断面），
@@ -2542,7 +2643,7 @@ const isMetroSelection = computed(() => {
   }
   const route = currentSelectedRoute.value;
   if (!route) return false;
-  const line = rawLines.value.find((item) => String(item?.lineId || "") === String(route.lineId || ""));
+  const line = rawLineIndexes.value.lineById.get(String(route.lineId || ""));
   return line
     ? isMetroLine(line)
     : isMetroLine({ lineName: route.lineName, lineId: route.lineId, routes: [route] });
@@ -2555,13 +2656,7 @@ const activeRoute = computed(() => {
     const groupRoute = buildLineGroupRoute(selectedLineName.value);
     if (groupRoute && routeMatchesKey(groupRoute, activeRouteId.value)) return groupRoute;
   }
-  for (const line of rawLines.value) {
-    if (line.routes) {
-      const match = line.routes.find(r => r.routeId === activeRouteId.value);
-      if (match) return withLineMeta(match, line);
-    }
-  }
-  return null;
+  return rawLineIndexes.value.routeById.get(String(activeRouteId.value)) || null;
 });
 
 function getRouteEndpointLabel(route, index) {
@@ -2678,7 +2773,7 @@ async function selectLineByName(lineName) {
   const target = normalizeLineSearchName(lineName);
   if (!target) return false;
   const line =
-    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)) === target) ||
+    rawLineIndexes.value.linesByName.get(target)?.[0] ||
     rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === target) ||
     rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)).includes(target) || target.includes(normalizeLineSearchName(lineDisplayName(item))));
   const displayName = line ? lineDisplayName(line) : "";
@@ -2702,7 +2797,7 @@ async function selectLineByFeature(props = {}) {
   const targetName = normalizeLineSearchName(name);
   if (!targetName) return false;
   const line =
-    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)) === targetName) ||
+    rawLineIndexes.value.linesByName.get(targetName)?.[0] ||
     rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === targetName) ||
     rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)).includes(targetName) || targetName.includes(normalizeLineSearchName(lineDisplayName(item))));
   if (!line) return false;
@@ -2857,6 +2952,13 @@ async function handleLineChange(lineName) {
 }
 
 // 选择某条线路的某个方向
+function hasUsableRouteDetail(route = {}) {
+  return Array.isArray(route?.links)
+    && route.links.length > 0
+    && Array.isArray(route?.facilities)
+    && route.facilities.length > 0;
+}
+
 async function loadRouteDetail(route, config = {}) {
   if (!route?.routeId) return route;
   if (route.lineGroup) return loadLineGroupDetail(route, config);
@@ -2864,6 +2966,15 @@ async function loadRouteDetail(route, config = {}) {
   const key = routeUniqueKey(route);
   if (routeDetailCache.has(key)) {
     return routeDetailCache.get(key);
+  }
+  if (hasUsableRouteDetail(route)) {
+    const detail = {
+      ...route,
+      facilities: route.facilities || [],
+      info: route.info || {},
+    };
+    routeDetailCache.set(key, detail);
+    return detail;
   }
   const res = await getRouteDetail(
     {
@@ -3134,6 +3245,7 @@ watch(searchMode, () => {
 async function loadAllLines() {
   const model = props.model;
   loading.value = true;
+  routeFlowMapCache.clear();
   abortOtherModelDataRequests(model);
   routePanelData.value = null;
   selectedRoutePanel.value = null;
@@ -3174,6 +3286,7 @@ onMounted(() => {
 watch(() => props.model, (newModel) => {
   if (newModel) {
     selectionAbortController?.abort();
+    routeFlowMapCache.clear();
     routeDetailCache.clear();
     routePanelDetailCache.clear();
     routePanelDetailPromises.clear();

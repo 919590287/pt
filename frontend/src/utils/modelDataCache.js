@@ -3,6 +3,7 @@ import { getLineAll, getRoutePanel } from "@/api/route.js";
 
 const modelCache = new Map();
 const pendingControllers = new Map();
+const warmupPromises = new Map();
 
 function modelKey(model) {
   return String(model || "");
@@ -115,6 +116,46 @@ export function getCachedStationPanel(model) {
   return sharedModelPanelRequest(model, "stationPanel", getStationPanel);
 }
 
+function runWhenIdle(fn) {
+  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(fn, { timeout: 3000 });
+    return;
+  }
+  setTimeout(fn, 0);
+}
+
+// 模型进入前预热客流交互所需的前端缓存：
+// - lineAll / facilityAll：地图点选、线路/站点搜索、线网 GeoJSON
+// - routePanel：线路着色、选中线路右侧面板、断面客流
+// stationPanel 体量可能更大，默认放到 idle 后台预热，避免阻塞线路点选首屏。
+export function warmModelInteractionCache(model, options = {}) {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const { includeStationPanel = false } = options;
+  const warmupKey = `${key}::${includeStationPanel ? "station" : "line"}`;
+  if (warmupPromises.has(warmupKey)) return warmupPromises.get(warmupKey);
+
+  const promise = Promise.all([
+    getCachedLineAll(key),
+    getCachedFacilityAll(key),
+    getCachedRoutePanel(key),
+  ])
+    .then(([lines, facilities, routePanel]) => {
+      if (includeStationPanel) {
+        runWhenIdle(() => {
+          getCachedStationPanel(key).catch(() => {});
+        });
+      }
+      return { lines, facilities, routePanel };
+    })
+    .finally(() => {
+      warmupPromises.delete(warmupKey);
+    });
+
+  warmupPromises.set(warmupKey, promise);
+  return promise;
+}
+
 // 同步窥视已缓存的整包线路客流面板（未缓存返回 null，不触发请求）。
 // 供行政区筛选变化时判断能否纯本地重算，避免重复下载整包。
 export function peekCachedRoutePanel(model) {
@@ -125,6 +166,11 @@ export function clearModelDataCache(model) {
   const key = modelKey(model);
   if (!key) return;
   modelCache.delete(key);
+  for (const pendingKey of Array.from(warmupPromises.keys())) {
+    if (pendingKey.startsWith(`${key}::`)) {
+      warmupPromises.delete(pendingKey);
+    }
+  }
   for (const [pendingKey, controller] of pendingControllers.entries()) {
     if (pendingKey.startsWith(`${key}::`)) {
       controller.abort();
