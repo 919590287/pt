@@ -32,8 +32,14 @@ const emit = defineEmits(["update:modelValue"]);
 const resolved = computed(() => resolveColorScale(props.modelValue));
 
 const legendItems = computed(() =>
-  buildLegendItems(resolved.value.colors, resolved.value.thresholds, props.formatValue || undefined),
+  buildLegendItems(resolved.value.colors, resolved.value.thresholds, props.formatValue || undefined, resolved.value.widths),
 );
+
+// 图例条形按档位线宽系数展示粗细（低→高逐档变粗）
+function legendLineHeight(width) {
+  const factor = Number(width) || 1;
+  return `${Math.round(3 + (factor - 1) * 5)}px`;
+}
 
 function patch(partial) {
   emit("update:modelValue", { ...props.modelValue, ...partial });
@@ -41,6 +47,10 @@ function patch(partial) {
 
 function handleSchemeSelect(schemeKey) {
   patch({ schemeKey });
+}
+
+function toggleReverse() {
+  patch({ reverse: !props.modelValue.reverse });
 }
 
 function handleClassCountChange(count) {
@@ -61,12 +71,30 @@ function handleThresholdInput(index, raw) {
 }
 
 function schemePreview(scheme) {
-  return `linear-gradient(to right, ${sampleScheme(scheme.key, 7).join(",")})`;
+  return `linear-gradient(to right, ${sampleScheme(scheme.key, 7, props.modelValue.reverse).join(",")})`;
 }
 </script>
 
 <template>
   <div class="color-scale-control">
+    <div class="csc-scheme-head">
+      <span class="csc-label">色系</span>
+      <button
+        type="button"
+        class="csc-reverse-btn"
+        :class="{ active: modelValue.reverse }"
+        title="反转色带方向"
+        @click="toggleReverse"
+      >
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="17 1 21 5 17 9"></polyline>
+          <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+          <polyline points="7 23 3 19 7 15"></polyline>
+          <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+        </svg>
+        反向
+      </button>
+    </div>
     <div class="csc-row csc-schemes">
       <button
         v-for="scheme in COLOR_SCHEMES"
@@ -99,7 +127,7 @@ function schemePreview(scheme) {
     <div class="csc-thresholds">
       <div v-for="(threshold, index) in resolved.thresholds" :key="index" class="csc-threshold-row">
         <span class="csc-threshold-swatch" :style="{ background: resolved.colors[index] }"></span>
-        <span class="csc-label">档{{ index + 1 }}/档{{ index + 2 }} 分界</span>
+        <span class="csc-label">档{{ index + 1 }}/档{{ index + 2 }} 分位</span>
         <el-input-number
           :model-value="threshold"
           :min="0.1"
@@ -117,7 +145,7 @@ function schemePreview(scheme) {
     <div v-if="showLegend" class="csc-legend">
       <div v-if="legendTitle" class="csc-legend-title">{{ legendTitle }}</div>
       <div v-for="(item, index) in legendItems" :key="index" class="csc-legend-item">
-        <span class="csc-legend-line" :style="{ background: item.color }"></span>
+        <span class="csc-legend-line" :style="{ background: item.color, height: legendLineHeight(item.width) }"></span>
         <span class="csc-legend-label">{{ item.label }}</span>
       </div>
     </div>
@@ -139,8 +167,38 @@ function schemePreview(scheme) {
   gap: 8px;
 }
 
+.csc-scheme-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.csc-reverse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #667085;
+  border: 1px solid rgba(21, 105, 222, 0.24);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+
+  &.active {
+    color: #1569de;
+    border-color: #1569de;
+    background: rgba(21, 105, 222, 0.1);
+  }
+}
+
 .csc-schemes {
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  max-height: 148px;
+  overflow-y: auto;
+  padding: 2px;
 }
 
 .csc-scheme {
@@ -148,7 +206,7 @@ function schemePreview(scheme) {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 3px 4px;
+  padding: 3px 2px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
@@ -160,15 +218,18 @@ function schemePreview(scheme) {
   }
 
   .csc-scheme-ramp {
-    width: 52px;
+    width: 100%;
     height: 10px;
     border-radius: 3px;
     border: 1px solid rgba(0, 0, 0, 0.08);
   }
 
   .csc-scheme-name {
-    font-size: 11px;
+    font-size: 10px;
+    line-height: 1.1;
     color: #667085;
+    text-align: center;
+    word-break: break-all;
   }
 }
 

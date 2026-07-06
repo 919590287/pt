@@ -53,7 +53,9 @@ public final class MatsimStationPanelCache {
     //        的 accessStopId 属于本站 facilityIds，取 leg 之后第一个非 interaction 活动，占比合计≈100%；
     //        找不到时退回全活动统计但仍过滤 interaction）；
     //      ②od 数组上限 12→60，并新增 originX/originY/destinationX/destinationY（经纬度，Web Mercator 反算）。需重算缓存。
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v13";
+    // v14: od 截断口径由“按线路×OD记录取前60条”改为“按对端站点聚合取前60个站点、保留其全部线路明细”，
+    //      避免低客流对端站被整站漏掉（前端 OD 图表/表格按对端站聚合展示）。需重算缓存。
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v14";
 
     // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
     // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
@@ -63,7 +65,7 @@ public final class MatsimStationPanelCache {
     private static final String MANIFEST_FILE = "manifest.json";
     private static final int HOURS = 24;
     private static final int LEADERBOARD_LIMIT = 50;
-    // v13: 12 → 60，前端需要更完整的站点 OD 列表。
+    // v14: 表示保留的“对端站点”数量上限（而非 OD 记录条数），每个站点的多线路明细全部保留。
     private static final int OD_LIMIT = 60;
     private static final int REACHABILITY_STATION_LIMIT = 80;
     // 项目统一投影为 epsg:3857（见 Datasource.ctf），经纬度输出用 Web Mercator 反算。
@@ -1371,9 +1373,19 @@ public final class MatsimStationPanelCache {
 
         private List<Map<String, Object>> odPayloads(Map<String, double[]> stationLonLat) {
             int totalFlow = od.values().stream().mapToInt(OdAccumulator::flow).sum();
+            // 先按“对端站点”聚合客流，取客流最高的前 OD_LIMIT 个对端站点；
+            // 再保留这些站点的全部（按线路）OD 明细，避免整站被“按记录”截断而漏掉（前端按站聚合展示）。
+            Map<String, Integer> flowByCounterpart = new HashMap<>();
+            for (OdAccumulator item : od.values()) {
+                String counterpart = stationName.equals(item.origin) ? item.destination : item.origin;
+                flowByCounterpart.merge(counterpart, item.flow(), Integer::sum);
+            }
+            List<String> ranked = new ArrayList<>(flowByCounterpart.keySet());
+            ranked.sort((a, b) -> Integer.compare(flowByCounterpart.get(b), flowByCounterpart.get(a)));
+            Set<String> kept = new LinkedHashSet<>(ranked.subList(0, Math.min(OD_LIMIT, ranked.size())));
             return od.values().stream()
+                    .filter(item -> kept.contains(stationName.equals(item.origin) ? item.destination : item.origin))
                     .sorted(Comparator.comparingInt(OdAccumulator::flow).reversed())
-                    .limit(OD_LIMIT)
                     .map(item -> item.toPayload(stationName, totalFlow, stationLonLat))
                     .toList();
         }

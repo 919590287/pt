@@ -6,6 +6,7 @@ import com.jts.gjcxfzksh.config.MatsimConfig;
 import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.exception.BusinessException;
+import com.jts.gjcxfzksh.optimization.model.AreaSpec;
 import com.jts.gjcxfzksh.optimization.model.EditItem;
 import com.jts.gjcxfzksh.optimization.model.OptimizationDraft;
 import com.jts.gjcxfzksh.optimization.util.GeoUtil;
@@ -132,6 +133,63 @@ public class SnapRoutingService {
         result.put("linkIds", linkIds);
         result.put("geometry", geometry);
         return result;
+    }
+
+    /**
+     * 研究区域内可行车路网（编辑期"开启路网"底图，供沿路网补画路径时参考）。
+     * 双向 link 按无序节点对去重为一条显示线段；草稿新增路段一并返回。
+     */
+    public JSONObject roadNetwork(String username, String parentModel, String draftId, AreaSpec area) {
+        matsimConfig.requireSchemeAccess(parentModel, username);
+        if (area == null || area.getPolygon() == null || area.getPolygon().size() < 3) {
+            throw new BusinessException("缺少研究区域");
+        }
+        Network network = network(parentModel);
+        List<VirtualLink> overlay = overlayLinks(username, parentModel, draftId, network);
+
+        double centerLat = RegionStatsService.centroidLat(area);
+        org.locationtech.jts.geom.Polygon polygon = GeoUtil.toPolygon(area.getPolygon(), null, true);
+        // 额外外扩 300m：允许贴着区域边缘画路径
+        double bufferUnits = GeoUtil.bufferInCrsUnits("EPSG:3857", centerLat, area.getBufferM() + 300);
+        org.locationtech.jts.geom.prep.PreparedGeometry zone =
+                GeoUtil.prepare((org.locationtech.jts.geom.Polygon) polygon.buffer(Math.max(0, bufferUnits)));
+
+        JSONArray segments = new JSONArray();
+        Set<String> seen = new HashSet<>();
+        for (Link link : network.getLinks().values()) {
+            if (!allowed(link.getAllowedModes())) {
+                continue;
+            }
+            Coord f = link.getFromNode().getCoord();
+            Coord t = link.getToNode().getCoord();
+            if (!GeoUtil.contains(zone, (f.getX() + t.getX()) / 2, (f.getY() + t.getY()) / 2)) {
+                continue;
+            }
+            String a = link.getFromNode().getId().toString();
+            String b = link.getToNode().getId().toString();
+            if (!seen.add(a.compareTo(b) <= 0 ? a + "|" + b : b + "|" + a)) {
+                continue;
+            }
+            segments.add(segmentLngLat(f, t));
+        }
+        for (VirtualLink vl : overlay) {
+            String a = vl.fromNodeId();
+            String b = vl.toNodeId();
+            if (!seen.add(a.compareTo(b) <= 0 ? a + "|" + b : b + "|" + a)) {
+                continue;
+            }
+            segments.add(segmentLngLat(vl.from(), vl.to()));
+        }
+        JSONObject result = new JSONObject();
+        result.put("segments", segments);
+        result.put("count", segments.size());
+        return result;
+    }
+
+    private static double[][] segmentLngLat(Coord from, Coord to) {
+        double[] f = GeoUtil.mercatorToLngLat(from.getX(), from.getY());
+        double[] t = GeoUtil.mercatorToLngLat(to.getX(), to.getY());
+        return new double[][]{f, t};
     }
 
     private Network network(String parentModel) {

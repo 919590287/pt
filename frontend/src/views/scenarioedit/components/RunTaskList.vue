@@ -140,30 +140,30 @@ function goView(job) {
     align-items: center;
 
     .title {
-      font-size: 13px;
-      font-weight: 750;
+      font-size: var(--dm2-text-base);
+      font-weight: var(--dm2-fw-bold);
     }
   }
 
   .empty {
-    font-size: 12px;
-    color: #94a3b8;
+    font-size: var(--dm2-text-sm);
+    color: var(--dm2-muted, #667085);
     text-align: center;
-    padding: 8px;
+    padding: var(--dm2-space-2);
   }
 }
 
 .job-card {
-  border: 1px solid var(--app-border, #e8edf5);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border: 1px solid var(--dm2-line, #e8edf5);
+  border-radius: var(--dm2-radius-sm);
+  padding: var(--dm2-space-2) var(--dm2-space-3);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  background: #fff;
+  gap: var(--dm2-space-2);
+  background: var(--dm2-surface, #fff);
 
-  &.failed { border-color: rgba(220, 38, 38, 0.35); }
-  &.done { border-color: rgba(15, 159, 110, 0.35); }
+  &.failed { border-color: var(--dm2-delete-line, rgba(220, 38, 38, 0.35)); }
+  &.done { border-color: var(--dm2-add-line, rgba(15, 159, 110, 0.35)); }
 
   .job-head {
     display: flex;
@@ -171,8 +171,8 @@ function goView(job) {
     align-items: center;
 
     .name {
-      font-size: 12px;
-      font-weight: 700;
+      font-size: var(--dm2-text-sm);
+      font-weight: var(--dm2-fw-bold);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -183,29 +183,29 @@ function goView(job) {
     display: flex;
     flex-wrap: wrap;
     gap: 2px;
-    font-size: 11px;
+    font-size: var(--dm2-text-xs);
 
     .stage-dot {
-      color: #94a3b8;
+      color: var(--dm2-muted-soft, #98a2b3);
 
-      &.done { color: #0f9f6e; }
-      &.doing { color: var(--app-blue, #1569de); font-weight: 700; }
+      &.done { color: var(--dm2-add, #1a8a3f); }
+      &.doing { color: var(--dm2-accent, #0071e3); font-weight: var(--dm2-fw-bold); }
 
-      .arrow { margin: 0 3px; color: #cbd5e1; }
+      .arrow { margin: 0 3px; color: var(--dm2-muted-soft, #98a2b3); }
     }
   }
 
   .msg {
-    font-size: 11px;
-    color: var(--app-ink-weak, #64748b);
+    font-size: var(--dm2-text-xs);
+    color: var(--dm2-muted, #667085);
     line-height: 1.5;
     word-break: break-all;
   }
 
   .iter {
-    font-size: 11px;
-    color: var(--app-blue, #1569de);
-    font-weight: 600;
+    font-size: var(--dm2-text-xs);
+    color: var(--dm2-accent, #0071e3);
+    font-weight: var(--dm2-fw-semibold);
   }
 
   .ops {
@@ -214,8 +214,8 @@ function goView(job) {
   }
 
   .issues {
-    font-size: 11px;
-    color: #b91c1c;
+    font-size: var(--dm2-text-xs);
+    color: var(--dm2-delete, #c4291c);
     line-height: 1.6;
   }
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 地铁站点：白底空心圈 + 地铁红（#dc4c5d）描边，与公交站点（青绿描边）同一视觉语言。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <circle cx="48" cy="48" r="40" fill="#ffffff" fill-opacity="0.9"/>
+  <circle cx="48" cy="48" r="31" fill="#ffffff" stroke="#dc4c5d" stroke-width="10"/>
+</svg>

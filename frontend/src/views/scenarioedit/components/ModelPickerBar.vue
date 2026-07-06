@@ -54,6 +54,8 @@ import { useModelSelectionStore } from "@/stores/modelSelection";
 import { useScenarioEditStore } from "../store";
 
 const PAGE_KEY = "scenarioedit";
+// 运行监测 / 客流分析共用的“当前模型”选择键：线网优化默认以它为母本，无需再次选择
+const CURRENT_MODEL_KEY = "datavisualization";
 
 const store = useScenarioEditStore();
 const selectionStore = useModelSelectionStore();
@@ -170,17 +172,42 @@ async function handleModelChange(name) {
   await ensureLoadedAndActivate(name);
 }
 
+/**
+ * 决定进入本模块时的母本：默认沿用“当前模型”（运行监测/客流分析正在查看的仿真模型），
+ * 从而做到“点击线网优化不改变当前模型状态，直接以当前模型为母本”。
+ * 若正在编辑草稿则不打断，沿用会话中已确立的母本。
+ */
+function pickDesiredSelection() {
+  // 已有在编草稿：保持当前母本，避免切换母本清空草稿
+  if (store.parentModel && (store.draft.area || store.draft.edits.length)) {
+    const own = selectionStore.getSelection(PAGE_KEY);
+    return { scheme: own.scheme, model: store.parentModel };
+  }
+  // 默认采用当前模型（仅仿真模型可作母本）
+  const current = selectionStore.getSelection(CURRENT_MODEL_KEY);
+  if (current.sourceMode !== "real" && current.scheme && current.model) {
+    return { scheme: current.scheme, model: current.model };
+  }
+  // 兜底：本模块上次的选择
+  const own = selectionStore.getSelection(PAGE_KEY);
+  return { scheme: own.scheme, model: own.model };
+}
+
 onMounted(async () => {
-  const restored = selectionStore.getSelection(PAGE_KEY);
   await fetchSchemes();
-  if (restored.scheme && schemeList.value.includes(restored.scheme)) {
-    scheme.value = restored.scheme;
+  const desired = pickDesiredSelection();
+  if (desired.scheme && schemeList.value.includes(desired.scheme)) {
+    scheme.value = desired.scheme;
     await fetchModels();
-    if (restored.model && modelList.value.some((m) => m.name === restored.model)) {
-      modelName.value = restored.model;
-      await ensureLoadedAndActivate(restored.model);
+    const item = desired.model ? modelList.value.find((m) => m.name === desired.model) : null;
+    if (item && item.cuttable) {
+      modelName.value = desired.model;
+      await ensureLoadedAndActivate(desired.model);
+      return;
     }
-  } else if (schemeList.value.length === 1) {
+    // 当前模型不可切分（缺 output_plans）时，保留其方案，等待用户在下拉里另选可作母本的模型
+  }
+  if (!scheme.value && schemeList.value.length === 1) {
     scheme.value = schemeList.value[0];
     await fetchModels();
   }

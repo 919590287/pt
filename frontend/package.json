@@ -18,6 +18,8 @@
     "@vueuse/components": "^14.2.1",
     "@vueuse/core": "^14.2.1",
     "axios": "^1.11.0",
+    "d3-color": "^3.1.0",
+    "d3-scale-chromatic": "^3.1.0",
     "echarts": "^6.0.0",
     "element-plus": "^2.13.7",
     "file-saver": "^2.0.5",

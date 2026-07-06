@@ -122,9 +122,11 @@ public final class ScheduleTools {
     }
 
     /**
-     * 解析/创建车型。params.vehicleType = {ref:"typeId"} 或 {name,seats,standing,lengthM}
+     * 解析/创建车型。params.vehicleType = {ref:"typeId"} 或 {name,seats,standing,lengthM}。
+     * networkMode 为线路的网络出行方式（如 bus/subway），新建车型必须显式设置——
+     * 否则 MATSim 写出 transitVehicles 时对非 car 车型抛 NPE（getNetworkMode 为空）。
      */
-    public static VehicleType resolveVehicleType(Vehicles vehicles, JSONObject vt, String editId) {
+    public static VehicleType resolveVehicleType(Vehicles vehicles, JSONObject vt, String editId, String networkMode) {
         if (vt == null) {
             throw new BusinessException("缺少车型配置");
         }
@@ -150,6 +152,7 @@ public final class ScheduleTools {
         type.getCapacity().setStandingRoom(standing);
         type.setLength(length);
         type.setPcuEquivalents(2.8);
+        type.setNetworkMode(networkMode == null || networkMode.isBlank() ? "car" : networkMode);
         if (vt.getString("name") != null) {
             type.setDescription(vt.getString("name"));
         }

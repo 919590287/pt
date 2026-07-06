@@ -1,33 +1,41 @@
 <template>
   <div class="mod-list">
-    <div class="list-head">
-      <span class="title">修改清单（{{ store.editCount }}）</span>
+    <div v-if="store.editCount" class="mod-head">
       <span class="save-state" :class="store.saveState">{{ saveStateText }}</span>
-      <el-button v-if="store.editCount" link type="danger" size="small" @click="clearAll">清空</el-button>
+      <el-button link type="danger" size="small" @click="clearAll">清空</el-button>
     </div>
 
-    <div v-if="!store.draft.edits.length" class="empty">
-      暂无修改。在左侧「线网编辑」中操作后，每一项修改都会列在这里，可随时撤销。
+    <div v-if="!store.draft.edits.length" class="edit-empty">
+      <strong>暂无修改</strong>
+      <p>在左侧「线网编辑」中操作后，每一项修改都会逐条列在这里，可随时撤销。</p>
     </div>
 
-    <el-scrollbar v-else max-height="320px">
+    <div v-else class="edit-operation-list">
       <TransitionGroup name="mod-fade">
         <div
           v-for="edit in store.draft.edits"
           :key="edit.id"
-          class="mod-card"
+          :class="['edit-operation-item', kindClass(edit)]"
           @mouseenter="$emit('hover-edit', edit)"
           @mouseleave="$emit('hover-edit', null)"
         >
-          <span :class="['badge', meta(edit).tone]">{{ meta(edit).icon }}</span>
-          <div class="body">
-            <div class="kind">{{ meta(edit).label }} <span class="group">{{ meta(edit).group }}</span></div>
-            <div class="summary">{{ summary(edit) }}</div>
+          <div class="operation-labels">
+            <span class="operation-dataset">{{ meta(edit).group }}</span>
+            <span class="operation-type">{{ meta(edit).label }}</span>
           </div>
-          <button class="undo" title="撤销该项" @click="undo(edit)">↺</button>
+          <strong>{{ edit.name || meta(edit).label }}</strong>
+          <div class="op-detail">
+            <template v-if="odDirections(edit).length">
+              <span v-for="d in odDirections(edit)" :key="d.label" class="od-line">
+                {{ d.label }}：{{ d.od }} · {{ d.count }}站
+              </span>
+            </template>
+            <span v-else>{{ summary(edit) }}</span>
+          </div>
+          <button class="op-undo" type="button" title="撤销该项" @click.stop="undo(edit)">↺</button>
         </div>
       </TransitionGroup>
-    </el-scrollbar>
+    </div>
   </div>
 </template>
 
@@ -52,8 +60,27 @@ function meta(edit) {
   return KIND_META[edit.kind] || { label: edit.kind, group: "", icon: "·", tone: "modify" };
 }
 
+function kindClass(edit) {
+  const tone = meta(edit).tone;
+  if (tone === "add") return "is-add";
+  if (tone === "delete") return "is-delete";
+  return "is-modify";
+}
+
 function summary(edit) {
   return editSummary(edit);
+}
+
+// 新增线路：逐方向的"首发站→终点站"（正/反向都显示）
+function odDirections(edit) {
+  if (edit.kind !== "route.add" && edit.kind !== "route.replace") return [];
+  const nameOf = (id) => store.stopIndex.get(id)?.name || id;
+  return (edit.geometry?.directions || []).map((d, i) => {
+    const stops = d.stops || [];
+    const a = stops.length ? nameOf(stops[0]) : "?";
+    const b = stops.length ? nameOf(stops[stops.length - 1]) : "?";
+    return { label: i === 0 ? "正向" : "反向", od: `${a} → ${b}`, count: stops.length };
+  });
 }
 
 async function undo(edit) {
@@ -90,111 +117,163 @@ async function clearAll() {
 </script>
 
 <style lang="scss" scoped>
+/* 结构/样式仿数据管理"更新"面板的 edit-operation-list / edit-operation-item */
 .mod-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  min-height: 0;
+  gap: var(--dm2-space-2);
 }
 
-.list-head {
+.mod-head {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-
-  .title {
-    font-size: 13px;
-    font-weight: 750;
-    flex: 1;
-  }
+  justify-content: flex-end;
+  gap: var(--dm2-space-2);
 
   .save-state {
-    font-size: 11px;
-    color: #94a3b8;
+    margin-right: auto;
+    font-size: var(--dm2-text-xs);
+    color: var(--dm2-muted-soft, #98a2b3);
 
-    &.saved { color: #0f9f6e; }
-    &.error { color: #dc2626; }
+    &.saved { color: var(--dm2-add, #1a8a3f); }
+    &.error { color: var(--dm2-delete, #c4291c); }
   }
 }
 
-.empty {
-  font-size: 12px;
-  color: var(--app-ink-weak, #94a3b8);
-  line-height: 1.6;
-  padding: 12px 8px;
+.edit-empty {
+  flex-shrink: 0;
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: var(--dm2-radius, 13px);
+  background: rgba(15, 23, 42, 0.02);
+  padding: 18px 16px;
   text-align: center;
-  border: 1px dashed var(--app-border, #e2e8f0);
-  border-radius: 10px;
+
+  strong {
+    display: block;
+    font-size: var(--dm2-text-base);
+    color: var(--dm2-ink, #1c2024);
+    margin-bottom: var(--dm2-space-1);
+  }
+
+  p {
+    margin: 0;
+    font-size: var(--dm2-text-sm);
+    line-height: 1.6;
+    color: var(--dm2-muted, #667085);
+  }
 }
 
-.mod-card {
+.edit-operation-list {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px;
-  margin-bottom: 6px;
-  border: 1px solid var(--app-border, #e8edf5);
-  border-radius: 10px;
-  background: #fff;
-  transition: border-color 0.15s ease;
+  flex-direction: column;
+  gap: var(--dm2-space-2);
+  padding-right: 4px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.2) transparent;
+
+  &::-webkit-scrollbar { width: 5px; }
+  &::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.16); border-radius: 999px; }
+}
+
+.edit-operation-item {
+  position: relative;
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "type title"
+    "type detail";
+  align-items: start;
+  gap: var(--dm2-space-1) var(--dm2-space-3);
+  padding: var(--dm2-space-3) 34px var(--dm2-space-3) var(--dm2-space-3);
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: var(--dm2-radius, 13px);
+  background: var(--dm2-surface, #ffffff);
+  --k-color: var(--dm2-accent, #0071e3);
+  transition: border-color 120ms ease, background-color 120ms ease;
+
+  &.is-add { --k-color: var(--dm2-add, #1a8a3f); }
+  &.is-modify { --k-color: var(--dm2-modify, #b06a00); }
+  &.is-delete { --k-color: var(--dm2-delete, #c4291c); }
 
   &:hover {
-    border-color: rgba(21, 105, 222, 0.4);
+    border-color: var(--dm2-line-strong, rgba(17, 32, 58, 0.18));
+    background: rgba(15, 23, 42, 0.02);
   }
 
-  .badge {
+  .operation-labels {
+    grid-area: type;
+    display: grid;
+    gap: 3px;
+    min-width: 44px;
+  }
+
+  .operation-dataset {
+    color: var(--dm2-muted-soft, #98a2b3);
+    font-size: var(--dm2-text-xs);
+    font-weight: var(--dm2-fw-semibold);
+    line-height: 1.2;
+  }
+
+  .operation-type {
+    color: var(--k-color);
+    font-size: var(--dm2-text-sm);
+    font-weight: var(--dm2-fw-bold);
+    line-height: 1.2;
+  }
+
+  strong {
+    grid-area: title;
+    min-width: 0;
+    color: var(--dm2-ink, #1c2024);
+    font-size: var(--dm2-text-md);
+    line-height: 1.4;
+    font-weight: var(--dm2-fw-bold);
+    overflow-wrap: anywhere;
+  }
+
+  .op-detail {
+    grid-area: detail;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    color: var(--dm2-muted, #667085);
+    font-size: var(--dm2-text-sm);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+
+    .od-line {
+      color: var(--dm2-ink-soft, #3b4452);
+    }
+  }
+
+  .op-undo {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 22px;
+    height: 22px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
     border-radius: 6px;
-    font-size: 12px;
-    font-weight: 700;
-    color: #fff;
-    flex-shrink: 0;
-
-    &.add { background: #16a34a; }
-    &.modify { background: #f59e0b; }
-    &.delete { background: #dc2626; }
-  }
-
-  .body {
-    flex: 1;
-    min-width: 0;
-
-    .kind {
-      font-size: 12px;
-      font-weight: 700;
-
-      .group {
-        margin-left: 6px;
-        font-size: 10px;
-        font-weight: 400;
-        color: #94a3b8;
-      }
-    }
-
-    .summary {
-      font-size: 12px;
-      color: var(--app-ink-weak, #64748b);
-      line-height: 1.5;
-      word-break: break-all;
-    }
-  }
-
-  .undo {
-    flex-shrink: 0;
-    border: 1px solid var(--app-border, #e2e8f0);
     background: #fff;
-    border-radius: 6px;
-    width: 24px;
-    height: 24px;
+    color: var(--dm2-muted, #667085);
     cursor: pointer;
-    color: #64748b;
+    font-size: var(--dm2-text-base);
+    line-height: 1;
 
     &:hover {
-      color: #dc2626;
-      border-color: rgba(220, 38, 38, 0.4);
+      color: var(--dm2-delete, #c4291c);
+      border-color: rgba(196, 41, 28, 0.4);
     }
   }
 }

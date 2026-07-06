@@ -1,8 +1,9 @@
 import { defineStore } from "pinia";
-import { computed, reactive, ref, watch } from "vue";
+import { computed, reactive, ref, shallowRef, watch } from "vue";
 import { getCachedLineAll, clearModelDataCache } from "@/utils/modelDataCache";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 import { optDraftList, optDraftSave, optDraftDelete, optDraftCopy, optAreaStats, optJobStatus } from "@/api/optimization";
+import { checkEditConflict } from "./conflicts";
 
 let editSeq = 0;
 
@@ -234,6 +235,21 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     return edit;
   }
 
+  /**
+   * 带冲突检测的加入清单：所有"✓ 加入修改清单"入口统一走这里。
+   * 命中冲突时不加入，返回 { ok:false, reason } 供界面用通俗语言提示用户。
+   */
+  function addEditChecked(payload) {
+    const verdict = checkEditConflict(payload, draft.edits, {
+      routeIndex: routeIndex.value,
+      stopIndex: stopIndex.value,
+    });
+    if (!verdict.ok) {
+      return { ok: false, reason: verdict.reason };
+    }
+    return { ok: true, edit: addEdit(payload) };
+  }
+
   function findDependents(editId) {
     return draft.edits.filter((e) => Array.isArray(e.deps) && e.deps.includes(editId));
   }
@@ -276,12 +292,13 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
   const activeTool = ref(""); // '' | area.draw | pick.line | pick.stop | pick.link | draw.route | draw.link | place.stop
   const toolContext = ref(null); // 工具私有上下文（发起表单的 kind 等）
   const toolDraft = reactive({
-    anchors: [], // draw.route / draw.link 的锚点 [[lng,lat]...]
+    anchors: [], // draw.route / draw.link / draw.gapfill 的锚点 [[lng,lat]...]
     pathPreview: null, // snapRoute 结果 {linkIds, geometry}
     snapBusy: false,
     snapError: "",
     pickedLinks: [], // pick.link 累计 [{linkId, reverseLinkId, geometry:[[lng,lat],[lng,lat]]}]
     placedPoint: null, // place.stop / snapPoint 结果 {lng,lat,linkId,...}
+    pickedStopId: "", // pick.stop（purpose=insert）结果：不改全局选中，供调整站点面板消费
   });
 
   function resetToolDraft() {
@@ -291,6 +308,149 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     toolDraft.snapError = "";
     toolDraft.pickedLinks = [];
     toolDraft.placedPoint = null;
+    toolDraft.pickedStopId = "";
+  }
+
+  // ---------- 编辑期地图辅助显示 ----------
+  /** 调整站点等面板请求显示路网底图（绘制类工具激活时也会自动显示） */
+  const roadNetWanted = ref(false);
+  /** 调整站点面板的地图预览 features（index.vue 监听渲染） */
+  const editPreview = shallowRef(null);
+
+  // ---------- 新增/修改线路：点选建线（既可点站点，也可点路网加途经点，参考交评多点选路） ----------
+  /**
+   * anchors：按顺序的锚点序列 {type:'stop'|'road', stopId?, lng, lat}（首发在前）。
+   * session：区段编辑会话（地图右键"修改/删除站点、新增上一站/下一站、修改断面路径"），
+   *          新点选插入到 insertPos，撤销只回退本会话新增的锚点；null=追加到末尾。
+   */
+  const lineBuilder = reactive({ anchors: [], session: null });
+  /** 按锚点沿路网寻径得到的走向 {linkIds, geometry}（EditToolbox 写入，index.vue 画连线） */
+  const lineBuilderPath = shallowRef(null);
+
+  function lineInsertPos() {
+    return lineBuilder.session ? lineBuilder.session.insertPos : lineBuilder.anchors.length;
+  }
+
+  function bumpLineSession() {
+    if (lineBuilder.session) {
+      lineBuilder.session.insertPos += 1;
+      lineBuilder.session.added += 1;
+    }
+  }
+
+  /** 点选站点：作为停靠站锚点（插入到会话位置或末尾） */
+  function appendLineStop(id) {
+    if (!id) return;
+    const s = stopIndex.value.get(id);
+    if (!s) return;
+    const pos = lineInsertPos();
+    const before = lineBuilder.anchors[pos - 1];
+    const after = lineBuilder.anchors[pos];
+    // 防与相邻锚点重复同站
+    if ((before?.type === "stop" && before.stopId === id) || (after?.type === "stop" && after.stopId === id)) return;
+    lineBuilder.anchors.splice(pos, 0, { type: "stop", stopId: id, lng: s.lng, lat: s.lat });
+    bumpLineSession();
+  }
+
+  /** 点选路网空白处：作为路径途经点（不停靠，仅约束走向沿路网） */
+  function appendLineRoadPoint(lng, lat) {
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+    lineBuilder.anchors.splice(lineInsertPos(), 0, { type: "road", lng, lat });
+    bumpLineSession();
+  }
+
+  function removeLineAnchorAt(i) {
+    if (i < 0 || i >= lineBuilder.anchors.length) return;
+    lineBuilder.anchors.splice(i, 1);
+    const s = lineBuilder.session;
+    if (s && i < s.insertPos) s.insertPos -= 1;
+  }
+
+  /** 撤销上一步：会话中只回退本会话新增的锚点 */
+  function popLineAnchor() {
+    const s = lineBuilder.session;
+    if (s) {
+      if (s.added > 0) {
+        lineBuilder.anchors.splice(s.insertPos - 1, 1);
+        s.insertPos -= 1;
+        s.added -= 1;
+      }
+      return;
+    }
+    lineBuilder.anchors.pop();
+  }
+
+  function clearLineBuilder() {
+    lineBuilder.anchors = [];
+    lineBuilder.session = null;
+    lineBuilderPath.value = null;
+  }
+
+  // ---- 区段编辑会话（地图右键触发；kind 供操作条提示文案） ----
+  function prevStopIdxFrom(i) {
+    for (let j = i - 1; j >= 0; j--) if (lineBuilder.anchors[j].type === "stop") return j;
+    return -1;
+  }
+
+  function nextStopIdxFrom(i) {
+    for (let j = i + 1; j < lineBuilder.anchors.length; j++) if (lineBuilder.anchors[j].type === "stop") return j;
+    return lineBuilder.anchors.length;
+  }
+
+  function openLineSession(kind, insertPos) {
+    // leftIdx：断开处左边界锚点下标（固定，不随插入右移）；autoConnect：用户显式选择"直接最短路连接"
+    lineBuilder.session = { kind, insertPos, added: 0, leftIdx: insertPos - 1, autoConnect: false };
+    setTool("pick.stop", { purpose: "buildLine", keepForm: true });
+  }
+
+  /** 会话中：用户显式选择直接沿最短路把断开处连起来（非默认自动） */
+  function sessionAutoConnect() {
+    if (lineBuilder.session) lineBuilder.session = { ...lineBuilder.session, autoConnect: true };
+  }
+
+  function endLineSession() {
+    lineBuilder.session = null;
+  }
+
+  /** 修改站点：移除该站及其两侧途经点，点选替换站（可加途经点） */
+  function beginStopReplace(i) {
+    if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const p = prevStopIdxFrom(i);
+    const n = nextStopIdxFrom(i);
+    lineBuilder.anchors.splice(p + 1, n - (p + 1));
+    openLineSession("replace", p + 1);
+  }
+
+  /** 删除站点：移除该站及其两侧途经点，进入补连接点选（可直接完成走最短路） */
+  function beginStopDelete(i) {
+    if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const p = prevStopIdxFrom(i);
+    const n = nextStopIdxFrom(i);
+    lineBuilder.anchors.splice(p + 1, n - (p + 1));
+    openLineSession("delete", p + 1);
+  }
+
+  /** 新增上一站：清掉与前一站之间的途经点，在该站前插入点选 */
+  function beginInsertBefore(i) {
+    if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const p = prevStopIdxFrom(i);
+    lineBuilder.anchors.splice(p + 1, i - (p + 1));
+    openLineSession("insertBefore", p + 1);
+  }
+
+  /** 新增下一站：清掉与后一站之间的途经点，在该站后插入点选 */
+  function beginInsertAfter(i) {
+    if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const n = nextStopIdxFrom(i);
+    lineBuilder.anchors.splice(i + 1, n - (i + 1));
+    openLineSession("insertAfter", i + 1);
+  }
+
+  /** 修改断面路径：清掉两相邻停靠站之间的途经点，重新点选该断面路径 */
+  function beginSegmentEdit(aIdx, bIdx) {
+    if (lineBuilder.anchors[aIdx]?.type !== "stop" || lineBuilder.anchors[bIdx]?.type !== "stop") return;
+    lineBuilder.anchors.splice(aIdx + 1, bIdx - (aIdx + 1));
+    openLineSession("segment", aIdx + 1);
   }
 
   function setTool(tool, context = null) {
@@ -298,6 +458,9 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     toolContext.value = context;
     resetToolDraft();
   }
+
+  // 当前打开的编辑表单类型（EditToolbox 同步；index.vue 据此判断搜索仅定位/屏蔽删除键）
+  const activeFormKind = ref("");
 
   const selection = reactive({ type: "", lineId: "", routeId: "", stopId: "" });
 
@@ -391,8 +554,12 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     lines, linesLoading, loadLines, stopIndex, routeIndex,
     draft, draftList, saveState, refreshDraftList, saveDraftNow, newDraft, openDraft, deleteDraft, copyDraft, resetDraftLocal,
     areaStats, areaStatsLoading, setArea, clearAreaOnly, refreshAreaStats,
-    addEdit, removeEdits, updateEdit, findDependents, editCount, editedTargets,
+    addEdit, addEditChecked, removeEdits, updateEdit, findDependents, editCount, editedTargets,
     activeTool, toolContext, toolDraft, setTool, resetToolDraft,
+    roadNetWanted, editPreview,
+    lineBuilder, lineBuilderPath, appendLineStop, appendLineRoadPoint, removeLineAnchorAt, popLineAnchor, clearLineBuilder,
+    endLineSession, sessionAutoConnect, beginStopReplace, beginStopDelete, beginInsertBefore, beginInsertAfter, beginSegmentEdit,
+    activeFormKind,
     selection, selectRoute, selectStop, clearSelection, selectedRoute, selectedStop,
     jobs, refreshJobs, startJobPolling, stopJobPolling,
   };

@@ -1,5 +1,5 @@
 <template>
-  <el-dialog v-model="visible" title="生成仿真模型" width="560px" :close-on-click-modal="false" append-to-body>
+  <el-dialog v-model="visible" title="开始仿真 · 方案命名" width="560px" :close-on-click-modal="false" append-to-body>
     <div class="wizard">
       <div class="pipeline-tip">
         将按顺序执行：<b>① 按研究区域切分母本 → 生成基线模型</b> → <b>② 应用 {{ store.editCount }} 项修改 → 生成方案模型</b> → <b>③ 顺序运行两个模型</b>，完成后自动进入模型库，可在「运行监测 / 客流分析」中查看。
@@ -18,12 +18,12 @@
       <div v-else class="validate-box ok">✓ 校验通过</div>
 
       <el-form label-width="96px" label-position="left" size="default">
-        <el-form-item label="基线模型名">
-          <el-input v-model="form.baselineName" maxlength="60" />
+        <el-form-item label="方案名称" required>
+          <el-input v-model="form.schemeName" maxlength="40" placeholder="给本方案起个名字，如：金洲片区公交优化" />
         </el-form-item>
-        <el-form-item label="方案模型名">
-          <el-input v-model="form.variantName" maxlength="60" />
-        </el-form-item>
+        <div v-if="form.schemeName.trim()" class="derive-tip">
+          将生成两个模型：<b>{{ baselineName }}</b>（基线）与 <b>{{ variantName }}</b>（方案）
+        </div>
         <el-form-item label="保存位置">
           <el-radio-group v-model="form.scope">
             <el-radio value="private">私有（仅自己可见）</el-radio>
@@ -32,7 +32,7 @@
         </el-form-item>
         <el-form-item label="迭代次数">
           <el-input-number v-model="form.iterations" :min="10" :max="500" :step="10" />
-          <span class="iter-tip">默认100次；区域小模型迭代较快</span>
+          <span class="iter-tip">默认20次；可自行调整，区域小模型迭代较快</span>
         </el-form-item>
       </el-form>
 
@@ -44,8 +44,8 @@
 
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="submitting" :disabled="validating || validationErrors.length > 0 || !form.baselineName || !form.variantName" @click="submit">
-        开始生成并运行
+      <el-button type="primary" :loading="submitting" :disabled="validating || validationErrors.length > 0 || !form.schemeName.trim()" @click="submit">
+        开始仿真
       </el-button>
     </template>
   </el-dialog>
@@ -68,10 +68,9 @@ const validationErrors = computed(() => validationIssues.value.filter((i) => i.l
 const validationWarnings = computed(() => validationIssues.value.filter((i) => i.level === "warning"));
 
 const form = reactive({
-  baselineName: "",
-  variantName: "",
+  schemeName: "",
   scope: "private",
-  iterations: 100,
+  iterations: 20,
 });
 
 function dateSuffix() {
@@ -79,11 +78,15 @@ function dateSuffix() {
   return `${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// 方案名称 → 派生基线/方案两个模型名
+const cleanName = computed(() => form.schemeName.trim().replace(/[/\\.]/g, "") || "方案");
+const baselineName = computed(() => `${cleanName.value}-基线-${dateSuffix()}`);
+const variantName = computed(() => `${cleanName.value}-方案-${dateSuffix()}`);
+
 watch(visible, async (v) => {
   if (!v) return;
-  const base = (store.draft.name || "方案").replace(/[/\\.]/g, "");
-  form.baselineName = `${base}-基线-${dateSuffix()}`;
-  form.variantName = `${base}-方案-${dateSuffix()}`;
+  // 命名只在此处进行：默认草稿名（未命名方案）不回填，其它保留供二次生成沿用
+  form.schemeName = store.draft.name && store.draft.name !== "未命名方案" ? store.draft.name : "";
   // 确保草稿已落库再校验
   await store.saveDraftNow();
   validating.value = true;
@@ -99,14 +102,17 @@ watch(visible, async (v) => {
 });
 
 async function submit() {
+  if (!form.schemeName.trim()) return;
   submitting.value = true;
   try {
+    // 命名落到草稿：左侧标识与后续二次生成沿用
+    store.draft.name = form.schemeName.trim();
     await store.saveDraftNow();
     const res = await optGenerate({
       draftId: store.draft.draftId,
       parentModel: store.parentModel,
-      baselineName: form.baselineName.trim(),
-      variantName: form.variantName.trim(),
+      baselineName: baselineName.value,
+      variantName: variantName.value,
       scope: form.scope === "public" ? "public" : "",
       iterations: form.iterations,
     });
@@ -150,6 +156,15 @@ async function submit() {
   &.error { background: rgba(220, 38, 38, 0.08); color: #b91c1c; }
 
   .issue { margin-top: 2px; }
+}
+
+.derive-tip {
+  margin: -4px 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--app-ink-weak, #64748b);
+
+  b { color: var(--app-blue, #1569de); font-weight: 600; }
 }
 
 .iter-tip {

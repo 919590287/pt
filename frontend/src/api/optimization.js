@@ -36,6 +36,10 @@ export function optSnapRoute(data, config = {}) {
   return request({ url: `/pt/optimization/snapRoute`, method: "POST", data, silentError: true, ...config });
 }
 
+export function optRoadNetwork(data, config = {}) {
+  return request({ url: `/pt/optimization/roadNetwork`, method: "POST", data, silentError: true, timeout: 1000 * 60, ...config });
+}
+
 export function optValidate(data, config = {}) {
   return request({ url: `/pt/optimization/validate`, method: "POST", data, ...config });
 }

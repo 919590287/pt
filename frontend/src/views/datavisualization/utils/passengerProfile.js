@@ -175,8 +175,26 @@ function fixedPercentGroup(demo, key, title, definitions) {
   return { key, title, sumLabel: "合计 100%", items: normalizeDisplayPercents(items) };
 }
 
+// 样本量优先取 riderCount；缺失/为 0 时回退到"各活动计数之和"，
+// 避免因后端某些口径未下发 riderCount 就让客流画像整体空白（原先 total<=0 直接返回空）。
+function activityCountSum(demographics = {}) {
+  const source = demographics?.activityTypes || demographics?.activities;
+  if (Array.isArray(source)) {
+    return source.reduce((sum, item) => sum + Math.max(0, toFiniteNumber(item?.count, 0)), 0);
+  }
+  if (source && typeof source === "object") {
+    return Object.values(source).reduce((sum, value) => {
+      const count = value && typeof value === "object" ? value.count : value;
+      return sum + Math.max(0, toFiniteNumber(count, 0));
+    }, 0);
+  }
+  return 0;
+}
+
 export function passengerProfileRiderCount(demographics = {}) {
-  return toFiniteNumber(demographics?.riderCount, 0);
+  const direct = toFiniteNumber(demographics?.riderCount, 0);
+  if (direct > 0) return direct;
+  return activityCountSum(demographics);
 }
 
 export function buildPassengerProfileGroups(demographics = {}) {

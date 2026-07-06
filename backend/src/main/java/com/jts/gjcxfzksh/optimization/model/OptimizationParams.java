@@ -58,6 +58,15 @@ public final class OptimizationParams {
     }
 
     @Data
+    public static class RoadNetworkParam {
+        private String parentModel;
+        /** 草稿 id：包含草稿中已新增的路段 */
+        private String draftId;
+        /** 研究区域（返回区域∪缓冲带附近的可行车路段） */
+        private AreaSpec area;
+    }
+
+    @Data
     public static class GenerateParam {
         private String draftId;
         private String parentModel;

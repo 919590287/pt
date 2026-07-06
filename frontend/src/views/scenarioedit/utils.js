@@ -1,4 +1,4 @@
-import { lngLatToWebMercator } from "@/mymap/index.js";
+import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
 
 /** 车型预设（用户友好，无需了解 MATSim 车型细节） */
 export const VEHICLE_PRESETS = [
@@ -83,9 +83,80 @@ export function stopsAlongPath(geometry, stopIndex, radiusM = 80) {
   return result;
 }
 
+// ==================== 折线投影与切片（调整站点用） ====================
+
+function pathMercator(geometry) {
+  const pts = geometry.map(([lng, lat]) => lngLatToWebMercator(lng, lat));
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  }
+  return { pts, cum };
+}
+
+/**
+ * 点在折线上的投影里程（mercator 距离度量）。
+ * coord: [lng,lat]。返回 { measure, distance }。
+ */
+export function projectMeasureOnPath(geometry, coord) {
+  if (!geometry || geometry.length < 2) return null;
+  const { pts, cum } = pathMercator(geometry);
+  const [px, py] = lngLatToWebMercator(coord[0], coord[1]);
+  let best = Infinity;
+  let bestMeasure = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const [ax, ay] = pts[i - 1];
+    const [bx, by] = pts[i];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 <= 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+    const qx = ax + t * dx;
+    const qy = ay + t * dy;
+    const d = Math.hypot(px - qx, py - qy);
+    if (d < best) {
+      best = d;
+      bestMeasure = cum[i - 1] + t * Math.sqrt(len2);
+    }
+  }
+  return { measure: bestMeasure, distance: best };
+}
+
+/**
+ * 截取折线 [m1, m2] 里程之间的子折线，返回 lngLat 坐标序列（含插值端点）。
+ */
+export function slicePathBetween(geometry, m1, m2) {
+  if (!geometry || geometry.length < 2) return [];
+  if (m2 < m1) [m1, m2] = [m2, m1];
+  const { pts, cum } = pathMercator(geometry);
+  const total = cum[cum.length - 1];
+  const from = Math.max(0, Math.min(total, m1));
+  const to = Math.max(0, Math.min(total, m2));
+  const interp = (m) => {
+    for (let i = 1; i < cum.length; i++) {
+      if (cum[i] >= m) {
+        const seg = cum[i] - cum[i - 1];
+        const t = seg <= 0 ? 0 : (m - cum[i - 1]) / seg;
+        return [
+          pts[i - 1][0] + t * (pts[i][0] - pts[i - 1][0]),
+          pts[i - 1][1] + t * (pts[i][1] - pts[i - 1][1]),
+        ];
+      }
+    }
+    return pts[pts.length - 1];
+  };
+  const out = [interp(from)];
+  for (let i = 0; i < pts.length; i++) {
+    if (cum[i] > from && cum[i] < to) out.push(pts[i]);
+  }
+  out.push(interp(to));
+  return out.map(([x, y]) => webMercatorToLngLat(x, y));
+}
+
 /** 修改项类型 -> 展示配置 */
 export const KIND_META = {
   "route.add": { label: "新增线路", group: "线路", icon: "＋", tone: "add" },
+  "route.replace": { label: "修改线路", group: "线路", icon: "✎", tone: "modify" },
   "route.modify.alignment": { label: "调整走向", group: "线路", icon: "✎", tone: "modify" },
   "route.modify.stops": { label: "调整停靠", group: "线路", icon: "✎", tone: "modify" },
   "route.delete": { label: "删除线路", group: "线路", icon: "✕", tone: "delete" },
@@ -105,7 +176,8 @@ export function editSummary(edit) {
   const t = edit.target || {};
   switch (edit.kind) {
     case "route.add":
-      return `${p.name || "新线路"} · ${(edit.geometry?.directions?.[0]?.stops || []).length}站 · ${p.bidirectional === false ? "单向" : "双向"}`;
+    case "route.replace":
+      return `${p.name || "线路"} · ${(edit.geometry?.directions?.[0]?.stops || []).length}站 · ${p.bidirectional === false ? "单向" : "双向"}`;
     case "route.modify.alignment":
       return `${edit.name} · 新走向 ${(edit.geometry?.stops || []).length}站`;
     case "route.modify.stops":

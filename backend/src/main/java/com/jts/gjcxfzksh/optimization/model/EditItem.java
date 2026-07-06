@@ -10,7 +10,7 @@ import java.util.List;
  * 线网优化修改项。kind 决定 params/geometry 的具体形状（见设计文档 §13.2）。
  *
  * P0 支持的 kind：
- *  route.add / route.modify.alignment / route.modify.stops / route.delete
+ *  route.add / route.replace / route.modify.alignment / route.modify.stops / route.delete
  *  stop.add / stop.move / stop.delete
  *  link.add / link.modify / link.delete
  *  ops.headway / ops.serviceHours / ops.vehicleType
@@ -21,7 +21,7 @@ public class EditItem {
     public static final List<String> APPLY_ORDER = List.of(
             "link.add",
             "stop.add", "stop.move", "stop.delete",
-            "route.add", "route.modify.alignment", "route.modify.stops", "route.delete",
+            "route.add", "route.replace", "route.modify.alignment", "route.modify.stops", "route.delete",
             "ops.headway", "ops.serviceHours", "ops.vehicleType",
             "link.modify",
             "link.delete");

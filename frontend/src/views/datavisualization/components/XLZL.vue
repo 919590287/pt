@@ -55,8 +55,8 @@
 
           <!-- Mode 1: Search by Line Name - Route details -->
           <template v-if="searchMode === 'line' && selectedLineName">
-            <!-- Directions Pill (if multiple routes) -->
-            <div class="route-directions" v-if="selectedLineRoutes.length > 1">
+            <!-- Directions Pill (if multiple routes)；地铁只按整线统计，不显示方向切换 -->
+            <div class="route-directions" v-if="selectedLineRoutes.length > 1 && !isMetroSelection">
               <div
                 v-for="(route, index) in selectedLineRoutes"
                 :key="route.routeId"
@@ -132,8 +132,9 @@
       <template #body>
         <div class="pfa-route-sections">
           <!-- 方向切换：两个方向分开统计与绘图，避免上下行混在一起
-               （客流画像为上下行合并统计、关联线路的同站换乘天然含对向站，均不提供切换） -->
-          <div v-if="panelDirectionRoutes.length > 1 && !['demographics', 'transfer'].includes(pfaLineSection)" class="panel-direction-section">
+               （客流画像为上下行合并统计、关联线路的同站换乘天然含对向站，均不提供切换）
+               地铁只按整线统计，不区分方向，故隐藏 -->
+          <div v-if="panelDirectionRoutes.length > 1 && !isMetroSelection && !['demographics', 'transfer'].includes(pfaLineSection)" class="panel-direction-section">
             <span class="panel-direction-label">线路方向</span>
             <div class="panel-direction-pills">
               <button
@@ -420,7 +421,6 @@
           <ColorScaleControl
             v-model="odFlowScale"
             legend-title="站间OD客流"
-            :format-value="odFlowLegendFormat"
             :show-legend="false"
           />
         </div>
@@ -532,7 +532,8 @@ import { RouteLayer } from "../layers/RouteLayer.js";
 import { emptyFeatureCollection, stationsToFeatureCollection } from "../layers/maplibreLayerUtils.js";
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { buildFlowCurveFeatureCollection, emptyFlowCurveCollection } from "../utils/flowCurves.js";
-import { buildLegendItems, classifyByPercent, createColorScaleConfig, resolveColorScale } from "@/utils/colorSchemes.js";
+import { buildValueLegendItems, classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale } from "@/utils/colorSchemes.js";
+import { PURE_METRO_LINE, isMetroLine, metroLineCanonicalName, metroLineNumber } from "@/utils/transitMode.js";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 import { injectSync } from "@/utils";
 
@@ -750,86 +751,7 @@ function routePanelFromPayload(routes = {}, route = null) {
     || null;
 }
 
-function metroLineNumber(text = "") {
-  const raw = String(text || "");
-  const chinese = raw.match(/(?:地铁|轨道|线路)?\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\s*(?:号线|线)/i);
-  const english = raw.match(/(?:metro|subway|mtr)(?:[-_\s]*line)?[-_\s]*([0-9]{1,2})\b|\bline[-_\s]*([0-9]{1,2})\b/i);
-  const token = chinese?.[1] || english?.[1] || english?.[2] || "";
-  if (!token) return "";
-  if (/^\d+$/.test(token)) return String(Number(token));
-  const table = {
-    一: "1", 二: "2", 三: "3", 四: "4", 五: "5", 六: "6", 七: "7", 八: "8", 九: "9", 十: "10",
-    十一: "11", 十二: "12", 十三: "13", 十四: "14", 十五: "15", 十六: "16", 十七: "17", 十八: "18", 十九: "19", 二十: "20",
-  };
-  return table[token] || "";
-}
-
-function normalizedTransitMode(text = "") {
-  const value = String(text || "").toLowerCase();
-  if (/subway|metro|mtr|rail|train|地铁|轨道|轻轨|有轨/.test(value)) return "subway";
-  if (/bus|公交/.test(value)) return "bus";
-  return "";
-}
-
-function declaredTransitMode(line = {}) {
-  const ownMode = normalizedTransitMode(line.mode || line.transportMode);
-  if (ownMode) return ownMode;
-  const routeModes = (Array.isArray(line.routes) ? line.routes : [])
-    .map((route) => normalizedTransitMode(route?.mode || route?.transportMode))
-    .filter(Boolean);
-  if (routeModes.includes("subway")) return "subway";
-  if (routeModes.includes("bus")) return "bus";
-  return "";
-}
-
-function hasMetroModeKeyword(text = "") {
-  return /subway|metro|mtr|rail|train|地铁|轨道|轻轨|有轨/i.test(String(text || ""));
-}
-
-function hasRouteIdMetroKeyword(text = "") {
-  return /subway|metro|mtr/i.test(String(text || ""));
-}
-
-function hasBusIdKeyword(text = "") {
-  const value = String(text || "").toLowerCase();
-  return value.includes("busgtfs")
-    || value.includes("bus_gtfs")
-    || value.startsWith("bus")
-    || value.includes(" bus");
-}
-
-// 同一条地铁线的分段/支线后缀：剥离后合并（如 3号线 + 3号线北段、12号线东段 + 12号线西段、14号线 + 14号线知识城线）。
-// 城市/制式前缀（佛山、南海、黄埔、海珠、有轨电车…）不在此列，确保跨系统同号线不会被错误合并。
-const METRO_SEGMENT_SUFFIX = /(北延段|南延段|东延段|西延段|北延线|南延线|东延线|西延线|北段|南段|东段|西段|延长线|延长段|知识城支线|知识城线|支线|一期|二期|三期|四期|首期工程|首期|首通段|后通段)/g;
-// 规范化后恰为“N号线”（阿拉伯或中文数字）才算“纯地铁线路号”，展示为“地铁N号线”。
-const PURE_METRO_LINE = /^(?:[0-9]{1,2}|[一二三四五六七八九十]{1,4})号线$/;
-
-// 规范化地铁线路名：去空白、去括号备注、剥离同线分段后缀；剥离后为空则回退原名。
-function metroLineCanonicalName(line = {}) {
-  const base = String(line.lineName || line.lineId || "")
-    .trim()
-    .replace(/\s+/g, "")
-    .replace(/[（(].*?[）)]/g, "");
-  const stripped = base.replace(METRO_SEGMENT_SUFFIX, "");
-  return stripped || base;
-}
-
-function isMetroLine(line = {}) {
-  const declaredMode = declaredTransitMode(line);
-  if (declaredMode === "subway") return true;
-  if (declaredMode === "bus") return false;
-  const lineText = [line.lineName, line.lineId].filter(Boolean).join(" ");
-  const idText = [
-    line.lineId,
-    ...(Array.isArray(line.routes) ? line.routes.map((route) => route?.routeId) : []),
-  ].filter(Boolean).join(" ");
-  if (!hasMetroModeKeyword(lineText) && hasBusIdKeyword(idText)) return false;
-  if (metroLineNumber(lineText) || hasMetroModeKeyword(lineText)) return true;
-  return (Array.isArray(line.routes) ? line.routes : []).some((route) => (
-    metroLineNumber([route?.routeName, route?.routeId].filter(Boolean).join(" "))
-    || hasRouteIdMetroKeyword(route?.routeId)
-  ));
-}
+// 地铁/公交制式判别已抽取到 @/utils/transitMode.js（与线网底图共用同一套口径）
 
 // 地铁线路聚合键：按“规范化线路名”聚合，而非裸线路号，避免跨系统同号线被错误合并。
 function lineGroupKey(line = {}) {
@@ -2158,8 +2080,9 @@ const PFA_OD_STATION_LAYER_ID = "pfa-station-od-station-layer";
 const PFA_OD_STATION_LABEL_LAYER_ID = "pfa-station-od-station-label-layer";
 const PFA_OD_PRIMARY_COLOR = "#f97316"; // 与选中线路主线（上行）颜色一致
 const PFA_OD_REVERSE_COLOR = "#1569de"; // 与反向线路（下行）颜色一致
-const PFA_OD_MIN_WIDTH = 1.2;
-const PFA_OD_MAX_WIDTH = 6;
+// 期望线风格：整体细线，仅按流量档位做轻微加粗（参考站间OD期望线图，避免高流量线路糊成一团）
+const PFA_OD_MIN_WIDTH = 0.6;
+const PFA_OD_MAX_WIDTH = 2.8;
 
 // 站间OD色阶配置（独立于断面/线路色阶），调节入口在地图图例右上角齿轮
 const odFlowScale = ref(createColorScaleConfig("ylorrd", 5));
@@ -2177,9 +2100,8 @@ function odPointToLngLat(x, y) {
     : null;
 }
 
-// 站点乘降的地图改为复用断面客流展示（单方向断面着色+空心圈站点），OD 曲线图层暂不启用；
-// 置回 true 可恢复站间OD曲线与其左下角图例
-const PFA_OD_MAP_ENABLED = false;
+// 站点乘降：地图上叠选中线路各站点的站间OD曲线（谁上/谁下），配左下角色阶图例
+const PFA_OD_MAP_ENABLED = true;
 
 const stationOdFlows = computed(() => {
   if (!PFA_OD_MAP_ENABLED || !shouldRenderPfaRightPanel.value || pfaLineSection.value !== "boarding" || !currentSelectedRoute.value) {
@@ -2211,31 +2133,31 @@ const maxStationOdFlow = computed(() =>
   stationOdFlows.value.reduce((max, item) => Math.max(max, item.value), 0)
 );
 
-function odFlowLegendFormat(percent) {
-  const max = maxStationOdFlow.value;
-  if (!(max > 0)) return `${percent}%`;
-  return `${Math.round((Number(percent) / 100) * max).toLocaleString()} 人次`;
+function odFlowValueLabel(value) {
+  return `${Math.round(Number(value) || 0).toLocaleString()} 人次`;
 }
 
 const odResolvedScale = computed(() => resolveColorScale(odFlowScale.value));
+// 站间OD分位数断点，由当前OD客流分布计算
+const odFlowBreaks = computed(() => quantileBreaks(stationOdFlows.value.map((flow) => flow.value), odResolvedScale.value.thresholds));
 const odLegendItems = computed(() =>
-  buildLegendItems(odResolvedScale.value.colors, odResolvedScale.value.thresholds, odFlowLegendFormat)
+  buildValueLegendItems(odResolvedScale.value.colors, odFlowBreaks.value, maxStationOdFlow.value, odFlowValueLabel, odResolvedScale.value.widths)
 );
 const showOdMapLegend = computed(() => stationOdFlows.value.length > 0);
 
-// 曲线 + 端点站 FeatureCollection：颜色/线宽按 flow 占最大OD的百分比分档
+// 曲线 + 端点站 FeatureCollection：颜色/线宽按 flow 的分位数分档
 const stationOdRender = computed(() => {
   const flows = stationOdFlows.value;
   if (!flows.length) {
     return { curves: emptyFlowCurveCollection(), stations: emptyFeatureCollection() };
   }
-  const { colors, thresholds } = odResolvedScale.value;
-  const maxFlow = maxStationOdFlow.value;
+  const { colors } = odResolvedScale.value;
+  const breaks = odFlowBreaks.value;
   const widthForClass = (index) => (colors.length > 1
     ? PFA_OD_MIN_WIDTH + ((PFA_OD_MAX_WIDTH - PFA_OD_MIN_WIDTH) * index) / (colors.length - 1)
     : (PFA_OD_MIN_WIDTH + PFA_OD_MAX_WIDTH) / 2);
   const curveInputs = flows.map((flow) => {
-    const classIndex = classifyByPercent(flow.value, maxFlow, thresholds);
+    const classIndex = classifyByBreaks(flow.value, breaks);
     return {
       from: flow.from,
       to: flow.to,
@@ -2251,7 +2173,8 @@ const stationOdRender = computed(() => {
   });
   // 低流量先画、高流量后画（叠在上层更醒目）
   curveInputs.sort((a, b) => a.value - b.value);
-  const curves = buildFlowCurveFeatureCollection(curveInputs, { curvature: 0.22 });
+  // 适度弧度呈期望线弧形；consistentSide 让所有弧线统一偏向线路同一侧（复刻期望线图，避免上下行两侧交织）
+  const curves = buildFlowCurveFeatureCollection(curveInputs, { curvature: 0.24, consistentSide: true });
   const stationFeatures = new Map();
   flows.forEach((flow) => {
     [[flow.from, flow.fromName], [flow.to, flow.toName]].forEach(([coord, name]) => {
@@ -2287,8 +2210,9 @@ function ensureStationOdLayers(map) {
       layout: { "line-join": "round", "line-cap": "round" },
       paint: {
         "line-color": ["get", "color"],
-        "line-width": ["get", "width"],
-        "line-opacity": 0.85,
+        // 细线按缩放轻微自适应，放大时略粗、缩小时更细，保持期望线的通透感
+        "line-width": ["interpolate", ["linear"], ["zoom"], 9, ["*", ["get", "width"], 0.7], 13, ["get", "width"], 16, ["*", ["get", "width"], 1.35]],
+        "line-opacity": 0.66,
       },
     });
   }
@@ -2549,11 +2473,18 @@ watch(BaseMapLineModeRef, (mode) => {
 });
 
 // 计算所有唯一的线路名称，并转换为 el-select-v2 需要的 options 格式
+// 携带 mode（公交/地铁）：供右上角搜索框按当前线网制式过滤候选。
 const lineOptions = computed(() => {
-  const names = rawLines.value.map(line => lineDisplayName(line)).filter(Boolean);
-  const uniqueNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const modeByName = new Map();
+  rawLines.value.forEach((line) => {
+    const name = lineDisplayName(line);
+    if (!name) return;
+    if (isMetroLine(line)) modeByName.set(name, "metro");
+    else if (!modeByName.has(name)) modeByName.set(name, "bus");
+  });
+  const uniqueNames = Array.from(modeByName.keys()).sort((a, b) => a.localeCompare(b, "zh-CN"));
   return uniqueNames
-    .map(name => ({ value: name, label: name }))
+    .map(name => ({ value: name, label: name, mode: modeByName.get(name) || "bus" }))
     .filter((option) => runMonitorLineOptionFilter(option));
 });
 
@@ -2600,6 +2531,21 @@ const selectedLineRoutes = computed(() => {
     return groupRoute ? [groupRoute, ...routes] : routes;
   }
   return routes;
+});
+
+// 当前选中是否为地铁线路：地铁只按整线统计，不区分上下行方向（隐藏方向切换）
+const isMetroSelection = computed(() => {
+  if (currentSelectedRoute.value?.lineGroup) return true;
+  if (selectedLineName.value) {
+    const lines = linesForDisplayName(selectedLineName.value);
+    if (lines.length) return lines.some(isMetroLine);
+  }
+  const route = currentSelectedRoute.value;
+  if (!route) return false;
+  const line = rawLines.value.find((item) => String(item?.lineId || "") === String(route.lineId || ""));
+  return line
+    ? isMetroLine(line)
+    : isMetroLine({ lineName: route.lineName, lineId: route.lineId, routes: [route] });
 });
 
 // 获取当前活动路线方向的详情
@@ -2764,6 +2710,14 @@ async function selectLineByFeature(props = {}) {
   selectedStationName.value = "";
   selectedLineName.value = lineDisplayName(line);
   await nextTick();
+  // 地铁：只选整线（上下行合并统计），不按方向选中
+  if (isMetroLine(line)) {
+    const groupRoute = selectedLineRoutes.value.find((route) => route.lineGroup);
+    if (groupRoute) {
+      await handleSelectRoute(groupRoute);
+      return true;
+    }
+  }
   const routes = selectedLineRoutes.value.filter((route) => !route.lineGroup);
   let target = null;
   const routeIdHint = props.routeId ?? props.route_id;

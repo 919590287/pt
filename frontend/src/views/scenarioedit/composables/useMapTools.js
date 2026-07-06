@@ -13,6 +13,8 @@ import { LAYER_IDS, updateToolPreview, clearToolPreview } from "../layers/editor
  *  pick.stop   点选站点
  *  pick.link   点选路段（吸附最近 link，可累计多段）
  *  draw.route  沿路网锚点寻径（新增线路/改走向）
+ *  draw.gapfill 补画缺失路径：起终点固定为两站（toolContext.fixedStart/fixedEnd），
+ *               点击加途经点沿路网寻径；进入即先尝试两站间直接寻径
  *  draw.link   画新路段折线（端点吸附既有节点）
  *  place.stop  放置新站点（吸附最近可停靠 link）
  */
@@ -46,20 +48,34 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
     if (m) clearToolPreview(m);
   }
 
+  /** draw.gapfill 的固定端点（两侧站点坐标） */
+  function gapfillEndpoints() {
+    if (store.activeTool !== "draw.gapfill") return null;
+    const ctx = store.toolContext || {};
+    if (!Array.isArray(ctx.fixedStart) || !Array.isArray(ctx.fixedEnd)) return null;
+    return [ctx.fixedStart, ctx.fixedEnd];
+  }
+
   function refreshPreview(cursor = null) {
     const m = map();
     if (!m) return;
+    const endpoints = gapfillEndpoints();
     updateToolPreview(m, {
       anchors: store.toolDraft.anchors,
       pathGeometry: store.toolDraft.pathPreview?.geometry || null,
       cursor,
       point: store.toolDraft.placedPoint ? [store.toolDraft.placedPoint.lng, store.toolDraft.placedPoint.lat] : null,
       segments: store.toolDraft.pickedLinks.map((l) => l.geometry).filter(Boolean),
+      endpoints: endpoints || [],
     });
   }
 
   async function requestSnapRoute() {
-    const anchors = store.toolDraft.anchors;
+    // 补画模式：锚点两端拼上固定的站点坐标，用户每点一下都在两站之间加一个途经点
+    const endpoints = gapfillEndpoints();
+    const anchors = endpoints
+      ? [endpoints[0], ...store.toolDraft.anchors, endpoints[1]]
+      : store.toolDraft.anchors;
     if (anchors.length < 2) {
       store.toolDraft.pathPreview = null;
       refreshPreview();
@@ -124,7 +140,7 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
       refreshPreview();
       return;
     }
-    if (tool === "draw.route") {
+    if (tool === "draw.route" || tool === "draw.gapfill") {
       store.toolDraft.anchors.push([lng, lat]);
       refreshPreview();
       requestSnapRoute();
@@ -181,8 +197,20 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
     }
     if (tool === "pick.stop") {
       const feats = queryFeatures([lng, lat], LAYER_IDS.baseStops);
-      if (feats.length > 0) {
-        store.selectStop(feats[0].properties.stopId);
+      const stopId = feats.length > 0 ? feats[0].properties.stopId : null;
+      const purpose = store.toolContext?.purpose;
+      if (purpose === "buildLine") {
+        // 新增线路建线（参考交评多点选路）：点到站点=加停靠站；点到空白/路网=加路径途经点
+        if (stopId) store.appendLineStop(stopId);
+        else store.appendLineRoadPoint(lng, lat);
+        return;
+      }
+      if (!stopId) return;
+      if (purpose === "insert") {
+        // 调整站点面板插站：不改全局选中，结果写入 toolDraft
+        store.toolDraft.pickedStopId = stopId;
+      } else {
+        store.selectStop(stopId);
       }
       return;
     }
@@ -224,13 +252,19 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
     }
     if (ev.key === "Backspace" || ev.key === "Delete") {
       const tool = store.activeTool;
-      if ((tool === "area.draw" || tool === "draw.route" || tool === "draw.link") && store.toolDraft.anchors.length > 0) {
-        const target = ev.target;
-        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      const target = ev.target;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
+      if ((tool === "area.draw" || tool === "draw.route" || tool === "draw.gapfill" || tool === "draw.link") && store.toolDraft.anchors.length > 0) {
         ev.preventDefault();
         store.toolDraft.anchors.pop();
-        if (tool === "draw.route") requestSnapRoute();
+        if (tool === "draw.route" || tool === "draw.gapfill") requestSnapRoute();
         refreshPreview();
+        return;
+      }
+      // 点选建线：⌫ 撤销上一步（等价底部操作条按钮）
+      if (tool === "pick.stop" && store.toolContext?.purpose === "buildLine") {
+        ev.preventDefault();
+        store.popLineAnchor();
       }
     }
   }
@@ -246,8 +280,12 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
     const m = map();
     if (m && tool === "area.draw") {
       dblHandle = () => {
-        // 双击闭合交由 AreaPanel 的完成按钮统一处理，这里只阻止误加点
+        // 双击闭合交由地图控件 ✏️ 的完成动作统一处理，这里只阻止误加点
       };
+    }
+    // 补画模式：进入即先尝试两站之间直接寻径，找得到就有初始预览
+    if (tool === "draw.gapfill") {
+      requestSnapRoute();
     }
     refreshPreview();
   }

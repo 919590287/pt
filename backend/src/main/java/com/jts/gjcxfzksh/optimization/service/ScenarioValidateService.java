@@ -84,7 +84,7 @@ public class ScenarioValidateService {
                 }
             }
             switch (edit.getKind()) {
-                case "route.add", "route.modify.alignment" -> {
+                case "route.add", "route.replace", "route.modify.alignment" -> {
                     JSONObject geometry = edit.getGeometry();
                     JSONArray directions = geometry == null ? null
                             : geometry.containsKey("directions") ? geometry.getJSONArray("directions") : wrapSingle(geometry);
@@ -105,11 +105,17 @@ public class ScenarioValidateService {
                             issues.add(ValidationIssue.error(edit.getId(), "方向" + (d + 1) + "缺少走向路段（请沿地图重新寻径）"));
                         }
                     }
-                    if ("route.add".equals(edit.getKind())) {
+                    // route.add 与 route.replace 都是"新建/整体重建线路"，需线路名与发车时段；
+                    // route.replace 还须校验被替换的原线路存在（未被删除项覆盖）
+                    boolean rebuild = "route.add".equals(edit.getKind()) || "route.replace".equals(edit.getKind());
+                    if (rebuild) {
                         checkSlots(issues, edit);
                         if (edit.getParams() == null || isBlank(edit.getParams().getString("name"))) {
                             issues.add(ValidationIssue.error(edit.getId(), "请填写线路名称"));
                         }
+                    }
+                    if ("route.replace".equals(edit.getKind())) {
+                        checkRouteRef(issues, edit, data, deletedLines);
                     }
                 }
                 case "route.modify.stops" -> {

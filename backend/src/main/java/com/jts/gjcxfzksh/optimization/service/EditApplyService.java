@@ -166,6 +166,7 @@ public class EditApplyService {
             case "stop.move" -> applyStopMove(ctx, edit);
             case "stop.delete" -> applyStopDelete(ctx, edit);
             case "route.add" -> applyRouteAdd(ctx, edit);
+            case "route.replace" -> applyRouteReplace(ctx, edit);
             case "route.modify.alignment" -> applyRouteAlignment(ctx, edit);
             case "route.modify.stops" -> applyRouteStops(ctx, edit);
             case "route.delete" -> applyRouteDelete(ctx, edit);
@@ -361,10 +362,14 @@ public class EditApplyService {
                 throw new BusinessException("站点吸附路段不存在: " + newLink);
             }
             if (!linkId.equals(facility.getLinkId()) && usedByTransit(ctx.schedule, facility)) {
+                // 被公交线路停靠的站不能改挂接 link：线路走向未必含新 link，改挂会在 validateFinal
+                // 被判"站点未挂接在走向上"而整单失败。此处仅移动点位、保持原挂接（线路走向不变）。
                 ctx.outcome.getIssues().add(ValidationIssue.warning(edit.getId(),
-                        "站点 " + display(facility) + " 移动跨越路段，经过线路的走向未变（仅停靠点位变化）"));
+                        "站点 " + display(facility) + " 已被公交线路停靠：仅调整了点位，仍挂接在原路段上（线路走向不变）。"
+                                + "如需把它改挂到另一条道路，请改用「修改线路」调整相关线路走向。"));
+            } else {
+                facility.setLinkId(linkId);
             }
-            facility.setLinkId(linkId);
         }
         if (edit.getParams() != null && edit.getParams().getString("name") != null) {
             facility.setName(edit.getParams().getString("name"));
@@ -413,7 +418,7 @@ public class EditApplyService {
         double opSpeed = dbl(params, "opSpeedKmh", 20);
         double dwell = dbl(params, "dwellSec", 30);
         JSONArray slots = params.getJSONArray("slots");
-        VehicleType vehicleType = ScheduleTools.resolveVehicleType(ctx.transitVehicles, params.getJSONObject("vehicleType"), edit.getId());
+        VehicleType vehicleType = ScheduleTools.resolveVehicleType(ctx.transitVehicles, params.getJSONObject("vehicleType"), edit.getId(), transportMode);
 
         TransitScheduleFactory factory = ctx.schedule.getFactory();
         Id<TransitLine> lineId = Id.create("opt_line_" + edit.getId(), TransitLine.class);
@@ -428,7 +433,7 @@ public class EditApplyService {
         for (int d = 0; d < directions.size(); d++) {
             JSONObject direction = directions.getJSONObject(d);
             List<Id<Link>> linkIds = toLinkIds(direction.getJSONArray("linkIds"));
-            List<TransitStopFacility> stops = resolveStopsOnPath(ctx, edit, direction.getJSONArray("stops"), linkIds);
+            List<TransitStopFacility> stops = resolveStopsOnPath(ctx, edit, direction.getJSONArray("stops"), linkIds, "d" + d);
             if (stops.size() < 2) {
                 throw new BusinessException("方向" + (d + 1) + "停靠站不足2个");
             }
@@ -444,11 +449,34 @@ public class EditApplyService {
         ctx.outcome.getApplied().add("新增线路 " + name + "：" + directions.size() + " 个方向，共 " + totalDepartures + " 班次");
     }
 
+    /**
+     * 修改线路：删除原线路后，按新定义（与 route.add 同结构）整体重建。
+     * target.lineId 为被替换的原线路；params/geometry 为新定义。
+     */
+    private void applyRouteReplace(Ctx ctx, EditItem edit) {
+        JSONObject target = edit.getTarget();
+        String lineIdStr = target == null ? null : target.getString("lineId");
+        if (lineIdStr != null) {
+            TransitLine old = ctx.schedule.getTransitLines().get(Id.create(lineIdStr, TransitLine.class));
+            if (old != null) {
+                Set<Id<Vehicle>> candidates = new LinkedHashSet<>();
+                for (TransitRoute route : old.getRoutes().values()) {
+                    collectVehicles(route, candidates);
+                }
+                ctx.schedule.removeTransitLine(old);
+                ScheduleTools.removeUnreferencedVehicles(ctx.schedule, ctx.transitVehicles, candidates);
+            } else {
+                ctx.outcome.getIssues().add(ValidationIssue.warning(edit.getId(), "被修改的原线路不存在（可能不在切分范围内）: " + lineIdStr));
+            }
+        }
+        applyRouteAdd(ctx, edit); // 用新定义重建
+    }
+
     private void applyRouteAlignment(Ctx ctx, EditItem edit) {
         RouteRef ref = requireRoute(ctx, edit);
         JSONObject geometry = required(edit.getGeometry(), "geometry");
         List<Id<Link>> linkIds = toLinkIds(geometry.getJSONArray("linkIds"));
-        List<TransitStopFacility> stops = resolveStopsOnPath(ctx, edit, geometry.getJSONArray("stops"), linkIds);
+        List<TransitStopFacility> stops = resolveStopsOnPath(ctx, edit, geometry.getJSONArray("stops"), linkIds, "a");
         if (stops.size() < 2) {
             throw new BusinessException("调整后停靠站不足2个");
         }
@@ -475,7 +503,7 @@ public class EditApplyService {
             throw new BusinessException("调整后停靠站不足2个");
         }
         List<Id<Link>> routeLinks = allRouteLinks(ref.route.getRoute());
-        List<TransitStopFacility> stops = resolveStopsOnPath(ctx, edit, stopsArr, routeLinks);
+        List<TransitStopFacility> stops = resolveStopsOnPath(ctx, edit, stopsArr, routeLinks, "s");
 
         // 原有站保留原时分；新增站按沿线位置在相邻保留站间插值
         Map<Id<TransitStopFacility>, TransitRouteStop> oldByFacility = new java.util.HashMap<>();
@@ -545,7 +573,7 @@ public class EditApplyService {
         List<Double> times = ScheduleTools.expandDepartureTimes(params.getJSONArray("slots"));
         VehicleType type = currentVehicleType(ctx, ref.route);
         if (params.getJSONObject("vehicleType") != null) {
-            type = ScheduleTools.resolveVehicleType(ctx.transitVehicles, params.getJSONObject("vehicleType"), edit.getId());
+            type = ScheduleTools.resolveVehicleType(ctx.transitVehicles, params.getJSONObject("vehicleType"), edit.getId(), ref.route.getTransportMode());
         }
         int n = ScheduleTools.rebuildDepartures(ctx.schedule, ctx.transitVehicles, ref.line, ref.route, times, type, edit.getId());
         String what = "ops.serviceHours".equals(edit.getKind()) ? "运营时间" : "发车间隔";
@@ -555,7 +583,7 @@ public class EditApplyService {
     private void applyVehicleType(Ctx ctx, EditItem edit) {
         RouteRef ref = requireRoute(ctx, edit);
         JSONObject params = required(edit.getParams(), "params");
-        VehicleType type = ScheduleTools.resolveVehicleType(ctx.transitVehicles, params.getJSONObject("vehicleType"), edit.getId());
+        VehicleType type = ScheduleTools.resolveVehicleType(ctx.transitVehicles, params.getJSONObject("vehicleType"), edit.getId(), ref.route.getTransportMode());
         Set<Id<Vehicle>> candidates = new LinkedHashSet<>();
         int n = 0;
         for (Departure d : ref.route.getDepartures().values()) {
@@ -615,8 +643,11 @@ public class EditApplyService {
 
     /**
      * 解析停靠站引用；站点吸附 link 不在走向上时自动生成"同名分方向站"克隆。
+     * cloneScope 用于隔离不同方向/断面的克隆命名空间：双向线正/反向都可能克隆同一原站，
+     * 若共用命名空间，对称中间站会拿到相同克隆 id 而互相复用（挂在对向 link 上）→ 站序校验失败。
      */
-    private List<TransitStopFacility> resolveStopsOnPath(Ctx ctx, EditItem edit, JSONArray stopsArr, List<Id<Link>> linkIds) {
+    private List<TransitStopFacility> resolveStopsOnPath(Ctx ctx, EditItem edit, JSONArray stopsArr,
+                                                         List<Id<Link>> linkIds, String cloneScope) {
         if (stopsArr == null || stopsArr.isEmpty()) {
             throw new BusinessException("缺少停靠站序列");
         }
@@ -628,7 +659,7 @@ public class EditApplyService {
             TransitStopFacility facility = requireStop(ctx.schedule, sid);
             if (facility.getLinkId() == null || !linkSet.contains(facility.getLinkId())) {
                 Id<Link> nearest = nearestLinkOnPath(ctx, facility, linkIds);
-                Id<TransitStopFacility> cloneId = Id.create(facility.getId() + ".opt_" + edit.getId() + "_" + cloneSeq++, TransitStopFacility.class);
+                Id<TransitStopFacility> cloneId = Id.create(facility.getId() + ".opt_" + edit.getId() + "_" + cloneScope + "_" + cloneSeq++, TransitStopFacility.class);
                 TransitStopFacility clone = ctx.schedule.getFacilities().get(cloneId);
                 if (clone == null) {
                     clone = ctx.schedule.getFactory().createTransitStopFacility(cloneId, facility.getCoord(), facility.getIsBlockingLane());

@@ -472,6 +472,9 @@ export class NetworkLayer extends Layer {
     // flowControl 图层默认随缩放/密度降透明度（全网底图防糊）；
     // 单条选中线路的断面图层应保持实色，传 zoomFadeOpacity:false 关闭衰减
     this.zoomFadeOpacity = opt.zoomFadeOpacity !== false;
+    // 默认把连续链路拼成 PathLayer（更平滑）；置 false 走 GPU 实例化 LineLayer（逐链路），
+    // 主线程不再遍历拼路径，配合 worker 二进制转换实现大线路断面的毫秒级上屏
+    this.continuousPath = opt.continuousPath !== false;
     this.layerId = `network-line-${this.id}`;
     this.tileMode = false;
     this.tileZoom = opt.tileZoom || TILE_ZOOM;
@@ -1103,7 +1106,7 @@ export class NetworkLayer extends Layer {
       miterLimit: 2,
     };
     this.publishDebug(data, attributes);
-    const pathData = this.tileMode ? [] : this.buildContinuousPathData(data, lineColor, zoomWidth, visualOpacity);
+    const pathData = (this.tileMode || !this.continuousPath) ? [] : this.buildContinuousPathData(data, lineColor, zoomWidth, visualOpacity);
     if (pathData.length) {
       const layers = this.renderPathLayers(pathData, commonProps, softEdgePixels, widthMaxPixels, widthScale, zoomWidth);
       setSharedDeckLayer(this.map, this.layerId, layers, this.zIndex);

@@ -129,22 +129,22 @@
             <div v-if="odViewMode === 'table'" class="od-table-wrapper pfa-od-table">
               <div class="transfer-table">
                 <div class="transfer-table-header">
-                  <span class="col-od-route">线路方向</span>
+                  <span class="col-od-route">OD对端站点</span>
                   <span class="col-od-flow text-right">客流量</span>
                 </div>
                 <div class="transfer-table-body">
-                  <div v-for="(item, idx) in odTableData" :key="`${item.routeId || 'route'}-${idx}`" class="transfer-table-row">
+                  <div v-for="(item, idx) in odStationChart" :key="`${item.chartLabel}-${idx}`" class="transfer-table-row">
                     <span class="col-od-route text-ellipsis">
-                      <strong>{{ item.lineName || '未知线路' }}</strong>
-                      <small>{{ item.routeDesc || item.routeName || '方向未识别' }}</small>
+                      <strong>{{ item.chartLabel }}</strong>
+                      <small v-if="item.routeCount > 1">{{ item.routeCount }} 条线路</small>
                     </span>
                     <span class="col-od-flow text-right bold">{{ item.flow.toLocaleString() }} <small>人次</small></span>
                   </div>
-                  <div v-if="!odTableData.length" class="pfa-empty">暂无OD客流数据</div>
+                  <div v-if="!odStationChart.length" class="pfa-empty">暂无OD客流数据</div>
                 </div>
               </div>
             </div>
-            <div v-else class="chart-container-wrapper">
+            <div v-else class="chart-container-wrapper" :style="{ height: odChartHeight + 'px' }">
               <el-auto-resizer class="chart_box">
                 <template #default="{ height, width }">
                   <VChart
@@ -156,19 +156,6 @@
                   />
                 </template>
               </el-auto-resizer>
-            </div>
-            <div class="od-curve-control">
-              <div class="od-curve-head">
-                <span class="od-curve-title">地图OD曲线</span>
-                <span class="pfa-section-meta">{{ odCurveDirectionLabel }}</span>
-              </div>
-              <ColorScaleControl
-                v-if="odCurveEntries.items.length"
-                v-model="odCurveScaleConfig"
-                :legend-title="odCurveLegendTitle"
-                :format-value="formatOdCurveLegendValue"
-              />
-              <div v-else class="pfa-empty">当前时段暂无可绘制的OD曲线</div>
             </div>
           </section>
 
@@ -586,7 +573,7 @@ import MCard2 from "./MCard2.vue";
 import ColorScaleControl from "./ColorScaleControl.vue";
 import { StationLayer } from "../layers/StationLayer.js";
 import { buildFlowCurveFeatureCollection } from "../utils/flowCurves.js";
-import { classifyByPercent, createColorScaleConfig, resolveColorScale } from "@/utils/colorSchemes.js";
+import { classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale } from "@/utils/colorSchemes.js";
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { injectSync } from "@/utils";
 import { webMercatorToLngLat } from "@/mymap/index.js";
@@ -667,6 +654,12 @@ watch(activeDatavisualizationTab, (newTab) => {
 function toFiniteNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function toFiniteCoord(value) {
+  if (value === null || value === undefined || value === "") return Number.NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : Number.NaN;
 }
 
 function hourSlice(values, startHour = 6, endHour = 22) {
@@ -942,23 +935,25 @@ watch(BaseMapLineModeRef, () => {
 
 // 计算所有唯一的站点名称，并转换为 el-select-v2 需要的 options 格式
 const stationOptions = computed(() => {
-  const names = [];
+  // 携带 mode（公交/地铁）：供右上角搜索框按当前线网制式过滤候选。
+  // 同名站被多条线路（含地铁）共用时，只要有一条地铁经过即算地铁站。
+  const modeByName = new Map();
   rawLines.value.forEach(line => {
-    if (line.routes) {
-      line.routes.forEach(route => {
-        if (route.facilities) {
-          route.facilities.forEach(fac => {
-            if (fac.facilityName) {
-              names.push(fac.facilityName);
-            }
-          });
-        }
+    if (!line.routes) return;
+    line.routes.forEach(route => {
+      if (!route.facilities) return;
+      const isSubway = inferStationType(line, route) === "subway";
+      route.facilities.forEach(fac => {
+        const name = fac.facilityName;
+        if (!name) return;
+        if (isSubway) modeByName.set(name, "metro");
+        else if (!modeByName.has(name)) modeByName.set(name, "bus");
       });
-    }
+    });
   });
-  const uniqueNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, "zh-CN"));
+  const uniqueNames = Array.from(modeByName.keys()).sort((a, b) => a.localeCompare(b, "zh-CN"));
   return uniqueNames
-    .map(name => ({ value: name, label: name }))
+    .map(name => ({ value: name, label: name, mode: modeByName.get(name) || "bus" }))
     .filter((option) => runMonitorStationOptionFilter(option));
 });
 
@@ -1425,6 +1420,19 @@ function stationLngLat(station) {
   return coords.every(Number.isFinite) ? coords : null;
 }
 
+function stationCoordByName(stationName) {
+  const rawName = String(stationName || "").trim();
+  if (!rawName) return null;
+  const direct = stationCoordIndex.value.get(rawName);
+  if (direct) return direct;
+  const normalized = normalizeStationSearchName(rawName);
+  if (!normalized) return null;
+  for (const [name, coord] of stationCoordIndex.value.entries()) {
+    if (normalizeStationSearchName(name) === normalized) return coord;
+  }
+  return null;
+}
+
 function stationFeature(station, index = 0) {
   const coordinates = stationLngLat(station);
   if (!coordinates) return null;
@@ -1749,8 +1757,8 @@ function ensureOdCurveLayers() {
     },
     paint: {
       "line-color": ["coalesce", ["get", "color"], "#f03b20"],
-      "line-width": ["coalesce", ["get", "width"], 1.5],
-      "line-opacity": 0.82,
+      "line-width": ["coalesce", ["get", "width"], 3.4],
+      "line-opacity": 0.92,
       "line-blur": 0.2,
     },
   });
@@ -1766,6 +1774,8 @@ function ensureOdCurveLayers() {
       "text-offset": [0.55, 0],
       "text-max-width": 12,
       "text-padding": 2,
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
     },
     paint: {
       "text-color": "#12304f",
@@ -1783,17 +1793,19 @@ function odCurveOverlayData() {
   if (!items.length) return empty;
   const selfCoord = stationLngLat(reachabilityOriginStation());
   if (!selfCoord) return empty;
-  const inbound = odCurveEntries.value.direction === "inbound";
-  const maxFlow = odCurveMaxFlow.value;
-  const { colors, thresholds } = resolveColorScale(odCurveScaleConfig.value);
-  const maxClassIndex = Math.max(1, colors.length - 1);
+  const { colors, thresholds, widths } = resolveColorScale(odCurveScaleConfig.value);
+  // 分位数断点：由当前OD客流分布计算（与左下角图例同口径）
+  const breaks = quantileBreaks(items.map((item) => item.flow), thresholds);
+  // 线宽按分档线宽系数（客流越大越粗）× 基础值，并给最低档兜底，保证浅黄色线在底图上可见。
+  const OD_BASE_WIDTH = 2.6;
+  const OD_MIN_WIDTH = 3.4;
   const flows = [];
   const labelFeatures = [];
   items.forEach((item) => {
     const remote = [item.lng, item.lat];
-    const classIndex = classifyByPercent(item.flow, maxFlow, thresholds);
-    // 线宽按档位 1.5px → 6px 插值
-    const width = Math.round((1.5 + (4.5 * classIndex) / maxClassIndex) * 10) / 10;
+    const inbound = item.direction !== "outbound";
+    const classIndex = classifyByBreaks(item.flow, breaks);
+    const width = Math.round(Math.max(OD_MIN_WIDTH, OD_BASE_WIDTH * (widths[classIndex] || 1)) * 10) / 10;
     flows.push({
       from: inbound ? remote : selfCoord,
       to: inbound ? selfCoord : remote,
@@ -1803,7 +1815,9 @@ function odCurveOverlayData() {
         width,
         stationName: item.name,
         flow: item.flow,
-        direction: odCurveEntries.value.direction,
+        inboundFlow: item.inboundFlow,
+        outboundFlow: item.outboundFlow,
+        direction: item.direction,
       },
     });
     if (item.name) {
@@ -2184,7 +2198,14 @@ const activeDetailTab = ref("overview");
 const segmentTimeRange = ref([8, 18]);
 const odViewMode = ref("table");
 // 需求8：OD曲线分级色阶配置（ColorScaleControl v-model 整值替换）
-const odCurveScaleConfig = ref(createColorScaleConfig("ylorrd", 5));
+// 需求：OD曲线色阶配置与图例移到地图左下角（index.vue），此处复用注入的共享配置；
+// 无注入（独立使用）时回退本地 ref。曲线仍在本组件按该配置着色/定宽。
+const injectedOdCurveScaleConfig = inject("odCurveScaleConfig", null);
+const localOdCurveScaleConfig = ref(createColorScaleConfig("YlOrRd", 5));
+const odCurveScaleConfig = injectedOdCurveScaleConfig || localOdCurveScaleConfig;
+// 把当前OD最大客流与客流分布回报给 index.vue，供左下角图例按分位数换算人次
+const runMonitorOdCurveMaxFlow = inject("runMonitorOdCurveMaxFlow", null);
+const runMonitorOdCurveValues = inject("runMonitorOdCurveValues", null);
 // 需求9：乘降热力图弹窗
 const boardingHeatmapVisible = ref(false);
 // 需求10：可达性分组显隐（整值替换更新）
@@ -2396,8 +2417,30 @@ const odTableData = computed(() => {
   }));
 });
 
+// 图表：按对端站点聚合（同名站累加、只出现一次；表格仍保留按线路方向的明细）
+const odStationChart = computed(() => {
+  const map = new Map();
+  for (const r of odTableData.value) {
+    const label = String(r.chartLabel || r.counterpart || r.destination || r.origin || "未知").trim();
+    const key = normalizeStationSearchName(label) || label;
+    const existing = map.get(key);
+    if (existing) {
+      existing.flow += r.flow;
+      existing.routeCount += 1;
+    } else {
+      map.set(key, { chartLabel: label, label, flow: r.flow, routeLabel: r.routeLabel, routeCount: 1 });
+    }
+  }
+  const rows = Array.from(map.values()).sort((a, b) => b.flow - a.flow);
+  rows.forEach((r) => { if (r.routeCount > 1) r.routeLabel = `${r.routeCount} 条线路`; });
+  return rows;
+});
+
+// 图表高度随对端站点数量增长（每站约 26px），面板内滚动，保证站点全部可见、不省略
+const odChartHeight = computed(() => Math.max(260, odStationChart.value.length * 26 + 40));
+
 const odChartOption = computed(() => {
-  const chartRows = odTableData.value.slice().reverse();
+  const chartRows = odStationChart.value.slice().reverse();
   const labels = chartRows.map(d => d.chartLabel);
   const flows = chartRows.map(d => d.flow);
 
@@ -2466,14 +2509,15 @@ const odChartOption = computed(() => {
         color: "#64748b",
         fontSize: 11,
         width: 160,
-        overflow: "truncate"
+        overflow: "truncate",
+        interval: 0
       }
     },
     series: [
       {
         name: "出行量",
         type: "bar",
-        barWidth: "45%",
+        barWidth: "60%",
         itemStyle: {
           color: {
             type: "linear",
@@ -2495,57 +2539,108 @@ const odChartOption = computed(() => {
 });
 
 // —— 需求8：客流OD地图曲线数据 ——
-// 优先展示 destination===本站（到站方向）；若无则回退 origin===本站（出站方向），面板注明方向。
-// 同一对端站多条线路合并为一条曲线（flow 求和），坐标缺失/流量为 0 的条目跳过（空值防护）。
+// 与右侧图表同口径：同一对端站多条线路、到站/出站记录合并为一条曲线（flow 求和）。
+// 坐标缺失时按站名回退到站点坐标索引，只有实在无坐标的条目才跳过。
 const odCurveEntries = computed(() => {
   const selfName = normalizeStationSearchName(selectedStationName.value);
-  if (!selfName) return { direction: "inbound", items: [] };
+  if (!selfName) return { direction: "all", items: [] };
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
   const odRows = Array.isArray(currentStationPanel.value?.od) ? currentStationPanel.value.od : [];
+  const merged = new Map();
 
-  const buildItems = (direction) => {
-    const inbound = direction === "inbound";
-    const merged = new Map();
-    odRows.forEach((item) => {
-      if (!item) return;
-      const selfSideName = inbound ? item.destination : item.origin;
-      if (normalizeStationSearchName(selfSideName) !== selfName) return;
-      const lng = Number(inbound ? item.originX : item.destinationX);
-      const lat = Number(inbound ? item.originY : item.destinationY);
-      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
-      const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
-      if (flow <= 0) return;
-      const name = String((inbound ? item.origin : item.destination) || item.counterpart || "").trim();
-      const key = `${name}|${lng.toFixed(6)},${lat.toFixed(6)}`;
-      const existing = merged.get(key);
-      if (existing) {
-        existing.flow += flow;
+  odRows.forEach((item) => {
+    if (!item) return;
+    const originName = String(item.origin || "").trim();
+    const destinationName = String(item.destination || "").trim();
+    const counterpartName = String(
+      item.counterpart || (normalizeStationSearchName(originName) === selfName ? destinationName : originName)
+    ).trim();
+    if (!counterpartName) return;
+
+    const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
+    if (flow <= 0) return;
+
+    const counterpartKey = normalizeStationSearchName(counterpartName);
+    const originKey = normalizeStationSearchName(originName);
+    const destinationKey = normalizeStationSearchName(destinationName);
+    const counterpartSide = counterpartKey === destinationKey
+      ? "destination"
+      : counterpartKey === originKey
+        ? "origin"
+        : originKey === selfName
+          ? "destination"
+          : "origin";
+    const direction = counterpartSide === "destination" ? "outbound" : "inbound";
+    let lng = toFiniteCoord(counterpartSide === "origin" ? item.originX : item.destinationX);
+    let lat = toFiniteCoord(counterpartSide === "origin" ? item.originY : item.destinationY);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+      const coord = stationCoordByName(counterpartName);
+      const ll = coord && Number.isFinite(coord.x) && Number.isFinite(coord.y) ? webMercatorToLngLat(coord.x, coord.y) : null;
+      if (ll && ll.every(Number.isFinite)) {
+        [lng, lat] = ll;
       } else {
-        merged.set(key, { name, lng, lat, flow });
+        return;
       }
-    });
-    return Array.from(merged.values()).sort((a, b) => b.flow - a.flow);
-  };
+    }
 
-  const inboundItems = buildItems("inbound");
-  if (inboundItems.length) return { direction: "inbound", items: inboundItems };
-  return { direction: "outbound", items: buildItems("outbound") };
+    const key = counterpartKey || counterpartName;
+    const existing = merged.get(key);
+    if (existing) {
+      existing.flow += flow;
+      existing.inboundFlow += direction === "inbound" ? flow : 0;
+      existing.outboundFlow += direction === "outbound" ? flow : 0;
+      existing.direction = existing.inboundFlow > 0 && existing.outboundFlow > 0 ? "both" : direction;
+    } else {
+      merged.set(key, {
+        name: counterpartName,
+        lng,
+        lat,
+        flow,
+        inboundFlow: direction === "inbound" ? flow : 0,
+        outboundFlow: direction === "outbound" ? flow : 0,
+        direction,
+      });
+    }
+  });
+
+  const items = Array.from(merged.values()).sort((a, b) => b.flow - a.flow);
+  const hasInbound = items.some((item) => item.inboundFlow > 0);
+  const hasOutbound = items.some((item) => item.outboundFlow > 0);
+  const direction = hasInbound && hasOutbound ? "both" : hasOutbound ? "outbound" : "inbound";
+  return { direction, items };
 });
 
 const odCurveMaxFlow = computed(() =>
   odCurveEntries.value.items.reduce((max, item) => Math.max(max, item.flow), 0)
 );
 
+// 把当前OD最大客流与客流分布回报给 index.vue（左下角图例据此按分位数换算人次）；
+// 非OD子功能或无数据时归零/清空，让图例自动隐藏。
+watch(
+  [odCurveEntries, pfaStationSection, shouldRenderPfaRightPanel],
+  () => {
+    const active = shouldRenderPfaRightPanel.value && pfaStationSection.value === "od";
+    const items = odCurveEntries.value.items;
+    if (runMonitorOdCurveMaxFlow) runMonitorOdCurveMaxFlow.value = active ? odCurveMaxFlow.value : 0;
+    if (runMonitorOdCurveValues) runMonitorOdCurveValues.value = active ? items.map((item) => item.flow) : [];
+  },
+  { immediate: true },
+);
+
 const odCurveDirectionLabel = computed(() => {
   if (!odCurveEntries.value.items.length) return "当前时段无OD曲线";
-  return odCurveEntries.value.direction === "inbound"
-    ? "展示方向：到站（来源站 → 本站）"
-    : "本站暂无到站OD，已展示出站方向（本站 → 目的站）";
+  if (odCurveEntries.value.direction === "inbound") return "展示方向：到站（来源站 → 本站）";
+  if (odCurveEntries.value.direction === "outbound") return "展示方向：出站（本站 → 目的站）";
+  return "展示方向：到站 + 出站（按对端站汇总）";
 });
 
 const odCurveLegendTitle = computed(() =>
-  odCurveEntries.value.direction === "inbound" ? "到站OD客流" : "出站OD客流"
+  odCurveEntries.value.direction === "inbound"
+    ? "到站OD客流"
+    : odCurveEntries.value.direction === "outbound"
+      ? "出站OD客流"
+      : "客流OD"
 );
 
 // 图例断点：百分比 → 人次
@@ -2900,6 +2995,8 @@ onUnmounted(() => {
   cleanUpSelectedStationRing();
   cleanUpReachabilityOverlay();
   cleanUpOdCurveOverlay();
+  if (runMonitorOdCurveMaxFlow) runMonitorOdCurveMaxFlow.value = 0;
+  if (runMonitorOdCurveValues) runMonitorOdCurveValues.value = [];
   rightPanelHasContent.value = false;
 });
 

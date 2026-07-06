@@ -11,15 +11,22 @@
 const P = "opt-editor"; // 前缀，避免与其他模块冲突
 
 export const LAYER_IDS = {
+  roadLines: `${P}-road-lines`,
   baseLines: `${P}-base-lines`,
   baseLinesHit: `${P}-base-lines-hit`,
   baseStops: `${P}-base-stops`,
+  baseStopLabels: `${P}-base-stop-labels`,
+  linePickedLine: `${P}-line-picked-line`,
+  linePickedStops: `${P}-line-picked-stops`,
+  linePickedSeq: `${P}-line-picked-seq`,
   areaFill: `${P}-area-fill`,
   areaLine: `${P}-area-line`,
   areaBuffer: `${P}-area-buffer`,
   mask: `${P}-mask`,
   overlayLines: `${P}-overlay-lines`,
   overlayPoints: `${P}-overlay-points`,
+  editPreviewLines: `${P}-edit-preview-lines`,
+  editPreviewStops: `${P}-edit-preview-stops`,
   toolLine: `${P}-tool-line`,
   toolAnchors: `${P}-tool-anchors`,
   toolPoint: `${P}-tool-point`,
@@ -28,12 +35,15 @@ export const LAYER_IDS = {
 };
 
 const SOURCES = {
+  road: `${P}-src-road`,
   baseLines: `${P}-src-base-lines`,
   baseStops: `${P}-src-base-stops`,
   area: `${P}-src-area`,
   areaBuffer: `${P}-src-area-buffer`,
   mask: `${P}-src-mask`,
   overlay: `${P}-src-overlay`,
+  editPreview: `${P}-src-edit-preview`,
+  linePicked: `${P}-src-line-picked`,
   tool: `${P}-src-tool`,
   highlight: `${P}-src-highlight`,
 };
@@ -52,6 +62,40 @@ function ensureLayer(map, layer) {
   if (!map.getLayer(layer.id)) {
     map.addLayer(layer);
   }
+}
+
+// ==================== 编辑期路网底图 ====================
+
+/**
+ * 研究区域内可行车路网（灰色细线）。绘制/补画路径时开启，供沿路网点选参考。
+ * segments: [[[lng,lat],[lng,lat]], ...]
+ */
+export function updateRoadNetwork(map, segments) {
+  const data = segments && segments.length
+    ? { type: "Feature", geometry: { type: "MultiLineString", coordinates: segments }, properties: {} }
+    : EMPTY;
+  ensureSource(map, SOURCES.road, data);
+  if (!map.getLayer(LAYER_IDS.roadLines)) {
+    // 保持在其它编辑图层之下
+    const before = [
+      LAYER_IDS.baseLines, LAYER_IDS.overlayLines, LAYER_IDS.editPreviewLines,
+      LAYER_IDS.toolLine, LAYER_IDS.highlightLine,
+    ].find((id) => map.getLayer(id));
+    map.addLayer({
+      id: LAYER_IDS.roadLines,
+      type: "line",
+      source: SOURCES.road,
+      paint: {
+        "line-color": "#94a3b8",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 11, 0.4, 14, 1.1, 17, 2.2],
+        "line-opacity": 0.65,
+      },
+    }, before);
+  }
+}
+
+export function clearRoadNetwork(map) {
+  ensureSource(map, SOURCES.road, EMPTY);
 }
 
 // ==================== 底图：线路与站点 ====================
@@ -90,6 +134,76 @@ export function updateBaseNetwork(map, routeFeatures, stopFeatures) {
       "circle-opacity": 0.95,
     },
   });
+  // 站点名称标注（建线点选时显示"全部站点和名称"）
+  ensureLayer(map, {
+    id: LAYER_IDS.baseStopLabels,
+    type: "symbol",
+    source: SOURCES.baseStops,
+    minzoom: 13,
+    layout: {
+      "text-field": ["coalesce", ["get", "name"], ""],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 13, 10, 16, 13],
+      "text-anchor": "left",
+      "text-offset": [0.7, 0],
+      "text-max-width": 8,
+      "text-optional": true,
+      "text-padding": 2,
+    },
+    paint: {
+      "text-color": "#1f3132",
+      "text-halo-color": "rgba(248, 251, 252, 0.94)",
+      "text-halo-width": 1.5,
+      "text-halo-blur": 0.4,
+    },
+  });
+}
+
+// ==================== 新增线路：已选站序高亮 + 沿路径连线 ====================
+
+/**
+ * features: 停靠站点（Point，properties.kind='stop', seq 序号）、路径途经点（kind='road'）
+ * 与沿路网连线（LineString）。
+ */
+export function updateLinePicked(map, features) {
+  ensureSource(map, SOURCES.linePicked, { type: "FeatureCollection", features: features || [] });
+  ensureLayer(map, {
+    id: LAYER_IDS.linePickedLine,
+    type: "line",
+    source: SOURCES.linePicked,
+    filter: ["==", ["geometry-type"], "LineString"],
+    paint: { "line-color": "#16a34a", "line-width": 4, "line-opacity": 0.9 },
+  });
+  ensureLayer(map, {
+    id: LAYER_IDS.linePickedStops,
+    type: "circle",
+    source: SOURCES.linePicked,
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      // 停靠站=大绿点；路径途经点=小灰点
+      "circle-radius": ["match", ["get", "kind"], "road", 4.5, 11],
+      "circle-color": ["match", ["get", "kind"], "road", "#ffffff", "#16a34a"],
+      "circle-stroke-color": ["match", ["get", "kind"], "road", "#94a3b8", "#ffffff"],
+      "circle-stroke-width": 2,
+    },
+  });
+  ensureLayer(map, {
+    id: LAYER_IDS.linePickedSeq,
+    type: "symbol",
+    source: SOURCES.linePicked,
+    filter: ["==", ["geometry-type"], "Point"],
+    layout: {
+      // 仅停靠站显示序号
+      "text-field": ["case", ["==", ["get", "kind"], "stop"], ["to-string", ["get", "seq"]], ""],
+      "text-size": 12,
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+    },
+    paint: { "text-color": "#ffffff" },
+  });
+}
+
+export function clearLinePicked(map) {
+  ensureSource(map, SOURCES.linePicked, EMPTY);
 }
 
 // ==================== 研究区域 ====================
@@ -288,9 +402,48 @@ export function updateOverlay(map, features) {
   });
 }
 
+// ==================== 调整站点编辑预览 ====================
+
+/**
+ * 调整站点面板的地图预览：分段线（沿用/已补画/缺失）+ 站点序列。
+ * features 由面板组装，线 props: {state: 'ok'|'drawn'|'gap'}；
+ * 点 props: {ptState: 'stop'|'new'|'hover', seq}
+ */
+export function updateEditPreview(map, features) {
+  ensureSource(map, SOURCES.editPreview, { type: "FeatureCollection", features: features || [] });
+  ensureLayer(map, {
+    id: LAYER_IDS.editPreviewLines,
+    type: "line",
+    source: SOURCES.editPreview,
+    filter: ["==", ["geometry-type"], "LineString"],
+    paint: {
+      "line-color": ["match", ["get", "state"], "drawn", "#0f9f6e", "gap", "#dc2626", "#3f82e0"],
+      "line-width": ["match", ["get", "state"], "gap", 3, 4.5],
+      "line-opacity": 0.9,
+      "line-dasharray": ["match", ["get", "state"], "gap", ["literal", [1.4, 1.2]], ["literal", [1, 0]]],
+    },
+  });
+  ensureLayer(map, {
+    id: LAYER_IDS.editPreviewStops,
+    type: "circle",
+    source: SOURCES.editPreview,
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      "circle-radius": ["match", ["get", "ptState"], "hover", 9, "new", 6.5, 5],
+      "circle-color": ["match", ["get", "ptState"], "hover", "#f97316", "new", "#16a34a", "#ffffff"],
+      "circle-stroke-color": ["match", ["get", "ptState"], "hover", "#ffffff", "new", "#ffffff", "#1569de"],
+      "circle-stroke-width": 2,
+    },
+  });
+}
+
+export function clearEditPreview(map) {
+  ensureSource(map, SOURCES.editPreview, EMPTY);
+}
+
 // ==================== 工具预览 ====================
 
-export function updateToolPreview(map, { anchors = [], pathGeometry = null, cursor = null, point = null, segments = [] }) {
+export function updateToolPreview(map, { anchors = [], pathGeometry = null, cursor = null, point = null, segments = [], endpoints = [] }) {
   const features = [];
   if (pathGeometry && pathGeometry.length > 1) {
     features.push(lineFeature(pathGeometry, { role: "path" }));
@@ -303,6 +456,10 @@ export function updateToolPreview(map, { anchors = [], pathGeometry = null, curs
   anchors.forEach((a, idx) => features.push(pointFeature(a, { role: "anchor", idx })));
   if (point) {
     features.push(pointFeature(point, { role: "snap" }));
+  }
+  // 固定起终点（补画路径模式）：绿色大圆点，提示"从站点开始/到站点结束"
+  for (const ep of endpoints) {
+    if (Array.isArray(ep)) features.push(pointFeature(ep, { role: "endpoint" }));
   }
   for (const seg of segments) {
     if (Array.isArray(seg) && seg.length > 1) {
@@ -327,8 +484,8 @@ export function updateToolPreview(map, { anchors = [], pathGeometry = null, curs
     source: SOURCES.tool,
     filter: ["==", ["geometry-type"], "Point"],
     paint: {
-      "circle-radius": ["match", ["get", "role"], "snap", 8, 5.5],
-      "circle-color": ["match", ["get", "role"], "snap", "#0f9f6e", "#1569de"],
+      "circle-radius": ["match", ["get", "role"], "snap", 8, "endpoint", 9, 5.5],
+      "circle-color": ["match", ["get", "role"], "snap", "#0f9f6e", "endpoint", "#16a34a", "#1569de"],
       "circle-stroke-color": "#ffffff",
       "circle-stroke-width": 2,
     },
@@ -341,13 +498,17 @@ export function clearToolPreview(map) {
 
 // ==================== 选中高亮 ====================
 
-export function updateHighlight(map, routeGeometry, stopPoint) {
+export function updateHighlight(map, routeGeometry, stopPoint, routeStops = []) {
   const features = [];
   if (routeGeometry && routeGeometry.length > 1) {
     features.push(lineFeature(routeGeometry, { role: "route" }));
   }
   if (stopPoint) {
     features.push(pointFeature(stopPoint, { role: "stop" }));
+  }
+  // 选中线路沿线站点（搜索选线后随线一起显示）
+  for (const s of routeStops) {
+    if (Array.isArray(s)) features.push(pointFeature(s, { role: "route-stop" }));
   }
   ensureSource(map, SOURCES.highlight, { type: "FeatureCollection", features });
   ensureLayer(map, {
@@ -363,10 +524,10 @@ export function updateHighlight(map, routeGeometry, stopPoint) {
     source: SOURCES.highlight,
     filter: ["==", ["geometry-type"], "Point"],
     paint: {
-      "circle-radius": 10,
-      "circle-color": "rgba(21,105,222,0.15)",
+      "circle-radius": ["match", ["get", "role"], "route-stop", 4.5, 10],
+      "circle-color": ["match", ["get", "role"], "route-stop", "#ffffff", "rgba(21,105,222,0.15)"],
       "circle-stroke-color": "#1569de",
-      "circle-stroke-width": 3,
+      "circle-stroke-width": ["match", ["get", "role"], "route-stop", 2, 3],
     },
   });
 }

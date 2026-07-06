@@ -95,6 +95,13 @@ public class OptimizationController {
                 param.getDraftId(), param.getAnchors()));
     }
 
+    @Operation(summary = "研究区域内可行车路网（编辑期路网底图）")
+    @PostMapping("/roadNetwork")
+    public AjaxResult roadNetwork(@RequestBody OptimizationParams.RoadNetworkParam param) {
+        return AjaxResult.ok(snapRoutingService.roadNetwork(CurrentUser.getUsername(), param.getParentModel(),
+                param.getDraftId(), param.getArea()));
+    }
+
     @Operation(summary = "草稿校验")
     @PostMapping("/validate")
     public AjaxResult validate(@RequestBody OptimizationParams.DraftIdParam param) {
