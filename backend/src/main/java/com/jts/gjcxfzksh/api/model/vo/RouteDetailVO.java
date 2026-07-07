@@ -74,16 +74,16 @@ public class RouteDetailVO {
     private void appendInfo(TransitRoute route, Info info) {
         Map<Id<Departure>, Departure> departures = route.getDepartures();
         if (!departures.isEmpty()) {
-            List<Departure> ds = departures.values().stream().toList();
-            info.firstTime = ds.getFirst().getDepartureTime();
-            info.lastTime = ds.getLast().getDepartureTime();
+            // departures 底层按 Departure ID 字符串序（TreeMap）而非发车时刻序，
+            // 首末班必须对时刻取 min/max，否则 "10" 排在 "2" 前会取错班次。
+            info.firstTime = departures.values().stream()
+                    .mapToDouble(Departure::getDepartureTime).min().orElse(0.0);
+            info.lastTime = departures.values().stream()
+                    .mapToDouble(Departure::getDepartureTime).max().orElse(0.0);
         }
-//        info.departureInterval = new ArrayList<>();
-//        for (PtTransitDepartureRule departureRule : departureRules) {
-//            info.departureInterval.add(departureRule.getBeginTime() + " - " + departureRule.getEndTime() + ", " + (departureRule.getSpaces() / 60) + "分");
-//        }
         info.facNum = route.getStops().size();
-        info.facDist = info.facNum == 0 ? 0.0 : info.routeDist / info.facNum;
+        // 平均站距 = 线路长度 / 站间区间数（站数-1），与前端兜底口径一致
+        info.facDist = info.facNum <= 1 ? 0.0 : info.routeDist / (info.facNum - 1);
         this.info = info;
     }
 

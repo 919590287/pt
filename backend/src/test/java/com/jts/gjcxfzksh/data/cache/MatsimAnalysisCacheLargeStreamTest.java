@@ -592,7 +592,7 @@ class MatsimAnalysisCacheLargeStreamTest {
     }
 
     private void assertPersonTracksContain(Path cache, String value) throws Exception {
-        Path tracks = cache.resolve("pt-events-v2").resolve("person-tracks.tsv.gz");
+        Path tracks = cache.resolve("pt-events-v3").resolve("person-tracks.tsv.gz");
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new GZIPInputStream(Files.newInputStream(tracks)), StandardCharsets.UTF_8))) {
             assertTrue(reader.lines().anyMatch(line -> line.contains(value)));
         }

@@ -6,6 +6,7 @@ let areaListCache = null;
 let areaListPromise = null;
 const realDataCache = new Map();
 const realDataPromises = new Map();
+const routeStopsPromises = new Map();
 const historyCache = new Map();
 const historyPromises = new Map();
 const adminDistrictCache = new Map();
@@ -63,7 +64,9 @@ export async function getCachedRealData(areaName = DEFAULT_AREA, options = {}) {
   const request = getBusLineStation(
     {
       areaName: area,
-      ...(versionId ? { versionId } : {}),
+      // 最新数据轻载（routeStops 以 deferred 占位，另行懒加载）；历史版本预览保持全量。
+      // 旧后端会忽略未知的 include 字段并返回全量，天然向后兼容。
+      ...(versionId ? { versionId } : { include: "core" }),
     },
     { silentError: true },
   )
@@ -83,6 +86,36 @@ export async function getCachedRealData(areaName = DEFAULT_AREA, options = {}) {
 
   realDataPromises.set(key, request);
   return request;
+}
+
+export function isRouteStopsDeferred(data) {
+  return data?.routeStops?.deferred === true;
+}
+
+// 懒加载 routeStops 并原地合并进最新数据缓存对象（引用不变，所有持有方立即可见）。
+// 返回合并后的 data；合并失败（版本错配/请求失败）时 data.routeStops 仍为 deferred 占位，调用方可重试。
+export function ensureCachedRouteStops(areaName = DEFAULT_AREA) {
+  const area = normalizeArea(areaName);
+  const existing = routeStopsPromises.get(area);
+  if (existing) return existing;
+  const generation = realDataGenerations.get(area) || 0;
+  const promise = getCachedRealData(area)
+    .then(async (data) => {
+      if (!isRouteStopsDeferred(data)) return data;
+      const res = await getBusLineStation({ areaName: area, include: "routeStops" }, { silentError: true });
+      if ((realDataGenerations.get(area) || 0) !== generation) return data;
+      const payload = res?.data || {};
+      const sameVersion = String(payload.versionId || "") === String(data.versionId || "");
+      if (payload.routeStops && sameVersion) {
+        data.routeStops = payload.routeStops;
+      }
+      return data;
+    })
+    .finally(() => {
+      routeStopsPromises.delete(area);
+    });
+  routeStopsPromises.set(area, promise);
+  return promise;
 }
 
 export async function getCachedAdminDistricts(areaName = DEFAULT_AREA, options = {}) {
@@ -135,6 +168,7 @@ export function invalidateCachedRealData(areaName = "") {
   if (!areaName) {
     realDataCache.clear();
     realDataPromises.clear();
+    routeStopsPromises.clear();
     return;
   }
   const prefix = `${normalizeArea(areaName)}::`;
@@ -146,6 +180,7 @@ export function invalidateCachedRealData(areaName = "") {
   [...realDataPromises.keys()].forEach((key) => {
     if (key.startsWith(prefix)) realDataPromises.delete(key);
   });
+  routeStopsPromises.delete(area);
 }
 
 export function invalidateCachedHistory(areaName = "") {
@@ -175,5 +210,7 @@ export function invalidateCachedAdminDistricts(areaName = "") {
 export function warmRealData(areaName = DEFAULT_AREA) {
   getCachedAreaList().catch(() => [DEFAULT_AREA]);
   getCachedAdminDistricts(areaName).catch(() => null);
-  getCachedRealData(areaName).catch(() => null);
+  getCachedRealData(areaName)
+    .then(() => ensureCachedRouteStops(areaName))
+    .catch(() => null);
 }

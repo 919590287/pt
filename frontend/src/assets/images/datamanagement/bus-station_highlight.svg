@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 选中/高亮站点：橙色（#f97316，与选中线路同色）粗描边空心圈 + 橙色靶心，白色光晕。 -->
+<!-- 选中/高亮站点：橙色（#f97316，与选中线路同色）空心环 + 靶心，
+     外圈同色低透明焦点环（focus ring）+ 白色光晕，形成"被点亮"的层次。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
-  <circle cx="48" cy="48" r="42" fill="#ffffff" fill-opacity="0.95"/>
-  <circle cx="48" cy="48" r="31" fill="#ffffff" stroke="#f97316" stroke-width="11"/>
-  <circle cx="48" cy="48" r="12" fill="#f97316"/>
+  <circle cx="48" cy="48" r="43" fill="none" stroke="#f97316" stroke-opacity="0.18" stroke-width="7"/>
+  <circle cx="48" cy="48" r="40" fill="#ffffff" fill-opacity="0.55"/>
+  <circle cx="48" cy="48" r="34" fill="#ffffff"/>
+  <circle cx="48" cy="48" r="34" fill="none" stroke="#ea6a0e" stroke-opacity="0.3" stroke-width="1.5"/>
+  <circle cx="48" cy="48" r="25.5" fill="#ffffff" stroke="#f97316" stroke-width="10"/>
+  <circle cx="48" cy="48" r="10" fill="#f97316"/>
 </svg>

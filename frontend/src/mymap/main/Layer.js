@@ -3,6 +3,10 @@ import { EventListener } from "./EventListener";
 
 const RENDER_ORDER_MAX_NUM = 9999999;
 
+// 模块级自增：原 parseInt(Math.random()*255*255*255).toString(16) 存在生日碰撞概率，
+// 碰撞会导致共享 deck 注册表 key / source-layer id 互相覆盖且无告警
+let _layerIdCounter = 0;
+
 export class Layer extends EventListener {
   name = "Layer";
   id = null;
@@ -29,7 +33,7 @@ export class Layer extends EventListener {
 
   constructor({ zIndex = 0, visible = true, event } = {}) {
     super({ event });
-    this.id = parseInt(Math.random() * 255 * 255 * 255).toString(16);
+    this.id = `layer-${++_layerIdCounter}`;
     this.zIndex = zIndex;
     this.visible = visible;
     this.pickColorNum = 0;

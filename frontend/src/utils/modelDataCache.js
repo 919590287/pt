@@ -1,12 +1,38 @@
+import { markRaw } from "vue";
+import { dataEvaluation } from "@/api/data.js";
 import { getFacilityAll, getStationPanel } from "@/api/facility.js";
 import { getLineAll, getRoutePanel } from "@/api/route.js";
+
+// 缓存的模型数上限（LRU）：监测页当前模型 + 方案编辑父模型 + 少量历史，超出淘汰最久未用的
+const MAX_CACHED_MODELS = 4;
+// lineAll / routePanel / stationPanel 都是模型级大 payload。
+// 首次读取在机械硬盘或冷缓存下经常接近 60s，不能沿用全局接口超时。
+const HEAVY_MODEL_REQUEST_TIMEOUT_MS = 180_000;
 
 const modelCache = new Map();
 const pendingControllers = new Map();
 const warmupPromises = new Map();
+const warmupRetryTimers = new Map();
 
 function modelKey(model) {
   return String(model || "");
+}
+
+function hasPendingFor(key) {
+  const prefix = `${key}::`;
+  for (const pendingKey of pendingControllers.keys()) {
+    if (pendingKey.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+function evictStaleModels() {
+  while (modelCache.size > MAX_CACHED_MODELS) {
+    const oldestKey = modelCache.keys().next().value;
+    // 有在途请求的模型不淘汰，避免撕裂 in-flight promise 去重语义
+    if (hasPendingFor(oldestKey)) break;
+    modelCache.delete(oldestKey);
+  }
 }
 
 function entryFor(model) {
@@ -14,9 +40,20 @@ function entryFor(model) {
   let entry = modelCache.get(key);
   if (!entry) {
     entry = {};
-    modelCache.set(key, entry);
+  } else {
+    modelCache.delete(key); // Map 插入序即 LRU 序：命中时重插到队尾
   }
+  modelCache.set(key, entry);
+  evictStaleModels();
   return entry;
+}
+
+// 大 payload 入缓存前统一 markRaw：任何组件即使把它放进深层 ref/reactive，
+// Vue 也会跳过代理（__v_skip），从源头消除全量数据的深响应式开销。
+// 约定：缓存数据只读、只做整值替换（scenarioedit 的编辑走独立 draft.edits，不改此数据）。
+function markRawDeepEnough(data) {
+  if (data && typeof data === "object") return markRaw(data);
+  return data;
 }
 
 function controllerKey(model, type) {
@@ -28,6 +65,14 @@ function isCanceled(error) {
     || error?.message === "canceled"
     || error?.cause?.message === "canceled"
     || error?.cause?.code === "ERR_CANCELED";
+}
+
+function isPanelReady(data, type) {
+  if (!data || data.status === "generating") return false;
+  if (type === "routePanel") return Boolean(data.routes);
+  if (type === "stationPanel") return Boolean(data.stations);
+  if (type === "evaluation") return Boolean(data.values);
+  return true;
 }
 
 function sharedModelRequest(model, type, requestFn) {
@@ -42,9 +87,12 @@ function sharedModelRequest(model, type, requestFn) {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   if (controller) pendingControllers.set(controllerKey(key, type), controller);
 
-  entry[promiseKey] = requestFn({ datasource: key }, { silentError: true, signal: controller?.signal })
+  entry[promiseKey] = requestFn(
+    { datasource: key },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
     .then((res) => {
-      const data = Array.isArray(res?.data) ? res.data : [];
+      const data = markRawDeepEnough(Array.isArray(res?.data) ? res.data : []);
       entry[dataKey] = data;
       return data;
     })
@@ -77,9 +125,13 @@ function sharedModelPanelRequest(model, type, requestFn) {
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   if (controller) pendingControllers.set(controllerKey(key, type), controller);
 
-  entry[promiseKey] = requestFn({ datasource: key }, { silentError: true, signal: controller?.signal })
+  entry[promiseKey] = requestFn(
+    { datasource: key },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
     .then((res) => {
-      const data = res?.data && typeof res.data === "object" ? res.data : null;
+      const raw = res?.data && typeof res.data === "object" ? res.data : null;
+      const data = raw ? markRawDeepEnough(raw) : raw;
       if (data && data.status !== "generating") {
         entry[dataKey] = data;
       }
@@ -116,12 +168,63 @@ export function getCachedStationPanel(model) {
   return sharedModelPanelRequest(model, "stationPanel", getStationPanel);
 }
 
+export function getCachedEvaluation(model) {
+  return sharedModelPanelRequest(model, "evaluation", dataEvaluation);
+}
+
 function runWhenIdle(fn) {
   if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
     window.requestIdleCallback(fn, { timeout: 3000 });
     return;
   }
   setTimeout(fn, 0);
+}
+
+function clearWarmupRetry(key) {
+  const timer = warmupRetryTimers.get(key);
+  if (timer) {
+    clearTimeout(timer);
+    warmupRetryTimers.delete(key);
+  }
+}
+
+function scheduleWarmPanelRetry(model, type, loader, attempt = 0) {
+  const key = `${modelKey(model)}::${type}::retry`;
+  if (!modelKey(model) || warmupRetryTimers.has(key) || attempt >= 90) return;
+  const delay = Math.min(15_000, 2_000 + attempt * 750);
+  const timer = setTimeout(() => {
+    warmupRetryTimers.delete(key);
+    loader(model)
+      .then((data) => {
+        if (!isPanelReady(data, type)) {
+          scheduleWarmPanelRetry(model, type, loader, attempt + 1);
+        }
+      })
+      .catch((error) => {
+        if (!isCanceled(error)) {
+          scheduleWarmPanelRetry(model, type, loader, attempt + 1);
+        }
+      });
+  }, delay);
+  warmupRetryTimers.set(key, timer);
+}
+
+function warmPanel(model, type, loader) {
+  return loader(model)
+    .then((data) => {
+      if (isPanelReady(data, type)) {
+        clearWarmupRetry(`${modelKey(model)}::${type}::retry`);
+      } else {
+        scheduleWarmPanelRetry(model, type, loader);
+      }
+      return data;
+    })
+    .catch((error) => {
+      if (!isCanceled(error)) {
+        scheduleWarmPanelRetry(model, type, loader);
+      }
+      return null;
+    });
 }
 
 // 模型进入前预热客流交互所需的前端缓存：
@@ -131,9 +234,14 @@ function runWhenIdle(fn) {
 export function warmModelInteractionCache(model, options = {}) {
   const key = modelKey(model);
   if (!key) return Promise.resolve(null);
-  const { includeStationPanel = false } = options;
-  const warmupKey = `${key}::${includeStationPanel ? "station" : "line"}`;
+  const { includeStationPanel = true, includeEvaluation = true, waitForHeavy = false } = options;
+  const warmupKey = `${key}::${includeStationPanel ? "station" : "line"}::${includeEvaluation ? "eval" : "noeval"}::${waitForHeavy ? "wait" : "idle"}`;
   if (warmupPromises.has(warmupKey)) return warmupPromises.get(warmupKey);
+
+  const warmHeavyPanels = () => Promise.allSettled([
+    includeStationPanel ? warmPanel(key, "stationPanel", getCachedStationPanel) : Promise.resolve(null),
+    includeEvaluation ? warmPanel(key, "evaluation", getCachedEvaluation) : Promise.resolve(null),
+  ]);
 
   const promise = Promise.all([
     getCachedLineAll(key),
@@ -141,10 +249,11 @@ export function warmModelInteractionCache(model, options = {}) {
     getCachedRoutePanel(key),
   ])
     .then(([lines, facilities, routePanel]) => {
-      if (includeStationPanel) {
-        runWhenIdle(() => {
-          getCachedStationPanel(key).catch(() => {});
-        });
+      if (includeStationPanel || includeEvaluation) {
+        if (waitForHeavy) {
+          return warmHeavyPanels().then(() => ({ lines, facilities, routePanel }));
+        }
+        runWhenIdle(warmHeavyPanels);
       }
       return { lines, facilities, routePanel };
     })
@@ -162,6 +271,55 @@ export function peekCachedRoutePanel(model) {
   return modelCache.get(modelKey(model))?.routePanelData || null;
 }
 
+// ---------- 模型级派生数据缓存 ----------
+// 目标：把"从整包数据构建索引/排序选项/拓扑"这类只依赖模型的重计算，
+// 前移到模型加载后只算一次，组件重挂载/tab 往返时直接命中，不再逐次重建。
+// builder 同步执行、结果 markRaw 后随模型 entry 一起 LRU 淘汰。
+export function getModelDerived(model, derivedKey, builder) {
+  const key = modelKey(model);
+  if (!key) return builder();
+  const entry = entryFor(key);
+  if (!entry.derived) entry.derived = new Map();
+  if (entry.derived.has(derivedKey)) return entry.derived.get(derivedKey);
+  const value = markRawDeepEnough(builder());
+  entry.derived.set(derivedKey, value);
+  return value;
+}
+
+// 使某个派生键失效（如显示范围等额外输入变化时由调用方主动失效）
+export function invalidateModelDerived(model, derivedKey) {
+  const entry = modelCache.get(modelKey(model));
+  entry?.derived?.delete(derivedKey);
+}
+
+// 模型作用域的通用 Map（如线路详情缓存）：随模型 entry 生命周期存活与淘汰，
+// 跨组件重挂载共享。limit 超出时按插入序淘汰最旧条目。
+export function getModelScopedMap(model, namespace) {
+  const key = modelKey(model);
+  const entry = entryFor(key);
+  if (!entry.scopedMaps) entry.scopedMaps = new Map();
+  let map = entry.scopedMaps.get(namespace);
+  if (!map) {
+    map = new Map();
+    entry.scopedMaps.set(namespace, map);
+  }
+  return map;
+}
+
+export function setScopedWithLimit(map, key, value, limit = 80) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, markRawDeepEnough(value));
+  while (map.size > limit) {
+    map.delete(map.keys().next().value);
+  }
+  return value;
+}
+
+// 测试与诊断用：当前缓存的模型键（按 LRU 序，队尾最新）
+export function __modelCacheKeys() {
+  return Array.from(modelCache.keys());
+}
+
 export function clearModelDataCache(model) {
   const key = modelKey(model);
   if (!key) return;
@@ -169,6 +327,11 @@ export function clearModelDataCache(model) {
   for (const pendingKey of Array.from(warmupPromises.keys())) {
     if (pendingKey.startsWith(`${key}::`)) {
       warmupPromises.delete(pendingKey);
+    }
+  }
+  for (const pendingKey of Array.from(warmupRetryTimers.keys())) {
+    if (pendingKey.startsWith(`${key}::`)) {
+      clearWarmupRetry(pendingKey);
     }
   }
   for (const [pendingKey, controller] of pendingControllers.entries()) {

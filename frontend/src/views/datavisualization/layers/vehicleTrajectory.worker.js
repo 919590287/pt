@@ -4,7 +4,9 @@ const MODE_KEYS = ["bus", "subway", "car"];
 const MODE_CODE_TO_KEY = ["bus", "subway", "car"];
 const VEHICLE_VISIBILITY_MODES = ["all", "public", "private"];
 const MIN_FRAME_CAPACITY = 1024;
-const MAX_POOLED_FRAME_BYTES = 96 * 1024 * 1024;
+// 帧缓冲池上限：池只服务 vehicle-frame 路径（主用的 GPU 段帧每秒 8 个小数组、GC 可承受），
+// 96MB 按 byteLength 分桶最坏可长期滞留，收敛到 32MB 足够覆盖峰值车数
+const MAX_POOLED_FRAME_BYTES = 32 * 1024 * 1024;
 const COMPACT_SECOND_INDEX_MAX_REFS = 8_000_000;
 const CHUNK_STORE_MEMORY_GB = Math.max(4, Math.min(8, Number(self.navigator?.deviceMemory) || 6));
 const MAX_CHUNK_STORE_BYTES = Math.round(CHUNK_STORE_MEMORY_GB * 48 * 1024 * 1024);
@@ -466,9 +468,10 @@ function activeFromBinaryVehicleIndex(time, data, originX, originY) {
   };
 }
 
-function binaryOffsetsForSecondWindow(second, values, index) {
+function binaryOffsetsForSecondWindow(second, values, index, windowSeconds = 1) {
   const windowStart = Math.floor(Number(second) || 0);
-  const windowEnd = windowStart + 1;
+  const windowSize = Math.max(1, Math.min(8, Math.floor(Number(windowSeconds) || 1)));
+  const windowEnd = windowStart + windowSize;
   if (!index) {
     const offsets = [];
     for (let offset = 0; offset < values.length; offset += BINARY_STRIDE) {
@@ -483,7 +486,23 @@ function binaryOffsetsForSecondWindow(second, values, index) {
     if (bucketIndex < 0 || bucketIndex >= index.seconds) {
       return new Int32Array(0);
     }
-    return index.offsets.subarray(index.bucketStarts[bucketIndex], index.bucketStarts[bucketIndex + 1]);
+    if (windowSize === 1) {
+      return index.offsets.subarray(index.bucketStarts[bucketIndex], index.bucketStarts[bucketIndex + 1]);
+    }
+    const seen = new Set();
+    const offsets = [];
+    const lastBucket = Math.min(index.seconds, bucketIndex + windowSize);
+    for (let bucket = bucketIndex; bucket < lastBucket; bucket++) {
+      const from = index.bucketStarts[bucket];
+      const to = index.bucketStarts[bucket + 1];
+      for (let i = from; i < to; i++) {
+        const offset = index.offsets[i];
+        if (seen.has(offset)) continue;
+        seen.add(offset);
+        offsets.push(offset);
+      }
+    }
+    return offsets;
   }
   if (index.kind === "vehicle") {
     const offsets = [];
@@ -536,11 +555,13 @@ function createSegmentFrame({ bucketSecond, origin, count, startXs, startYs, end
   };
 }
 
-function segmentFrameFromBinary(time, data) {
+function segmentFrameFromBinary(time, data, windowSeconds = 1) {
   const values = data?.segments;
   if (!values?.length) {
+    const windowSize = Math.max(1, Math.min(8, Math.floor(Number(windowSeconds) || 1)));
+    const bucketSecond = Math.floor(Math.max(0, Number(time) || 0) / windowSize) * windowSize;
     const frame = createSegmentFrame({
-      bucketSecond: Math.floor(Number(time) || 0),
+      bucketSecond,
       origin: data?.origin || [0, 0],
       count: 0,
       startXs: new Float32Array(0),
@@ -556,8 +577,9 @@ function segmentFrameFromBinary(time, data) {
   }
 
   const seconds = Math.max(0, Number(time) || 0);
-  const bucketSecond = Math.floor(seconds);
-  const offsets = binaryOffsetsForSecondWindow(bucketSecond, values, data.index);
+  const windowSize = Math.max(1, Math.min(8, Math.floor(Number(windowSeconds) || 1)));
+  const bucketSecond = Math.floor(seconds / windowSize) * windowSize;
+  const offsets = binaryOffsetsForSecondWindow(bucketSecond, values, data.index, windowSize);
   const capacity = offsets.length;
   const startXs = new Float32Array(capacity);
   const startYs = new Float32Array(capacity);
@@ -814,7 +836,7 @@ function activeAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode)
     : activeFromJson(seconds, indexed);
 }
 
-function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode) {
+function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode, bucketSeconds = 1) {
   currentVisibilityMode = normalizeVisibilityMode(visibilityMode);
   if (!indexed) {
     const frame = createSegmentFrame({
@@ -833,7 +855,7 @@ function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilit
     return { segmentFrame: frame, stats: emptyStats(), transfer: segmentFrameTransfer(frame) };
   }
   if (indexed.kind === "binary") {
-    return segmentFrameFromBinary(seconds, indexed);
+    return segmentFrameFromBinary(seconds, indexed, bucketSeconds);
   }
   return activeFromJson(seconds, indexed);
 }
@@ -868,7 +890,7 @@ self.onmessage = (event) => {
       const seconds = Number(message.seconds);
       if (Number.isFinite(seconds)) {
         const result = message.gpuSegments
-          ? segmentFrameAtChunk(indexed, Math.max(0, seconds), message.visibilityMode)
+          ? segmentFrameAtChunk(indexed, Math.max(0, seconds), message.visibilityMode, message.bucketSeconds)
           : activeAtChunk(indexed, Math.max(0, seconds), message.visibilityMode);
         const transfer = result.transfer || [];
         delete result.transfer;
@@ -906,7 +928,7 @@ self.onmessage = (event) => {
       activeKey = key;
       const seconds = Math.max(0, Number(message.seconds) || 0);
       const result = message.gpuSegments
-        ? segmentFrameAtChunk(indexed, seconds, message.visibilityMode)
+        ? segmentFrameAtChunk(indexed, seconds, message.visibilityMode, message.bucketSeconds)
         : activeAtChunk(indexed, seconds, message.visibilityMode);
       const transfer = result.transfer || [];
       delete result.transfer;
@@ -929,7 +951,7 @@ self.onmessage = (event) => {
     if (type === "setSegmentTime") {
       const indexed = activeKey != null ? chunkStore.get(activeKey) : null;
       const seconds = Math.max(0, Number(message.seconds) || 0);
-      const result = segmentFrameAtChunk(indexed, seconds, message.visibilityMode);
+      const result = segmentFrameAtChunk(indexed, seconds, message.visibilityMode, message.bucketSeconds);
       const transfer = result.transfer || [];
       delete result.transfer;
       respond(id, {

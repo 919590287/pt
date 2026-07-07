@@ -114,10 +114,8 @@
           <div class="header-actions-left">
             <div class="pfa-route-heading">
               <span class="pfa-route-name">{{ pfaRouteTitle }}</span>
-              <span v-if="pfaRouteEndpoints" class="pfa-route-endpoints">{{ pfaRouteEndpoints }}</span>
               <span class="pfa-route-sub">
                 {{ routeMetrics.stationCount }} · 全长 {{ routeMetrics.length }}
-                <span v-if="mergedStatsActive" class="pfa-merged-badge">全线（上下行合并）</span>
               </span>
             </div>
           </div>
@@ -173,7 +171,7 @@
               v-model="segmentTimeRange"
               range
               :min="6"
-              :max="22"
+              :max="23"
               :step="segmentTimeStep"
               :show-tooltip="false"
               class="time-range-slider"
@@ -192,7 +190,8 @@
                 <span class="col-load">满载率</span>
               </div>
               <div class="table-body">
-                <div v-for="(seg, idx) in routeSegments" :key="idx" class="table-row">
+                <!-- 环线/往返可能出现重名断面：组合键保证唯一稳定 -->
+                <div v-for="(seg, idx) in routeSegments" :key="`${seg.routeKey || ''}-${seg.fromFacilityId || seg.fromName || ''}-${seg.toFacilityId || seg.toName || ''}-${idx}`" class="table-row">
                   <span class="col-name">{{ seg.name }}</span>
                   <span class="col-flow">{{ seg.flow.toLocaleString() }}</span>
                   <span class="col-load">
@@ -206,25 +205,25 @@
 
           <!-- ② 站点分时段乘降（折线 / 柱状可切换；图表点击即全屏） -->
           <section v-else-if="pfaLineSection === 'boarding'" class="pfa-section">
-            <div class="section-header">
+            <div class="section-header boarding-section-header">
               <span class="section-title">站点乘降客流（按所选时段）</span>
-              <div class="section-actions">
-                <div class="chart-type-selector">
-                  <div
+              <div class="section-actions chart-mode-actions">
+                <div class="chart-type-selector" role="group" aria-label="站点乘降客流图表类型">
+                  <button
                     v-for="type in ['line', 'bar', 'heatmap']"
                     :key="type"
+                    type="button"
                     :class="['type-pill', boardingChartType === type ? 'active' : '']"
                     @click="boardingChartType = type"
                   >
                     {{ type === 'line' ? '折线图' : type === 'bar' ? '柱状图' : '热力图' }}
-                  </div>
+                  </button>
                 </div>
               </div>
             </div>
             <div class="boarding-chart-stack">
               <div class="boarding-chart-panel">
                 <div class="boarding-chart-title">
-                  <span>{{ routeDirectionText(currentSelectedRoute) }}</span>
                   <span class="boarding-chart-hint">点击图表全屏</span>
                 </div>
                 <!-- 热力图并入图表类型切换：占用更高的容器避免被裁切 -->
@@ -243,7 +242,7 @@
                           class="boarding-heatmap-panel-chart"
                           :option="boardingHeatmapOption"
                           autoresize
-                          :update-options="{ notMerge: true }"
+                          :update-options="{ replaceMerge: ['series'], lazyUpdate: true }"
                         />
                       </template>
                     </el-auto-resizer>
@@ -263,7 +262,7 @@
                         class="boarding-alighting-bar-chart"
                         :option="boardingAlightingChartOption"
                         autoresize
-                        :update-options="{ notMerge: true }"
+                        :update-options="{ replaceMerge: ['series'], lazyUpdate: true }"
                       />
                     </template>
                   </el-auto-resizer>
@@ -276,8 +275,7 @@
           <section v-else-if="pfaLineSection === 'demographics'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">客流画像</span>
-              <span v-if="mergedStatsActive || demographicsRiderCount" class="pfa-section-meta">
-                <span v-if="mergedStatsActive" class="pfa-merged-badge">全线（上下行合并）</span>
+              <span v-if="demographicsRiderCount" class="pfa-section-meta">
                 <span v-if="demographicsRiderCount">样本 {{ demographicsRiderCount.toLocaleString() }} 人</span>
               </span>
             </div>
@@ -308,7 +306,6 @@
           <section v-else-if="pfaLineSection === 'transfer'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">关联线路分析（直接换乘）</span>
-              <span v-if="mergedStatsActive" class="pfa-merged-badge">全线（上下行合并）</span>
             </div>
             <div
               class="transfer-analysis-layout"
@@ -322,7 +319,7 @@
                       class="transfer-bar-chart"
                       :option="transferChartOption"
                       autoresize
-                      :update-options="{ notMerge: true }"
+                      :update-options="{ replaceMerge: ['series'], lazyUpdate: true }"
                     />
                   </template>
                 </el-auto-resizer>
@@ -381,7 +378,7 @@
         <div class="ranking-scroll-list">
           <button
             v-for="(item, index) in currentLeaderboard"
-            :key="index"
+            :key="item.lineName"
             class="ranking-row"
             type="button"
             @click="selectLeaderboardLine(item)"
@@ -473,14 +470,11 @@
     </template>
     <div class="boarding-fullscreen-body">
       <section class="boarding-fullscreen-panel">
-        <div class="boarding-fullscreen-chart-title">
-          <span>{{ routeDirectionText(currentSelectedRoute) }}</span>
-        </div>
         <VChart
           class="boarding-fullscreen-chart"
           :option="boardingFullscreenChartOption"
           autoresize
-          :update-options="{ notMerge: true }"
+          :update-options="{ replaceMerge: ['series'], lazyUpdate: true }"
         />
       </section>
     </div>
@@ -500,7 +494,6 @@
         <div>
           <div class="boarding-heatmap-kicker">乘降热力图</div>
           <div class="boarding-heatmap-title">{{ pfaRouteTitle }}</div>
-          <div v-if="boardingHeatmapData.directionText" class="boarding-heatmap-subtitle">{{ boardingHeatmapData.directionText }}</div>
         </div>
         <span class="boarding-heatmap-meta">
           {{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }} · {{ segmentTimeUnit }}min · 站点 × 时段（乘+降）
@@ -513,7 +506,7 @@
         class="boarding-heatmap-chart"
         :option="boardingHeatmapOption"
         autoresize
-        :update-options="{ notMerge: true }"
+        :update-options="{ replaceMerge: ['series'], lazyUpdate: true }"
       />
       <el-empty v-else description="当前时段暂无乘降数据" />
     </div>
@@ -521,10 +514,11 @@
 </template>
 
 <script setup>
-import { ref, shallowRef, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick, unref } from "vue";
+import { ref, shallowRef, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick, unref, markRaw } from "vue";
 import { Search, Location, Download } from "@element-plus/icons-vue";
+import { saveAs } from "file-saver";
 import { getRouteDetail, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
-import { abortOtherModelDataRequests, getCachedLineAll, getCachedRoutePanel } from "@/utils/modelDataCache.js";
+import { abortOtherModelDataRequests, getCachedLineAll, getCachedRoutePanel, getModelDerived, getModelScopedMap, setScopedWithLimit } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import ColorScaleControl from "./ColorScaleControl.vue";
@@ -532,7 +526,10 @@ import { RouteLayer } from "../layers/RouteLayer.js";
 import { emptyFeatureCollection, stationsToFeatureCollection } from "../layers/maplibreLayerUtils.js";
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { buildFlowCurveFeatureCollection, emptyFlowCurveCollection } from "../utils/flowCurves.js";
+import { compareZh, createDebouncedMirror, isCanceledRequest } from "../utils/panelShared.js";
+import { provisionalRouteLinks } from "../utils/routeGeometry.js";
 import { buildValueLegendItems, classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale } from "@/utils/colorSchemes.js";
+import { MAP_THEME, hexNumber } from "@/utils/mapTheme.js";
 import { PURE_METRO_LINE, isMetroLine, metroLineCanonicalName, metroLineNumber } from "@/utils/transitMode.js";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 import { injectSync } from "@/utils";
@@ -543,35 +540,49 @@ const props = defineProps({
 
 const loading = ref(true);
 const searchMode = ref("line"); // "line" | "station"
-const rawLines = ref([]);
-const allLinks = ref([]);
-const routeDetailCache = new Map();
+// 全量线路数据体量大且所有赋值点均为整值替换，shallowRef 避免深层代理开销
+const rawLines = shallowRef([]);
+// rawLines 当前归属的模型：模型切换瞬间 rawLines 仍是旧数据，
+// 派生缓存以它为键，避免把旧模型的选项写进新模型的缓存
+let rawLinesModel = "";
+// 线路详情缓存下沉到模型级作用域：重挂载/切 tab 后仍命中，随模型 LRU 淘汰且模型间天然隔离
+const routeDetailCache = computed(() => getModelScopedMap(props.model, "xlzl:routeDetail"));
+// routeDetailCache 是非响应式 Map：写入处 bump 版本号、读取它的 computed 显式依赖版本号，
+// 使缓存写入能直接触发派生重算，不再依赖 selectedRouteDetail 赋值的旁路兜底
+const routeDetailCacheVersion = shallowRef(0);
+function writeRouteDetailCache(key, detail) {
+  setScopedWithLimit(routeDetailCache.value, key, detail, 80);
+  routeDetailCacheVersion.value += 1;
+  return detail;
+}
 const routePanelDetailCache = new Map();
+// 缓存值 markRaw：面板是只读大对象，防止后续被响应式 ref 深层代理
+function cachePanelDetail(key, panel) {
+  if (panel) routePanelDetailCache.set(key, markRaw(panel));
+  return panel;
+}
 const routePanelDetailPromises = new Map();
-const routePanelData = ref(null);
-const selectedRoutePanel = ref(null);
-const selectedReverseRouteDetail = ref(null);
-const selectedReverseRoutePanel = ref(null);
+const routePanelData = shallowRef(null);
+// 面板含 stationFlows/segments 等大数组且所有赋值点均为整值替换：深层 ref 会让
+// 时段聚合热循环里的每次数组访问都经 Proxy，用 shallowRef 消除代理开销
+const selectedRoutePanel = shallowRef(null);
+const selectedReverseRouteDetail = shallowRef(null);
+const selectedReverseRoutePanel = shallowRef(null);
 let routePanelPromise = null;
 let selectionAbortController = null;
 let selectionRequestSeq = 0;
 const routeFlowMapCache = new Map();
-const ROUTE_FLOW_MAP_CACHE_LIMIT = 240;
+const ROUTE_FLOW_MAP_CACHE_LIMIT = 24;
+// 卸载标志：injectSync 等异步回调在组件销毁后不得再挂图层
+let isComponentUnmounted = false;
 
 const selectedLineName = ref("");
 const selectedStationName = ref("");
 const activeRouteId = ref("");
 const activeMatchedRouteId = ref("");
-const matchedRoutes = ref([]);
+const matchedRoutes = shallowRef([]);
 // 线路详情（含全部 links）体量大且所有赋值点均为整值替换，用 shallowRef 避免深层代理
 const selectedRouteDetail = shallowRef(null);
-
-function isCanceledRequest(error) {
-  return error?.message === "请求已取消"
-    || error?.message === "canceled"
-    || error?.cause?.message === "canceled"
-    || error?.cause?.code === "ERR_CANCELED";
-}
 
 function nextSelectionSignal() {
   selectionAbortController?.abort();
@@ -612,10 +623,12 @@ const shouldLoadSelectedRoutePanel = computed(() => runMonitorSimplifiedRight ||
 
 // 统一的当前选中路线计算属性
 const currentSelectedRoute = computed(() => {
+  // 显式依赖缓存版本：routeDetailCache（非响应式 Map）写入后本 computed 才能重算
+  routeDetailCacheVersion.value;
   const targetId = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
   if (!targetId) return null;
   if (selectedRouteDetail.value && routeMatchesKey(selectedRouteDetail.value, targetId)) return selectedRouteDetail.value;
-  if (routeDetailCache.has(String(targetId))) return routeDetailCache.get(String(targetId));
+  if (routeDetailCache.value.has(String(targetId))) return routeDetailCache.value.get(String(targetId));
   if (searchMode.value === "station") {
     const matched = matchedRoutes.value.find((route) => routeUniqueKey(route) === String(targetId));
     if (matched) return matched;
@@ -673,11 +686,7 @@ const mergedLineGroupPanel = computed(() => {
 // 统计类内容（指标 metrics / 客流画像 / 日客流量 / 关联线路）优先用全线合并口径；
 // 方向敏感内容（站点乘降、断面、站间OD）仍用 currentRoutePanel（单方向）。
 const statsPanel = computed(() => mergedLineGroupPanel.value || currentRoutePanel.value);
-const mergedStatsActive = computed(() =>
-  Boolean(mergedLineGroupPanel.value) || Boolean(currentSelectedRoute.value?.lineGroup)
-);
-
-// 需求1：右侧面板标题只显示纯线路名（lineName 为空才回退 lineId），起终点另起小字展示。
+// 需求1：右侧面板标题只显示纯线路名（lineName 为空才回退 lineId）。
 const pfaRouteTitle = computed(() => {
   const route = currentSelectedRoute.value || {};
   const name = String(
@@ -690,15 +699,6 @@ const pfaRouteTitle = computed(() => {
   if (name) return name;
   const lineId = String(route.lineId || "").trim();
   return lineId || "线路客流分析";
-});
-
-const pfaRouteEndpoints = computed(() => {
-  const route = currentSelectedRoute.value || {};
-  if (route.lineGroup) return "";
-  const facilities = Array.isArray(route.facilities) ? route.facilities : [];
-  const start = facilities[0]?.facilityName || "";
-  const end = facilities[facilities.length - 1]?.facilityName || "";
-  return start && end ? `${start} - ${end}` : "";
 });
 
 function toFiniteNumber(value, fallback = 0) {
@@ -727,11 +727,33 @@ function routeMatchesKey(route = {}, key = "") {
   return routeUniqueKey(route) === text || String(route?.routeId || "") === text;
 }
 
+// 整包 routes 的 routeId→panel 索引：按模型只建一次，兜底查找从 O(全网路线数) 降为 O(1)。
+// routePanelData 仅在 props.model 匹配时写入（见 ensureRoutePanelData），索引与模型键天然一致。
+function panelRouteIdIndex(routes) {
+  return getModelDerived(props.model, "xlzl:panelRouteIndex", () => {
+    const index = new Map();
+    Object.values(routes || {}).forEach((item) => {
+      const routeId = String(item?.routeId || "");
+      if (!routeId) return;
+      const list = index.get(routeId);
+      if (list) list.push(item);
+      else index.set(routeId, [item]);
+    });
+    return index;
+  });
+}
+
 function findRoutePanelPayload(routes = {}, route = null) {
   if (!route || !routes || typeof routes !== "object") return null;
   const routeId = String(route.routeId || "");
+  if (!routeId) return null;
   const lineId = String(route.lineId || "");
-  return Object.values(routes).find((item) => (
+  // 只对整包 payload 建模型级索引；其余对象（含数据未就绪的空默认值）走原线性查找，
+  // 避免把空索引写进模型缓存造成后续永久 miss
+  const candidates = routes === routePanelData.value?.routes
+    ? (panelRouteIdIndex(routes).get(routeId) || [])
+    : Object.values(routes);
+  return candidates.find((item) => (
     item
     && String(item.routeId || "") === routeId
     && (!lineId || String(item.lineId || "") === lineId)
@@ -831,6 +853,9 @@ function stationFlowLookup(stationFlows = []) {
   return map;
 }
 
+// 乘降图/全屏图/热力图/导出共享同一份物理站点客流索引，避免各消费点重复重建 Map
+const currentStationFlowLookup = computed(() => stationFlowLookup(currentRoutePanel.value?.stationFlows));
+
 function uniqueFacilities(routes = []) {
   const seen = new Set();
   const facilities = [];
@@ -845,9 +870,39 @@ function uniqueFacilities(routes = []) {
   return facilities;
 }
 
+function routeLinkKey(link = {}) {
+  const id = String(link?.linkId || link?.id || "");
+  if (id) return id;
+  const from = link?.from || {};
+  const to = link?.to || {};
+  return [
+    Number(from.x).toFixed(2),
+    Number(from.y).toFixed(2),
+    Number(to.x).toFixed(2),
+    Number(to.y).toFixed(2),
+  ].join(":");
+}
+
+function uniqueRouteLinks(routes = []) {
+  const seen = new Set();
+  const links = [];
+  routes.forEach((route) => {
+    (Array.isArray(route?.links) ? route.links : []).forEach((link) => {
+      if (!link?.from || !link?.to) return;
+      const key = routeLinkKey(link);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      links.push(link);
+    });
+  });
+  return links;
+}
+
 function routeWithCachedDetail(route = {}) {
+  // 显式依赖缓存版本：经由本函数读缓存的 computed（整线组等）随写入自动失效
+  routeDetailCacheVersion.value;
   const key = routeUniqueKey(route);
-  const cached = key ? routeDetailCache.get(key) : null;
+  const cached = key ? routeDetailCache.value.get(key) : null;
   return cached ? { ...route, ...cached } : route;
 }
 
@@ -863,29 +918,15 @@ function buildLineGroupRoute(displayName, lines = linesForDisplayName(displayNam
     lineName: displayName,
     routeId: key,
     routeName: displayName,
-    links: routes.flatMap((route) => Array.isArray(route.links) ? route.links : []),
+    links: uniqueRouteLinks(routes),
     facilities: uniqueFacilities(routes),
     childRoutes: routes,
   };
 }
 
-function selectedHourBucketRange(startHour, endHour) {
-  const start = Math.max(0, Math.min(23, Math.floor(Number(startHour) || 0)));
-  const end = Math.max(start, Math.min(23, Math.floor(Number(endHour) || start)));
-  return { start, end };
-}
-
-function sumHourRange(values, startHour, endHour) {
-  if (!Array.isArray(values)) return 0;
-  const { start, end } = selectedHourBucketRange(startHour, endHour);
-  let total = 0;
-  for (let hour = start; hour <= end; hour++) {
-    total += toFiniteNumber(values[hour], 0);
-  }
-  return total;
-}
-
-// 小时数据按重叠比例分摊到子小时时段（15/30min 桶用），[startHour, endHour) 左闭右开
+// 小时数据按重叠比例分摊到子小时时段，[startHour, endHour) 左闭右开。
+// 全组件统一此口径（与热力图一致）：滑块 [8,18] 即统计 08:00–18:00，
+// 15/30min 单位下的亚小时边界真实生效
 function sumHourRangeProportional(values, startHour, endHour) {
   if (!Array.isArray(values)) return 0;
   const t0 = Math.max(0, Number(startHour) || 0);
@@ -898,19 +939,23 @@ function sumHourRangeProportional(values, startHour, endHour) {
   return total;
 }
 
-function averageHourRange(values, startHour, endHour) {
+// 按重叠比例加权的小时均值（满载率等率值用），与 sumHourRangeProportional 同一 [start, end) 口径
+function averageHourRangeProportional(values, startHour, endHour) {
   if (!Array.isArray(values)) return 0;
-  const { start, end } = selectedHourBucketRange(startHour, endHour);
+  const t0 = Math.max(0, Number(startHour) || 0);
+  const t1 = Math.min(24, Number(endHour) || 0);
   let total = 0;
-  let count = 0;
-  for (let hour = start; hour <= end; hour++) {
+  let weight = 0;
+  for (let hour = Math.floor(t0); hour < t1; hour++) {
+    const overlap = Math.min(hour + 1, t1) - Math.max(hour, t0);
+    if (overlap <= 0) continue;
     const value = Number(values[hour]);
     if (Number.isFinite(value)) {
-      total += value;
-      count++;
+      total += value * overlap;
+      weight += overlap;
     }
   }
-  return count ? total / count : 0;
+  return weight > 0 ? total / weight : 0;
 }
 
 const routeMetrics = computed(() => {
@@ -971,16 +1016,18 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
   const facilities = targetRoute.facilities || [];
 
   const stationNames = facilities.map(f => f.facilityName || "");
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
-  const stationFlowMap = stationFlowLookup(targetPanel?.stationFlows);
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
+  const stationFlowMap = targetPanel === currentRoutePanel.value
+    ? currentStationFlowLookup.value
+    : stationFlowLookup(targetPanel?.stationFlows);
   const boardingData = facilities.map((fac) => {
     const flow = stationFlowMap.get(physicalStationKey(fac));
-    return Math.round(sumHourRange(flow?.boardingByHour, startHour, endHour));
+    return Math.round(sumHourRangeProportional(flow?.boardingByHour, startHour, endHour));
   });
   const alightingData = facilities.map((fac) => {
     const flow = stationFlowMap.get(physicalStationKey(fac));
-    return -Math.round(sumHourRange(flow?.alightingByHour, startHour, endHour));
+    return -Math.round(sumHourRangeProportional(flow?.alightingByHour, startHour, endHour));
   });
 
   const isBar = boardingChartType.value === "bar";
@@ -1031,6 +1078,9 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
   });
 
   const makeSeries = (name, color, data, stackId, radius) => ({
+    // id 绑定图表类型：replaceMerge 按 id 映射，折线/柱状切换时旧 series 整体删除重建，
+    // 避免 merge 残留旧 stack/lineStyle
+    id: `${name}-${boardingChartType.value}`,
     name,
     type: boardingChartType.value,
     stack: isBar ? stackId : undefined,
@@ -1046,7 +1096,8 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
 
   return {
     backgroundColor: "transparent",
-    animationDuration: fullscreen ? 420 : 280,
+    // 拖动时段滑块期间关闭入场动画：防抖镜像连续落值时动画反复重启是主要绘制开销
+    animationDuration: segmentTimeRangeDragging.value ? 0 : (fullscreen ? 420 : 280),
     animationEasing: "quarticOut",
     tooltip: {
       trigger: "axis",
@@ -1093,10 +1144,11 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
 }
 
 function routeDirectionText(route = {}) {
+  if (route?.lineGroup || isMetroSelection.value) return "全线客流";
   const facilities = Array.isArray(route?.facilities) ? route.facilities : [];
   const start = facilities[0]?.facilityName || "";
   const end = facilities[facilities.length - 1]?.facilityName || "";
-  return start && end ? `${start} 至 ${end}` : route?.routeName || route?.lineName || "";
+  return start && end ? `${start}-${end}方向客流` : route?.routeName || route?.lineName || "";
 }
 
 // 乘降图表只画当前方向（方向切换在右侧面板顶部），点击图表进入全屏
@@ -1137,9 +1189,10 @@ const boardingHeatmapData = computed(() => {
   const panel = currentRoutePanel.value;
   const facilities = Array.isArray(route.facilities) ? route.facilities : [];
   const stationNames = facilities.map((fac, index) => fac?.facilityName || `站点${index + 1}`);
-  const [startHour, endHour] = segmentTimeRange.value;
+  // 与其他重计算一致消费 180ms 防抖镜像：拖动滑块期间不逐档重建热力矩阵
+  const [startHour, endHour] = debouncedSegmentTimeRange.value;
   const unitHours = Math.max(0.25, (Number(segmentTimeUnit.value) || 60) / 60);
-  const stationFlowMap = stationFlowLookup(panel?.stationFlows);
+  const stationFlowMap = currentStationFlowLookup.value;
 
   const buckets = [];
   for (let t = startHour; t < endHour - 1e-9; t += unitHours) {
@@ -1177,6 +1230,9 @@ const boardingHeatmapOption = computed(() => {
   const safeMax = Math.max(1, maxCellFlow);
   return {
     backgroundColor: "transparent",
+    // 拖动时段滑块期间关闭动画，避免连续 setOption 反复重启入场动画（同乘降图）
+    animationDuration: segmentTimeRangeDragging.value ? 0 : 280,
+    animationEasing: "quarticOut",
     tooltip: {
       position: "top",
       backgroundColor: "rgba(30, 41, 59, 0.9)",
@@ -1268,141 +1324,6 @@ const boardingHeatmapOption = computed(() => {
   };
 });
 
-const boardingProfileChartOption = computed(() => {
-  const route = currentSelectedRoute.value || {};
-  const facilities = route.facilities || [];
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
-  const stationFlowMap = stationFlowLookup(currentRoutePanel.value?.stationFlows);
-  const stationNames = facilities.map(f => f.facilityName || "");
-  const boardingData = facilities.map((fac) => {
-    const flow = stationFlowMap.get(physicalStationKey(fac));
-    return sumHourRange(flow?.boardingByHour, startHour, endHour);
-  });
-  const alightingData = facilities.map((fac) => {
-    const flow = stationFlowMap.get(physicalStationKey(fac));
-    return sumHourRange(flow?.alightingByHour, startHour, endHour);
-  });
-  const onboardData = [];
-  let onboard = 0;
-  for (let index = 0; index < facilities.length; index++) {
-    onboard = Math.max(0, onboard + boardingData[index] - alightingData[index]);
-    onboardData.push(onboard);
-  }
-
-  return {
-    backgroundColor: "transparent",
-    tooltip: {
-      trigger: "axis",
-      axisPointer: { type: "cross" },
-      backgroundColor: "rgba(30, 41, 59, 0.9)",
-      borderColor: "rgba(255, 255, 255, 0.15)",
-      textStyle: {
-        color: "#ffffff",
-        fontSize: 12
-      }
-    },
-    legend: {
-      data: ["上车", "下车", "车内客流"],
-      top: 0,
-      textStyle: {
-        color: "#64748b",
-        fontSize: 11
-      }
-    },
-    grid: {
-      left: "3%",
-      right: "4%",
-      bottom: "18%",
-      top: "18%",
-      containLabel: true
-    },
-    xAxis: {
-      type: "category",
-      data: stationNames,
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 9,
-        interval: 0,
-        rotate: 35,
-        formatter: (value) => value.length > 5 ? value.substring(0, 5) + "..." : value
-      },
-      axisLine: {
-        lineStyle: {
-          color: "rgba(21, 105, 222, 0.15)"
-        }
-      }
-    },
-    yAxis: [
-      {
-        type: "value",
-        name: "乘降",
-        axisLabel: {
-          color: "#64748b",
-          fontSize: 10
-        },
-        splitLine: {
-          lineStyle: {
-            color: "rgba(21, 105, 222, 0.06)",
-            type: "dashed"
-          }
-        }
-      },
-      {
-        type: "value",
-        name: "车内",
-        axisLabel: {
-          color: "#64748b",
-          fontSize: 10
-        },
-        splitLine: { show: false }
-      }
-    ],
-    series: [
-      {
-        name: "上车",
-        type: "bar",
-        barWidth: "24%",
-        data: boardingData,
-        itemStyle: {
-          color: "#0f9f6e",
-          borderRadius: [3, 3, 0, 0]
-        }
-      },
-      {
-        name: "下车",
-        type: "bar",
-        barWidth: "24%",
-        data: alightingData,
-        itemStyle: {
-          color: "#f43f5e",
-          borderRadius: [3, 3, 0, 0]
-        }
-      },
-      {
-        name: "车内客流",
-        type: "line",
-        yAxisIndex: 1,
-        smooth: 0.25,
-        showSymbol: true,
-        symbol: "circle",
-        symbolSize: 5,
-        data: onboardData,
-        itemStyle: {
-          color: "#1569de"
-        },
-        lineStyle: {
-          color: "#1569de",
-          width: 2.6
-        },
-        areaStyle: {
-          color: "rgba(21, 105, 222, 0.08)"
-        }
-      }
-    ]
-  };
-});
-
 function transferLineKey(name = "") {
   return normalizeLineSearchName(name) || String(name || "").trim();
 }
@@ -1429,32 +1350,27 @@ function lineTouchesTransferStations(line = {}, stationNames = new Set()) {
   );
 }
 
-function baseTransferLineRows() {
+// 基础行集只依赖选中线路与线网数据（与统计时段无关）：独立 computed 缓存全网扫描结果，
+// 拖动时段滑块时不再逐次重扫 rawLines × routes × facilities
+const transferBaseLineRows = computed(() => {
   const stationNames = routeTransferStationNames();
   const currentLineKey = transferLineKey(currentSelectedRoute.value?.lineName || selectedLineName.value);
-  const rows = new Map();
+  const rows = [];
+  const seen = new Set();
   rawLines.value.forEach((line) => {
     if (!lineTouchesTransferStations(line, stationNames)) return;
     const name = lineDisplayName(line);
     const key = transferLineKey(name);
-    if (!key || key === currentLineKey) return;
-    if (!rows.has(key)) {
-      rows.set(key, {
-        key,
-        name,
-        fare: "-",
-        headway: "-",
-        flow: 0,
-        ratio: 0,
-      });
-    }
+    if (!key || key === currentLineKey || seen.has(key)) return;
+    seen.add(key);
+    rows.push({ key, name });
   });
   return rows;
-}
+});
 
 function addTransferPanelRows(rows, panel) {
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
   const currentLineKey = transferLineKey(currentSelectedRoute.value?.lineName || selectedLineName.value);
   (Array.isArray(panel?.transfers) ? panel.transfers : []).forEach((item) => {
     const name = item.lineName || item.lineId || "--";
@@ -1471,12 +1387,16 @@ function addTransferPanelRows(rows, panel) {
       });
     }
     const row = rows.get(key);
-    row.flow += Math.round(sumHourRange(item.flowByHour, startHour, endHour));
+    row.flow += Math.round(sumHourRangeProportional(item.flowByHour, startHour, endHour));
   });
 }
 
 function buildTransferRowsForRange() {
-  const rows = baseTransferLineRows();
+  // 每次重建行 Map：基础行集是缓存的 computed，直接向其累加 flow 会污染缓存值
+  const rows = new Map();
+  transferBaseLineRows.value.forEach(({ key, name }) => {
+    rows.set(key, { key, name, fare: "-", headway: "-", flow: 0, ratio: 0 });
+  });
   // 需求12：关联线路优先用全线合并组的 transfers（已含上下行），无组时回退双方向累加
   const merged = mergedLineGroupPanel.value;
   if (merged && Array.isArray(merged.transfers) && merged.transfers.length) {
@@ -1492,13 +1412,16 @@ function buildTransferRowsForRange() {
       ...item,
       ratio: total > 0 ? Number(((item.flow / total) * 100).toFixed(1)) : 0
     }))
-    .sort((a, b) => b.flow - a.flow || a.name.localeCompare(b.name, "zh-CN"));
+    .sort((a, b) => b.flow - a.flow || compareZh(a.name, b.name));
 }
 
+// 换乘行数据收敛为单一 computed：图表/表格/高度共享一次全网扫描（原先 chart 与 table 各扫一遍）
+const transferRows = computed(() => buildTransferRowsForRange());
+
 const transferChartOption = computed(() => {
-  const transferRows = buildTransferRowsForRange();
-  const transferLines = transferRows.map(item => item.name);
-  const passengerData = transferRows.map(item => item.flow);
+  const rows = transferRows.value;
+  const transferLines = rows.map(item => item.name);
+  const passengerData = rows.map(item => item.flow);
   
   return {
     backgroundColor: "transparent",
@@ -1604,9 +1527,7 @@ const transferChartOption = computed(() => {
   };
 });
 
-const transferTableData = computed(() => {
-  return buildTransferRowsForRange();
-});
+const transferTableData = computed(() => transferRows.value);
 
 // 32px 表头带 + 每行 28px，与右侧票价/发车间隔表逐行对齐（同 transferChartOption 的像素网格）
 const transferChartHeight = computed(() => {
@@ -1615,117 +1536,9 @@ const transferChartHeight = computed(() => {
 });
 
 const { proxy } = getCurrentInstance() || {};
-const activeChartType = ref("line");
 // 站点乘降图：折线 / 柱状切换
 const boardingChartType = ref("bar");
 const boardingFullscreenVisible = ref(false);
-
-const passengerFlowChartOption = computed(() => {
-  const isLine = activeChartType.value === "line";
-  const hours = ["06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00"];
-  // 需求12：日客流量优先取全线（上下行合并）组的 hourlyFlow
-  const hourlyFlow = statsPanel.value?.hourlyFlow || [];
-  const data = hours.map((_, index) => toFiniteNumber(hourlyFlow[index + 6], 0));
-
-  const linearGradient = (proxy?.$echarts?.graphic?.LinearGradient) || function() { return null; };
-
-  return {
-    tooltip: {
-      trigger: "axis",
-      appendToBody: true,
-      extraCssText: "z-index: 999; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.12); border: none;",
-      backgroundColor: "rgba(255, 255, 255, 0.98)",
-      textStyle: {
-        color: "#2d3748",
-        fontSize: 12
-      },
-      formatter: function (params) {
-        if (!params || params.length === 0) return "";
-        const item = params[0];
-        return `
-          <div style="font-weight: 600; margin-bottom: 4px; color: #1569de;">${item.name}</div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: #1569de;"></span>
-            <span>客流量: <strong style="font-size: 13px; color: #1a202c;">${item.value.toLocaleString()} 人次</strong></span>
-          </div>
-        `;
-      }
-    },
-    grid: {
-      top: 25,
-      left: 10,
-      right: 15,
-      bottom: 5,
-      containLabel: true
-    },
-    xAxis: {
-      type: "category",
-      data: hours,
-      axisLine: {
-        lineStyle: {
-          color: "rgba(21, 105, 222, 0.15)"
-        }
-      },
-      axisLabel: {
-        color: "#60758e",
-        fontSize: 10,
-        interval: 2
-      },
-      axisTick: {
-        show: false
-      }
-    },
-    yAxis: {
-      type: "value",
-      name: "人次",
-      nameTextStyle: {
-        color: "#a0aec0",
-        fontSize: 10,
-        align: "right",
-        padding: [0, 8, 0, 0]
-      },
-      splitLine: {
-        lineStyle: {
-          color: "rgba(21, 105, 222, 0.06)",
-          type: "dashed"
-        }
-      },
-      axisLabel: {
-        color: "#60758e",
-        fontSize: 10
-      }
-    },
-    series: [
-      {
-        name: "客流",
-        type: isLine ? "line" : "bar",
-        smooth: isLine ? 0.35 : false,
-        symbol: "circle",
-        symbolSize: isLine ? 6 : 0,
-        showSymbol: false,
-        barWidth: "40%",
-        itemStyle: {
-          color: "#1569de",
-          borderRadius: isLine ? 0 : [4, 4, 0, 0]
-        },
-        lineStyle: {
-          width: 3.5,
-          color: "#1569de",
-          shadowColor: "rgba(21, 105, 222, 0.3)",
-          shadowBlur: 8,
-          shadowOffsetY: 3
-        },
-        areaStyle: isLine ? {
-          color: new linearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(21, 105, 222, 0.35)" },
-            { offset: 1, color: "rgba(21, 105, 222, 0.01)" }
-          ])
-        } : null,
-        data: data
-      }
-    ]
-  };
-});
 
 // 监听当前选中的路线，控制右侧面板内容状态
 watch(currentSelectedRoute, (newRoute) => {
@@ -1740,8 +1553,8 @@ watch(activeDatavisualizationTab, (newTab) => {
   }
 });
 
-// 运行监测页：把当前选中线路的客流面板与名称上抛给 index.vue 的简化右侧卡片。
-// 客流分析页未提供这些注入（值为 null），此处为无操作，不影响其行为。
+// 把当前选中线路的客流面板与名称上抛给 index.vue（运行监测简化卡片与客流分析地图/统计共用；
+// 宿主未提供这些注入时值为 null，此处安全跳过）。
 watch(
   [currentRoutePanel, currentSelectedRoute, selectedLineName],
   () => {
@@ -1771,14 +1584,40 @@ watch(selectedRouteDetail, (detail) => {
   }
 });
 
+// 反向详情/面板统一经 watch 回写父级：线路搜索与站点搜索两条选中路径口径一致
+// （原先仅 handleSelectRoute 手工回写，站点搜索模式下父级的双向合计拿不到反向数据）
+watch([selectedReverseRouteDetail, selectedReverseRoutePanel], ([detail, panel]) => {
+  if (runMonitorSelectedReverseRouteDetail) runMonitorSelectedReverseRouteDetail.value = detail || null;
+  if (runMonitorSelectedReverseLinePanel) runMonitorSelectedReverseLinePanel.value = panel || null;
+});
+
+// —— CSV 导出（项目无 xlsx 依赖，走已有的 file-saver）——
+// 前置 UTF-8 BOM 保证 Excel 打开中文不乱码；含逗号/引号/换行的字段按 RFC 4180 转义
+function csvEscape(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function exportCsvFile(rows, fileName) {
+  const content = rows.map((row) => row.map(csvEscape).join(",")).join("\r\n");
+  saveAs(new Blob(["\uFEFF", content], { type: "text/csv;charset=utf-8" }), fileName);
+}
+
 function handleExportLeaderboard() {
-  if (proxy?.$message) {
-    proxy.$message.success({
-      message: "客流排行榜数据已成功导出为 Excel！",
-      type: "success",
-      duration: 2000
-    });
+  const list = currentLeaderboard.value;
+  if (!list.length) {
+    proxy?.$message?.warning("暂无排行数据可导出");
+    return;
   }
+  const typeText = activeTransitType.value === "bus" ? "公交" : "地铁";
+  exportCsvFile(
+    [
+      ["排名", "线路名称", "说明", "日均客流量(人次)"],
+      ...list.map((item, index) => [index + 1, item.lineName, item.desc, item.passengerFlow]),
+    ],
+    `${typeText}线路客流排行.csv`,
+  );
+  proxy?.$message?.success(`${typeText}线路客流排行已导出 CSV 文件`);
 }
 
 const activeTransitType = ref("bus");
@@ -1792,9 +1631,6 @@ const currentLeaderboard = computed(() => {
   }));
 });
 
-const activeDetailTab = ref("overview");
-const segmentViewMode = ref("table");
-const transferViewMode = ref("table");
 const timeUnitOptions = [
   { label: "15min", value: 15 },
   { label: "30min", value: 30 },
@@ -1803,6 +1639,14 @@ const timeUnitOptions = [
 const segmentTimeUnit = ref(60);
 const segmentTimeStep = computed(() => segmentTimeUnit.value / 60);
 const segmentTimeRange = ref([8, 18]);
+// 拖动时段滑块每跨一档都会触发「断面聚合→热力矩阵→换乘扫描→地图 links 重建→图表重绘」级联，
+// 重计算统一消费 180ms 防抖镜像；滑块 v-model 与头部时段文案仍读原值保证即时反馈
+const { debounced: debouncedSegmentTimeRange, cancel: cancelSegmentTimeMirror } = createDebouncedMirror(segmentTimeRange, 180);
+// 拖动进行中（原值与镜像不一致）临时关闭图表动画，避免连环动画重启
+const segmentTimeRangeDragging = computed(
+  () => segmentTimeRange.value[0] !== debouncedSegmentTimeRange.value[0]
+    || segmentTimeRange.value[1] !== debouncedSegmentTimeRange.value[1],
+);
 
 function formatHourLabel(hour) {
   const totalMinutes = Math.round((Number(hour) || 0) * 60);
@@ -1821,7 +1665,8 @@ function alignHourToUnit(hour, unitMinutes = segmentTimeUnit.value) {
 
 watch(segmentTimeUnit, (unit) => {
   const minHour = 6;
-  const maxHour = 22;
+  // 上限 23：[start, end) 口径下选到 23 才覆盖 22:00–23:00 的最后一个小时桶
+  const maxHour = 23;
   const nextRange = segmentTimeRange.value.map((value) =>
     Math.max(minHour, Math.min(maxHour, alignHourToUnit(value, unit)))
   );
@@ -1829,25 +1674,67 @@ watch(segmentTimeUnit, (unit) => {
   segmentTimeRange.value = nextRange;
 });
 
+// 按当前激活子节导出对应面板明细为 CSV
 function handleExportDetail() {
-  if (proxy?.$message) {
-    const text = activeDetailTab.value === "overview" 
-      ? "线路数据总览" 
-      : activeDetailTab.value === "boardingAlighting" 
-        ? "线路乘降分析" 
-        : "线路断面分析";
-    proxy.$message.success({
-      message: `${text}数据已成功导出！`,
-      type: "success",
-      duration: 2000
+  const section = pfaLineSection.value;
+  const routeTitle = pfaRouteTitle.value || "线路";
+  const startHour = segmentTimeRange.value[0];
+  const endHour = segmentTimeRange.value[1];
+  let label = "";
+  let rows = [];
+  if (section === "segments") {
+    label = "断面客流";
+    rows = [
+      ["断面（相邻站点）", "客流量(人次)", "满载率(%)"],
+      ...routeSegments.value.map((seg) => [seg.name, seg.flow, seg.loadRate]),
+    ];
+  } else if (section === "boarding") {
+    label = "站点乘降";
+    const facilities = Array.isArray(currentSelectedRoute.value?.facilities)
+      ? currentSelectedRoute.value.facilities
+      : [];
+    const stationFlowMap = currentStationFlowLookup.value;
+    rows = [
+      ["站点", "上车人数(人次)", "下车人数(人次)"],
+      ...facilities.map((fac) => {
+        const flow = stationFlowMap.get(physicalStationKey(fac));
+        return [
+          fac?.facilityName || "",
+          Math.round(sumHourRangeProportional(flow?.boardingByHour, startHour, endHour)),
+          Math.round(sumHourRangeProportional(flow?.alightingByHour, startHour, endHour)),
+        ];
+      }),
+    ];
+  } else if (section === "demographics") {
+    label = "客流画像";
+    rows = [["分组", "项目", "占比(%)"]];
+    demographicsGroups.value.forEach((group) => {
+      group.items.forEach((item) => rows.push([group.title, item.label, item.value]));
     });
+  } else {
+    label = "关联换乘";
+    rows = [
+      ["关联线路", "换乘人数(人次)", "占比(%)", "票价", "发车间隔"],
+      ...transferRows.value.map((item) => [item.name, item.flow, item.ratio, item.fare, item.headway]),
+    ];
   }
+  if (rows.length <= 1) {
+    proxy?.$message?.warning("当前面板暂无数据可导出");
+    return;
+  }
+  // 时段相关面板的文件名带统计时段（去掉冒号，避免非法文件名字符）
+  const rangeText = `${formatHourLabel(startHour)}-${formatHourLabel(endHour)}`.replace(/:/g, "");
+  const fileName = ["segments", "boarding", "transfer"].includes(section)
+    ? `${routeTitle}_${label}_${rangeText}.csv`
+    : `${routeTitle}_${label}.csv`;
+  exportCsvFile(rows, fileName);
+  proxy?.$message?.success(`${label}数据已导出 CSV 文件`);
 }
 
 // 原始断面：按服务模式（交路/区间车）逐条，保留方向与路线归属，供地图按子路线着色使用。
 const rawRouteSegments = computed(() => {
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
   return (currentRoutePanel.value?.segments || []).map((segment) => ({
     name: segment.name,
     routeKey: String(segment.routeKey || ""),
@@ -1855,8 +1742,8 @@ const rawRouteSegments = computed(() => {
     routeId: String(segment.routeId || ""),
     fromFacilityId: String(segment.fromFacilityId || ""),
     toFacilityId: String(segment.toFacilityId || ""),
-    flow: Math.round(sumHourRange(segment.flowByHour, startHour, endHour)),
-    loadRate: Number(averageHourRange(segment.loadRateByHour, startHour, endHour).toFixed(1))
+    flow: Math.round(sumHourRangeProportional(segment.flowByHour, startHour, endHour)),
+    loadRate: Number(averageHourRangeProportional(segment.loadRateByHour, startHour, endHour).toFixed(1))
   }));
 });
 
@@ -1870,8 +1757,8 @@ function stationPairKeyOf(a, b) {
 // （34 站 → 约 33 个相邻区段），而非按交路/方向重复罗列。满载率按所选时段用整线运力重算。
 const routeSegments = computed(() => {
   const panel = currentRoutePanel.value;
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
   if (!panel?.lineGroup) return rawRouteSegments.value;
   const capacityByHour = Array.isArray(panel.capacityByHour) ? panel.capacityByHour : [];
   const byPair = new Map();
@@ -1910,8 +1797,8 @@ const routeSegments = computed(() => {
       name: peak.name,
       fromName: peak.fromName,
       toName: peak.toName,
-      flow: Math.round(sumHourRange(peak.flowByHour, startHour, endHour)),
-      loadRate: Number(averageHourRange(loadByHour, startHour, endHour).toFixed(1))
+      flow: Math.round(sumHourRangeProportional(peak.flowByHour, startHour, endHour)),
+      loadRate: Number(averageHourRangeProportional(loadByHour, startHour, endHour).toFixed(1))
     };
   });
 });
@@ -2065,18 +1952,20 @@ function routeFlowMapCacheKey(route, segments = []) {
     linkCount,
     facilityCount,
     segmentList.length,
-    segmentTimeRange.value[0],
-    segmentTimeRange.value[1],
+    debouncedSegmentTimeRange.value[0],
+    debouncedSegmentTimeRange.value[1],
     flowChecksum,
   ].join(":");
 }
 
 function rememberRouteFlowMap(key, links) {
   if (!key) return links;
-  if (routeFlowMapCache.size >= ROUTE_FLOW_MAP_CACHE_LIMIT) {
-    routeFlowMapCache.clear();
-  }
+  // LRU 逐条淘汰：整体 clear 会让后续全部 miss 重算（拖动时段时明显抖动）
+  if (routeFlowMapCache.has(key)) routeFlowMapCache.delete(key);
   routeFlowMapCache.set(key, links);
+  while (routeFlowMapCache.size > ROUTE_FLOW_MAP_CACHE_LIMIT) {
+    routeFlowMapCache.delete(routeFlowMapCache.keys().next().value);
+  }
   return links;
 }
 
@@ -2123,8 +2012,8 @@ watch(
     selectedRouteDetail.value,
     currentRoutePanel.value,
     routeSegments.value,
-    segmentTimeRange.value[0],
-    segmentTimeRange.value[1],
+    debouncedSegmentTimeRange.value[0],
+    debouncedSegmentTimeRange.value[1],
   ],
   () => {
     if (!runMonitorSelectedRouteMapLinks) return;
@@ -2146,11 +2035,11 @@ watch(
 const reverseRouteSegments = computed(() => {
   const panel = selectedReverseRoutePanel.value;
   if (!Array.isArray(panel?.segments) || !panel.segments.length) return [];
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
   return panel.segments.map((segment) => ({
     name: segment.name,
-    flow: Math.round(sumHourRange(segment.flowByHour, startHour, endHour)),
+    flow: Math.round(sumHourRangeProportional(segment.flowByHour, startHour, endHour)),
   }));
 });
 
@@ -2176,11 +2065,12 @@ watch(
 // ===== 需求7：站点乘降 · 站间OD客流曲线（上行 + 下行同一色阶，黄→红弧线） =====
 const PFA_OD_CURVE_SOURCE_ID = "pfa-station-od-curve-source";
 const PFA_OD_CURVE_LAYER_ID = "pfa-station-od-curve-layer";
+const PFA_OD_CURVE_CASING_LAYER_ID = "pfa-station-od-curve-casing-layer";
 const PFA_OD_STATION_SOURCE_ID = "pfa-station-od-station-source";
 const PFA_OD_STATION_LAYER_ID = "pfa-station-od-station-layer";
 const PFA_OD_STATION_LABEL_LAYER_ID = "pfa-station-od-station-label-layer";
-const PFA_OD_PRIMARY_COLOR = "#f97316"; // 与选中线路主线（上行）颜色一致
-const PFA_OD_REVERSE_COLOR = "#1569de"; // 与反向线路（下行）颜色一致
+const PFA_OD_PRIMARY_COLOR = MAP_THEME.od.up; // 与选中线路主线（上行）颜色一致
+const PFA_OD_REVERSE_COLOR = MAP_THEME.od.down; // 与反向线路（下行）颜色一致
 // 期望线风格：整体细线，仅按流量档位做轻微加粗（参考站间OD期望线图，避免高流量线路糊成一团）
 const PFA_OD_MIN_WIDTH = 0.6;
 const PFA_OD_MAX_WIDTH = 2.8;
@@ -2303,6 +2193,20 @@ function ensureStationOdLayers(map) {
   if (!map.getSource(PFA_OD_STATION_SOURCE_ID)) {
     map.addSource(PFA_OD_STATION_SOURCE_ID, { type: "geojson", data: emptyFeatureCollection() });
   }
+  if (!map.getLayer(PFA_OD_CURVE_CASING_LAYER_ID)) {
+    // 白色描边衬底：略宽于曲线本体，让期望线在密集底图上边缘利落（同线网 casing 语言）
+    map.addLayer({
+      id: PFA_OD_CURVE_CASING_LAYER_ID,
+      type: "line",
+      source: PFA_OD_CURVE_SOURCE_ID,
+      layout: { "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": "#ffffff",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 9, ["+", ["*", ["get", "width"], 0.7], 1.6], 13, ["+", ["get", "width"], 1.8], 16, ["+", ["*", ["get", "width"], 1.35], 2]],
+        "line-opacity": 0.45,
+      },
+    });
+  }
   if (!map.getLayer(PFA_OD_CURVE_LAYER_ID)) {
     map.addLayer({
       id: PFA_OD_CURVE_LAYER_ID,
@@ -2313,7 +2217,16 @@ function ensureStationOdLayers(map) {
         "line-color": ["get", "color"],
         // 细线按缩放轻微自适应，放大时略粗、缩小时更细，保持期望线的通透感
         "line-width": ["interpolate", ["linear"], ["zoom"], 9, ["*", ["get", "width"], 0.7], 13, ["get", "width"], 16, ["*", ["get", "width"], 1.35]],
-        "line-opacity": 0.66,
+        // 高流量曲线更实、低流量更透，形成期望线的主次层次
+        "line-opacity": [
+          "interpolate",
+          ["linear"],
+          ["get", "width"],
+          PFA_OD_MIN_WIDTH,
+          0.52,
+          PFA_OD_MAX_WIDTH,
+          0.9,
+        ],
       },
     });
   }
@@ -2360,7 +2273,7 @@ function ensureStationOdLayers(map) {
 function cleanUpStationOdLayers() {
   const map = MapRef.value?.map;
   if (!map) return;
-  [PFA_OD_STATION_LABEL_LAYER_ID, PFA_OD_STATION_LAYER_ID, PFA_OD_CURVE_LAYER_ID].forEach((layerId) => {
+  [PFA_OD_STATION_LABEL_LAYER_ID, PFA_OD_STATION_LAYER_ID, PFA_OD_CURVE_LAYER_ID, PFA_OD_CURVE_CASING_LAYER_ID].forEach((layerId) => {
     if (map.getLayer(layerId)) map.removeLayer(layerId);
   });
   [PFA_OD_STATION_SOURCE_ID, PFA_OD_CURVE_SOURCE_ID].forEach((sourceId) => {
@@ -2387,170 +2300,34 @@ watch([stationOdRender, () => MapRef.value?.map], () => {
   updateStationOdMap();
 });
 
-const segmentChartOption = computed(() => {
-  const linearGradient = (proxy?.$echarts?.graphic?.LinearGradient) || function() { return null; };
-  const segments = routeSegments.value;
-  const names = segments.map(s => s.name);
-  const loadRates = segments.map(s => s.loadRate);
-  
-  const colors = loadRates.map(rate => {
-    if (rate >= 70) {
-      return new linearGradient(0, 0, 1, 0, [
-        { offset: 0, color: "rgba(239, 68, 68, 0.3)" },
-        { offset: 1, color: "#dc4c5d" }
-      ]);
-    } else if (rate >= 45) {
-      return new linearGradient(0, 0, 1, 0, [
-        { offset: 0, color: "rgba(245, 158, 11, 0.3)" },
-        { offset: 1, color: "#d97706" }
-      ]);
-    } else {
-      return new linearGradient(0, 0, 1, 0, [
-        { offset: 0, color: "rgba(16, 185, 129, 0.3)" },
-        { offset: 1, color: "#0f9f6e" }
-      ]);
-    }
-  });
-
-  return {
-    tooltip: {
-      trigger: "axis",
-      appendToBody: true,
-      extraCssText: "z-index: 999; border-radius: 8px; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.12);",
-      backgroundColor: "rgba(255, 255, 255, 0.98)",
-      textStyle: {
-        color: "#2d3748",
-        fontSize: 11
-      },
-      formatter: function(params) {
-        if (!params || params.length === 0) return "";
-        const idx = params[0].dataIndex;
-        const seg = segments[idx];
-        return `
-          <div style="font-weight: 600; margin-bottom: 4px; color: #1569de;">${seg.name}</div>
-          <div style="display: flex; flex-direction: column; gap: 4px;">
-            <div>客流量: <strong style="color: #2d3748;">${seg.flow.toLocaleString()} 人次</strong></div>
-            <div>满载率: <strong style="color: ${seg.loadRate >= 70 ? '#dc4c5d' : seg.loadRate >= 45 ? '#d97706' : '#0f9f6e'};">${seg.loadRate}%</strong></div>
-          </div>
-        `;
-      }
-    },
-    legend: {
-      data: ["满载率 (%)", "客流量 (人次)"],
-      textStyle: {
-        color: "#64748b",
-        fontSize: 10
-      },
-      top: 0,
-      right: 10
-    },
-    grid: {
-      top: 30,
-      left: 10,
-      right: 25,
-      bottom: 5,
-      containLabel: true
-    },
-    xAxis: [
-      {
-        type: "value",
-        name: "满载率",
-        max: 100,
-        splitLine: {
-          lineStyle: {
-            color: "rgba(21, 105, 222, 0.05)",
-            type: "dashed"
-          }
-        },
-        axisLabel: {
-          color: "#60758e",
-          fontSize: 10
-        }
-      },
-      {
-        type: "value",
-        name: "客流量",
-        splitLine: { show: false },
-        axisLabel: {
-          color: "#60758e",
-          fontSize: 10
-        }
-      }
-    ],
-    yAxis: {
-      type: "category",
-      data: names,
-      axisLine: {
-        lineStyle: {
-          color: "rgba(21, 105, 222, 0.15)"
-        }
-      },
-      axisLabel: {
-        color: "#2d3748",
-        fontSize: 10,
-        fontWeight: "600",
-        width: 140,
-        overflow: "truncate"
-      },
-      axisTick: { show: false }
-    },
-    series: [
-      {
-        name: "满载率 (%)",
-        type: "bar",
-        xAxisIndex: 0,
-        data: loadRates,
-        barWidth: "22%",
-        itemStyle: {
-          borderRadius: [0, 4, 4, 0],
-          color: function(params) {
-            return colors[params.dataIndex];
-          }
-        }
-      },
-      {
-        name: "客流量 (人次)",
-        type: "bar",
-        xAxisIndex: 1,
-        data: segments.map(s => s.flow),
-        barWidth: "22%",
-        itemStyle: {
-          borderRadius: [0, 4, 4, 0],
-          color: new linearGradient(0, 0, 1, 0, [
-            { offset: 0, color: "rgba(21, 105, 222, 0.25)" },
-            { offset: 1, color: "#1569de" }
-          ])
-        }
-      }
-    ]
-  };
-});
-
+// 简化右侧模式（运行监测/客流分析宿主）下这两个图层永不挂载：跳过构造，避免无谓资源占用
 // 模型公交线网背景，与数据管理使用同一组青灰色和淡化透明度。
-const _BgRouteLayer = new RouteLayer({
+const _BgRouteLayer = runMonitorSimplifiedRight ? null : new RouteLayer({
   zIndex: 998,
   lineWidth: LineWidthRef.value,
   flowControl: false,
-  color: 0x2f6f73,
-  opacity: 0.72,
+  color: hexNumber(MAP_THEME.network.line),
+  opacity: MAP_THEME.network.lineOpacity,
 });
 
 // 选中/激活路线图层（与数据管理一致的橙色高亮）
-const _RouteLayer = new RouteLayer({
+const _RouteLayer = runMonitorSimplifiedRight ? null : new RouteLayer({
   zIndex: 999,
   lineWidth: LineWidthRef.value * 1.8,
   flowControl: false,
-  color: 0xf97316,
+  color: hexNumber(MAP_THEME.route.up),
   opacity: 1
 });
 
 const SELECTED_ROUTE_STOPS_SOURCE_ID = "selected-route-stops-source";
 const SELECTED_ROUTE_STOPS_LAYER_ID = "selected-route-stops-layer";
 // 需求6：选中线路站点空心圈描边取当前方向线路颜色（上行主线橙，与 _RouteLayer 一致）
-const ROUTE_STROKE_COLOR = "#f97316";
+const ROUTE_STROKE_COLOR = MAP_THEME.route.up;
 
 // 将图层添加到地图
 injectSync("MapRef").then((map) => {
+  // 组件可能在 MapRef 就绪前被卸载（快速切 tab）：已 dispose 的图层再 addLayer 会残留在地图上无人清理
+  if (isComponentUnmounted) return;
   if (!runMonitorSimplifiedRight) {
     map.value?.addLayer(_BgRouteLayer);
     map.value?.addLayer(_RouteLayer);
@@ -2563,8 +2340,8 @@ injectSync("MapRef").then((map) => {
 
 // 监听线宽变化
 watch(LineWidthRef, (value) => {
-  _BgRouteLayer.setLineWidth(value);
-  _RouteLayer.setLineWidth(value * 1.8);
+  _BgRouteLayer?.setLineWidth(value);
+  _RouteLayer?.setLineWidth(value * 1.8);
 });
 watch(BaseMapLineModeRef, (mode) => {
   if (runMonitorSimplifiedRight) return;
@@ -2576,39 +2353,37 @@ watch(BaseMapLineModeRef, (mode) => {
 // 计算所有唯一的线路名称，并转换为 el-select-v2 需要的 options 格式
 // 携带 mode（公交/地铁）：供右上角搜索框按当前线网制式过滤候选。
 const lineOptions = computed(() => {
-  const modeByName = new Map();
-  rawLines.value.forEach((line) => {
-    const name = lineDisplayName(line);
-    if (!name) return;
-    if (isMetroLine(line)) modeByName.set(name, "metro");
-    else if (!modeByName.has(name)) modeByName.set(name, "bus");
+  if (!rawLines.value.length) return [];
+  // 纯模型部分（收集+中文排序）按模型只算一次；制式过滤随开关变化在此轻量执行
+  const allOptions = getModelDerived(rawLinesModel || props.model, "xlzl:lineOptionsAll", () => {
+    const modeByName = new Map();
+    rawLines.value.forEach((line) => {
+      const name = lineDisplayName(line);
+      if (!name) return;
+      if (isMetroLine(line)) modeByName.set(name, "metro");
+      else if (!modeByName.has(name)) modeByName.set(name, "bus");
+    });
+    const uniqueNames = Array.from(modeByName.keys()).sort(compareZh);
+    return uniqueNames.map(name => ({ value: name, label: name, mode: modeByName.get(name) || "bus" }));
   });
-  const uniqueNames = Array.from(modeByName.keys()).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  return uniqueNames
-    .map(name => ({ value: name, label: name, mode: modeByName.get(name) || "bus" }))
-    .filter((option) => runMonitorLineOptionFilter(option));
+  return allOptions.filter((option) => runMonitorLineOptionFilter(option));
 });
 
 // 计算所有唯一的站点名称，并转换为 el-select-v2 需要的 options 格式
 const stationOptions = computed(() => {
-  const names = [];
-  rawLines.value.forEach(line => {
-    if (line.routes) {
-      line.routes.forEach(route => {
-        if (route.facilities) {
-          route.facilities.forEach(fac => {
-            if (fac.facilityName) {
-              names.push(fac.facilityName);
-            }
-          });
-        }
+  if (!rawLines.value.length) return [];
+  const allOptions = getModelDerived(rawLinesModel || props.model, "xlzl:stationOptionsAll", () => {
+    const names = new Set();
+    rawLines.value.forEach(line => {
+      line.routes?.forEach(route => {
+        route.facilities?.forEach(fac => {
+          if (fac.facilityName) names.add(fac.facilityName);
+        });
       });
-    }
+    });
+    return Array.from(names).sort(compareZh).map(name => ({ value: name, label: name }));
   });
-  const uniqueNames = Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  return uniqueNames
-    .map(name => ({ value: name, label: name }))
-    .filter((option) => runMonitorStationOptionFilter(option));
+  return allOptions.filter((option) => runMonitorStationOptionFilter(option));
 });
 
 // 将线路候选项上抛给 index.vue 的右上角搜索框
@@ -2676,6 +2451,30 @@ function routeEndpointNames(route = {}) {
   };
 }
 
+function routeDirectionDedupeKey(route = {}, index = 0) {
+  if (route?.lineGroup) return "";
+  const { start, end } = routeEndpointNames(route);
+  if (start && end) {
+    return `${normalizeLineSearchName(start)}->${normalizeLineSearchName(end)}`;
+  }
+  return routeUniqueKey(route) || String(route?.routeName || route?.lineName || index);
+}
+
+function uniquePhysicalDirectionRoutes(routes = []) {
+  const activeKey = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
+  const byDirection = new Map();
+  routes.forEach((route, index) => {
+    if (!route || route.lineGroup) return;
+    const directionKey = routeDirectionDedupeKey(route, index);
+    if (!directionKey) return;
+    const existing = byDirection.get(directionKey);
+    if (!existing || routeMatchesKey(route, activeKey)) {
+      byDirection.set(directionKey, route);
+    }
+  });
+  return Array.from(byDirection.values());
+}
+
 function findReverseRoute(route = {}) {
   if (!route || route.lineGroup) return null;
   const currentKey = routeUniqueKey(route);
@@ -2706,16 +2505,33 @@ function clearReverseSelectionOutputs() {
   if (runMonitorSelectedReverseRouteMapLinks) runMonitorSelectedReverseRouteMapLinks.value = [];
 }
 
+function applyReverseRoutePreview(reverseRoute) {
+  if (!reverseRoute) return;
+  const reverseKey = routeUniqueKey(reverseRoute);
+  selectedReverseRoutePanel.value = reverseKey
+    ? routePanelDetailCache.get(reverseKey)
+      || routePanelFromPayload(routePanelData.value?.routes, reverseRoute)
+      || null
+    : null;
+  const reverseProvisional = provisionalRouteDetail(reverseRoute);
+  if (reverseProvisional) {
+    selectedReverseRouteDetail.value = reverseProvisional;
+    if (runMonitorSelectedReverseRouteMapLinks) {
+      runMonitorSelectedReverseRouteMapLinks.value = reverseProvisional.links;
+    }
+  }
+}
+
 // —— 右侧面板方向切换：两个方向分开统计与绘图 ——
 // 线路搜索模式复用左侧的方向列表；站点搜索模式由当前方向 + 对向方向组成。
 const panelDirectionRoutes = computed(() => {
   if (searchMode.value === "line") {
-    return selectedLineRoutes.value;
+    return uniquePhysicalDirectionRoutes(selectedLineRoutes.value);
   }
   const current = currentSelectedRoute.value;
   if (!current || current.lineGroup) return [];
   const reverse = findReverseRoute(current);
-  return reverse ? [current, reverse] : [];
+  return uniquePhysicalDirectionRoutes(reverse ? [current, reverse] : [current]);
 });
 
 function isPanelDirectionActive(route) {
@@ -2743,7 +2559,7 @@ function formatSecondsToTime(seconds) {
 // 更新图层状态
 function updateLayers(activeLinks = null) {
   if (runMonitorSimplifiedRight) {
-    _RouteLayer.setData([]);
+    // 简化右侧模式下未构造 _RouteLayer，无图层需要清理
     if (!activeLinks?.length) {
       selectedRouteDetail.value = null;
       cleanUpSelectedRouteStops();
@@ -2751,11 +2567,11 @@ function updateLayers(activeLinks = null) {
     return;
   }
   if (activeLinks?.length) {
-    _BgRouteLayer.hide();
-    _RouteLayer.setData(activeLinks);
+    _BgRouteLayer?.hide();
+    _RouteLayer?.setData(activeLinks);
   } else {
-    _BgRouteLayer.hide();
-    _RouteLayer.setData([]);
+    _BgRouteLayer?.hide();
+    _RouteLayer?.setData([]);
     selectedRouteDetail.value = null;
     cleanUpSelectedRouteStops();
   }
@@ -2912,22 +2728,25 @@ function cleanUpSelectedRouteStops() {
 function centerOnRoute(links) {
   if (!links || !links.length) return;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const points = [];
   links.forEach(link => {
     if (link.from.x < minX) minX = link.from.x;
     if (link.from.x > maxX) maxX = link.from.x;
     if (link.from.y < minY) minY = link.from.y;
     if (link.from.y > maxY) maxY = link.from.y;
-    points.push([link.from.x, link.from.y]);
-    
+
     if (link.to.x < minX) minX = link.to.x;
     if (link.to.x > maxX) maxX = link.to.x;
     if (link.to.y < minY) minY = link.to.y;
     if (link.to.y > maxY) maxY = link.to.y;
-    points.push([link.to.x, link.to.y]);
   });
+  if (![minX, minY, maxX, maxY].every(Number.isFinite)) return;
   if (typeof MapRef.value?.setFitZoomAndCenterByPoints === "function") {
-    MapRef.value.setFitZoomAndCenterByPoints(points);
+    MapRef.value.setFitZoomAndCenterByPoints([
+      [minX, minY],
+      [minX, maxY],
+      [maxX, minY],
+      [maxX, maxY],
+    ]);
     return;
   }
   const centerX = (minX + maxX) / 2;
@@ -2959,13 +2778,32 @@ function hasUsableRouteDetail(route = {}) {
     && route.facilities.length > 0;
 }
 
+// —— 选中即时上屏：不等 routeDetail 网络返回，先用本地已有数据把线画出来 ——
+// geometry→伪 links 的纯转换在 utils/routeGeometry.js（含单测）。
+// 返回可立即上屏的线路详情：详情缓存命中给精确版，否则给摘要过渡版（provisionalDetail 标记）。
+// 过渡版只写 selectedRouteDetail 等展示状态，绝不写入 routeDetailCache。
+function provisionalRouteDetail(route) {
+  if (!route?.routeId) return null;
+  const key = routeUniqueKey(route);
+  if (routeDetailCache.value.has(key)) return routeDetailCache.value.get(key);
+  const links = provisionalRouteLinks(route);
+  if (!links.length) return null;
+  return {
+    ...route,
+    links,
+    facilities: Array.isArray(route.facilities) ? route.facilities : [],
+    info: route.info || {},
+    provisionalDetail: true,
+  };
+}
+
 async function loadRouteDetail(route, config = {}) {
   if (!route?.routeId) return route;
   if (route.lineGroup) return loadLineGroupDetail(route, config);
   const routeId = String(route.routeId);
   const key = routeUniqueKey(route);
-  if (routeDetailCache.has(key)) {
-    return routeDetailCache.get(key);
+  if (routeDetailCache.value.has(key)) {
+    return routeDetailCache.value.get(key);
   }
   if (hasUsableRouteDetail(route)) {
     const detail = {
@@ -2973,7 +2811,7 @@ async function loadRouteDetail(route, config = {}) {
       facilities: route.facilities || [],
       info: route.info || {},
     };
-    routeDetailCache.set(key, detail);
+    writeRouteDetailCache(key, detail);
     return detail;
   }
   const res = await getRouteDetail(
@@ -2992,23 +2830,24 @@ async function loadRouteDetail(route, config = {}) {
     facilities: res.data?.facilities || route.facilities || [],
     info: res.data?.info || route.info || {},
   };
-  routeDetailCache.set(key, detail);
+  writeRouteDetailCache(key, detail);
   return detail;
 }
 
 async function loadLineGroupDetail(route, config = {}) {
   const key = routeUniqueKey(route);
-  if (routeDetailCache.has(key)) return routeDetailCache.get(key);
+  if (routeDetailCache.value.has(key)) return routeDetailCache.value.get(key);
   const childRoutes = Array.isArray(route?.childRoutes) ? route.childRoutes : [];
   const childDetails = (await Promise.all(childRoutes.map((child) => loadRouteDetail(child, config))))
     .filter(Boolean);
+  const detailRoutes = childDetails.length ? childDetails : childRoutes;
   const detail = {
     ...route,
-    links: childDetails.flatMap((child) => Array.isArray(child?.links) ? child.links : []),
-    facilities: uniqueFacilities(childDetails.length ? childDetails : childRoutes),
-    childRoutes: childDetails.length ? childDetails : childRoutes,
+    links: uniqueRouteLinks(detailRoutes),
+    facilities: uniqueFacilities(detailRoutes),
+    childRoutes: detailRoutes,
   };
-  routeDetailCache.set(key, detail);
+  writeRouteDetailCache(key, detail);
   return detail;
 }
 
@@ -3019,7 +2858,7 @@ async function loadRoutePanelDetail(route, config = {}) {
   if (route?.lineGroup) {
     const panel = await ensureRoutePanelData();
     const groupPanel = panel?.lineGroups?.[key] || null;
-    if (groupPanel) routePanelDetailCache.set(key, groupPanel);
+    cachePanelDetail(key, groupPanel);
     return groupPanel;
   }
   if (routePanelDetailCache.has(key)) return routePanelDetailCache.get(key);
@@ -3027,7 +2866,7 @@ async function loadRoutePanelDetail(route, config = {}) {
   // 右侧面板即点即出，不再为每次选中发 routePanelDetail 请求
   const localPanel = routePanelFromPayload(routePanelData.value?.routes, route);
   if (localPanel) {
-    routePanelDetailCache.set(key, localPanel);
+    cachePanelDetail(key, localPanel);
     return localPanel;
   }
   if (routePanelDetailPromises.has(key)) return routePanelDetailPromises.get(key);
@@ -3040,7 +2879,7 @@ async function loadRoutePanelDetail(route, config = {}) {
     .then((res) => {
       const panel = res?.data && typeof res.data === "object" ? res.data : null;
       if (props.model === model && panel && Object.keys(panel).length) {
-        routePanelDetailCache.set(key, panel);
+        cachePanelDetail(key, panel);
         return panel;
       }
       return null;
@@ -3059,15 +2898,18 @@ async function loadRoutePanelDetail(route, config = {}) {
 async function loadSelectedRoutePanel(route, config = {}) {
   const key = routeUniqueKey(route);
   if (!key || !shouldLoadSelectedRoutePanel.value) return null;
-  const detailPanel = await loadRoutePanelDetail(route, config);
-  if (detailPanel) return detailPanel;
-  if (!shouldRenderPfaRightPanel.value) return null;
+  const cachedPanel = routePanelDetailCache.get(key)
+    || routePanelFromPayload(routePanelData.value?.routes, route);
+  if (cachedPanel) return cachedPanel;
   const panel = await ensureRoutePanelData();
   const routePanel = routePanelFromPayload(panel?.routes, route);
   if (routePanel) {
-    routePanelDetailCache.set(key, routePanel);
+    cachePanelDetail(key, routePanel);
+    return routePanel;
   }
-  return routePanel;
+  const detailPanel = await loadRoutePanelDetail(route, config);
+  if (detailPanel) return detailPanel;
+  return null;
 }
 
 function ensureRoutePanelData() {
@@ -3105,35 +2947,60 @@ async function handleSelectRoute(route) {
     || routePanelFromPayload(routePanelData.value?.routes, route)
     || null;
   clearReverseSelectionOutputs();
+  applyReverseRoutePreview(reverseRoute);
+
+  // 选中即刻画线+居中（摘要 geometry 或缓存详情），不等 routeDetail 网络返回
+  let provisionalPainted = false;
+  const provisional = provisionalRouteDetail(route);
+  if (provisional) {
+    selectedRouteDetail.value = provisional;
+    updateLayers(provisional.links);
+    centerOnRoute(provisional.links);
+    updateSelectedRouteStops(provisional);
+    provisionalPainted = true;
+  }
+  const detailPromise = loadRouteDetail(route, { signal: request.signal });
+  const panelPromise = loadSelectedRoutePanel(route, { signal: request.signal });
+  const reverseDetailPromise = reverseRoute
+    ? loadRouteDetail(reverseRoute, { signal: request.signal })
+    : Promise.resolve(null);
+  const reversePanelPromise = reverseRoute
+    ? loadSelectedRoutePanel(reverseRoute, { signal: request.signal })
+    : Promise.resolve(null);
+
+  panelPromise.then((panel) => {
+    if (selectionRequestSeq !== request.seq || String(activeRouteId.value) !== routeId) return;
+    if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
+  }).catch(() => {});
+
+  reversePanelPromise.then((reversePanel) => {
+    if (selectionRequestSeq !== request.seq || String(activeRouteId.value) !== routeId) return;
+    selectedReverseRoutePanel.value = reversePanel || null;
+  }).catch(() => {});
+
+  reverseDetailPromise
+    .then((reverseDetail) => {
+      if (selectionRequestSeq !== request.seq || String(activeRouteId.value) !== routeId) return;
+      selectedReverseRouteDetail.value = reverseDetail || null;
+      if (runMonitorSelectedReverseRouteMapLinks) {
+        runMonitorSelectedReverseRouteMapLinks.value = Array.isArray(reverseDetail?.links) ? reverseDetail.links : [];
+      }
+    })
+    .catch(() => {});
+
   try {
-    const [detail, panel, reverseDetail, reversePanel] = await Promise.all([
-      loadRouteDetail(route, { signal: request.signal }),
-      loadSelectedRoutePanel(route, { signal: request.signal }),
-      reverseRoute ? loadRouteDetail(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
-      reverseRoute ? loadSelectedRoutePanel(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
-    ]);
+    const detail = await detailPromise;
     if (selectionRequestSeq !== request.seq || String(activeRouteId.value) !== routeId) return;
     selectedRouteDetail.value = detail;
-    if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
-    selectedReverseRouteDetail.value = reverseDetail || null;
-    selectedReverseRoutePanel.value = reversePanel || null;
-    if (runMonitorSelectedReverseRouteDetail) {
-      runMonitorSelectedReverseRouteDetail.value = reverseDetail || null;
-    }
-    if (runMonitorSelectedReverseLinePanel) {
-      runMonitorSelectedReverseLinePanel.value = reversePanel || null;
-    }
-    if (runMonitorSelectedReverseRouteMapLinks) {
-      runMonitorSelectedReverseRouteMapLinks.value = Array.isArray(reverseDetail?.links) ? reverseDetail.links : [];
-    }
     if (detail?.links && detail.links.length > 0) {
       updateLayers(detail.links);
-      centerOnRoute(detail.links);
+      // 摘要走向已居中过（与精确 links 外接框最多差抽稀容差 8m），不再二次跳相机
+      if (!provisionalPainted) centerOnRoute(detail.links);
     }
     updateSelectedRouteStops(detail);
   } catch (error) {
-    // 过期请求的失败不能清掉新选中线路的状态
-    if (!isCanceledRequest(error) && selectionRequestSeq === request.seq) {
+    // 过期请求的失败不能清掉新选中线路的状态；已有摘要过渡显示时保留，不闪空
+    if (!isCanceledRequest(error) && selectionRequestSeq === request.seq && !provisionalPainted) {
       selectedRouteDetail.value = null;
       updateLayers(null);
     }
@@ -3172,6 +3039,7 @@ function handleStationChange(stationName) {
               routeName: route.routeName,
               info: route.info,
               links: route.links,
+              geometry: route.geometry,
               facilities: route.facilities,
               stationCoord: fac.coord || null,
             });
@@ -3202,26 +3070,58 @@ async function handleSelectMatchedRoute(item) {
     || routePanelFromPayload(routePanelData.value?.routes, item)
     || null;
   clearReverseSelectionOutputs();
+  applyReverseRoutePreview(reverseRoute);
+
+  // 选中即刻画线+居中（摘要 geometry 或缓存详情），不等 routeDetail 网络返回
+  let provisionalPainted = false;
+  const provisional = provisionalRouteDetail(item);
+  if (provisional) {
+    selectedRouteDetail.value = provisional;
+    updateLayers(provisional.links);
+    centerOnRoute(provisional.links);
+    updateSelectedRouteStops(provisional);
+    provisionalPainted = true;
+  }
+  const detailPromise = loadRouteDetail(item, { signal: request.signal });
+  const panelPromise = loadSelectedRoutePanel(item, { signal: request.signal });
+  const reverseDetailPromise = reverseRoute
+    ? loadRouteDetail(reverseRoute, { signal: request.signal })
+    : Promise.resolve(null);
+  const reversePanelPromise = reverseRoute
+    ? loadSelectedRoutePanel(reverseRoute, { signal: request.signal })
+    : Promise.resolve(null);
+
+  panelPromise.then((panel) => {
+    if (selectionRequestSeq !== request.seq || String(activeMatchedRouteId.value) !== key) return;
+    if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
+  }).catch(() => {});
+
+  reversePanelPromise.then((reversePanel) => {
+    if (selectionRequestSeq !== request.seq || String(activeMatchedRouteId.value) !== key) return;
+    selectedReverseRoutePanel.value = reversePanel || null;
+  }).catch(() => {});
+
+  reverseDetailPromise
+    .then((reverseDetail) => {
+      if (selectionRequestSeq !== request.seq || String(activeMatchedRouteId.value) !== key) return;
+      selectedReverseRouteDetail.value = reverseDetail || null;
+    })
+    .catch(() => {});
+
   try {
-    const [detail, panel, reverseDetail, reversePanel] = await Promise.all([
-      loadRouteDetail(item, { signal: request.signal }),
-      loadSelectedRoutePanel(item, { signal: request.signal }),
-      reverseRoute ? loadRouteDetail(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
-      reverseRoute ? loadSelectedRoutePanel(reverseRoute, { signal: request.signal }) : Promise.resolve(null),
-    ]);
+    const detail = await detailPromise;
     if (selectionRequestSeq !== request.seq || String(activeMatchedRouteId.value) !== key) return;
     selectedRouteDetail.value = detail;
-    if (shouldLoadSelectedRoutePanel.value) selectedRoutePanel.value = panel;
-    selectedReverseRouteDetail.value = reverseDetail || null;
-    selectedReverseRoutePanel.value = reversePanel || null;
-    if (detail?.links) {
+    // 与 handleSelectRoute 对齐：空 links 不触发 updateLayers([])，避免误清刚设置的选中详情
+    if (detail?.links && detail.links.length > 0) {
       updateLayers(detail.links);
-      centerOnRoute(detail.links);
+      // 摘要走向已居中过（与精确 links 外接框最多差抽稀容差 8m），不再二次跳相机
+      if (!provisionalPainted) centerOnRoute(detail.links);
     }
     updateSelectedRouteStops(detail);
   } catch (error) {
-    // 过期请求的失败不能清掉新选中线路的状态
-    if (!isCanceledRequest(error) && selectionRequestSeq === request.seq) {
+    // 过期请求的失败不能清掉新选中线路的状态；已有摘要过渡显示时保留，不闪空
+    if (!isCanceledRequest(error) && selectionRequestSeq === request.seq && !provisionalPainted) {
       selectedRouteDetail.value = null;
       updateLayers(null);
     }
@@ -3255,12 +3155,14 @@ async function loadAllLines() {
   try {
     const lineRes = await getCachedLineAll(model);
     if (props.model !== model) return;
-      const data = (Array.isArray(lineRes) ? lineRes : []).map((line) => ({
-        ...line,
-        lineName: line?.lineName || line?.lineId || "未命名线路",
-      }));
+      // 规范化结果按模型记忆化：重挂载/切 tab 直接命中同一份 markRaw 数组，不再整表重克隆
+      const data = getModelDerived(model, "xlzl:normalizedLines", () =>
+        (Array.isArray(lineRes) ? lineRes : []).map((line) => ({
+          ...line,
+          lineName: line?.lineName || line?.lineId || "未命名线路",
+        })));
+      rawLinesModel = model;
       rawLines.value = data;
-      allLinks.value = [];
       if (!runMonitorSimplifiedRight) {
         _BgRouteLayer.setTileSource(model, { tileRequest: getRouteTileBinary });
       }
@@ -3287,7 +3189,7 @@ watch(() => props.model, (newModel) => {
   if (newModel) {
     selectionAbortController?.abort();
     routeFlowMapCache.clear();
-    routeDetailCache.clear();
+    // routeDetailCache 为模型作用域 Map，模型切换后天然指向新 Map，旧模型缓存随 LRU 淘汰即可
     routePanelDetailCache.clear();
     routePanelDetailPromises.clear();
     routePanelData.value = null;
@@ -3305,12 +3207,14 @@ watch(() => props.model, (newModel) => {
 });
 
 onUnmounted(() => {
+  isComponentUnmounted = true;
+  cancelSegmentTimeMirror();
   selectionAbortController?.abort();
   if (runMonitorSelectedRouteDetail) runMonitorSelectedRouteDetail.value = null;
   if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
   clearReverseSelectionOutputs();
-  _BgRouteLayer.dispose();
-  _RouteLayer.dispose();
+  _BgRouteLayer?.dispose();
+  _RouteLayer?.dispose();
   cleanUpSelectedRouteStops();
   cleanUpStationOdLayers();
 });
@@ -3405,30 +3309,6 @@ defineExpose({
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-/* 需求1：起终点信息另起一行小字展示（标题只保留纯线路名） */
-.pfa-route-endpoints {
-  font-size: var(--dm2-text-xs);
-  font-weight: var(--dm2-fw-medium);
-  color: var(--dm2-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* 需求12：全线（上下行合并）口径标注 */
-.pfa-merged-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 6px;
-  margin-left: 4px;
-  border-radius: 999px;
-  border: 1px solid rgba(21, 105, 222, 0.28);
-  background: rgba(21, 105, 222, 0.08);
-  color: var(--dm2-accent, #1569de);
-  font-size: 10px;
-  font-weight: var(--dm2-fw-semibold, 600);
-  line-height: 1.5;
-  white-space: nowrap;
 }
 .pfa-route-sub {
   font-size: var(--dm2-text-xs);
@@ -3669,19 +3549,39 @@ defineExpose({
   min-width: 0;
   flex-wrap: wrap;
 }
+.pfa-route-sections .boarding-section-header {
+  align-items: stretch;
+  flex-direction: column;
+  gap: var(--dm2-space-2);
+}
+.pfa-route-sections .chart-mode-actions {
+  width: 100%;
+  justify-content: stretch;
+}
 .pfa-route-sections .chart-type-selector {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2px;
-  padding: 2px;
+  width: 100%;
+  padding: 3px;
   border-radius: var(--dm2-radius-sm);
   background: var(--dm2-surface-sunken);
   border: 1px solid var(--dm2-line);
 }
 .pfa-route-sections .chart-type-selector .type-pill {
-  padding: 3px 10px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
   border-radius: calc(var(--dm2-radius-sm) - 3px);
+  background: transparent;
+  font-family: var(--dm2-font);
   font-size: var(--dm2-text-xs);
   font-weight: var(--dm2-fw-semibold);
+  line-height: 1;
   color: var(--dm2-muted);
   cursor: pointer;
   user-select: none;
@@ -3737,14 +3637,14 @@ defineExpose({
 .pfa-route-sections .boarding-chart-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--dm2-space-3);
   margin-bottom: var(--dm2-space-2);
   color: var(--dm2-muted);
   font-size: var(--dm2-text-xs);
   font-weight: var(--dm2-fw-semibold);
 }
-.pfa-route-sections .boarding-chart-title span:last-child {
+.pfa-route-sections .boarding-chart-hint {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4084,24 +3984,6 @@ defineExpose({
   display: flex;
   flex-direction: column;
 }
-.boarding-fullscreen-chart-title {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 0 2px 8px;
-  color: var(--dm2-muted);
-  font-size: var(--dm2-text-sm);
-  font-weight: var(--dm2-fw-semibold);
-}
-.boarding-fullscreen-chart-title span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: var(--dm2-fw-medium);
-}
 .boarding-fullscreen-chart {
   width: 100%;
   flex: 1 1 auto;
@@ -4174,11 +4056,6 @@ defineExpose({
   font-size: 17px;
   font-weight: 700;
   line-height: 1.25;
-}
-.boarding-heatmap-subtitle {
-  margin-top: 2px;
-  color: var(--dm2-muted);
-  font-size: var(--dm2-text-xs);
 }
 .boarding-heatmap-meta {
   flex: 0 0 auto;
@@ -4430,89 +4307,6 @@ defineExpose({
   }
 }
 
-.timeline-container {
-  display: flex;
-  flex-direction: column;
-  padding-left: 8px;
-  
-  .timeline-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding-bottom: 14px;
-    position: relative;
-    cursor: pointer;
-    
-    &:hover {
-      .timeline-content .station-name {
-        color: #1569de;
-      }
-      .timeline-dot {
-        border-color: #1569de;
-        background: #1569de;
-      }
-    }
-    
-    &:not(:last-child)::after {
-      content: "";
-      position: absolute;
-      left: 6px;
-      top: 12px;
-      bottom: -4px;
-      width: 2px;
-      background-color: rgba(21, 105, 222, 0.15);
-    }
-    
-    .timeline-dot {
-      width: 14px;
-      height: 14px;
-      border: 2px solid rgba(21, 105, 222, 0.4);
-      border-radius: 50%;
-      background: #ffffff;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-top: 2px;
-      z-index: 1;
-      transition: all 0.2s ease;
-      
-      &.first {
-        border-color: #0f9f6e;
-        .dot-inner { background: #0f9f6e; }
-      }
-      &.last {
-        border-color: #dc4c5d;
-        .dot-inner { background: #dc4c5d; }
-      }
-      
-      .dot-inner {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: transparent;
-      }
-    }
-    
-    .timeline-content {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      
-      .station-name {
-        font-size: 13px;
-        font-weight: 600;
-        color: #2d3748;
-        transition: color 0.2s ease;
-      }
-      
-      .station-idx {
-        font-size: 10px;
-        color: #a0aec0;
-      }
-    }
-  }
-}
-
 .matched-title {
   font-size: 13px;
   font-weight: bold;
@@ -4613,48 +4407,6 @@ defineExpose({
   background-color: var(--app-card-bg);
   border-radius: 8px;
   box-shadow: none;
-}
-
-.route-detail-panel {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 4px;
-}
-
-.metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-  margin-bottom: 12px;
-  
-  .metric-card {
-    background: var(--app-card-bg);
-    border: 1px solid rgba(21, 105, 222, 0.12);
-    border-radius: 6px;
-    padding: 8px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    box-sizing: border-box;
-    transition: border-color 0.2s ease;
-    
-    &:hover {
-      border-color: rgba(21, 105, 222, 0.25);
-    }
-    
-    .label {
-      font-size: 11px;
-      color: #60758e;
-      font-weight: 600;
-    }
-    
-    .value {
-      font-size: 16px;
-      font-weight: bold;
-      color: #1569de;
-      font-family: var(--app-font-number);
-    }
-  }
 }
 
 .passenger-flow-section {
@@ -4844,35 +4596,6 @@ defineExpose({
         background: rgba(245, 158, 11, 0.08);
         color: #d97706;
       }
-    }
-  }
-}
-
-.stations-section {
-  border-top: 1px solid rgba(21, 105, 222, 0.08);
-  padding-top: 16px;
-  
-  .section-title {
-    font-size: 14px;
-    font-weight: bold;
-    color: #12304f;
-    margin-bottom: 12px;
-  }
-  
-  .station-scroll-list {
-    max-height: calc(100vh - 640px);
-    overflow-y: auto;
-    padding-right: 6px;
-    
-    &::-webkit-scrollbar {
-      width: 6px;
-    }
-    &::-webkit-scrollbar-thumb {
-      background: rgba(21, 105, 222, 0.2);
-      border-radius: 3px;
-    }
-    &::-webkit-scrollbar-thumb:hover {
-      background: rgba(21, 105, 222, 0.4);
     }
   }
 }
@@ -5100,492 +4823,6 @@ defineExpose({
     }
   }
 }
-
-/* Route Boarding & Alighting Analysis Panel Premium Styling */
-.route-boarding-alighting-panel {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 4px;
-  
-  .time-range-section {
-    background: rgba(21, 105, 222, 0.02);
-    border: 1px dashed rgba(21, 105, 222, 0.15);
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    
-    .time-range-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-      
-      .title {
-        font-size: 13px;
-        font-weight: bold;
-        color: #1569de;
-      }
-      
-      .range-text {
-        font-size: 13px;
-        font-weight: bold;
-        color: #12304f;
-        background: rgba(21, 105, 222, 0.08);
-        padding: 2px 8px;
-        border-radius: 4px;
-      }
-    }
-    
-    .time-range-slider {
-      padding: 0 8px;
-      
-      :deep(.el-slider__bar) {
-        background-color: #1569de;
-      }
-      :deep(.el-slider__button) {
-        border-color: #1569de;
-        width: 14px;
-        height: 14px;
-      }
-    }
-  }
-
-  .boarding-alighting-header,
-  .boarding-profile-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-    
-    .section-title {
-      font-size: 14px;
-      font-weight: bold;
-      color: #12304f;
-    }
-  }
-
-  .boarding-alighting-chart-wrapper {
-    height: 260px;
-    width: 100%;
-    position: relative;
-    margin-bottom: 18px;
-    
-    .chart_box {
-      width: 100%;
-      height: 100%;
-    }
-    
-    .boarding-alighting-bar-chart {
-      width: 100%;
-      height: 100%;
-    }
-  }
-
-  .boarding-profile-chart-wrapper {
-    height: 230px;
-    width: 100%;
-    position: relative;
-    
-    .chart_box,
-    .boarding-profile-chart {
-      width: 100%;
-      height: 100%;
-    }
-  }
-}
-
-/* Route Transfer Analysis Panel Premium Styling */
-.route-transfer-panel {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 4px;
-  
-  .time-range-section {
-    background: rgba(21, 105, 222, 0.02);
-    border: 1px dashed rgba(21, 105, 222, 0.15);
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    
-    .time-range-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 6px;
-      
-      .title {
-        font-size: 13px;
-        font-weight: bold;
-        color: #1569de;
-      }
-      
-      .range-text {
-        font-size: 13px;
-        font-weight: bold;
-        color: #12304f;
-        background: rgba(21, 105, 222, 0.08);
-        padding: 2px 8px;
-        border-radius: 4px;
-      }
-    }
-    
-    .time-range-slider {
-      padding: 0 8px;
-      
-      :deep(.el-slider__bar) {
-        background-color: #1569de;
-      }
-      :deep(.el-slider__button) {
-        border-color: #1569de;
-        width: 14px;
-        height: 14px;
-      }
-    }
-  }
-
-  .transfer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-    
-    .section-title {
-      font-size: 14px;
-      font-weight: bold;
-      color: #12304f;
-    }
-  }
-
-  .transfer-scroll-wrapper {
-    height: calc(100vh - 460px);
-    overflow-y: auto;
-    padding-right: 6px;
-    
-    &::-webkit-scrollbar {
-      width: 6px;
-    }
-    &::-webkit-scrollbar-thumb {
-      background: rgba(21, 105, 222, 0.2);
-      border-radius: 3px;
-    }
-    &::-webkit-scrollbar-thumb:hover {
-      background: rgba(21, 105, 222, 0.4);
-    }
-  }
-
-  .transfer-table {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    
-    .table-header {
-      display: flex;
-      background: rgba(21, 105, 222, 0.05);
-      border-radius: 6px;
-      padding: 10px 14px;
-      font-weight: bold;
-      color: #1569de;
-      font-size: 12px;
-      margin-bottom: 8px;
-      
-      span {
-        display: inline-block;
-      }
-      .col-name { flex: 1.4; }
-      .col-station { flex: 1.1; }
-      .col-flow { flex: 1.1; text-align: right; margin-right: 20px; }
-      .col-ratio { flex: 1.3; }
-    }
-    
-    .table-row {
-      display: flex;
-      align-items: center;
-      padding: 11px 14px;
-      border-bottom: 1px dashed rgba(21, 105, 222, 0.1);
-      font-size: 12px;
-      color: #2d3748;
-      transition: all 0.25s ease;
-      
-      &:hover {
-        background: rgba(21, 105, 222, 0.02);
-      }
-      
-      .col-name { 
-        flex: 1.4; 
-        display: flex; 
-        align-items: center; 
-        gap: 6px;
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        
-        .line-badge-icon {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 16px;
-          height: 16px;
-          border-radius: 50%;
-          font-size: 9px;
-          font-weight: 800;
-          color: #ffffff;
-          
-          &.metro {
-            background: #e11d48;
-          }
-          &.bus {
-            background: #0f9f6e;
-          }
-        }
-      }
-      
-      .col-station {
-        flex: 1.1;
-        color: #4b5563;
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      
-      .col-flow { 
-        flex: 1.1; 
-        text-align: right; 
-        font-family: var(--app-font-number);
-        font-weight: 700;
-        color: #1569de;
-        margin-right: 20px;
-      }
-      
-      .col-ratio { 
-        flex: 1.3; 
-        display: flex; 
-        align-items: center; 
-        gap: 8px;
-        
-        .ratio-bar-bg {
-          flex: 1;
-          height: 6px;
-          background: #f1f5f9;
-          border-radius: 3px;
-          overflow: hidden;
-        }
-        .ratio-bar-fill {
-          display: block;
-          height: 100%;
-          border-radius: 3px;
-          background: #0b91b7;
-        }
-        .ratio-text {
-          font-size: 11px;
-          font-weight: 600;
-          color: #64748b;
-          width: 38px;
-          text-align: right;
-        }
-      }
-    }
-  }
-
-  .transfer-chart-wrapper {
-    height: calc(100vh - 460px);
-    width: 100%;
-    position: relative;
-    
-    .chart_box {
-      width: 100%;
-      height: 100%;
-    }
-    
-    .transfer-bar-chart {
-      width: 100%;
-      height: 100%;
-    }
-  }
-}
-
-/* Route Segment Analysis Panel Premium Styling */
-.route-segments-panel {
-  display: flex;
-  flex-direction: column;
-  padding: 8px 4px;
-  
-  .time-range-section {
-    background: rgba(21, 105, 222, 0.02);
-    border: 1px dashed rgba(21, 105, 222, 0.15);
-    padding: 12px 16px;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    
-    .time-range-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      
-      .title {
-        font-size: 13px;
-        font-weight: bold;
-        color: #12304f;
-      }
-      
-      .range-text {
-        font-size: 13px;
-        font-weight: bold;
-        color: #1569de;
-        font-family: var(--app-font-number);
-      }
-    }
-    
-    .time-range-slider {
-      width: 96%;
-      margin: 0 auto;
-      :deep(.el-slider__bar) {
-        background-color: #1569de;
-      }
-      :deep(.el-slider__button) {
-        border-color: #1569de;
-      }
-    }
-  }
-  
-  .segments-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-    
-    .section-title {
-      font-size: 14px;
-      font-weight: bold;
-      color: #12304f;
-    }
-    
-    .view-mode-group {
-      :deep(.el-radio-button__inner) {
-        font-size: 11px;
-        font-weight: 600;
-        padding: 5px 12px;
-      }
-    }
-  }
-  
-  .segments-scroll-wrapper {
-    max-height: calc(100vh - 460px);
-    overflow-y: auto;
-    padding-right: 4px;
-    
-    &::-webkit-scrollbar {
-      width: 6px;
-    }
-    &::-webkit-scrollbar-thumb {
-      background: rgba(21, 105, 222, 0.2);
-      border-radius: 3px;
-    }
-    &::-webkit-scrollbar-thumb:hover {
-      background: rgba(21, 105, 222, 0.4);
-    }
-  }
-  
-  .segments-table {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    
-    .table-header {
-      display: flex;
-      background: rgba(21, 105, 222, 0.05);
-      border-radius: 4px;
-      padding: 10px;
-      font-size: 12px;
-      font-weight: bold;
-      color: #60758e;
-      border-bottom: 1.5px solid rgba(21, 105, 222, 0.15);
-      margin-bottom: 6px;
-    }
-    
-    .table-row {
-      display: flex;
-      align-items: center;
-      padding: 12px 10px;
-      border-bottom: 1px dashed rgba(21, 105, 222, 0.12);
-      font-size: 13px;
-      transition: all 0.2s ease;
-      
-      &:hover {
-        background: rgba(21, 105, 222, 0.02);
-      }
-      
-      &:last-child {
-        border-bottom: none;
-      }
-    }
-    
-    .col-name {
-      flex-grow: 1;
-      font-weight: 600;
-      color: #2d3748;
-      min-width: 0;
-      padding-right: 12px;
-    }
-    
-    .col-flow {
-      width: 95px;
-      flex-shrink: 0;
-      text-align: right;
-      font-family: var(--app-font-number);
-      font-weight: 600;
-      color: #60758e;
-      padding-right: 12px;
-    }
-    
-    .col-load {
-      width: 65px;
-      flex-shrink: 0;
-      text-align: right;
-      
-      .load-indicator {
-        font-family: var(--app-font-number);
-        font-weight: bold;
-        padding: 2px 6px;
-        border-radius: 4px;
-        font-size: 11px;
-        
-        &.high {
-          background: rgba(239, 68, 68, 0.1);
-          color: #dc4c5d;
-        }
-        &.medium {
-          background: rgba(245, 158, 11, 0.1);
-          color: #d97706;
-        }
-        &.low {
-          background: rgba(16, 185, 129, 0.1);
-          color: #0f9f6e;
-        }
-      }
-    }
-  }
-  
-  .segments-chart-wrapper {
-    height: calc(100vh - 460px);
-    width: 100%;
-    position: relative;
-    
-    .chart_box {
-      width: 100%;
-      height: 100%;
-    }
-    
-    .segments-bar-chart {
-      width: 100%;
-      height: 100%;
-    }
-  }
-}
-
-
 
 .ranking-panel {
   flex: 1;

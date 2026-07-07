@@ -8,15 +8,18 @@ const WEB_MERCATOR_WORLD_SIZE = WEB_MERCATOR_HALF_WORLD * 2;
 const MERCATOR_UNIT_PER_WEB_MERCATOR_METER = 1 / WEB_MERCATOR_WORLD_SIZE;
 const MIN_INSTANCE_CAPACITY = 16;
 const DEFAULT_MODEL_WORLD_SCALE = 4;
-const VEHICLE_CULL_PADDING_METERS = 220;
-const VEHICLE_CULL_PADDING_PIXELS = 48;
 const DEBUG_PUBLISH_INTERVAL_MS = 250;
+// 调试通道（dataset 写入/JSON.stringify）默认关闭，仅 window.APP_CONFIG.debug 时开启
+const DEBUG_CHANNEL_ENABLED = typeof window !== "undefined" && Boolean(window.APP_CONFIG?.debug);
 const ORIGIN_REBASE_DEFAULT_METERS = 50000;
 const SMOOTH_MIN_ZOOM = 15.3;
 const SMOOTH_SNAP_METERS = 900;
 const MODE_INDEX_TO_KEY = ["bus", "subway", "car"];
 const DEG_TO_RAD = Math.PI / 180;
 const INSTANCE_Z_METERS = 0.18;
+const LOW_ZOOM_SCALE_PIVOT = 13.6;
+const LOW_ZOOM_SCALE_MAX = 48;
+const VEHICLE_CULL_PADDING_METERS = 600;
 
 function vehicleModelUrl(fileName) {
   const baseUrl =
@@ -52,6 +55,12 @@ function rendererPixelRatio() {
     return Math.max(1, Math.min(2, configured));
   }
   return Math.min((typeof window !== "undefined" && window.devicePixelRatio) || 1, 2);
+}
+
+function lowZoomScaleMultiplier(zoom) {
+  const value = Number(zoom);
+  if (!Number.isFinite(value) || value >= LOW_ZOOM_SCALE_PIVOT) return 1;
+  return Math.max(1, Math.min(LOW_ZOOM_SCALE_MAX, Math.pow(2, LOW_ZOOM_SCALE_PIVOT - value)));
 }
 
 function nextCapacity(count) {
@@ -578,6 +587,7 @@ export class VehicleModelLayer {
     this.originReady = false;
     this.vehicleScaleRatio = 1;
     this.vehicleScale = DEFAULT_MODEL_WORLD_SCALE;
+    this.renderVehicleScale = DEFAULT_MODEL_WORLD_SCALE;
     this.trajectoryTime = 0;
     this.vehicles = [];
     this.vehicleFrame = null;
@@ -649,7 +659,7 @@ export class VehicleModelLayer {
     this.renderer.resetState();
     gl.clear(gl.DEPTH_BUFFER_BIT);
     this.renderer.render(this.scene, this.camera);
-    if (renderStartedAt && typeof document !== "undefined") {
+    if (DEBUG_CHANNEL_ENABLED && renderStartedAt && typeof document !== "undefined") {
       const now = performance.now();
       if (now - this.lastRenderDebugAt > DEBUG_PUBLISH_INTERVAL_MS) {
         this.lastRenderDebugAt = now;
@@ -700,19 +710,42 @@ export class VehicleModelLayer {
   setVehicleScale(scale) {
     this.vehicleScaleRatio = Math.max(0.35, Math.min(2.5, Number(scale) || 1));
     const nextScale = this.vehicleScaleRatio * DEFAULT_MODEL_WORLD_SCALE;
-    if (Math.abs(nextScale - this.vehicleScale) < 0.001) return;
+    const scaleChanged = Math.abs(nextScale - this.vehicleScale) >= 0.001;
     this.vehicleScale = nextScale;
+    this.updateRenderScaleUniforms(true);
+    if (!scaleChanged) return;
     this.updateInstances();
+  }
+
+  currentRenderVehicleScale() {
+    return this.vehicleScale * lowZoomScaleMultiplier(this.mapWrapper?.zoom);
+  }
+
+  updateRenderScaleUniforms(force = false) {
+    const nextScale = this.currentRenderVehicleScale();
+    if (!force && Math.abs(nextScale - this.renderVehicleScale) < 0.001) return false;
+    this.renderVehicleScale = nextScale;
+    for (const group of this.meshGroups.values()) {
+      const useGpuTrajectory = group.userData?.mode === "segments";
+      for (const mesh of group.meshes) {
+        setFastMaterialUniforms(mesh.material, this.renderVehicleScale, {
+          time: this.trajectoryTime,
+          useGpuTrajectory,
+        });
+      }
+    }
+    return true;
   }
 
   setTrajectoryTime(seconds) {
     const nextTime = Math.max(0, Number(seconds) || 0);
-    if (Math.abs(nextTime - this.trajectoryTime) < 0.0001) return;
+    const scaleChanged = this.updateRenderScaleUniforms();
+    if (Math.abs(nextTime - this.trajectoryTime) < 0.0001 && !scaleChanged) return;
     this.trajectoryTime = nextTime;
     for (const group of this.meshGroups.values()) {
       const useGpuTrajectory = group.userData?.mode === "segments";
       for (const mesh of group.meshes) {
-        setFastMaterialUniforms(mesh.material, this.vehicleScale, {
+        setFastMaterialUniforms(mesh.material, this.renderVehicleScale, {
           time: this.trajectoryTime,
           useGpuTrajectory,
         });
@@ -723,6 +756,7 @@ export class VehicleModelLayer {
 
   setVehicles(vehicles = []) {
     const isFrame = vehicles?.kind === "vehicle-frame" || vehicles?.kind === "vehicle-segment-frame";
+    const renderScaleChanged = this.updateRenderScaleUniforms();
     // 快速路径：相机移动（平移/缩放/旋转/resize）会重复下发同一帧对象。
     // 若帧对象与内容版本号都未变化、且原点无需 rebase（chooseOrigin 返回 false），
     // 实例缓冲内容不会有任何差异，直接触发重绘即可，跳过 O(N) 的全量重写与 GPU 上传。
@@ -737,6 +771,7 @@ export class VehicleModelLayer {
       vehicles === this.vehicleFrame &&
       vehicles.__contentRev === this.vehicleFrameRev &&
       (vehicles.kind !== "vehicle-frame" || useSmoothingNow === this.lastUseSmoothing) &&
+      !renderScaleChanged &&
       !this.chooseOrigin()
     ) {
       this.publishDebug();
@@ -801,6 +836,7 @@ export class VehicleModelLayer {
   }
 
   publishDebug(force = false) {
+    if (!DEBUG_CHANNEL_ENABLED) return;
     if (typeof document === "undefined") return;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
     if (!force && now - this.lastDebugPublishAt < DEBUG_PUBLISH_INTERVAL_MS) {
@@ -873,158 +909,8 @@ export class VehicleModelLayer {
     return true;
   }
 
-  modeVehicles(mode) {
-    return this.vehicles.filter((vehicle) => vehicle?.mode === mode && vehicle.webMercator?.length >= 2);
-  }
-
-  visibleBounds() {
-    const bounds = this.mapWrapper?.getWindowRangeAndWebMercator?.();
-    const padding = Math.max(VEHICLE_CULL_PADDING_METERS, (this.mapWrapper?.cameraHeight || 0) * 0.004);
-    const web = bounds
-      ? {
-          minX: bounds.minX - padding,
-          minY: bounds.minY - padding,
-          maxX: bounds.maxX + padding,
-          maxY: bounds.maxY + padding,
-        }
-      : null;
-    const canvas = this.map?.getCanvas?.();
-    const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
-    const width = canvas?.clientWidth || (canvas?.width ? canvas.width / pixelRatio : 0);
-    const height = canvas?.clientHeight || (canvas?.height ? canvas.height / pixelRatio : 0);
-    const screen = width > 0 && height > 0
-      ? {
-          minX: -VEHICLE_CULL_PADDING_PIXELS,
-          minY: -VEHICLE_CULL_PADDING_PIXELS,
-          maxX: width + VEHICLE_CULL_PADDING_PIXELS,
-          maxY: height + VEHICLE_CULL_PADDING_PIXELS,
-        }
-      : null;
-    if (!web && !screen) return null;
-    return { web, screen };
-  }
-
-  isInVisibleBounds(vehicle, bounds) {
-    if (!bounds) return true;
-    const web = bounds.web || bounds;
-    const x = Number(vehicle.webMercator?.[0]);
-    const y = Number(vehicle.webMercator?.[1]);
-    if (web && Number.isFinite(x) && Number.isFinite(y)) {
-      const inWebBounds = x >= web.minX
-        && x <= web.maxX
-        && y >= web.minY
-        && y <= web.maxY;
-      if (!inWebBounds || !this.shouldUseScreenCull(bounds)) {
-        return inWebBounds;
-      }
-    }
-    if (bounds.screen && vehicle.position && this.map?.project) {
-      try {
-        const point = this.map.project(vehicle.position);
-        if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-          return point.x >= bounds.screen.minX
-            && point.x <= bounds.screen.maxX
-            && point.y >= bounds.screen.minY
-            && point.y <= bounds.screen.maxY;
-        }
-      } catch {
-        // Fall back to the cached web-mercator bounds if map projection is unavailable mid-update.
-      }
-    }
-    return true;
-  }
-
-  isFrameIndexInVisibleBounds(frame, index, bounds) {
-    if (!bounds?.web) return true;
-    const x = Number(frame.xs?.[index]);
-    const y = Number(frame.ys?.[index]);
-    const web = bounds.web;
-    const inWebBounds = Number.isFinite(x)
-      && Number.isFinite(y)
-      && x >= web.minX
-      && x <= web.maxX
-      && y >= web.minY
-      && y <= web.maxY;
-    if (!inWebBounds || !this.shouldUseScreenCull(bounds)) {
-      return inWebBounds;
-    }
-    try {
-      const point = this.map?.project?.(webMercatorToLngLat(x, y));
-      if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-        return point.x >= bounds.screen.minX
-          && point.x <= bounds.screen.maxX
-          && point.y >= bounds.screen.minY
-          && point.y <= bounds.screen.maxY;
-      }
-    } catch {
-      return inWebBounds;
-    }
-    return inWebBounds;
-  }
-
-  shouldUseScreenCull(bounds) {
-    if (!bounds?.screen || !this.map?.project) return false;
-    return Boolean(this.mapWrapper?.enableRotate)
-      || Number(this.mapWrapper?.pitch) < 89.5
-      || Math.abs(Number(this.mapWrapper?.rotation) || 0) > 0.01;
-  }
-
-  vehicleBuckets() {
-    const buckets = new Map(this.modes.map((mode) => [mode, []]));
-    const counts = new Map(this.modes.map((mode) => [mode, 0]));
-    let total = 0;
-    let visible = 0;
-    this.lastVisibleFirst = null;
-    if (this.vehicleFrame?.kind === "vehicle-frame") {
-      const frame = this.vehicleFrame;
-      const count = this.activeTotal();
-      const modes = frame.modes || [];
-      for (let index = 0; index < count; index++) {
-        const mode = MODE_INDEX_TO_KEY[Math.round(Number(modes[index]) || 0)] || "car";
-        if (!buckets.has(mode)) continue;
-        counts.set(mode, (counts.get(mode) || 0) + 1);
-        total += 1;
-        buckets.get(mode).push(index);
-        if (!this.lastVisibleFirst) {
-          this.lastVisibleFirst = {
-            mode,
-            webMercator: [Number(frame.xs[index]), Number(frame.ys[index])],
-            position: null,
-            screen: null,
-            angle: Number(frame.angles?.[index]) || 0,
-          };
-        }
-        visible += 1;
-      }
-      this.lastTotalCount = total;
-      this.lastVisibleCount = visible;
-      this.lastModeCounts = Object.fromEntries(counts);
-      return { buckets, counts };
-    }
-
-    for (const vehicle of this.vehicles) {
-      const mode = vehicle?.mode;
-      if (!buckets.has(mode) || !vehicle.webMercator?.length) continue;
-      counts.set(mode, (counts.get(mode) || 0) + 1);
-      total += 1;
-      buckets.get(mode).push(vehicle);
-      if (!this.lastVisibleFirst) {
-        const screen = vehicle.position ? this.map?.project?.(vehicle.position) : null;
-        this.lastVisibleFirst = {
-          mode,
-          webMercator: vehicle.webMercator,
-          position: vehicle.position,
-          screen: screen ? [screen.x, screen.y] : null,
-          angle: vehicle.angle,
-        };
-      }
-      visible += 1;
-    }
-    this.lastTotalCount = total;
-    this.lastVisibleCount = visible;
-    this.lastModeCounts = Object.fromEntries(counts);
-    return { buckets, counts };
-  }
+  // （原 modeVehicles/visibleBounds/isInVisibleBounds/isFrameIndexInVisibleBounds/shouldUseScreenCull/vehicleBuckets
+  //  双重剔除体系从未被实例更新路径调用，属死代码，已删除；如需视口剔除应在每秒段帧重写时按视口过滤写入实例。）
 
   displayKeyForVehicle(mode, frame, frameIndex, vehicle) {
     if (frame) {
@@ -1095,6 +981,36 @@ export class VehicleModelLayer {
     }
   }
 
+  visibleWebBounds() {
+    const bounds = this.mapWrapper?.getWindowRangeAndWebMercator?.();
+    if (!bounds) return null;
+    const padding = Math.max(
+      VEHICLE_CULL_PADDING_METERS,
+      (Number(this.mapWrapper?.cameraHeight) || 0) * 0.01,
+      this.renderVehicleScale * 24,
+    );
+    return {
+      minX: Number(bounds.minX) - padding,
+      minY: Number(bounds.minY) - padding,
+      maxX: Number(bounds.maxX) + padding,
+      maxY: Number(bounds.maxY) + padding,
+    };
+  }
+
+  pointInVisibleBounds(x, y, bounds) {
+    if (!bounds) return true;
+    return x >= bounds.minX && x <= bounds.maxX && y >= bounds.minY && y <= bounds.maxY;
+  }
+
+  segmentInVisibleBounds(x1, y1, x2, y2, bounds) {
+    if (!bounds) return true;
+    const minX = Math.min(x1, x2);
+    const maxX = Math.max(x1, x2);
+    const minY = Math.min(y1, y2);
+    const maxY = Math.max(y1, y2);
+    return maxX >= bounds.minX && minX <= bounds.maxX && maxY >= bounds.minY && minY <= bounds.maxY;
+  }
+
   disposeMeshGroup(group) {
     if (!group) return;
     for (const mesh of group.meshes || []) {
@@ -1129,7 +1045,7 @@ export class VehicleModelLayer {
     const meshes = template.parts.map((part, index) => {
       const geometry = createInstancedGeometry(part.geometry, instanceTransform, instanceSegmentXY, instanceSegmentInfo);
       const material = createFastInstancedMaterial(part.material);
-      setFastMaterialUniforms(material, this.vehicleScale, { time: this.trajectoryTime });
+      setFastMaterialUniforms(material, this.renderVehicleScale, { time: this.trajectoryTime });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.name = `${this.id}-${mode}-${index}-${part.name}`;
       mesh.frustumCulled = false;
@@ -1163,8 +1079,10 @@ export class VehicleModelLayer {
     const frameModes = frame?.modes || [];
     const modeCounts = Object.fromEntries(this.modes.map((mode) => [mode, 0]));
     const [frameOriginX = 0, frameOriginY = 0] = frame.origin || [];
+    const bounds = this.visibleWebBounds();
     this.lastVisibleFirst = null;
     let total = 0;
+    let visible = 0;
 
     for (let index = 0; index < frameCount; index++) {
       const mode = MODE_INDEX_TO_KEY[Math.round(Number(frameModes[index]) || 0)] || "car";
@@ -1181,16 +1099,24 @@ export class VehicleModelLayer {
       ) {
         continue;
       }
-      modeCounts[mode] += 1;
       total += 1;
+      const worldStartX = Number(frameOriginX) + startX;
+      const worldStartY = Number(frameOriginY) + startY;
+      const worldEndX = Number(frameOriginX) + endX;
+      const worldEndY = Number(frameOriginY) + endY;
+      if (!this.segmentInVisibleBounds(worldStartX, worldStartY, worldEndX, worldEndY, bounds)) {
+        continue;
+      }
+      modeCounts[mode] += 1;
+      visible += 1;
       if (!this.lastVisibleFirst) {
         const duration = Math.max(endTime - startTime, 0.001);
         const ratio = clamp((this.trajectoryTime - startTime) / duration, 0, 1);
         this.lastVisibleFirst = {
           mode,
           webMercator: [
-            Number(frameOriginX) + startX + (endX - startX) * ratio,
-            Number(frameOriginY) + startY + (endY - startY) * ratio,
+            worldStartX + (endX - startX) * ratio,
+            worldStartY + (endY - startY) * ratio,
           ],
           position: null,
           screen: null,
@@ -1200,7 +1126,7 @@ export class VehicleModelLayer {
     }
 
     this.lastTotalCount = total;
-    this.lastVisibleCount = total;
+    this.lastVisibleCount = visible;
     this.lastModeCounts = { ...modeCounts };
 
     const groups = new Map();
@@ -1214,7 +1140,7 @@ export class VehicleModelLayer {
       groups.set(mode, group);
       for (const mesh of group.meshes) {
         mesh.geometry.instanceCount = count;
-        setFastMaterialUniforms(mesh.material, this.vehicleScale, {
+        setFastMaterialUniforms(mesh.material, this.renderVehicleScale, {
           time: this.trajectoryTime,
           useGpuTrajectory: true,
         });
@@ -1237,16 +1163,23 @@ export class VehicleModelLayer {
       ) {
         continue;
       }
+      const worldStartX = Number(frameOriginX) + startX;
+      const worldStartY = Number(frameOriginY) + startY;
+      const worldEndX = Number(frameOriginX) + endX;
+      const worldEndY = Number(frameOriginY) + endY;
+      if (!this.segmentInVisibleBounds(worldStartX, worldStartY, worldEndX, worldEndY, bounds)) {
+        continue;
+      }
       const writeIndex = writeOffsets[mode] || 0;
       const yawOffset = this.templates.get(mode)?.yawOffset || 0;
       writeInstanceSegment(
         group.segmentXYBuffer,
         group.segmentInfoBuffer,
         writeIndex,
-        Number(frameOriginX) + startX - this.origin[0],
-        Number(frameOriginY) + startY - this.origin[1],
-        Number(frameOriginX) + endX - this.origin[0],
-        Number(frameOriginY) + endY - this.origin[1],
+        worldStartX - this.origin[0],
+        worldStartY - this.origin[1],
+        worldEndX - this.origin[0],
+        worldEndY - this.origin[1],
         startTime,
         endTime,
         Math.atan2(endY - startY, endX - startX) + yawOffset,
@@ -1297,8 +1230,10 @@ export class VehicleModelLayer {
     const frameCount = frame ? this.activeTotal() : 0;
     const frameModes = frame?.modes || [];
     const modeCounts = Object.fromEntries(this.modes.map((mode) => [mode, 0]));
+    const bounds = this.visibleWebBounds();
     this.lastVisibleFirst = null;
     let total = 0;
+    let visible = 0;
 
     if (frame) {
       for (let index = 0; index < frameCount; index++) {
@@ -1307,8 +1242,10 @@ export class VehicleModelLayer {
         if (!Number.isFinite(webX) || !Number.isFinite(webY)) continue;
         const mode = MODE_INDEX_TO_KEY[Math.round(Number(frameModes[index]) || 0)] || "car";
         if (!(mode in modeCounts)) continue;
-        modeCounts[mode] += 1;
         total += 1;
+        if (!this.pointInVisibleBounds(webX, webY, bounds)) continue;
+        modeCounts[mode] += 1;
+        visible += 1;
         if (!this.lastVisibleFirst) {
           this.lastVisibleFirst = {
             mode,
@@ -1325,8 +1262,10 @@ export class VehicleModelLayer {
         const webX = Number(vehicle?.webMercator?.[0]);
         const webY = Number(vehicle?.webMercator?.[1]);
         if (!(mode in modeCounts) || !Number.isFinite(webX) || !Number.isFinite(webY)) continue;
-        modeCounts[mode] += 1;
         total += 1;
+        if (!this.pointInVisibleBounds(webX, webY, bounds)) continue;
+        modeCounts[mode] += 1;
+        visible += 1;
         if (!this.lastVisibleFirst) {
           const screen = vehicle.position ? this.map?.project?.(vehicle.position) : null;
           this.lastVisibleFirst = {
@@ -1341,7 +1280,7 @@ export class VehicleModelLayer {
     }
 
     this.lastTotalCount = total;
-    this.lastVisibleCount = total;
+    this.lastVisibleCount = visible;
     this.lastModeCounts = { ...modeCounts };
 
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -1367,7 +1306,7 @@ export class VehicleModelLayer {
       groups.set(mode, group);
       for (const mesh of group.meshes) {
         mesh.geometry.instanceCount = count;
-        setFastMaterialUniforms(mesh.material, this.vehicleScale, {
+        setFastMaterialUniforms(mesh.material, this.renderVehicleScale, {
           time: this.trajectoryTime,
           useGpuTrajectory: false,
         });
@@ -1409,12 +1348,18 @@ export class VehicleModelLayer {
       for (let index = 0; index < frameCount; index++) {
         const mode = MODE_INDEX_TO_KEY[Math.round(Number(frameModes[index]) || 0)] || "car";
         if (!(mode in modeCounts)) continue;
+        const webX = Number(frame.xs?.[index]);
+        const webY = Number(frame.ys?.[index]);
+        if (!Number.isFinite(webX) || !Number.isFinite(webY) || !this.pointInVisibleBounds(webX, webY, bounds)) continue;
         writeVehicle(mode, index, null);
       }
     } else {
       for (const vehicle of this.vehicles) {
         const mode = vehicle?.mode;
         if (!(mode in modeCounts) || !vehicle.webMercator?.length) continue;
+        const webX = Number(vehicle.webMercator[0]);
+        const webY = Number(vehicle.webMercator[1]);
+        if (!Number.isFinite(webX) || !Number.isFinite(webY) || !this.pointInVisibleBounds(webX, webY, bounds)) continue;
         writeVehicle(mode, -1, vehicle);
       }
     }

@@ -27,7 +27,7 @@
         <div v-else-if="!versions.length" class="history-state">暂无历史版本</div>
         <div v-else class="history-timeline">
           <article
-            v-for="record in versions"
+            v-for="record in visibleVersions"
             :key="record.versionId"
             :class="['history-version-node', record.isActiveDataVersion ? 'active-data' : '']"
           >
@@ -81,6 +81,14 @@
               </el-button>
             </div>
           </article>
+          <el-button
+            v-if="visibleVersions.length < versions.length"
+            class="history-show-more"
+            plain
+            @click="versionRenderCount += VERSION_RENDER_BATCH"
+          >
+            显示更早的 {{ versions.length - visibleVersions.length }} 个版本
+          </el-button>
         </div>
       </div>
 
@@ -144,7 +152,7 @@
 </template>
 
 <script setup>
-defineProps({
+const props = defineProps({
   area: { type: String, default: "" },
   loading: { type: Boolean, default: false },
   error: { type: String, default: "" },
@@ -159,6 +167,14 @@ defineProps({
 });
 
 const emit = defineEmits(["refresh", "show-details", "export", "preview", "close-details", "preview-evidence"]);
+
+// 版本数随提交单调增长，分批渲染避免时间轴节点无上限膨胀
+const VERSION_RENDER_BATCH = 30;
+const versionRenderCount = ref(VERSION_RENDER_BATCH);
+watch(() => props.versions, () => {
+  versionRenderCount.value = VERSION_RENDER_BATCH;
+});
+const visibleVersions = computed(() => props.versions.slice(0, versionRenderCount.value));
 
 function handleExport(record, command) {
   const [datasetType, format] = String(command || "").split(":");
@@ -179,6 +195,11 @@ function handleExport(record, command) {
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
+}
+
+.history-show-more {
+  align-self: center;
+  margin-top: 4px;
 }
 
 .history-header {

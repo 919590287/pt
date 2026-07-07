@@ -40,12 +40,7 @@
             </div>
             <div v-else class="detail-tab-selector">
               <div
-                v-for="tab in [
-                  {value: 'overview', label: '站点数据分析'},
-                  {value: 'boardingAlighting', label: '站点乘降分析'},
-                  {value: 'od', label: '站点OD分析'},
-                  {value: 'reachability', label: '站点可达分析'}
-                ]"
+                v-for="tab in DETAIL_TABS"
                 :key="tab.value"
                 :class="['tab-pill', activeDetailTab === tab.value ? 'active' : '']"
                 @click.stop="activeDetailTab = tab.value"
@@ -81,12 +76,12 @@
               重试
             </el-button>
           </div>
-          <div v-if="!stationPanelUnavailable && ['boarding', 'od'].includes(pfaStationSection)" class="time-range-section">
+          <div v-if="!stationPanelUnavailable && PFA_TIME_RANGE_SECTIONS.includes(pfaStationSection)" class="time-range-section">
             <div class="time-range-header">
               <span class="title">统计时段选择</span>
               <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
             </div>
-            <el-slider v-model="segmentTimeRange" range :min="6" :max="22" :step="1" :show-tooltip="false" class="time-range-slider" />
+            <el-slider v-model="segmentTimeRange" range :min="6" :max="23" :step="1" :show-tooltip="false" class="time-range-slider" />
           </div>
 
           <section v-if="!stationPanelUnavailable && pfaStationSection === 'boarding'" class="pfa-section">
@@ -105,7 +100,7 @@
                     class="boarding-alighting-bar-chart"
                     :option="boardingAlightingChartOption"
                     autoresize
-                    :update-options="{ notMerge: true }"
+                    :update-options="{ notMerge: true, lazyUpdate: true }"
                   />
                 </template>
               </el-auto-resizer>
@@ -117,7 +112,7 @@
               <span class="section-title">客流OD</span>
               <div class="chart-type-selector">
                 <div
-                  v-for="mode in [{value: 'table', label: '表格'}, {value: 'chart', label: '图表'}]"
+                  v-for="mode in PFA_OD_VIEW_MODES"
                   :key="mode.value"
                   :class="['type-pill', odViewMode === mode.value ? 'active' : '']"
                   @click="odViewMode = mode.value"
@@ -152,7 +147,7 @@
                     class="od-bar-chart"
                     :option="odChartOption"
                     autoresize
-                    :update-options="{ notMerge: true }"
+                    :update-options="{ notMerge: true, lazyUpdate: true }"
                   />
                 </template>
               </el-auto-resizer>
@@ -272,7 +267,7 @@
               <span class="section-title">全天客流变化</span>
               <div class="chart-type-selector">
                 <div
-                  v-for="type in ['line', 'bar']"
+                  v-for="type in FLOW_CHART_TYPES"
                   :key="type"
                   :class="['type-pill', activeChartType === type ? 'active' : '']"
                   @click="activeChartType = type"
@@ -289,7 +284,7 @@
                     class="flow-chart"
                     :option="passengerFlowChartOption"
                     autoresize
-                    :update-options="{ notMerge: true }"
+                    :update-options="{ notMerge: true, lazyUpdate: true }"
                   />
                 </template>
               </el-auto-resizer>
@@ -307,7 +302,7 @@
                   class="matched-item"
                 >
                   <div class="item-header">
-                    <span class="line-badge" :class="inferStationType(item, item) === 'subway' ? 'subway-badge' : 'bus-badge'">
+                    <span class="line-badge" :class="item.isSubway ? 'subway-badge' : 'bus-badge'">
                       {{ item.lineName }}
                     </span>
                     <span class="item-stops">{{ item.facilities?.length || item.info?.facNum }} 站</span>
@@ -338,7 +333,7 @@
               v-model="segmentTimeRange"
               range
               :min="6"
-              :max="22"
+              :max="23"
               :step="1"
               :show-tooltip="false"
               class="time-range-slider"
@@ -357,7 +352,7 @@
                   class="boarding-alighting-bar-chart"
                   :option="boardingAlightingChartOption"
                   autoresize
-                  :update-options="{ notMerge: true }"
+                  :update-options="{ notMerge: true, lazyUpdate: true }"
                 />
               </template>
             </el-auto-resizer>
@@ -376,7 +371,7 @@
               v-model="segmentTimeRange"
               range
               :min="6"
-              :max="22"
+              :max="23"
               :step="1"
               :show-tooltip="false"
               class="time-range-slider"
@@ -388,7 +383,7 @@
             <span class="section-title">OD客流排名</span>
             <div class="chart-type-selector">
               <div
-                v-for="mode in [{value: 'table', label: '数据表格'}, {value: 'chart', label: '可视化图表'}]"
+                v-for="mode in OD_VIEW_MODES"
                 :key="mode.value"
                 :class="['type-pill', odViewMode === mode.value ? 'active' : '']"
                 @click="odViewMode = mode.value"
@@ -406,7 +401,7 @@
                 <span class="col-od-flow text-right">客流量</span>
               </div>
               <div class="transfer-table-body">
-                <div v-for="(item, idx) in odTableData" :key="idx" class="transfer-table-row">
+                <div v-for="(item, idx) in odTableData" :key="`${item.origin || ''}-${item.destination || ''}-${item.routeLabel || idx}`" class="transfer-table-row">
                   <span class="col-od-route text-ellipsis">
                     <strong>{{ item.lineName || '未知线路' }}</strong>
                     <small>{{ item.routeDesc || item.routeName || '方向未识别' }}</small>
@@ -426,7 +421,7 @@
                   class="od-bar-chart"
                   :option="odChartOption"
                   autoresize
-                  :update-options="{ notMerge: true }"
+                  :update-options="{ notMerge: true, lazyUpdate: true }"
                 />
               </template>
             </el-auto-resizer>
@@ -464,7 +459,7 @@
                   class="reachability-pie-chart"
                   :option="reachabilityChartOption"
                   autoresize
-                  :update-options="{ notMerge: true }"
+                  :update-options="{ notMerge: true, lazyUpdate: true }"
                 />
               </template>
             </el-auto-resizer>
@@ -482,7 +477,7 @@
         <div class="rm-ranking-tools">
           <div class="rm-seg" role="group" aria-label="客流类型">
             <button
-              v-for="type in ['bus', 'subway']"
+              v-for="type in TRANSIT_TYPES"
               :key="type"
               type="button"
               :class="['rm-seg-btn', activeTransitType === type ? 'active' : '']"
@@ -506,7 +501,7 @@
         <div class="ranking-scroll-list">
           <button
             v-for="(item, index) in currentLeaderboard"
-            :key="index"
+            :key="item.stationName || item.name || index"
             class="ranking-row"
             type="button"
             @click="selectLeaderboardStation(item)"
@@ -521,7 +516,7 @@
               <span class="route-desc-text">{{ item.desc }}</span>
             </div>
             <div class="col-flow">
-              <span class="flow-value">{{ item.passengerFlow.toLocaleString() }}</span>
+              <span class="flow-value">{{ (item.passengerFlow ?? 0).toLocaleString() }}</span>
               <span class="flow-unit">人次</span>
             </div>
           </button>
@@ -557,7 +552,7 @@
         class="station-heatmap-chart"
         :option="boardingHeatmapOption"
         autoresize
-        :update-options="{ notMerge: true }"
+        :update-options="{ notMerge: true, lazyUpdate: true }"
       />
       <el-empty v-else description="当前时段暂无线路×OD客流数据" />
     </div>
@@ -565,26 +560,41 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
+import { ref, shallowRef, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
 import { Location, Download } from "@element-plus/icons-vue";
-import { abortOtherModelDataRequests, getCachedLineAll, getCachedStationPanel } from "@/utils/modelDataCache.js";
+import { abortOtherModelDataRequests, getCachedLineAll, getCachedStationPanel, getModelDerived } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
-import ColorScaleControl from "./ColorScaleControl.vue";
 import { StationLayer } from "../layers/StationLayer.js";
 import { buildFlowCurveFeatureCollection } from "../utils/flowCurves.js";
 import { classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale } from "@/utils/colorSchemes.js";
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { injectSync } from "@/utils";
+import { compareZh, createDebouncedMirror, isCanceledRequest, runWhenIdle } from "../utils/panelShared.js";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 
 const props = defineProps({
   model: String,
 });
 
+// 模板 v-for 静态选项提为常量，避免每次渲染重建数组
+const DETAIL_TABS = [
+  { value: "overview", label: "站点数据分析" },
+  { value: "boardingAlighting", label: "站点乘降分析" },
+  { value: "od", label: "站点OD分析" },
+  { value: "reachability", label: "站点可达分析" },
+];
+const PFA_TIME_RANGE_SECTIONS = ["boarding", "od"];
+const PFA_OD_VIEW_MODES = [{ value: "table", label: "表格" }, { value: "chart", label: "图表" }];
+const OD_VIEW_MODES = [{ value: "table", label: "数据表格" }, { value: "chart", label: "可视化图表" }];
+const FLOW_CHART_TYPES = ["line", "bar"];
+const TRANSIT_TYPES = ["bus", "subway"];
+
 const loading = ref(true);
-const rawLines = ref([]);
-const stationPanelData = ref(null);
+const rawLines = shallowRef([]);
+// rawLines 当前归属的模型：派生索引以它为键，避免模型切换瞬间写错缓存
+let rawLinesModel = "";
+const stationPanelData = shallowRef(null);
 const stationPanelStatus = ref("idle");
 const stationPanelError = ref("");
 let stationPanelPromise = null;
@@ -599,8 +609,8 @@ const selectedStationCoord = ref(null);
 const selectedReverseStationName = ref("");
 const selectedReverseStationFacilityId = ref("");
 const selectedReverseStationCoord = ref(null);
-const matchedRoutes = ref([]);
-const allMapStations = ref([]);
+const matchedRoutes = shallowRef([]);
+const allMapStations = shallowRef([]);
 
 const StationSizeRef = inject("StationSizeRef", ref(40));
 const MapRef = inject("MapRef", ref(null));
@@ -617,11 +627,29 @@ const pfaStationSection = inject("pfaStationSection", ref("boarding"));
 const runMonitorStationOptionFilter = inject("runMonitorStationOptionFilter", () => true);
 const shouldRenderPfaRightPanel = computed(() => Boolean(pfaRightPanel?.value ?? pfaRightPanel));
 
-function isCanceledRequest(error) {
-  return error?.message === "请求已取消"
-    || error?.message === "canceled"
-    || error?.cause?.message === "canceled"
-    || error?.cause?.code === "ERR_CANCELED";
+// 全网设施索引（byName/byId → 保序候选列表）：按模型只建一次，选站查询 O(1)
+function buildFacilityIndex(lines) {
+  const byName = new Map();
+  const byId = new Map();
+  let ordinal = 0;
+  (Array.isArray(lines) ? lines : []).forEach((line) => {
+    line.routes?.forEach((route) => {
+      route.facilities?.forEach((fac, facIndex) => {
+        const entry = { line, route, fac, facIndex, ordinal: ordinal++ };
+        const name = fac?.facilityName;
+        if (name) {
+          if (!byName.has(name)) byName.set(name, []);
+          byName.get(name).push(entry);
+        }
+        const id = fac?.facilityId != null && fac.facilityId !== "" ? String(fac.facilityId) : "";
+        if (id) {
+          if (!byId.has(id)) byId.set(id, []);
+          byId.get(id).push(entry);
+        }
+      });
+    });
+  });
+  return { byName, byId };
 }
 
 // 监听当前选中的站点，控制右侧面板内容状态
@@ -662,22 +690,62 @@ function toFiniteCoord(value) {
   return Number.isFinite(number) ? number : Number.NaN;
 }
 
-function hourSlice(values, startHour = 6, endHour = 22) {
+// 时段口径统一为左闭右开 [startHour, endHour)：滑块 [8,18] 表示 08:00-18:00，
+// 不再包含 18 点起的桶；滑块上限相应提升到 23 以覆盖 22:00-23:00 桶
+function hourSlice(values, startHour = 6, endHour = 23) {
   const source = Array.isArray(values) ? values : [];
   const result = [];
-  for (let hour = startHour; hour <= endHour; hour++) {
+  for (let hour = startHour; hour < endHour; hour++) {
     result.push(toFiniteNumber(source[hour], 0));
   }
   return result;
 }
 
+// stations 键的归一化索引按面板数据对象缓存：未命中 fallback 不再逐键归一化全扫
+const stationsNormalizedIndexCache = new WeakMap();
+function stationsNormalizedIndex(stations) {
+  let index = stationsNormalizedIndexCache.get(stations);
+  if (!index) {
+    index = new Map();
+    Object.keys(stations).forEach((key) => {
+      const normalized = normalizeStationSearchName(key);
+      if (normalized && !index.has(normalized)) index.set(normalized, key);
+    });
+    stationsNormalizedIndexCache.set(stations, index);
+  }
+  return index;
+}
+
 function stationPanelByName(stationName) {
-  const stations = stationPanelData.value?.stations || {};
-  if (!stationName) return null;
+  const stations = stationPanelData.value?.stations;
+  if (!stations || !stationName) return null;
   if (stations[stationName]) return stations[stationName];
   const target = normalizeStationSearchName(stationName);
-  const matchedKey = Object.keys(stations).find((key) => normalizeStationSearchName(key) === target);
+  const matchedKey = stationsNormalizedIndex(stations).get(target);
   return matchedKey ? stations[matchedKey] : null;
+}
+
+// 同一 (站点面板, 设施面板) 的合并结果缓存：保持返回对象身份稳定，
+// 避免每次重算都产出新对象、令下游 watch 在内容未变时误判变化触发地图重绘
+const sidePanelMergeCache = new WeakMap();
+function mergedSidePanel(stationPanel, facilityPanel, stationName) {
+  let byFacility = sidePanelMergeCache.get(stationPanel);
+  if (!byFacility) {
+    byFacility = new Map();
+    sidePanelMergeCache.set(stationPanel, byFacility);
+  }
+  let merged = byFacility.get(facilityPanel);
+  if (!merged) {
+    merged = {
+      ...stationPanel,
+      ...facilityPanel,
+      stationName: stationPanel.stationName || stationName,
+      mode: stationPanel.mode,
+      desc: stationPanel.desc,
+    };
+    byFacility.set(facilityPanel, merged);
+  }
+  return merged;
 }
 
 function stationPanelForSide(stationName, facilityId = "", options = {}) {
@@ -687,24 +755,12 @@ function stationPanelForSide(stationName, facilityId = "", options = {}) {
   const id = String(facilityId || "");
   const facilityPanels = stationPanel.facilityPanels;
   if (id && facilityPanels && typeof facilityPanels === "object") {
-    if (facilityPanels[id]) return {
-      ...stationPanel,
-      ...facilityPanels[id],
-      stationName: stationPanel.stationName || stationName,
-      mode: stationPanel.mode,
-      desc: stationPanel.desc,
-    };
+    if (facilityPanels[id]) return mergedSidePanel(stationPanel, facilityPanels[id], stationName);
     const matched = Object.values(facilityPanels).find((panel) =>
       String(panel?.facilityId || "") === id
       || (Array.isArray(panel?.facilityIds) && panel.facilityIds.some((candidate) => String(candidate || "") === id))
     );
-    if (matched) return {
-      ...stationPanel,
-      ...matched,
-      stationName: stationPanel.stationName || stationName,
-      mode: stationPanel.mode,
-      desc: stationPanel.desc,
-    };
+    if (matched) return mergedSidePanel(stationPanel, matched, stationName);
   }
   return fallbackToAggregate ? stationPanel : null;
 }
@@ -784,8 +840,8 @@ const stationMetrics = computed(() => {
 });
 
 const stationBoardingSummary = computed(() => {
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
   const boarding = hourSlice(currentStationPanel.value?.boardingByHour, startHour, endHour)
     .reduce((sum, value) => sum + value, 0);
   const alighting = hourSlice(currentStationPanel.value?.alightingByHour, startHour, endHour)
@@ -809,7 +865,7 @@ const activeChartType = ref("line");
 const passengerFlowChartOption = computed(() => {
   const isLine = activeChartType.value === "line";
   const hours = Array.from({ length: 17 }, (_, index) => formatHourRangeLabel(index + 6));
-  const data = hourSlice(currentStationPanel.value?.hourlyFlow, 6, 22);
+  const data = hourSlice(currentStationPanel.value?.hourlyFlow, 6, 23);
 
   const linearGradient = (proxy?.$echarts?.graphic?.LinearGradient) || function() { return null; };
 
@@ -919,11 +975,13 @@ const _StationLayer = new StationLayer({
 
 // 将图层添加到地图
 injectSync("MapRef").then((map) => {
+  // 组件可能在 MapRef 就绪前被卸载（快速切 tab）：已 dispose 的图层再挂上去会残留
+  if (stationPanelDisposed) return;
   // 运行监测由 index.vue 统一绘制模型站点和数据管理同款选中图标。
   if (!runMonitorSimplifiedRight) {
     map.value?.addLayer(_StationLayer);
   }
-  nextTick(renderReachabilityOverlay);
+  scheduleOverlayRefresh();
 });
 
 watch(StationSizeRef, (value) => {
@@ -934,11 +992,11 @@ watch(BaseMapLineModeRef, () => {
 }, { immediate: true });
 
 // 计算所有唯一的站点名称，并转换为 el-select-v2 需要的 options 格式
-const stationOptions = computed(() => {
-  // 携带 mode（公交/地铁）：供右上角搜索框按当前线网制式过滤候选。
-  // 同名站被多条线路（含地铁）共用时，只要有一条地铁经过即算地铁站。
+// 携带 mode（公交/地铁）：供右上角搜索框按当前线网制式过滤候选。
+// 同名站被多条线路（含地铁）共用时，只要有一条地铁经过即算地铁站。
+function buildStationOptionsBase(lines) {
   const modeByName = new Map();
-  rawLines.value.forEach(line => {
+  (Array.isArray(lines) ? lines : []).forEach(line => {
     if (!line.routes) return;
     line.routes.forEach(route => {
       if (!route.facilities) return;
@@ -951,10 +1009,19 @@ const stationOptions = computed(() => {
       });
     });
   });
-  const uniqueNames = Array.from(modeByName.keys()).sort((a, b) => a.localeCompare(b, "zh-CN"));
-  return uniqueNames
-    .map(name => ({ value: name, label: name, mode: modeByName.get(name) || "bus" }))
-    .filter((option) => runMonitorStationOptionFilter(option));
+  const uniqueNames = Array.from(modeByName.keys()).sort(compareZh);
+  return uniqueNames.map(name => ({ value: name, label: name, mode: modeByName.get(name) || "bus" }));
+}
+
+// 拆两级：全量候选（扫描+排序）只依赖 rawLines 且按模型缓存，
+// 显示范围变化只重跑末级 filter，不再重跑全网扫描
+const stationOptions = computed(() => {
+  const lines = rawLines.value;
+  // 只有 rawLines 已归属该模型时才写模型级缓存，避免加载前的空数据污染缓存
+  const base = rawLinesModel && lines.length
+    ? getModelDerived(rawLinesModel, "zdzl:stationOptions", () => buildStationOptionsBase(lines))
+    : buildStationOptionsBase(lines);
+  return base.filter((option) => runMonitorStationOptionFilter(option));
 });
 
 // 将站点候选项上抛给 index.vue 的右上角搜索框
@@ -1056,9 +1123,9 @@ function stationDistance(a, b) {
   return Number.isFinite(dx) && Number.isFinite(dy) ? Math.hypot(dx, dy) : Number.POSITIVE_INFINITY;
 }
 
-const stationCoordCandidates = computed(() => {
+function buildStationCoordCandidates(lines) {
   const buckets = new Map();
-  rawLines.value.forEach((line) => {
+  (Array.isArray(lines) ? lines : []).forEach((line) => {
     (line.routes || []).forEach((route) => {
       (route.facilities || []).forEach((fac) => {
         const name = fac.facilityName;
@@ -1091,6 +1158,14 @@ const stationCoordCandidates = computed(() => {
     });
   });
   return buckets;
+}
+
+// 与 facilityIndex/mapStations 同口径按模型缓存：tab 往返重挂载不再重跑全网三层扫描
+const stationCoordCandidates = computed(() => {
+  const lines = rawLines.value;
+  return rawLinesModel && lines.length
+    ? getModelDerived(rawLinesModel, "zdzl:coordCandidates", () => buildStationCoordCandidates(lines))
+    : buildStationCoordCandidates(lines);
 });
 
 const stationCoordIndex = computed(() => {
@@ -1101,14 +1176,14 @@ const stationCoordIndex = computed(() => {
   return result;
 });
 
-const stationNetworkTopology = computed(() => {
+function buildStationNetworkTopology(lines) {
   const nodes = new Map();
   const nodeToRoutes = new Map();
   const routeToNodeList = new Map();
   const nameToNodes = new Map();
   const facilityToNode = new Map();
 
-  rawLines.value.forEach((line) => {
+  (Array.isArray(lines) ? lines : []).forEach((line) => {
     (line.routes || []).forEach((route) => {
       const routeKey = routeTopologyKey(line, route);
       const routeNodeList = routeToNodeList.get(routeKey) || [];
@@ -1164,7 +1239,7 @@ const stationNetworkTopology = computed(() => {
   });
 
   nodes.forEach((node) => {
-    const sortedNames = Array.from(node.names).sort((a, b) => a.localeCompare(b, "zh-CN"));
+    const sortedNames = Array.from(node.names).sort(compareZh);
     node.names = sortedNames;
     node.facilityIds = Array.from(node.facilityIds);
     node.name = sortedNames[0] || node.name;
@@ -1172,6 +1247,14 @@ const stationNetworkTopology = computed(() => {
   });
 
   return { nodes, nodeToRoutes, routeToNodeList, nameToNodes, facilityToNode };
+}
+
+// 拓扑同样按模型缓存：可达性 BFS 的输入在重挂载后直接命中
+const stationNetworkTopology = computed(() => {
+  const lines = rawLines.value;
+  return rawLinesModel && lines.length
+    ? getModelDerived(rawLinesModel, "zdzl:topology", () => buildStationNetworkTopology(lines))
+    : buildStationNetworkTopology(lines);
 });
 
 function selectedReachabilityNodeKey(topology = stationNetworkTopology.value) {
@@ -1276,10 +1359,20 @@ function reachabilityNodePayloads(nodeKeys, topology = stationNetworkTopology.va
       y: node.y,
       type: node.type || "bus",
     }))
-    .sort((a, b) => a.label.localeCompare(b.label, "zh-CN") || a.key.localeCompare(b.key));
+    .sort((a, b) => compareZh(a.label, b.label) || a.key.localeCompare(b.key));
 }
 
 const localReachabilityData = computed(() => {
+  // 仅可达性区块激活时才计算：两级换乘 BFS + 数千节点过滤排序是点击路径上最大的单笔开销，
+  // 依赖 pfaStationSection 保证切入该区块时自动重算
+  if (pfaStationSection.value !== "reachability") {
+    return {
+      ready: false,
+      directStations: [],
+      transfer1Stations: [],
+      transfer2Stations: [],
+    };
+  }
   const topology = stationNetworkTopology.value;
   const originKey = selectedReachabilityNodeKey(topology);
   if (!originKey || !topology.nodes.has(originKey)) {
@@ -1326,6 +1419,7 @@ const REACHABILITY_LEVEL_KEYS = ["direct", "transfer1", "transfer2"];
 // 需求8：客流OD地图曲线（贝塞尔弧线 + 起点站名标签）
 const OD_CURVE_SOURCE_ID = "station-od-curve-source";
 const OD_CURVE_LAYER_ID = "station-od-curve-layer";
+const OD_CURVE_CASING_LAYER_ID = "station-od-curve-casing-layer";
 const OD_CURVE_LABEL_SOURCE_ID = "station-od-curve-label-source";
 const OD_CURVE_LABEL_LAYER_ID = "station-od-curve-label-layer";
 const RM_SOURCE_STATIONS = "rm-bus-network-stations-source";
@@ -1481,18 +1575,27 @@ function reachabilityStationCoord(station) {
   return station;
 }
 
+// 站点 → 过滤用 option 包装的缓存：显示范围反复变化时不再为全网站点重复分配对象
+const stationRangeOptionCache = new WeakMap();
 function stationRangeOption(station) {
+  const cacheable = station && typeof station === "object";
+  if (cacheable) {
+    const cached = stationRangeOptionCache.get(station);
+    if (cached) return cached;
+  }
   const name = station?.name || station?.label || "";
   const x = Number(station?.x ?? station?.coord?.x);
   const y = Number(station?.y ?? station?.coord?.y);
   const coord = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : station?.coord || null;
   const facilityIds = Array.isArray(station?.facilityIds) ? station.facilityIds : [];
-  return {
+  const option = {
     value: name,
     label: name,
     facilityId: String(station?.facilityId || facilityIds[0] || ""),
     coord,
   };
+  if (cacheable) stationRangeOptionCache.set(station, option);
+  return option;
 }
 
 function stationInDisplayRange(station) {
@@ -1587,21 +1690,27 @@ function setRunMonitorStationSource(stations) {
   source.setData(stationsFeatureCollection(stations));
 }
 
-function applyReachabilityStationFilter() {
-  const stations = reachabilityVisibleStations.value;
+// 上次喂给图层的站点数组引用：reachabilityVisibleStations 是 computed，
+// 依赖未变时数组身份稳定，引用相同说明图层数据已是最新，跳过重建 FeatureCollection 与 setData
+let lastAppliedStationsRef = null;
+
+function applyStationsToLayers(stations, force = false) {
+  if (!force && stations === lastAppliedStationsRef) return;
+  lastAppliedStationsRef = stations;
   if (!runMonitorSimplifiedRight) {
     _StationLayer.setData(stations);
   }
   setRunMonitorStationSource(stations);
 }
 
+function applyReachabilityStationFilter() {
+  applyStationsToLayers(reachabilityVisibleStations.value);
+}
+
 function restoreReachabilityStationFilter() {
   const stations = reachabilityVisibleStations.value;
   if (!stations.length && !allMapStations.value.length) return;
-  if (!runMonitorSimplifiedRight) {
-    _StationLayer.setData(stations);
-  }
-  setRunMonitorStationSource(stations);
+  applyStationsToLayers(stations);
 }
 
 function addMapLayer(map, layer, beforeId = RM_LAYER_STATIONS) {
@@ -1747,6 +1856,21 @@ function ensureOdCurveLayers() {
   if (!map.getSource(OD_CURVE_LABEL_SOURCE_ID)) {
     map.addSource(OD_CURVE_LABEL_SOURCE_ID, { type: "geojson", data: emptyFeatureCollection() });
   }
+  // 白色描边衬底：略宽于曲线本体，密集底图上边缘更利落（与线网/期望线 casing 同一语言）
+  addMapLayer(map, {
+    id: OD_CURVE_CASING_LAYER_ID,
+    type: "line",
+    source: OD_CURVE_SOURCE_ID,
+    layout: {
+      "line-cap": "round",
+      "line-join": "round",
+    },
+    paint: {
+      "line-color": "#ffffff",
+      "line-width": ["+", ["coalesce", ["get", "width"], 3.4], 1.8],
+      "line-opacity": 0.5,
+    },
+  });
   addMapLayer(map, {
     id: OD_CURVE_LAYER_ID,
     type: "line",
@@ -1803,7 +1927,8 @@ function odCurveOverlayData() {
   const labelFeatures = [];
   items.forEach((item) => {
     const remote = [item.lng, item.lat];
-    const inbound = item.direction !== "outbound";
+    // direction === "both" 固定以本站为起点，避免曲线几何方向随数据顺序漂移
+    const inbound = item.direction === "inbound";
     const classIndex = classifyByBreaks(item.flow, breaks);
     const width = Math.round(Math.max(OD_MIN_WIDTH, OD_BASE_WIDTH * (widths[classIndex] || 1)) * 10) / 10;
     flows.push({
@@ -1850,11 +1975,32 @@ function renderOdCurveOverlay() {
 function cleanUpOdCurveOverlay() {
   const map = MapRef.value?.map;
   if (!map) return;
-  [OD_CURVE_LABEL_LAYER_ID, OD_CURVE_LAYER_ID].forEach((layerId) => {
+  [OD_CURVE_LABEL_LAYER_ID, OD_CURVE_LAYER_ID, OD_CURVE_CASING_LAYER_ID].forEach((layerId) => {
     if (map.getLayer(layerId)) map.removeLayer(layerId);
   });
   [OD_CURVE_LABEL_SOURCE_ID, OD_CURVE_SOURCE_ID].forEach((sourceId) => {
     if (map.getSource(sourceId)) map.removeSource(sourceId);
+  });
+}
+
+// 地图 overlay（可达圆点/OD曲线/选中圈/站点过滤）刷新合并调度：
+// 一次交互内 watch 与事件处理多处触发时只在同一 nextTick 里各重建一次
+let overlayRefreshScheduled = false;
+function scheduleOverlayRefresh() {
+  if (overlayRefreshScheduled) return;
+  overlayRefreshScheduled = true;
+  nextTick(() => {
+    overlayRefreshScheduled = false;
+    if (stationPanelDisposed) return;
+    renderReachabilityOverlay();
+    applyReachabilityStationFilter();
+    renderOdCurveOverlay();
+    if (shouldRenderPfaRightPanel.value && selectedStationName.value) {
+      const coord = reachabilityOriginStation();
+      if (coord) updateSelectedStationRing(coord);
+    } else {
+      cleanUpSelectedStationRing();
+    }
   });
 }
 
@@ -1886,6 +2032,10 @@ function oppositeStationCandidate(stationName, facilityId = "", coord = null) {
     .sort((left, right) => stationCoordDistance(coord, left) - stationCoordDistance(coord, right))[0] || null;
 }
 
+// 选站调用序号：nextTick 恢复后若已被更新调用超越则放弃后续步骤，
+// 避免快速连选时旧调用的 handleStationChange 造成双跳/瞬态覆盖
+let stationSelectSeq = 0;
+
 async function selectStationByName(stationName) {
   const target = normalizeStationSearchName(stationName);
   if (!target) return false;
@@ -1896,11 +2046,13 @@ async function selectStationByName(stationName) {
       return name.includes(target) || target.includes(name);
     });
   if (!option?.value) return false;
+  const seq = ++stationSelectSeq;
   const primary = (stationCoordCandidates.value.get(option.value) || [])[0] || null;
   const reverse = oppositeStationCandidate(option.value, primary?.facilityId, primary);
   selectedStationFacilityId.value = String(primary?.facilityId || "");
   selectedStationName.value = option.value;
   await nextTick();
+  if (seq !== stationSelectSeq) return true;
   handleStationChange(option.value, selectedStationFacilityId.value, reverse);
   return true;
 }
@@ -1908,6 +2060,7 @@ async function selectStationByName(stationName) {
 async function selectStationByFeature(props = {}) {
   const stationName = props.facilityName || props.stop_name || props.station_name || props.name || "";
   if (!stationName) return false;
+  const seq = ++stationSelectSeq;
   const facilityId = String(props.facilityId || props.stop_id || props._stationKey || "");
   const paired = {
     name: props.pairedStationName || stationName,
@@ -1918,6 +2071,7 @@ async function selectStationByFeature(props = {}) {
   selectedStationFacilityId.value = facilityId;
   selectedStationName.value = stationName;
   await nextTick();
+  if (seq !== stationSelectSeq) return true;
   handleStationChange(
     stationName,
     facilityId,
@@ -1926,12 +2080,17 @@ async function selectStationByFeature(props = {}) {
   return true;
 }
 
-function selectLeaderboardStation(item) {
-  selectStationByName(item?.stationName);
+async function selectLeaderboardStation(item) {
+  const found = await selectStationByName(item?.stationName);
+  if (!found) {
+    proxy?.$message?.warning("该站点不在当前显示范围内，无法定位");
+  }
 }
 
 // 切换站点时
 function handleStationChange(stationName, facilityId = "", pairedStation = null) {
+  // 站点变更/清空时关闭热力图弹窗，避免残留上一站点的弹窗
+  boardingHeatmapVisible.value = false;
   if (!stationName) {
     selectedStationFacilityId.value = "";
     selectedStationCoord.value = null;
@@ -1954,47 +2113,54 @@ function handleStationChange(stationName, facilityId = "", pairedStation = null)
   let exactStationCoord = null;
   const matchPhysicalStation = shouldRenderPfaRightPanel.value;
 
-  rawLines.value.forEach(line => {
-    if (line.routes) {
-      line.routes.forEach(route => {
-        if (route.facilities) {
-          const matchedFac = route.facilities.find((fac) => {
-            if (!runMonitorStationOptionFilter({
-              value: fac.facilityName,
-              label: fac.facilityName,
-              facilityId: fac.facilityId,
-              coord: fac.coord,
-            })) {
-              return false;
-            }
-            const sameFacility = selectedStationFacilityId.value && String(fac.facilityId || "") === selectedStationFacilityId.value;
-            if (sameFacility) {
-              return true;
-            }
-            return (!selectedStationFacilityId.value || matchPhysicalStation) && fac.facilityName === stationName;
-          });
-          if (matchedFac) {
-            if (selectedStationFacilityId.value && String(matchedFac.facilityId || "") === selectedStationFacilityId.value && matchedFac.coord) {
-              exactStationCoord = matchedFac.coord;
-            }
-            if (!stationCoord && matchedFac.coord) {
-              stationCoord = matchedFac.coord;
-            }
-            matches.push({
-              lineId: line.lineId,
-              lineName: line.lineName,
-              routeId: route.routeId,
-              routeName: route.routeName,
-              info: route.info,
-              links: route.links,
-              facilities: route.facilities,
-              stationCoord: matchedFac.coord,
-            });
-          }
-        }
-      });
+  // 每次选站不再全网三层扫描（线路×路线×设施 数万次 + 每设施一个临时对象），
+  // 改为查模型级预建索引（byName/byId），只对少量候选跑范围过滤；语义与原 find 一致：
+  // 每条 route 取设施序最小且通过过滤的命中，结果按原全网遍历序（ordinal）排列
+  const facilityIndex = getModelDerived(rawLinesModel || props.model, "zdzl:facilityIndex", () => buildFacilityIndex(rawLines.value));
+  const candidateEntries = [];
+  if (selectedStationFacilityId.value) {
+    candidateEntries.push(...(facilityIndex.byId.get(selectedStationFacilityId.value) || []));
+  }
+  if (!selectedStationFacilityId.value || matchPhysicalStation) {
+    candidateEntries.push(...(facilityIndex.byName.get(stationName) || []));
+  }
+  const winnerByRoute = new Map();
+  for (const entry of candidateEntries) {
+    const fac = entry.fac;
+    if (!runMonitorStationOptionFilter({
+      value: fac.facilityName,
+      label: fac.facilityName,
+      facilityId: fac.facilityId,
+      coord: fac.coord,
+    })) {
+      continue;
     }
-  });
+    const existing = winnerByRoute.get(entry.route);
+    if (!existing || entry.facIndex < existing.facIndex) {
+      winnerByRoute.set(entry.route, entry);
+    }
+  }
+  const winners = Array.from(winnerByRoute.values()).sort((a, b) => a.ordinal - b.ordinal);
+  for (const { line, route, fac } of winners) {
+    if (selectedStationFacilityId.value && String(fac.facilityId || "") === selectedStationFacilityId.value && fac.coord) {
+      exactStationCoord = fac.coord;
+    }
+    if (!stationCoord && fac.coord) {
+      stationCoord = fac.coord;
+    }
+    matches.push({
+      lineId: line.lineId,
+      lineName: line.lineName,
+      routeId: route.routeId,
+      routeName: route.routeName,
+      info: route.info,
+      links: route.links,
+      facilities: route.facilities,
+      stationCoord: fac.coord,
+      // 预计算制式，模板不再每行跑正则
+      isSubway: inferStationType(line, route) === "subway",
+    });
+  }
 
   matchedRoutes.value = matches;
   selectedStationCoord.value = exactStationCoord || stationCoord || stationCoordIndex.value.get(stationName) || null;
@@ -2014,20 +2180,11 @@ function handleStationChange(stationName, facilityId = "", pairedStation = null)
   const displayCoord = selectedStationCoord.value;
 
   if (displayCoord && MapRef.value && (!runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value)) {
-    MapRef.value.setCenter([displayCoord.x, displayCoord.y]);
-    MapRef.value.setZoom(15.5);
-    if (shouldRenderPfaRightPanel.value) {
-      updateSelectedStationRing(displayCoord);
-    } else {
-      cleanUpSelectedStationRing();
-    }
+    // 合并为一次 jumpTo，避免两次相机变更/重绘
+    MapRef.value.setCenterAndZoom([displayCoord.x, displayCoord.y], 15.5);
   }
-  nextTick(() => {
-    renderReachabilityOverlay();
-    if (shouldRenderPfaRightPanel.value) {
-      applyReachabilityStationFilter();
-    }
-  });
+  // 选中圈/可达 overlay/OD曲线统一走合并调度：与状态 watch 同帧去重，选站只重建一次
+  scheduleOverlayRefresh();
 }
 
 function clearStationPanelRetry() {
@@ -2055,6 +2212,13 @@ function scheduleStationPanelRetry(model) {
       ensureStationPanelData();
     }
   }, delay);
+}
+
+function shouldRetryStationPanelError(error) {
+  if (isCanceledRequest(error)) return false;
+  if (stationPanelRetryCount < 8) return true;
+  const message = String(error?.message || "");
+  return /超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message);
 }
 
 function ensureStationPanelData(options = {}) {
@@ -2091,8 +2255,13 @@ function ensureStationPanelData(options = {}) {
       if (isCanceledRequest(error) || stationPanelDisposed) return null;
       if (props.model === model) {
         stationPanelData.value = null;
-        stationPanelStatus.value = "error";
-        stationPanelError.value = error?.message || "站点客流数据加载失败";
+        if (shouldRetryStationPanelError(error)) {
+          stationPanelError.value = "";
+          scheduleStationPanelRetry(model);
+        } else {
+          stationPanelStatus.value = "error";
+          stationPanelError.value = error?.message || "站点客流数据加载失败";
+        }
       }
       return null;
     })
@@ -2113,62 +2282,66 @@ async function loadAllData() {
   allMapStations.value = [];
   clearStationPanelRetry();
   stationPanelRetryCount = 0;
-  // 站点面板整包无条件预取：首次点站时右侧面板直接命中本地缓存，
-  // 不再让用户等整包下载（运行监测与客流分析共用 modelDataCache 的同一次请求）
-  ensureStationPanelData();
+  // 站点面板整包预取延到空闲：保持「首次点站命中本地缓存」的体验，
+  // 但不与首屏地图渲染/线网加载抢主线程（整包 JSON.parse 可达数百 ms）
+  runWhenIdle(() => {
+    if (!stationPanelDisposed && props.model === model) ensureStationPanelData();
+  });
   try {
       const lineRes = await getCachedLineAll(model);
       if (props.model !== model) return;
       const data = Array.isArray(lineRes) ? lineRes : [];
+      rawLinesModel = model;
       rawLines.value = data;
 
-      // 提取唯一的站点用于地图打点渲染 (按坐标去重)
-      const stationsList = [];
-      const coordsSet = new Set();
-      const stationByCoord = new Map();
-      data.forEach((line) => {
-        if (line.routes) {
-          line.routes.forEach((route) => {
-            if (route.facilities) {
-              route.facilities.forEach((fac) => {
-                if (fac.coord && fac.facilityName && fac.coord.x && fac.coord.y) {
-                  const key = stationCoordKey(fac.coord.x, fac.coord.y);
-                  const type = inferStationType(line, route);
-                  if (!coordsSet.has(key)) {
-                    coordsSet.add(key);
-                    const station = {
-                      key,
-                      coordKey: key,
-                      name: fac.facilityName,
-                      facilityId: String(fac.facilityId || ""),
-                      x: fac.coord.x,
-                      y: fac.coord.y,
-                      type,
-                    };
-                    stationByCoord.set(key, station);
-                    stationsList.push(station);
-                  } else if (type === "subway") {
-                    const station = stationByCoord.get(key);
-                    if (station) station.type = "subway";
-                  }
+      // 站点提取（按坐标去重）按模型记忆化：重挂载/切 tab 直接命中，不再全网三层扫描
+      const stationsList = getModelDerived(model, "zdzl:mapStations", () => {
+        const list = [];
+        const coordsSet = new Set();
+        const stationByCoord = new Map();
+        data.forEach((line) => {
+          line.routes?.forEach((route) => {
+            route.facilities?.forEach((fac) => {
+              if (fac.coord && fac.facilityName && fac.coord.x && fac.coord.y) {
+                const key = stationCoordKey(fac.coord.x, fac.coord.y);
+                const type = inferStationType(line, route);
+                if (!coordsSet.has(key)) {
+                  coordsSet.add(key);
+                  const station = {
+                    key,
+                    coordKey: key,
+                    name: fac.facilityName,
+                    facilityId: String(fac.facilityId || ""),
+                    x: fac.coord.x,
+                    y: fac.coord.y,
+                    type,
+                  };
+                  stationByCoord.set(key, station);
+                  list.push(station);
+                } else if (type === "subway") {
+                  const station = stationByCoord.get(key);
+                  if (station) station.type = "subway";
                 }
-              });
-            }
+              }
+            });
           });
+        });
+        return list;
+      });
+
+      // 选站索引提前到空闲期预建：保证「点第一个站之前」索引已就绪（用户要求：加载模型时缓存）
+      runWhenIdle(() => {
+        if (props.model === model) {
+          getModelDerived(model, "zdzl:facilityIndex", () => buildFacilityIndex(data));
         }
       });
 
       allMapStations.value = stationsList;
-      if (!runMonitorSimplifiedRight) {
-        _StationLayer.setData(reachabilityVisibleStations.value);
-        if (BaseMapLineModeRef.value === "bus-network") {
-          _StationLayer.hide();
-        }
+      applyStationsToLayers(reachabilityVisibleStations.value, true);
+      if (!runMonitorSimplifiedRight && BaseMapLineModeRef.value === "bus-network") {
+        _StationLayer.hide();
       }
-      nextTick(() => {
-        renderReachabilityOverlay();
-        applyReachabilityStationFilter();
-      });
+      scheduleOverlayRefresh();
   } catch (error) {
     if (props.model === model && !isCanceledRequest(error)) rawLines.value = [];
   } finally {
@@ -2184,21 +2357,45 @@ const currentLeaderboard = computed(() => {
   return stationPanelData.value?.summary?.leaderboard?.[activeTransitType.value] || [];
 });
 
+// CSV 导出（带 BOM，Excel 直接打开中文不乱码）；项目无 xlsx 依赖，避免引新包
+function downloadCsv(filename, rows) {
+  const escapeCell = (cell) => {
+    const text = String(cell ?? "");
+    return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const content = "\uFEFF" + rows.map((row) => row.map(escapeCell).join(",")).join("\r\n");
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
 function handleExportLeaderboard() {
-  if (proxy?.$message) {
-    proxy.$message.success({
-      message: "客流排行榜数据已成功导出为 Excel！",
-      type: "success",
-      duration: 2000
-    });
+  const rows = currentLeaderboard.value;
+  if (!rows.length) {
+    proxy?.$message?.warning("暂无可导出的排行数据");
+    return;
   }
+  const csvRows = [["排名", "站点名称", "说明", "日均客流量(人次)"]];
+  rows.forEach((item, index) => {
+    csvRows.push([index + 1, item.stationName || item.name || "", item.desc || "", toFiniteNumber(item.passengerFlow, 0)]);
+  });
+  downloadCsv(`站点客流排行_${activeTransitType.value === "bus" ? "公交" : "地铁"}.csv`, csvRows);
+  proxy?.$message?.success("客流排行榜已导出 CSV 文件");
 }
 
 const activeDetailTab = ref("overview");
 const segmentTimeRange = ref([8, 18]);
+// 拖动时段滑块每档触发「OD 全链路重算 + notMerge 重绘 + 地图曲线层重建」级联，
+// 重计算统一消费 180ms 防抖镜像；v-model 与时段文案读原值保证即时反馈
+const { debounced: debouncedSegmentTimeRange, cancel: cancelSegmentTimeMirror } = createDebouncedMirror(segmentTimeRange, 180);
 const odViewMode = ref("table");
-// 需求8：OD曲线分级色阶配置（ColorScaleControl v-model 整值替换）
-// 需求：OD曲线色阶配置与图例移到地图左下角（index.vue），此处复用注入的共享配置；
+// 需求8：OD曲线分级色阶配置（色阶控件与图例已移到地图左下角 index.vue），此处复用注入的共享配置；
 // 无注入（独立使用）时回退本地 ref。曲线仍在本组件按该配置着色/定宽。
 const injectedOdCurveScaleConfig = inject("odCurveScaleConfig", null);
 const localOdCurveScaleConfig = ref(createColorScaleConfig("YlOrRd", 5));
@@ -2220,29 +2417,65 @@ function formatHourRangeLabel(hour) {
 }
 
 function handleExportDetail() {
-  if (proxy?.$message) {
-    const activeSection = shouldRenderPfaRightPanel.value ? pfaStationSection.value : activeDetailTab.value;
-    const text = activeSection === "overview"
-      ? "站点数据分析"
-      : activeSection === "boardingAlighting" || activeSection === "boarding"
-        ? "站点乘降分析"
-        : activeSection === "od"
-          ? "站点OD分析"
-          : activeSection === "demographics"
-            ? "客流画像"
-            : "站点可达分析";
-    proxy.$message.success({
-      message: `${text}数据已成功导出！`,
-      type: "success",
-      duration: 2000
+  const activeSection = shouldRenderPfaRightPanel.value ? pfaStationSection.value : activeDetailTab.value;
+  const stationName = selectedStationName.value || "站点";
+  const startHour = segmentTimeRange.value[0];
+  const endHour = segmentTimeRange.value[1];
+  let sectionLabel;
+  const rows = [];
+  if (activeSection === "overview") {
+    sectionLabel = "站点数据分析";
+    rows.push(["指标", "数值"]);
+    const metrics = stationMetrics.value;
+    rows.push(["站点日均客流", metrics.passenger]);
+    rows.push(["高峰小时客流", metrics.peakFlow]);
+    rows.push(["服务乘客数", metrics.population]);
+    rows.push(["换乘便利度", metrics.transferScore]);
+    rows.push([]);
+    rows.push(["时段", "客流量(人次)"]);
+    hourSlice(currentStationPanel.value?.hourlyFlow, 6, 23).forEach((value, index) => {
+      rows.push([formatHourRangeLabel(6 + index), value]);
+    });
+  } else if (activeSection === "boardingAlighting" || activeSection === "boarding") {
+    sectionLabel = "站点乘降分析";
+    rows.push(["时段", "上车人数", "下车人数"]);
+    const boardingByHour = currentStationPanel.value?.boardingByHour || [];
+    const alightingByHour = currentStationPanel.value?.alightingByHour || [];
+    for (let hour = startHour; hour < endHour; hour++) {
+      rows.push([formatHourRangeLabel(hour), toFiniteNumber(boardingByHour[hour], 0), toFiniteNumber(alightingByHour[hour], 0)]);
+    }
+  } else if (activeSection === "od") {
+    sectionLabel = "站点OD分析";
+    rows.push(["线路", "方向", "起点", "终点", "客流量(人次)"]);
+    odTableData.value.forEach((item) => {
+      rows.push([item.lineName || "", item.routeDesc || item.routeName || "", item.origin || "", item.destination || "", item.flow]);
+    });
+  } else if (activeSection === "demographics") {
+    sectionLabel = "客流画像";
+    rows.push(["分组", "类别", "占比(%)"]);
+    stationDemographicsGroups.value.forEach((group) => {
+      (group.items || []).forEach((item) => rows.push([group.title, item.label, item.value.toFixed(1)]));
+    });
+  } else {
+    sectionLabel = "站点可达分析";
+    rows.push(["可达等级", "站点数", "站点明细"]);
+    reachabilityGroups.value.forEach((group) => {
+      rows.push([group.label, group.count, group.stations.map((station) => reachabilityStationLabel(station)).join(" / ")]);
     });
   }
+  // 只有表头说明当前区块无数据
+  if (rows.length < 2) {
+    proxy?.$message?.warning(`当前${sectionLabel}暂无可导出数据`);
+    return;
+  }
+  downloadCsv(`${stationName}_${sectionLabel}.csv`, rows);
+  proxy?.$message?.success(`${sectionLabel}已导出 CSV 文件`);
 }
 
 // 站点乘降分析
 const boardingAlightingChartOption = computed(() => {
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
 
   const hours = [];
   const boardingData = [];
@@ -2250,7 +2483,8 @@ const boardingAlightingChartOption = computed(() => {
   const boardingByHour = currentStationPanel.value?.boardingByHour || [];
   const alightingByHour = currentStationPanel.value?.alightingByHour || [];
 
-  for (let hour = startHour; hour <= endHour; hour++) {
+  // 与 hourSlice 同口径：左闭右开 [startHour, endHour)
+  for (let hour = startHour; hour < endHour; hour++) {
     hours.push(formatHourRangeLabel(hour));
     boardingData.push(toFiniteNumber(boardingByHour[hour], 0));
     alightingData.push(-toFiniteNumber(alightingByHour[hour], 0));
@@ -2387,8 +2621,8 @@ const boardingAlightingChartOption = computed(() => {
 
 // 站点OD分析
 const odTableData = computed(() => {
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
 
   const rows = (currentStationPanel.value?.od || []).map((item) => {
     const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
@@ -2437,15 +2671,40 @@ const odStationChart = computed(() => {
 });
 
 // 图表高度随对端站点数量增长（每站约 26px），面板内滚动，保证站点全部可见、不省略
-const odChartHeight = computed(() => Math.max(260, odStationChart.value.length * 26 + 40));
+// 高度封顶：枢纽站对端可达数百个，无上限时 dpr=2 下会生成数十 MB 的超高位图，低端机可能直接崩
+const OD_CHART_MAX_HEIGHT = 520;
+const OD_CHART_VISIBLE_ROWS = Math.floor((OD_CHART_MAX_HEIGHT - 40) / 26);
+const odChartHeight = computed(() => Math.max(260, Math.min(OD_CHART_MAX_HEIGHT, odStationChart.value.length * 26 + 40)));
+const odChartNeedsZoom = computed(() => odStationChart.value.length > OD_CHART_VISIBLE_ROWS);
 
 const odChartOption = computed(() => {
   const chartRows = odStationChart.value.slice().reverse();
   const labels = chartRows.map(d => d.chartLabel);
   const flows = chartRows.map(d => d.flow);
+  // 超出可视行数时用 dataZoom 分页浏览（初始窗口停在客流最大的顶部行），画布高度不再随对端站数无限增长
+  const zoomStartValue = Math.max(0, chartRows.length - OD_CHART_VISIBLE_ROWS);
 
   return {
     backgroundColor: "transparent",
+    dataZoom: odChartNeedsZoom.value
+      ? [
+          {
+            type: "slider",
+            yAxisIndex: 0,
+            width: 12,
+            right: 2,
+            startValue: zoomStartValue,
+            endValue: chartRows.length - 1,
+            zoomLock: false,
+            brushSelect: false,
+            showDetail: false,
+            borderColor: "rgba(21, 105, 222, 0.15)",
+            fillerColor: "rgba(21, 105, 222, 0.12)",
+            handleSize: 14,
+          },
+          { type: "inside", yAxisIndex: 0, zoomOnMouseWheel: false, moveOnMouseWheel: true },
+        ]
+      : undefined,
     tooltip: {
       trigger: "axis",
       axisPointer: {
@@ -2542,10 +2801,12 @@ const odChartOption = computed(() => {
 // 与右侧图表同口径：同一对端站多条线路、到站/出站记录合并为一条曲线（flow 求和）。
 // 坐标缺失时按站名回退到站点坐标索引，只有实在无坐标的条目才跳过。
 const odCurveEntries = computed(() => {
+  // 仅 OD 区块激活时计算：作为多个 watch 的源，非激活态被强制求值等于每次时段变化白跑全表聚合
+  if (pfaStationSection.value !== "od") return { direction: "all", items: [] };
   const selfName = normalizeStationSearchName(selectedStationName.value);
   if (!selfName) return { direction: "all", items: [] };
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
   const odRows = Array.isArray(currentStationPanel.value?.od) ? currentStationPanel.value.od : [];
   const merged = new Map();
 
@@ -2628,31 +2889,10 @@ watch(
   { immediate: true },
 );
 
-const odCurveDirectionLabel = computed(() => {
-  if (!odCurveEntries.value.items.length) return "当前时段无OD曲线";
-  if (odCurveEntries.value.direction === "inbound") return "展示方向：到站（来源站 → 本站）";
-  if (odCurveEntries.value.direction === "outbound") return "展示方向：出站（本站 → 目的站）";
-  return "展示方向：到站 + 出站（按对端站汇总）";
-});
-
-const odCurveLegendTitle = computed(() =>
-  odCurveEntries.value.direction === "inbound"
-    ? "到站OD客流"
-    : odCurveEntries.value.direction === "outbound"
-      ? "出站OD客流"
-      : "客流OD"
-);
-
-// 图例断点：百分比 → 人次
-function formatOdCurveLegendValue(percent) {
-  const flow = Math.round((toFiniteNumber(percent, 0) / 100) * odCurveMaxFlow.value);
-  return `${flow.toLocaleString()} 人次`;
-}
-
 // —— 需求9：站点乘降热力图（线路 × OD对端站） ——
 const boardingHeatmapData = computed(() => {
-  const startHour = segmentTimeRange.value[0];
-  const endHour = segmentTimeRange.value[1];
+  const startHour = debouncedSegmentTimeRange.value[0];
+  const endHour = debouncedSegmentTimeRange.value[1];
   const selfName = normalizeStationSearchName(selectedStationName.value);
   const odRows = Array.isArray(currentStationPanel.value?.od) ? currentStationPanel.value.od : [];
 
@@ -2809,7 +3049,8 @@ const reachabilityData = computed(() => {
   const reachability = currentStationPanel.value?.reachability || {};
   const local = localReachabilityData.value;
   const localReady = local.ready;
-  const limitStations = (stations) => stations.slice(0, toFiniteNumber(reachability.stationListLimit, 80));
+  // 兜底至少 1：后端给 0 时不应清空明细列表
+  const limitStations = (stations) => stations.slice(0, Math.max(1, toFiniteNumber(reachability.stationListLimit, 80)));
   return {
     direct: localReady ? local.directStations.length : toFiniteNumber(reachability.direct, 0),
     transfer1: localReady ? local.transfer1Stations.length : toFiniteNumber(reachability.transfer1, 0),
@@ -2906,48 +3147,23 @@ const reachabilityChartOption = computed(() => {
   };
 });
 
+// 可达 overlay/OD曲线/选中圈/站点过滤共用一个 watch：
+// 源用独立 getter 数组（逐项 Object.is 比较），值未变不触发；刷新走合并调度，一次交互每类至多重建一次
 watch(
-  () => [
-    selectedStationName.value,
-    pfaStationSection.value,
-    currentStationPanel.value,
-    localReachabilityData.value,
-    stationCoordIndex.value,
-    selectedStationCoord.value,
-    allMapStations.value,
-    displayRangeStations.value,
-    shouldRenderPfaRightPanel.value,
+  [
+    shouldRenderPfaRightPanel,
+    pfaStationSection,
+    selectedStationName,
+    selectedStationCoord,
+    currentStationPanel,
+    displayRangeStations,
+    stationCoordIndex,
+    () => debouncedSegmentTimeRange.value[0],
+    () => debouncedSegmentTimeRange.value[1],
+    odCurveScaleConfig,
   ],
   () => {
-    nextTick(() => {
-      renderReachabilityOverlay();
-      applyReachabilityStationFilter();
-      if (shouldRenderPfaRightPanel.value && selectedStationName.value) {
-        const coord = reachabilityOriginStation();
-        if (coord) updateSelectedStationRing(coord);
-      } else {
-        cleanUpSelectedStationRing();
-      }
-    });
-  },
-  { immediate: false }
-);
-
-// 需求8：section/站点/面板数据/时段/色阶配置变化时刷新（或清理）OD曲线
-watch(
-  () => [
-    shouldRenderPfaRightPanel.value,
-    pfaStationSection.value,
-    selectedStationName.value,
-    selectedStationCoord.value,
-    currentStationPanel.value,
-    stationCoordIndex.value,
-    segmentTimeRange.value[0],
-    segmentTimeRange.value[1],
-    odCurveScaleConfig.value,
-  ],
-  () => {
-    nextTick(() => renderOdCurveOverlay());
+    scheduleOverlayRefresh();
   },
   { immediate: false }
 );
@@ -2990,6 +3206,7 @@ watch(() => props.model, (newModel) => {
 
 onUnmounted(() => {
   stationPanelDisposed = true;
+  cancelSegmentTimeMirror();
   clearStationPanelRetry();
   _StationLayer.dispose();
   cleanUpSelectedStationRing();
@@ -2997,11 +3214,17 @@ onUnmounted(() => {
   cleanUpOdCurveOverlay();
   if (runMonitorOdCurveMaxFlow) runMonitorOdCurveMaxFlow.value = 0;
   if (runMonitorOdCurveValues) runMonitorOdCurveValues.value = [];
-  rightPanelHasContent.value = false;
+  // 仅当当前 tab 仍属于本组件时才清面板状态：tab 切换时卸载晚于新组件挂载，
+  // 无守卫会把新 tab 刚置 true 的状态清掉导致右侧面板闪空
+  if (activeDatavisualizationTab.value === "站点客流监测") {
+    rightPanelHasContent.value = false;
+  }
 });
 
 // 取消选中：清空选中站点与地图高亮圈（供 index.vue 点击空白处调用）
 function clearSelection() {
+  // 关闭热力图弹窗，避免残留已取消选中站点的弹窗
+  boardingHeatmapVisible.value = false;
   selectedStationName.value = "";
   selectedStationFacilityId.value = "";
   selectedStationCoord.value = null;

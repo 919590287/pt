@@ -50,9 +50,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * route-panel-v12 / station-panel-v13 新契约：
+ * route-panel-v14 / station-panel-v15 契约：
  * 任务A 线路站间 OD（stationOd）、任务B 出行目的活动画像（过滤 interaction）、
- * 任务C 对向/邻近站台换乘（坐标 ≤200m）、任务D 公交 lineGroups（bus::lineId）。
+ * 任务C 换乘判定（同 facility，或同站名且 ≤500m；v12 的 200m 邻近异名站台规则已移除）、
+ * 任务D 公交 lineGroups（bus::lineId）。
  */
 class PanelStationOdAndTripPurposeTest {
 
@@ -60,6 +61,7 @@ class PanelStationOdAndTripPurposeTest {
     private static final double H9 = 9 * 3600.0;
     private static final double H10 = 10 * 3600.0;
     private static final double H11 = 11 * 3600.0;
+    private static final double H12 = 12 * 3600.0;
     // mercatorToWgs84(5000, 0) 的经度：toDegrees(5000 / 6378137)。
     private static final double LON_5000 = Math.toDegrees(5000.0 / 6378137.0);
 
@@ -123,21 +125,28 @@ class PanelStationOdAndTripPurposeTest {
     }
 
     @Test
-    void transfersMatchOppositePlatformWithin200MetersButNotBeyond() throws Exception {
+    void transfersRequireSameFacilityOrSameNamedNearbyStop() throws Exception {
         MatsimData data = buildData("area/public/od-transfer");
         MatsimRoutePanelCache.prepareOnModelLoad(data);
         Map<String, Object> panel = MatsimRoutePanelCache.readRoutePanel(data);
         Map<?, ?> routes = (Map<?, ?>) panel.get("routes");
         Map<?, ?> up = (Map<?, ?>) routes.get("up");
 
-        // 任务C：p3 在乙站下车、100m 外不同名的“地铁对面站台”上车 → 计为换乘；
-        //        p4 在乙站下车、300m 外的“远站台”上车 → 不计。
+        // v13/v14 契约：跨线换乘要求同 facility，或同站名且坐标 ≤500m。
+        // p3 在乙站下车、100m 外【不同名】的“地铁对面站台”上车 → 不算换乘（v12 的 200m 邻近规则已移除）；
+        // p4 在乙站下车、300m 外不同名的“远站台”上车 → 不算换乘。
         List<?> transfers = (List<?>) up.get("transfers");
-        assertTrue(transfers.stream().anyMatch(item -> item instanceof Map<?, ?> transfer
-                && "metro-line".equals(transfer.get("lineId"))
-                && ((Number) transfer.get("flow")).intValue() == 1));
+        assertTrue(transfers.stream().noneMatch(item -> item instanceof Map<?, ?> transfer
+                && "metro-line".equals(transfer.get("lineId"))));
         assertTrue(transfers.stream().noneMatch(item -> item instanceof Map<?, ?> transfer
                 && "far-line".equals(transfer.get("lineId"))));
+
+        // p7 在“地铁终点”下地铁后于同一 facility（m2）换乘 far-line → 计为换乘（正例）。
+        Map<?, ?> metroUp = (Map<?, ?>) routes.get("m-up");
+        List<?> metroTransfers = (List<?>) metroUp.get("transfers");
+        assertTrue(metroTransfers.stream().anyMatch(item -> item instanceof Map<?, ?> transfer
+                && "far-line".equals(transfer.get("lineId"))
+                && ((Number) transfer.get("flow")).intValue() == 1));
     }
 
     @Test
@@ -174,10 +183,15 @@ class PanelStationOdAndTripPurposeTest {
         assertEquals("fa2", second.get("fromFacilityId"));
         assertEquals(1, ((Number) second.get("flow")).intValue());
 
-        // transfers 聚合（组外线路）与 demographics 聚合。
+        // transfers 聚合（组外线路）：v13/v14 收紧后本 fixture 的公交组无跨线换乘（p3 的
+        // 100m 不同名站台不再算换乘）；组外换乘聚合改由地铁组验证（p7 同设施换乘 far-line）。
         List<?> groupTransfers = (List<?>) busGroup.get("transfers");
-        assertTrue(groupTransfers.stream().anyMatch(item -> item instanceof Map<?, ?> transfer
-                && "metro-line".equals(transfer.get("lineId"))));
+        assertTrue(groupTransfers.isEmpty());
+        Map<?, ?> metroGroupForTransfers = (Map<?, ?>) lineGroups.get("metro::地铁1号线");
+        assertNotNull(metroGroupForTransfers);
+        List<?> metroGroupTransfers = (List<?>) metroGroupForTransfers.get("transfers");
+        assertTrue(metroGroupTransfers.stream().anyMatch(item -> item instanceof Map<?, ?> transfer
+                && "far-line".equals(transfer.get("lineId"))));
         Map<?, ?> groupDemographics = (Map<?, ?>) busGroup.get("demographics");
         assertEquals(4, ((Number) groupDemographics.get("riderCount")).intValue());
         Map<String, Map<?, ?>> groupActivities = activityByKey((List<?>) groupDemographics.get("activityTypes"));
@@ -267,7 +281,11 @@ class PanelStationOdAndTripPurposeTest {
                 track("p4", "bus-line", "up", "bus-up-1", "dep-up", "fa1", true, H11),
                 track("p4", "bus-line", "up", "bus-up-1", "dep-up", "fa2", false, H11 + 600),
                 track("p4", "far-line", "far-up", "far-1", "dep-far", "mfar", true, H11 + 1200),
-                track("p4", "far-line", "far-up", "far-1", "dep-far", "fa1", false, H11 + 1800)
+                track("p4", "far-line", "far-up", "far-1", "dep-far", "fa1", false, H11 + 1800),
+                // p7：12 点在地铁终点（同一 facility m2）下地铁、换乘 far-line（v13/v14 同设施换乘正例）。
+                track("p7", "metro-line", "m-up", "metro-1", "dep-metro", "m2", false, H12),
+                track("p7", "far-line", "far-up", "far-1", "dep-far", "m2", true, H12 + 300),
+                track("p7", "far-line", "far-up", "far-1", "dep-far", "fa1", false, H12 + 900)
         )));
         return data;
     }

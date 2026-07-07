@@ -91,8 +91,8 @@
                       {{ ind.name }}
                       <em v-if="ind.unit" class="unit">({{ ind.unit }})</em>
                     </span>
-                    <span :class="['col-value', modelValueDisplay(ind).cls]">
-                      {{ modelValueDisplay(ind).text }}
+                    <span :class="['col-value', ind.display.cls]">
+                      {{ ind.display.text }}
                     </span>
                     <span class="col-standard">{{ ind.standardText }}</span>
                   </div>
@@ -114,10 +114,10 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, inject, watch } from "vue";
-import { Opportunity, Loading, Clock, WarningFilled } from "@element-plus/icons-vue";
+import { Opportunity, Loading, WarningFilled } from "@element-plus/icons-vue";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
-import { dataEvaluation } from "@/api/data.js";
+import { getCachedEvaluation } from "@/utils/modelDataCache.js";
 import {
   EVALUATION_DIMENSIONS,
   EVALUATION_INDICATORS,
@@ -173,20 +173,21 @@ function isCanceledRequest(error) {
 }
 
 function fetchEvaluation() {
+  if (!props.model) return;
   clearTimeout(evalRetryTimer);
   evalAbortController?.abort();
   evalAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
   evalRequestSeq += 1;
   const seq = evalRequestSeq;
+  const model = props.model;
   // 轮询期间保持 generating 展示，避免每 5 秒闪一次 loading
   if (evalStatus.value !== "generating") {
     evalStatus.value = "loading";
   }
   evalError.value = "";
-  dataEvaluation({ datasource: props.model }, { signal: evalAbortController?.signal })
-    .then((res) => {
-      if (seq !== evalRequestSeq) return;
-      const payload = res?.data || {};
+  getCachedEvaluation(model)
+    .then((payload = {}) => {
+      if (seq !== evalRequestSeq || props.model !== model) return;
       if (payload.status === "generating") {
         evalStatus.value = "generating";
         scheduleEvalRetry();
@@ -196,7 +197,13 @@ function fetchEvaluation() {
       evalStatus.value = "ready";
     })
     .catch((error) => {
-      if (seq !== evalRequestSeq || isCanceledRequest(error)) return;
+      if (seq !== evalRequestSeq || props.model !== model || isCanceledRequest(error)) return;
+      const message = String(error?.message || "");
+      if (/超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message)) {
+        evalStatus.value = "generating";
+        scheduleEvalRetry();
+        return;
+      }
       evalError.value = error?.message || "体检评估数据加载失败";
       evalStatus.value = "error";
     });
@@ -209,11 +216,24 @@ onMounted(() => {
   fetchEvaluation();
 });
 
+watch(() => props.model, () => {
+  evalRequestSeq += 1;
+  clearTimeout(evalRetryTimer);
+  evalAbortController?.abort();
+  evalValues.value = null;
+  evalError.value = "";
+  evalStatus.value = "loading";
+  fetchEvaluation();
+});
+
 onUnmounted(() => {
   evalRequestSeq += 1;
   clearTimeout(evalRetryTimer);
   evalAbortController?.abort();
-  rightPanelHasContent.value = false;
+  // tab 切换时新组件先置 true、本组件后卸载，无守卫会把它清掉导致右侧面板闪空
+  if (activeDatavisualizationTab.value === "体检评估分析") {
+    rightPanelHasContent.value = false;
+  }
 });
 
 /******************************** 指标取值与展示 ********************************/
@@ -244,11 +264,13 @@ function modelValueDisplay(indicator) {
   return { text: formatted, cls: "is-neutral" };
 }
 
-// 表格按 5 个评估维度分组
-const indicatorGroups = EVALUATION_DIMENSIONS.map((dimension) => ({
+// 表格按 5 个评估维度分组；display 预计算（模板原先每行调用 modelValueDisplay 两次）
+const indicatorGroups = computed(() => EVALUATION_DIMENSIONS.map((dimension) => ({
   dimension,
-  indicators: EVALUATION_INDICATORS.filter((item) => item.dimension === dimension),
-}));
+  indicators: EVALUATION_INDICATORS
+    .filter((item) => item.dimension === dimension)
+    .map((item) => ({ ...item, display: modelValueDisplay(item) })),
+})));
 
 /******************************** 维度得分（雷达图 / 综合评分） ********************************/
 // 模型系列：normalizeIndicator 以建议值为基准归一化（上限1.2），dimensionScores 取维度内均值；

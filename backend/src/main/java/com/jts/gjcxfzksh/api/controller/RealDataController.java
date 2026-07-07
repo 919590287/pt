@@ -47,7 +47,7 @@ public class RealDataController {
     @Operation(summary = "公交线路站点")
     @PostMapping("/busLineStation")
     public AjaxResult busLineStation(@RequestBody RealDataParam param) {
-        return AjaxResult.ok(realDataService.busLineStation(param.getAreaName(), param.getVersionId()));
+        return AjaxResult.ok(realDataService.busLineStation(param.getAreaName(), param.getVersionId(), param.getInclude()));
     }
 
     @Operation(summary = "真实数据历史")

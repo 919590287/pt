@@ -80,12 +80,19 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         }
         String cacheKey = evaluationCacheKey(data);
         long start = System.currentTimeMillis();
+        evictStaleEvaluationEntries(data.getName(), cacheKey);
         evaluationCache.computeIfAbsent(cacheKey, ignored -> buildEvaluation(data));
         log.info("体检评估指标预热完成: model={}, 耗时={}ms", data.getName(), System.currentTimeMillis() - start);
     }
 
     private String evaluationCacheKey(MatsimData data) {
         return data.getName() + "#v" + com.jts.gjcxfzksh.data.Datasource.currentLoadVersion(data.getName());
+    }
+
+    /** 同一模型重载后版本号递增，旧版本条目不再命中，及时逐出避免缓存无限增长。 */
+    private void evictStaleEvaluationEntries(String modelName, String currentKey) {
+        String prefix = modelName + "#v";
+        evaluationCache.keySet().removeIf(key -> key.startsWith(prefix) && !key.equals(currentKey));
     }
 
     @Override
@@ -161,7 +168,8 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                         (e1, e2) -> NumberUtil.round(e1, 2).doubleValue(),
                         LinkedHashMap::new
                 )));
-        result.put("xlklqd_sum", xlklqd.values().stream().mapToDouble(value -> value).sum());
+        result.put("xlklqd_sum", NumberUtil.round(
+                xlklqd.values().stream().mapToDouble(value -> value).sum(), 2).doubleValue());
         // 车公里运营成本  元*乘客*km
         // 车单位人次运营成本    元*人次
         // 运营服务
@@ -210,6 +218,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                     "message", "模型客流数据仍在加载，请稍后重试"
             );
         }
+        evictStaleEvaluationEntries(data.getName(), cacheKey);
         return evaluationCache.computeIfAbsent(cacheKey, ignored -> buildEvaluation(data));
     }
 
@@ -224,14 +233,19 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         Double areaKm2 = effectiveAreaKm2(data, stopCoords);
 
         // ===== 总体水平 =====
+        double netKm = ptNetworkLength(data.getSchedule(), data.getNetwork()) / 1000.0;
         values.put("czrkmd", areaKm2 == null ? null : (int) Math.round(populationCount / areaKm2));
-        values.put("gjxwmd", areaKm2 == null ? null
-                : round2(ptNetworkLength(data.getSchedule(), data.getNetwork()) / 1000.0 / areaKm2));
+        values.put("gjxwmd", areaKm2 == null ? null : round2(netKm / areaKm2));
         Double coverage = TransitMetrics.coverage300Percent(stopCoords, data.getPopulation());
         values.put("fgl300", coverage == null ? null : round2(coverage));
         // 标台数用"高峰同时在营车辆数"估算（GTFS 转换模型每班次一辆车，直接数车辆会放大一个数量级）
         long fleet = TransitMetrics.peakConcurrentVehicles(data.getSchedule());
         values.put("wrbyl", populationCount == 0 || fleet == 0 ? null : round2(fleet / (populationCount / 10000.0)));
+        // ===== 总量（优化评估双模型对比：客流量 / 配车数 / 线网运营规模；均不依赖 plans，稳健）=====
+        values.put("khl", boardings);                                    // 客流量：日客运总量（上车人次）
+        values.put("pcs", fleet == 0 ? null : fleet);                    // 配车数：高峰同时在营车辆（标台）
+        values.put("yylc", round2(netKm));                               // 线网运营里程（km）
+        values.put("xlls", data.getSchedule().getTransitLines().size()); // 线路条数
         // 大模型不加载 plans，population 为 null 时基于出行计划的指标输出 null（前端显示"暂无数据"）
         Map<String, Double> legShare = data.getPopulation() == null ? Map.of() : legTypeRant(data.getPopulation());
         values.put("cxfdl", legShare.get(Constant.ROUTE_MODE_PT));
@@ -557,13 +571,17 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             List<PlanElement> elements = person.getSelectedPlan().getPlanElements();
             for (PlanElement element : elements) {
                 if (element instanceof Leg leg) {
+                    // Route.getDistance() 可能为 NaN（距离未定义），累加前必须过滤，
+                    // 否则整个均值被污染为 NaN，NumberUtil.round(NaN) 直接抛异常导致接口 500。
                     if (Constant.ROUTE_MODE_PT.equals(leg.getMode())) {
-                        if (leg.getTravelTime().isDefined() && leg.getRoute() != null) {
+                        if (leg.getTravelTime().isDefined() && leg.getRoute() != null
+                                && !Double.isNaN(leg.getRoute().getDistance())) {
                             ptTime += leg.getTravelTime().seconds();
                             ptDist += leg.getRoute().getDistance();
                         }
                     } else if (Constant.ROUTE_MODE_CAR.equals(leg.getMode())) {
-                        if (leg.getTravelTime().isDefined() && leg.getRoute() != null) {
+                        if (leg.getTravelTime().isDefined() && leg.getRoute() != null
+                                && !Double.isNaN(leg.getRoute().getDistance())) {
                             carTime += leg.getTravelTime().seconds();
                             carDist += leg.getRoute().getDistance();
                         }
@@ -574,7 +592,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         double ptAvg = ptTime == 0 ? 0 : ptDist / ptTime * 3.6; // m/s -> km/h
         double carAvg = carTime == 0 ? 0 : carDist / carTime * 3.6;
         Map<String, Double> result = new HashMap<>();
-        result.put("ptAvg", NumberUtil.round(ptAvg, 2).doubleValue());
+        result.put("ptAvg", NumberUtil.round(Double.isNaN(ptAvg) ? 0 : ptAvg, 2).doubleValue());
         result.put("carAvg", NumberUtil.round(Double.isNaN(carAvg) ? 0 : carAvg, 2).doubleValue());
         return result; // 公交平均速度/小汽车平均速度
     }
@@ -640,40 +658,53 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         return routeCount == 0 ? 0.0 : NumberUtil.round(lc / routeCount, 2).doubleValue(); // 平均值
     }
 
-    // 线路客流强度
+    /**
+     * 线路客流强度（人次/km，按客流降序）。
+     * TransitRoute ID 在 MATSim 中只在所属 TransitLine 内唯一，跨线路可重复，
+     * 因此上车记录按 lineId+routeId 复合键分组；输出键在 routeId 全局唯一时用裸
+     * routeId，重复时用 "lineId::routeId" 消歧，避免同键互相覆盖。
+     * 返回值不做四舍五入，由调用方在展示层统一 round，保证排序基于原始值。
+     */
     private Map<String, Double> routePersonStrength(MatsimData matsim_data) {
-//        double length = 0.;
-//        double personCount = 0.;
-        Map<String, Double> result = new HashMap<>();
-        Map<RouteId, List<PTPersonTrack>> routeIdListMap = matsim_data.getPersonTracks().stream()
-                .filter(PTPersonTrack::getEnter)
-                .collect(Collectors.groupingBy(PTPersonTrack::getRouteId));
+        Map<String, Long> boardingsByLineRoute = new HashMap<>();
+        for (PTPersonTrack track : matsim_data.getPersonTracks()) {
+            if (!Boolean.TRUE.equals(track.getEnter()) || track.getRouteId() == null) {
+                continue;
+            }
+            String key = track.getLineId() + "::" + track.getRouteId();
+            boardingsByLineRoute.merge(key, 1L, Long::sum);
+        }
 
+        Map<String, Integer> routeIdCounts = new HashMap<>();
         Map<Id<TransitLine>, TransitLine> transitLines = matsim_data.getSchedule().getTransitLines();
+        for (TransitLine transitLine : transitLines.values()) {
+            for (Id<TransitRoute> routeId : transitLine.getRoutes().keySet()) {
+                routeIdCounts.merge(routeId.toString(), 1, Integer::sum);
+            }
+        }
+
+        Map<String, Double> result = new HashMap<>();
         for (Map.Entry<Id<TransitLine>, TransitLine> line : transitLines.entrySet()) {
             TransitLine transitLine = line.getValue();
-            Map<Id<TransitRoute>, TransitRoute> transitRoutes = transitLine.getRoutes();
-            for (Map.Entry<Id<TransitRoute>, TransitRoute> route : transitRoutes.entrySet()) {
+            for (Map.Entry<Id<TransitRoute>, TransitRoute> route : transitLine.getRoutes().entrySet()) {
                 TransitRoute transitRoute = route.getValue();
                 NetworkRoute networkRoute = transitRoute.getRoute();
                 double distance = DistanceUtil.distance(networkRoute, matsim_data.getNetwork());
-                List<PTPersonTrack> tracks = routeIdListMap.get(RouteId.create(route.getKey()));
-                double p = (tracks == null) ? 0.0 : tracks.size();
-                result.put(route.getKey().toString(), distance == 0 ? 0.0 : p / (distance / 1000));
+                String routeId = route.getKey().toString();
+                String lineRouteKey = line.getKey() + "::" + routeId;
+                double p = boardingsByLineRoute.getOrDefault(lineRouteKey, 0L);
+                String outputKey = routeIdCounts.getOrDefault(routeId, 0) > 1 ? lineRouteKey : routeId;
+                result.put(outputKey, distance == 0 ? 0.0 : p / (distance / 1000));
             }
         }
-//        personCount = matsim_data.getPersonTracks().stream().filter(PTPersonTrack::getEnter).count();
-//        return personCount / (length / 1000);
-        // 只需要数值最多的前5
         return result.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        v -> NumberUtil.round(v.getValue(), 2).doubleValue(),
-                        (e1, e2) -> NumberUtil.round(e1, 2).doubleValue(),
+                        Map.Entry::getValue,
+                        (e1, e2) -> e1,
                         LinkedHashMap::new
                 ));
-//        return result;
     }
 
     private static double[] roundHourly(double[] values) {
@@ -702,19 +733,19 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         for (Map.Entry<String, Integer> entry : types.entrySet()) {
             count += entry.getValue();
         }
-        Map<String, Double> typesRant = new HashMap<>();
+        Map<String, Double> typesRant = new LinkedHashMap<>();
         if (count == 0) {
             return typesRant;
         }
         BigDecimal c = BigDecimal.valueOf(count);
         for (Map.Entry<String, Integer> entry : types.entrySet()) {
             BigDecimal b = new BigDecimal(entry.getValue());
-            BigDecimal v = b.divide(c, 2, RoundingMode.HALF_UP);
+            // 比例保留 4 位小数再转百分数 → 百分比精确到 0.01%；
+            // 原实现只保留 2 位（1% 步进），0.4% 的分担率会被抹成 0%。
+            BigDecimal v = b.divide(c, 4, RoundingMode.HALF_UP);
             double d = v.multiply(_100).doubleValue(); // %
             typesRant.put(entry.getKey(), d);
         }
-
-//        return pt <= 0 || count <= 0 ? 0 : (double) pt / count;
         return typesRant;
     }
 

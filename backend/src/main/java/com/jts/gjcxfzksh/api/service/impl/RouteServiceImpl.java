@@ -82,8 +82,9 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
             return null;
         }
         RouteDetailVO vo = new RouteDetailVO(route, network);
-        // 直线系数
-        vo.getInfo().setLc(routeRC(route, network));
+        // 非直线系数（线路长度/首末站直线距离）。原实现误用重复系数 routeRC，
+        // 单条 route 的重复系数恒≈1，导致该指标失去意义；与 routePanel 的 metrics.lc 口径对齐。
+        vo.getInfo().setLc(routeNoLC(route, network));
         // 满载率
         vo.getInfo().setTakeRate(fullLoadRate(route, matsim_data));
         // 填充日均客流
@@ -104,17 +105,19 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         if (param.getRouteId() == null || param.getRouteId().isBlank()) {
             throw new BusinessException("routeId 不能为空");
         }
-        TransitRoute transitRoute = getTransitRoute(Id.create(param.getRouteId(), TransitRoute.class), param);
-        if (transitRoute == null) {
+        LineRoute lineRoute = getLineRoute(Id.create(param.getRouteId(), TransitRoute.class), param);
+        if (lineRoute == null) {
             log.warn("找不到线路");
             return new HashMap<>();
         }
+        TransitRoute transitRoute = lineRoute.route();
+        String lineId = lineRoute.lineId();
         Network network = matsim_data.getNetwork();
         Map<String, Object> result = new HashMap<>();
-        // 日出行人次（仅统计该线路的上车人次，而非全网总量）
-        RouteId currentRouteId = RouteId.create(transitRoute.getId());
+        // 日出行人次（仅统计该线路的上车人次；routeId 跨线路可重复，须带 lineId 过滤）
         long rcxrc = matsim_data.getPersonTracks().stream()
-                .filter(track -> Boolean.TRUE.equals(track.getEnter()) && currentRouteId.equals(track.getRouteId()))
+                .filter(track -> Boolean.TRUE.equals(track.getEnter())
+                        && trackMatchesRoute(track, transitRoute, lineId))
                 .count();
         result.put("rcxrc", rcxrc);
         // 非直线系数
@@ -127,12 +130,21 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         double mzl = fullLoadRate(transitRoute, matsim_data);
         result.put("mzl", mzl);
         // 线路客流强度
-        double xlklqd = routePersonStrength(transitRoute, matsim_data);
+        double xlklqd = routePersonStrength(transitRoute, lineId, matsim_data);
         result.put("xlklqd", xlklqd);
         // 平均候车时间
-        double pjhcsj = avgAwaitTime(transitRoute, matsim_data);
+        double pjhcsj = avgAwaitTime(transitRoute, lineId, matsim_data);
         result.put("pjhcsj", pjhcsj);
         return result;
+    }
+
+    /** track 是否属于该线路：routeId 相等且（track 未记录 lineId 或 lineId 一致）。 */
+    private static boolean trackMatchesRoute(PTPersonTrack track, TransitRoute transitRoute, String lineId) {
+        if (track.getRouteId() == null || !track.getRouteId().equals(transitRoute.getId())) {
+            return false;
+        }
+        return track.getLineId() == null || lineId == null
+                || lineId.equals(track.getLineId().toString());
     }
 
     @Override
@@ -294,16 +306,28 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         return facilityList;
     }
 
+    /** 解析结果：TransitRoute 及其所属 lineId（客流过滤需要复合键）。 */
+    private record LineRoute(String lineId, TransitRoute route) {
+    }
+
     /**
      * routeId获取TransitRoute
      */
     private TransitRoute getTransitRoute(Id<TransitRoute> routeId, DatasourceParam param) {
+        LineRoute lineRoute = getLineRoute(routeId, param);
+        return lineRoute == null ? null : lineRoute.route();
+    }
+
+    private LineRoute getLineRoute(Id<TransitRoute> routeId, DatasourceParam param) {
         TransitSchedule schedule = matsim_data(param).getSchedule();
         String lineId = routeLineId(param);
         if (lineId != null && !lineId.isBlank()) {
             TransitLine line = schedule.getTransitLines().get(Id.create(lineId, TransitLine.class));
             if (line != null) {
-                return line.getRoutes().get(routeId);
+                TransitRoute route = line.getRoutes().get(routeId);
+                if (route != null) {
+                    return new LineRoute(lineId, route);
+                }
             }
         }
         Map<Id<TransitLine>, TransitLine> transitLines = schedule.getTransitLines();
@@ -312,7 +336,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
             Map<Id<TransitRoute>, TransitRoute> routes = transitLine.getRoutes();
             for (Map.Entry<Id<TransitRoute>, TransitRoute> route : routes.entrySet()) {
                 if (routeId.equals(route.getKey())) {
-                    return route.getValue();
+                    return new LineRoute(line.getKey().toString(), route.getValue());
                 }
             }
         }
@@ -330,25 +354,29 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     }
 
     /**
-     * 平均等待时间
+     * 平均等待时间（秒）。乘客筛选与 plan leg 匹配都带 lineId，
+     * 避免跨线路同名 routeId 的乘客/行程被混入。
      */
-    private double avgAwaitTime(TransitRoute transitRoute, MatsimData matsim_data) {
+    private double avgAwaitTime(TransitRoute transitRoute, String lineId, MatsimData matsim_data) {
+        if (matsim_data.getPopulation() == null) {
+            return 0.0; // 大模型不加载 plans，无法基于计划时间统计
+        }
         double awaitTime = 0;
         double count = 0;
         // 筛选 personid
         Set<PersonId> personIds = matsim_data.getPersonTracks().stream()
-                .filter(track -> {
-                    return track.getRouteId().equals(RouteId.create(transitRoute.getId()));
-                })
+                .filter(track -> trackMatchesRoute(track, transitRoute, lineId))
                 .map(PTPersonTrack::getPersonId)
                 .collect(Collectors.toSet());
         if (personIds.isEmpty()) {
             return 0.0;
         }
         Map<Id<Person>, ? extends Person> persons = matsim_data.getPopulation().getPersons();
-        for (
-                PersonId personId : personIds) {
+        for (PersonId personId : personIds) {
             Person person = persons.get(personId);
+            if (person == null || person.getSelectedPlan() == null) {
+                continue;
+            }
             List<PlanElement> elements = person.getSelectedPlan().getPlanElements();
             for (int i = 0; i < elements.size(); i++) {
                 PlanElement element = elements.get(i);
@@ -356,16 +384,24 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
                     Route route = leg.getRoute();
                     if (route instanceof TransitPassengerRoute tproute) {
                         if (tproute.getRouteId().equals(transitRoute.getId())
+                                && (tproute.getLineId() == null || lineId == null
+                                        || lineId.equals(tproute.getLineId().toString()))
                                 && Constant.ROUTE_MODE_PT.equals(leg.getMode())) {
                             if (i < 2 || !leg.getDepartureTime().isDefined()) {
                                 continue;
                             }
-                            Leg l2 = (Leg) elements.get(i - 2);
+                            if (!(elements.get(i - 2) instanceof Leg l2)) {
+                                continue;
+                            }
                             if (!l2.getDepartureTime().isDefined() || !l2.getTravelTime().isDefined()) {
                                 continue;
                             }
                             double st = l2.getDepartureTime().seconds() + l2.getTravelTime().seconds();
-                            awaitTime += leg.getDepartureTime().seconds() - st;
+                            double await = leg.getDepartureTime().seconds() - st;
+                            if (await < 0) { // 计划数据异常的负候车样本丢弃，与 TransitMetrics 口径一致
+                                continue;
+                            }
+                            awaitTime += await;
                             count++;
                         }
                     }
@@ -376,17 +412,15 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     }
 
     /**
-     * 线路客流强度
+     * 线路客流强度（人次/km），上车记录按 lineId+routeId 过滤。
      */
-    private double routePersonStrength(TransitRoute transitRoute, MatsimData matsim_data) {
-        double length = 0.;
-        double personCount = 0.;
+    private double routePersonStrength(TransitRoute transitRoute, String lineId, MatsimData matsim_data) {
         NetworkRoute networkRoute = transitRoute.getRoute();
-        length += DistanceUtil.distance(networkRoute, matsim_data.getNetwork());
-        personCount += matsim_data.getPersonTracks().stream().filter(track -> {
-            return Boolean.TRUE.equals(track.getEnter()) && track.getRouteId().equals(transitRoute.getId());
-        }).count();
-
+        double length = DistanceUtil.distance(networkRoute, matsim_data.getNetwork());
+        double personCount = matsim_data.getPersonTracks().stream()
+                .filter(track -> Boolean.TRUE.equals(track.getEnter())
+                        && trackMatchesRoute(track, transitRoute, lineId))
+                .count();
         return length <= 0 ? 0.0 : personCount / (length / 1000);
     }
 

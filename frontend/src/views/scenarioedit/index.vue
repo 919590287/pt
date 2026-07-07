@@ -249,6 +249,7 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { onBeforeRouteLeave } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
 import { optRoadNetwork } from "@/api/optimization";
@@ -295,10 +296,26 @@ const generateBlockReason = computed(() => {
 // ---------------- 线路候选弹层 ----------------
 const routePicker = reactive({ visible: false, candidates: [], x: 0, y: 0 });
 
+function menuMinY() {
+  if (typeof window === "undefined") return 72;
+  const styles = window.getComputedStyle(document.documentElement);
+  const headerHeight = Number.parseFloat(styles.getPropertyValue("--app-header-height")) || 58;
+  return headerHeight + 10;
+}
+
+function clampFloatingMenuPosition(x, y, width = 240, height = 200) {
+  if (typeof window === "undefined") return { x, y };
+  return {
+    x: Math.max(8, Math.min(x, window.innerWidth - width)),
+    y: Math.max(menuMinY(), Math.min(y, window.innerHeight - height)),
+  };
+}
+
 function onPickRouteCandidates(candidates, point) {
   routePicker.candidates = candidates;
-  routePicker.x = Math.min(point.x, window.innerWidth - 240);
-  routePicker.y = Math.min(point.y + 60, window.innerHeight - 200);
+  const menuPos = clampFloatingMenuPosition(point.x, point.y + 60, 240, 200);
+  routePicker.x = menuPos.x;
+  routePicker.y = menuPos.y;
   routePicker.visible = true;
 }
 
@@ -618,8 +635,9 @@ function onMapContextMenu(e) {
     lineCtxMenu.type = "stop";
     lineCtxMenu.anchorIdx = idx;
     lineCtxMenu.title = `站点：${anchorStopName(idx)}`;
-    lineCtxMenu.x = Math.min(e.originalEvent?.clientX ?? e.point.x, window.innerWidth - 220);
-    lineCtxMenu.y = Math.min(e.originalEvent?.clientY ?? e.point.y, window.innerHeight - 240);
+    const menuPos = clampFloatingMenuPosition(e.originalEvent?.clientX ?? e.point.x, e.originalEvent?.clientY ?? e.point.y, 220, 240);
+    lineCtxMenu.x = menuPos.x;
+    lineCtxMenu.y = menuPos.y;
     lineCtxMenu.visible = true;
     return;
   }
@@ -638,8 +656,9 @@ function onMapContextMenu(e) {
   lineCtxMenu.aIdx = stopsArr[k].i;
   lineCtxMenu.bIdx = stopsArr[k + 1].i;
   lineCtxMenu.title = `断面：${anchorStopName(stopsArr[k].i)} → ${anchorStopName(stopsArr[k + 1].i)}`;
-  lineCtxMenu.x = Math.min(e.originalEvent?.clientX ?? e.point.x, window.innerWidth - 220);
-  lineCtxMenu.y = Math.min(e.originalEvent?.clientY ?? e.point.y, window.innerHeight - 160);
+  const menuPos = clampFloatingMenuPosition(e.originalEvent?.clientX ?? e.point.x, e.originalEvent?.clientY ?? e.point.y, 220, 160);
+  lineCtxMenu.x = menuPos.x;
+  lineCtxMenu.y = menuPos.y;
   lineCtxMenu.visible = true;
 }
 
@@ -655,6 +674,12 @@ function lineCtxAction(action) {
 
 function closeLineCtxMenu() {
   lineCtxMenu.visible = false;
+}
+
+function resetTransientInteractionState() {
+  routePicker.visible = false;
+  lineCtxMenu.visible = false;
+  store.setTool("");
 }
 
 // ---------------- 视野控制 ----------------
@@ -839,13 +864,18 @@ onMounted(() => {
   store.startJobPolling();
 });
 
+onBeforeRouteLeave(() => {
+  resetTransientInteractionState();
+  return true;
+});
+
 onUnmounted(() => {
   stopWatchers.forEach((s) => (typeof s === "function" ? s() : s?.stop?.()));
   stopWatchers = [];
   window.removeEventListener("keydown", handleGlobalKeydown);
   window.removeEventListener("click", closeLineCtxMenu);
   store.stopJobPolling();
-  store.setTool("");
+  resetTransientInteractionState();
   if (rotateListenerId) MapRef.value?.removeEventListener?.("update:camera:rotate", rotateListenerId);
   const m = map();
   if (m) {
@@ -1108,7 +1138,7 @@ onUnmounted(() => {
 
 .route-picker {
   position: fixed;
-  z-index: 3000;
+  z-index: calc(var(--z-header, 1500) - 1);
   min-width: 200px;
   background: #fff;
   border: 1px solid var(--app-border, #dde3ec);

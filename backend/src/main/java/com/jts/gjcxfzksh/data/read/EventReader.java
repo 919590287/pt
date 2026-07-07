@@ -37,6 +37,7 @@ public class EventReader extends DefaultHandler {
     private final List<PersonLeavesVehicleEventHandler> personLeavesVehicleEventHandlers = new ArrayList<>();
     private final List<VehicleDepartsAtFacilityEventHandler> vehicleDepartsAtFacilityEventHandlers = new ArrayList<>();
     private final List<VehicleArrivesAtFacilityEventHandler> vehicleArrivesAtFacilityEventHandlers = new ArrayList<>();
+    private final List<TransitDriverStartsEventHandler> transitDriverStartsEventHandlers = new ArrayList<>();
     private long current = 0L;
     private long printNum = 1L;
     private String fileName;
@@ -70,6 +71,9 @@ public class EventReader extends DefaultHandler {
             }
             if (eh instanceof VehicleArrivesAtFacilityEventHandler) {
                 vehicleArrivesAtFacilityEventHandlers.add((VehicleArrivesAtFacilityEventHandler) eh);
+            }
+            if (eh instanceof TransitDriverStartsEventHandler) {
+                transitDriverStartsEventHandlers.add((TransitDriverStartsEventHandler) eh);
             }
         }
     }
@@ -169,6 +173,23 @@ public class EventReader extends DefaultHandler {
                 this.handler(new VehicleArrivesAtFacilityEvent(time, Id.create(attributes.getValue(VehicleArrivesAtFacilityEvent.ATTRIBUTE_VEHICLE), Vehicle.class), Id.create(attributes.getValue(VehicleArrivesAtFacilityEvent.ATTRIBUTE_FACILITY), TransitStopFacility.class), delay == null ? 0.0 : Double.parseDouble(delay)));
                 break;
             }
+            case TransitDriverStartsEvent.EVENT_TYPE: {
+                // 车辆开始执行某班次：提供 vehicle→line/route/departure 的权威动态映射与司机身份
+                String driver = attributes.getValue(TransitDriverStartsEvent.ATTRIBUTE_DRIVER_ID);
+                String vehicle = attributes.getValue(TransitDriverStartsEvent.ATTRIBUTE_VEHICLE_ID);
+                String transitLine = attributes.getValue(TransitDriverStartsEvent.ATTRIBUTE_TRANSIT_LINE_ID);
+                String transitRoute = attributes.getValue(TransitDriverStartsEvent.ATTRIBUTE_TRANSIT_ROUTE_ID);
+                String departure = attributes.getValue(TransitDriverStartsEvent.ATTRIBUTE_DEPARTURE_ID);
+                if (driver != null && vehicle != null) {
+                    this.handler(new TransitDriverStartsEvent(time,
+                            Id.create(driver, Person.class),
+                            Id.create(vehicle, Vehicle.class),
+                            transitLine == null ? null : Id.create(transitLine, org.matsim.pt.transitSchedule.api.TransitLine.class),
+                            transitRoute == null ? null : Id.create(transitRoute, org.matsim.pt.transitSchedule.api.TransitRoute.class),
+                            departure == null ? null : Id.create(departure, org.matsim.pt.transitSchedule.api.Departure.class)));
+                }
+                break;
+            }
         }
     }
 
@@ -217,6 +238,12 @@ public class EventReader extends DefaultHandler {
 
     public void handler(VehicleArrivesAtFacilityEvent event) {
         for (VehicleArrivesAtFacilityEventHandler handler : vehicleArrivesAtFacilityEventHandlers) {
+            handler.handleEvent(event);
+        }
+    }
+
+    public void handler(TransitDriverStartsEvent event) {
+        for (TransitDriverStartsEventHandler handler : transitDriverStartsEventHandlers) {
             handler.handleEvent(event);
         }
     }

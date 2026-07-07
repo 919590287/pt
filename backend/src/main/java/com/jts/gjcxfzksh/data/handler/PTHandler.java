@@ -7,13 +7,14 @@ import lombok.Getter;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.events.PersonEntersVehicleEvent;
 import org.matsim.api.core.v01.events.PersonLeavesVehicleEvent;
+import org.matsim.api.core.v01.events.TransitDriverStartsEvent;
 import org.matsim.api.core.v01.events.handler.PersonEntersVehicleEventHandler;
 import org.matsim.api.core.v01.events.handler.PersonLeavesVehicleEventHandler;
+import org.matsim.api.core.v01.events.handler.TransitDriverStartsEventHandler;
 import org.matsim.core.api.experimental.events.VehicleArrivesAtFacilityEvent;
 import org.matsim.core.api.experimental.events.VehicleDepartsAtFacilityEvent;
 import org.matsim.core.api.experimental.events.handler.VehicleArrivesAtFacilityEventHandler;
 import org.matsim.core.api.experimental.events.handler.VehicleDepartsAtFacilityEventHandler;
-import org.matsim.pt.transitSchedule.api.Departure;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
 
@@ -25,7 +26,8 @@ public class PTHandler implements
         VehicleArrivesAtFacilityEventHandler,
         VehicleDepartsAtFacilityEventHandler,
         PersonEntersVehicleEventHandler,
-        PersonLeavesVehicleEventHandler {
+        PersonLeavesVehicleEventHandler,
+        TransitDriverStartsEventHandler {
 
     @Getter
     private final Set<PTPersonTrack> personTracks = new ObjectOpenHashSet<>();
@@ -39,8 +41,14 @@ public class PTHandler implements
     private final ConcurrentMap<VehicleId, RouteId> vrMap = new ConcurrentHashMap<>();
     // VehicleId -> TransitLineId. TransitRouteId is only unique within a line in many MATSim schedules.
     private final ConcurrentMap<VehicleId, LineId> vlMap = new ConcurrentHashMap<>();
+    // 公交司机 personId 集合（来自 TransitDriverStarts 事件），显式排除司机的上下车事件。
+    // 原实现依赖“司机上/下车时车辆恰好不在站台（vfMap 无记录）”这一事件顺序侥幸过滤，不可靠。
+    private final Set<String> driverIds = ConcurrentHashMap.newKeySet();
 
     public PTHandler(TransitSchedule schedule) {
+        // 静态兜底映射：按时刻表 departure→vehicle 建立。同一辆车服务多个班次/交路时
+        // 只保留最后注册的班次，会导致归属错位——TransitDriverStarts 事件（下方 handleEvent）
+        // 会在每个班次开始时动态覆盖为当前班次，事件齐全时以动态映射为准。
         schedule.getTransitLines().forEach((lineId, line) -> line.getRoutes().forEach((routeId, route) -> {
             routes.put(RouteId.create(routeId), route);
             route.getDepartures().forEach((departureId, departure) -> {
@@ -52,6 +60,26 @@ public class PTHandler implements
                 vlMap.put(VehicleId.create(departure.getVehicleId()), LineId.create(lineId));
             });
         }));
+    }
+
+    @Override
+    public void handleEvent(TransitDriverStartsEvent event) {
+        if (event.getDriverId() != null) {
+            driverIds.add(event.getDriverId().toString());
+        }
+        if (event.getVehicleId() == null) {
+            return;
+        }
+        VehicleId vehicleId = VehicleId.create(event.getVehicleId());
+        if (event.getTransitRouteId() != null) {
+            vrMap.put(vehicleId, RouteId.create(event.getTransitRouteId()));
+        }
+        if (event.getTransitLineId() != null) {
+            vlMap.put(vehicleId, LineId.create(event.getTransitLineId()));
+        }
+        if (event.getDepartureId() != null) {
+            vdMap.put(vehicleId, DepartureId.create(event.getDepartureId()));
+        }
     }
 
     @Override
@@ -79,6 +107,9 @@ public class PTHandler implements
     }
 
     private void createTrack(VehicleId vehicleId, PersonId personId, double time, Boolean enter) {
+        if (personId != null && driverIds.contains(personId.toString())) {
+            return; // 司机的上下车事件不是客流
+        }
         RouteId routeId = vrMap.get(vehicleId);
         DepartureId departureId = vdMap.get(vehicleId);
         if (routeId == null) {

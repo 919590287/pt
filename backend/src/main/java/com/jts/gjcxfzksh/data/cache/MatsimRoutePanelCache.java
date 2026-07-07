@@ -66,7 +66,18 @@ public final class MatsimRoutePanelCache {
     //        transfers/stationOd 聚合；地铁组既有聚合键与合并行为不变。需重算缓存。
     // v13: 换乘判定收紧为“同站换乘”（同 facility 或同站名，站名天然合并上下行对站）；
     //      移除 v12 的 200m 邻近站台规则——它把步行可达的地铁/公交站都算成了直接换乘。需重算缓存。
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v13";
+    // v14: 统计口径修复批次（需重算缓存）：
+    //      ①跨零点时刻（>86400s）折叠回当日小时，不再全部压进 23 时桶；
+    //      ②断面客流改为“按乘次配对”口径：每次乘坐按上车时刻计入其途经的全部断面（stop 序号区间），
+    //        修复跨小时乘客造成的桶间错位与环线同站双计；
+    //      ③满载率/percent 不再封顶 100%，真实超载可见；
+    //      ④换乘同名站增加 ≤500m 坐标距离校验，排除同名异地站误判；
+    //      ⑤track 排序补充次键（同秒先下后上），配对结果可复现；
+    //      ⑥lineGroup 的 lc 输出 null（原 0.0 占位会被当真值展示）、facDist 取代表方向、
+    //        首末班仅统计有班次的成员；
+    //      ⑦公交/地铁判定收紧（裸“N线”须带地铁/轨道前缀，接驳/巴士等公交词优先）；
+    //      ⑧出行目的兜底键仅在 routeId 全局唯一时使用；上下车归属统一 pt-events-v3 动态映射。
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v14";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
@@ -77,8 +88,11 @@ public final class MatsimRoutePanelCache {
     private static final int STATION_OD_LIMIT = 500;
     // 项目统一投影为 epsg:3857（见 Datasource.ctf），经纬度输出用 Web Mercator 反算。
     private static final double EARTH_RADIUS = 6378137.0;
+    // 裸“N线”必须带“地铁/轨道”前缀才算地铁线号，“N号线”单独成立——
+    // 否则 B1线/K1线 等公交快线命名会被误判为地铁（与 MatsimAnalysisCache 同步维护）。
     private static final Pattern CHINESE_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
-            "(?i)(?:地铁|轨道|线路)?\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
+            "(?i)(?:地铁|轨道)\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
+                    + "|([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*号线"
     );
     private static final Pattern ENGLISH_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
             "(?i)(?:metro|subway|mtr)(?:[-_\\s]*line)?[-_\\s]*([0-9]{1,2})\\b|\\bline[-_\\s]*([0-9]{1,2})\\b"
@@ -189,11 +203,14 @@ public final class MatsimRoutePanelCache {
     }
 
     private static boolean isMetroRouteText(Map<?, ?> route) {
-        String text = String.valueOf(route.get("mode")) + ' '
-                + route.get("transportMode") + ' '
-                + route.get("lineName") + ' '
-                + route.get("routeName") + ' '
-                + route.get("lineId");
+        // route payload 的 mode 已由 inferTransitMode 按 transportMode 优先算好，直接使用；
+        // 原实现对 lineName/routeName 再做文本匹配，"地铁接驳专线"等公交线会被误计入 metro 曲线，
+        // 与右侧线路面板的 mode 归类互相矛盾。仅当 mode 缺失（旧版缓存）时才退回文本判定。
+        Object mode = route.get("mode");
+        if (mode != null && !"null".equals(String.valueOf(mode)) && !String.valueOf(mode).isBlank()) {
+            return "subway".equals(String.valueOf(mode));
+        }
+        String text = route.get("lineName") + " " + route.get("routeName") + " " + route.get("lineId");
         return OVERALL_METRO_TEXT_PATTERN.matcher(text).find();
     }
 
@@ -216,6 +233,11 @@ public final class MatsimRoutePanelCache {
         }
         if (routeValue == null) {
             routeValue = routes.get(routeId);
+            // 裸键命中时校验 lineId：请求带了错误 lineId 时不能把别的线路数据当详情返回
+            if (routeValue instanceof Map<?, ?> bare && lineId != null && !lineId.isBlank()
+                    && !lineId.equals(String.valueOf(bare.get("lineId")))) {
+                routeValue = null;
+            }
         }
         if (routeValue == null) {
             routeValue = findRoutePayload(routes, lineId, routeId);
@@ -280,6 +302,8 @@ public final class MatsimRoutePanelCache {
             Map<String, Object> payload = buildPanel(data);
             writeGzipJson(panelPath(data), payload);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            // 源数据变更触发的重建必须踢掉旧内存条目，否则 loadPanel 继续命中重建前的旧统计
+            MEMORY_CACHE.remove(panelPath(data).toAbsolutePath().normalize().toString());
             log.info("线路客流面板缓存生成完成: model={}, routes={}",
                     data.getName(), ((Map<?, ?>) payload.getOrDefault("routes", Map.of())).size());
         } catch (Exception e) {
@@ -312,7 +336,7 @@ public final class MatsimRoutePanelCache {
         // 换乘/OD 都是“人×记录”级热路径：facility 坐标与名称统一预建 map，避免逐条回查 schedule。
         Map<String, FacilityGeo> facilityGeo = buildFacilityGeo(data);
         indexPassengerTracks(data.getPersonTracks(), routes);
-        indexTransfers(data.getPersonTracks(), routes);
+        indexTransfers(data.getPersonTracks(), routes, facilityGeo);
         indexStationOd(data.getPersonTracks(), routes);
         Population population = data.getPopulation();
         Map<String, Map<String, Integer>> tripPurposeByRoute = buildTripPurposeByRoute(population);
@@ -320,7 +344,7 @@ public final class MatsimRoutePanelCache {
         Map<String, Integer> routeIdCounts = routeIdCounts(routes.values());
         Map<String, Object> routePayloads = new LinkedHashMap<>();
         for (RoutePanelAccumulator route : routes.values()) {
-            route.finish(population, tripPurposeByRoute, facilityGeo);
+            route.finish(population, tripPurposeByRoute, facilityGeo, routeIdCounts);
             routePayloads.put(route.payloadKey(routeIdCounts), route.toPayload());
         }
 
@@ -441,17 +465,35 @@ public final class MatsimRoutePanelCache {
         if (tracks == null || tracks.isEmpty()) {
             return;
         }
+        long dropped = 0;
         for (PTPersonTrack track : tracks) {
             RoutePanelAccumulator route = routeForTrack(routes, track);
             if (route != null) {
                 route.addTrack(track);
+            } else {
+                dropped++;
             }
+        }
+        if (dropped > 0) {
+            // 静默丢弃会让总客流无解释地偏低，至少要能在日志里对账
+            log.warn("线路客流面板: {} 条上下车记录无法唯一定位到 schedule 线路（lineId/routeId 不匹配或跨线路歧义），已弃计", dropped);
         }
     }
 
+    /**
+     * 同人 track 的时间排序：同一秒内“先下车后上车”（换乘的自然顺序），
+     * 最后按车辆 ID 定序——tracks 源是无序 HashSet，无次键时同秒事件顺序不可复现，
+     * 换乘/OD 配对结果会随每次构建漂移。
+     */
+    private static final Comparator<PTPersonTrack> TRACK_TIME_ORDER =
+            Comparator.comparingDouble(MatsimRoutePanelCache::safeTime)
+                    .thenComparingInt(track -> Boolean.TRUE.equals(track.getEnter()) ? 1 : 0)
+                    .thenComparing(track -> String.valueOf(track.getVehicleId()));
+
     private static void indexTransfers(
             Collection<PTPersonTrack> tracks,
-            Map<String, RoutePanelAccumulator> routes
+            Map<String, RoutePanelAccumulator> routes,
+            Map<String, FacilityGeo> facilityGeo
     ) {
         if (tracks == null || tracks.isEmpty()) {
             return;
@@ -459,7 +501,7 @@ public final class MatsimRoutePanelCache {
         Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
 
         byPerson.values().parallelStream().forEach(personTracks -> {
-            personTracks.sort(Comparator.comparingDouble(track -> track.getTime() == null ? 0.0 : track.getTime()));
+            personTracks.sort(TRACK_TIME_ORDER);
             for (int i = 0; i + 1 < personTracks.size(); i++) {
                 PTPersonTrack leave = personTracks.get(i);
                 PTPersonTrack enter = personTracks.get(i + 1);
@@ -475,7 +517,7 @@ public final class MatsimRoutePanelCache {
                 if (fromRoute == null || toRoute == null || fromRoute.lineId.equals(toRoute.lineId)) {
                     continue;
                 }
-                if (!sameTransferStation(fromRoute, leave, toRoute, enter)) {
+                if (!sameTransferStation(fromRoute, leave, toRoute, enter, facilityGeo)) {
                     continue;
                 }
                 int hour = hourOf(safeTime(enter));
@@ -506,7 +548,7 @@ public final class MatsimRoutePanelCache {
         }
         Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
         byPerson.values().parallelStream().forEach(personTracks -> {
-            personTracks.sort(Comparator.comparingDouble(MatsimRoutePanelCache::safeTime));
+            personTracks.sort(TRACK_TIME_ORDER);
             PTPersonTrack boarding = null;
             for (PTPersonTrack track : personTracks) {
                 if (Boolean.TRUE.equals(track.getEnter())) {
@@ -520,7 +562,11 @@ public final class MatsimRoutePanelCache {
                 if (sameRide(boarding, track)) {
                     RoutePanelAccumulator route = routeForTrack(routes, boarding);
                     if (route != null) {
-                        route.addStationOd(idString(boarding.getFacilityId()), idString(track.getFacilityId()));
+                        String fromFacilityId = idString(boarding.getFacilityId());
+                        String toFacilityId = idString(track.getFacilityId());
+                        route.addStationOd(fromFacilityId, toFacilityId);
+                        // 断面客流：整次乘坐按上车时刻计入其途经的全部断面
+                        route.addRideSegments(fromFacilityId, toFacilityId, hourOf(safeTime(boarding)));
                     }
                 }
                 boarding = null;
@@ -562,6 +608,11 @@ public final class MatsimRoutePanelCache {
             if (!routeId.equals(route.routeId)) {
                 continue;
             }
+            // 回退扫描也要求 lineId 一致（track 带 lineId 但复合键未命中说明 schedule 有出入，
+            // 不能落到别的线路头上）
+            if (lineId != null && !lineId.isBlank() && !lineId.equals(route.lineId)) {
+                continue;
+            }
             if (match != null) {
                 return null;
             }
@@ -570,11 +621,15 @@ public final class MatsimRoutePanelCache {
         return match;
     }
 
+    /** 同名站视为同站的坐标距离上限（投影米）：排除跨区同名异地站（“东站”“广场”类重名）。 */
+    private static final double SAME_NAME_TRANSFER_MAX_METERS = 500.0;
+
     private static boolean sameTransferStation(
             RoutePanelAccumulator fromRoute,
             PTPersonTrack leave,
             RoutePanelAccumulator toRoute,
-            PTPersonTrack enter
+            PTPersonTrack enter,
+            Map<String, FacilityGeo> facilityGeo
     ) {
         String leaveFacilityId = idString(leave.getFacilityId());
         String enterFacilityId = idString(enter.getFacilityId());
@@ -583,11 +638,21 @@ public final class MatsimRoutePanelCache {
         }
         // v13：仅“同站换乘”成立——同站名即可（站名合并上下行对站）；
         // 不再按 200m 邻近坐标判定，避免把步行到附近地铁/公交站的行为算成直接换乘。
+        // v14：同名之上增加坐标校验——城市里大量跨区重名站，甲地“东站”下车、
+        // 乙地“东站”上车不是换乘。坐标缺失时保持 v13 行为。
         String leaveStation = fromRoute.stationName(leaveFacilityId);
         String enterStation = toRoute.stationName(enterFacilityId);
-        return !leaveStation.isBlank()
-                && !"--".equals(leaveStation)
-                && leaveStation.equals(enterStation);
+        if (leaveStation.isBlank() || "--".equals(leaveStation) || !leaveStation.equals(enterStation)) {
+            return false;
+        }
+        FacilityGeo from = facilityGeo.get(leaveFacilityId);
+        FacilityGeo to = facilityGeo.get(enterFacilityId);
+        if (from == null || to == null || from.coord() == null || to.coord() == null) {
+            return true;
+        }
+        double dx = from.coord().getX() - to.coord().getX();
+        double dy = from.coord().getY() - to.coord().getY();
+        return dx * dx + dy * dy <= SAME_NAME_TRANSFER_MAX_METERS * SAME_NAME_TRANSFER_MAX_METERS;
     }
 
     private static Map<String, Object> buildSummary(Collection<RoutePanelAccumulator> routes) {
@@ -764,7 +829,9 @@ public final class MatsimRoutePanelCache {
         if (Double.isNaN(seconds) || Double.isInfinite(seconds)) {
             return 0;
         }
-        return Math.max(0, Math.min(HOURS - 1, (int) Math.floor(Math.max(0, seconds) / 3600.0)));
+        // MATSim 时刻可 >86400（如 25:30 发的夜班车），折叠回当日小时；
+        // 原 min(23,…) 会把跨零点事件全部压进 23 时桶，凌晨客流恒为 0。
+        return ((int) Math.floor(Math.max(0, seconds) / 3600.0)) % HOURS;
     }
 
     private static double safeTime(PTPersonTrack track) {
@@ -821,7 +888,7 @@ public final class MatsimRoutePanelCache {
         String value = nonBlank(text, "");
         Matcher matcher = CHINESE_METRO_LINE_NUMBER_PATTERN.matcher(value);
         while (matcher.find()) {
-            String token = matcher.group(1);
+            String token = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
             String number = chineseLineNumber(token);
             if (!number.isBlank()) {
                 return number;
@@ -848,6 +915,10 @@ public final class MatsimRoutePanelCache {
         if (!containsMetroModeKeyword(lineText) && containsBusIdKeyword(lineId + " " + routeId)) {
             return "bus";
         }
+        // “地铁接驳专线”“轨道巴士”等公交命名含地铁关键词，公交业务词优先判 bus
+        if (containsBusServiceKeyword(lineText + " " + routeText)) {
+            return "bus";
+        }
         if (!canonicalMetroLineNumber(lineText).isBlank()
                 || containsMetroModeKeyword(lineText)
                 || !canonicalMetroLineNumber(routeText).isBlank()
@@ -855,6 +926,12 @@ public final class MatsimRoutePanelCache {
             return "subway";
         }
         return "bus";
+    }
+
+    private static boolean containsBusServiceKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("接驳") || value.contains("专线")
+                || value.contains("巴士") || value.contains("公交") || value.contains("brt");
     }
 
     private static String normalizeDeclaredTransportMode(String rawMode) {
@@ -930,7 +1007,8 @@ public final class MatsimRoutePanelCache {
         if (denominator <= 0) {
             return 0.0;
         }
-        return round2(Math.min(100.0, numerator * 100.0 / denominator));
+        // 不封顶：满载率 >100% 是真实的超载信号，封顶会把“严重超载”抹成“正好满载”
+        return round2(numerator * 100.0 / denominator);
     }
 
     private static int intSum(int[] values) {
@@ -1211,6 +1289,8 @@ public final class MatsimRoutePanelCache {
         private final double firstTime;
         private final double lastTime;
         private final List<StopMeta> stops = new ArrayList<>();
+        // facilityId → 该设施在 stops 序列中的全部序号（环线可多次出现）
+        private final Map<String, List<Integer>> facilityStopIndices = new HashMap<>();
         private final Map<String, StationFlowAccumulator> stationFlows = new LinkedHashMap<>();
         private final Map<String, TransferAccumulator> transfers = new HashMap<>();
         private final Set<String> riderIds = new LinkedHashSet<>();
@@ -1259,12 +1339,20 @@ public final class MatsimRoutePanelCache {
                 String facilityName = nonBlank(stop.getStopFacility().getName(), facilityId);
                 stops.add(new StopMeta(index++, facilityId, facilityName));
                 stationFlows.putIfAbsent(facilityId, new StationFlowAccumulator(facilityId, facilityName));
+                // 环线/折返线路同一 facility 可出现多次，记录全部 stop 序号供乘次配对定位
+                facilityStopIndices.computeIfAbsent(facilityId, ignored -> new ArrayList<>()).add(stops.size() - 1);
+            }
+            for (int i = 0; i + 1 < stops.size(); i++) {
+                segments.add(new SegmentFlowAccumulator(stops.get(i), stops.get(i + 1)));
             }
             this.desc = routeDesc(stops);
             indexDepartures(data, route.getDepartures().values());
         }
 
         private void addTrack(PTPersonTrack track) {
+            if (track.getEnter() == null) {
+                return; // 上/下车标记缺失的坏记录不能默认按下车计，否则下车数虚增、与上车不守恒
+            }
             int hour = hourOf(safeTime(track));
             String facilityId = idString(track.getFacilityId());
             StationFlowAccumulator station = stationFlows.computeIfAbsent(
@@ -1303,51 +1391,70 @@ public final class MatsimRoutePanelCache {
             stationOd.computeIfAbsent(key, ignored -> new StationOdAccumulator(fromFacilityId, toFacilityId)).flow++;
         }
 
+        /**
+         * 断面客流按乘次配对累计：一次乘坐（上车站→下车站）在其途经的每个断面 +1，
+         * 全程记入【上车时刻】所在小时桶。
+         * 相比原“逐小时对上/下车增量求前缀和”的算法，修复了两类失真：
+         * ①跨小时乘客的 +1/-1 落在不同小时桶，下游断面在上车小时被永久虚增；
+         * ②环线同一 facility 出现两次时按 facilityId 查询计数被双计。
+         * stop 序号取“上车站的首个序号”与“其后最近的下车站序号”，环线语义正确。
+         */
+        private synchronized void addRideSegments(String fromFacilityId, String toFacilityId, int hour) {
+            if (segments.isEmpty() || fromFacilityId == null || toFacilityId == null) {
+                return;
+            }
+            List<Integer> fromIndices = facilityStopIndices.get(fromFacilityId);
+            List<Integer> toIndices = facilityStopIndices.get(toFacilityId);
+            if (fromIndices == null || toIndices == null) {
+                return; // events 与 schedule 不配套时无法定位，弃计该乘次
+            }
+            int fromIndex = fromIndices.get(0);
+            int toIndex = -1;
+            for (int candidate : toIndices) {
+                if (candidate > fromIndex) {
+                    toIndex = candidate;
+                    break;
+                }
+            }
+            if (toIndex < 0) {
+                return; // 下车站不在上车站之后（数据异常），弃计
+            }
+            for (int i = fromIndex; i < toIndex && i < segments.size(); i++) {
+                segments.get(i).flowByHour[hour]++;
+            }
+        }
+
         private void finish(
                 Population population,
                 Map<String, Map<String, Integer>> tripPurposeByRoute,
-                Map<String, FacilityGeo> facilityGeo
+                Map<String, FacilityGeo> facilityGeo,
+                Map<String, Integer> routeIdCounts
         ) {
             buildSegments();
-            this.tripPurposeCounts = resolveTripPurposeCounts(tripPurposeByRoute);
+            this.tripPurposeCounts = resolveTripPurposeCounts(tripPurposeByRoute, routeIdCounts);
             this.demographics = buildDemographicsPayload(population, riderIds, tripPurposeCounts);
             this.stationOdPayload = stationOdPayloads(stationOd.values(), facilityGeo);
         }
 
-        private Map<String, Integer> resolveTripPurposeCounts(Map<String, Map<String, Integer>> tripPurposeByRoute) {
+        private Map<String, Integer> resolveTripPurposeCounts(
+                Map<String, Map<String, Integer>> tripPurposeByRoute,
+                Map<String, Integer> routeIdCounts
+        ) {
             Map<String, Integer> counts = tripPurposeByRoute.get(routeKey(lineId, routeId));
-            if (counts == null) {
-                // plans 中 TransitPassengerRoute 缺失 lineId 时的兜底键。
+            if (counts == null && routeIdCounts.getOrDefault(routeId, 0) <= 1) {
+                // plans 中 TransitPassengerRoute 缺失 lineId 时的兜底键——
+                // 仅当 routeId 全局唯一才可用，否则同名 route 会各自领走同一份计数、组聚合后成倍虚增。
                 counts = tripPurposeByRoute.get(routeKey(null, routeId));
             }
             return counts == null ? Map.of() : counts;
         }
 
         private void buildSegments() {
-            segments.clear();
-            for (int i = 0; i + 1 < stops.size(); i++) {
-                StopMeta from = stops.get(i);
-                StopMeta to = stops.get(i + 1);
-                segments.add(new SegmentFlowAccumulator(from, to));
-            }
-            if (segments.isEmpty()) {
-                return;
-            }
-            for (int hour = 0; hour < HOURS; hour++) {
-                int onboard = 0;
-                for (int i = 0; i + 1 < stops.size(); i++) {
-                    StopMeta stop = stops.get(i);
-                    StationFlowAccumulator station = stationFlows.get(stop.facilityId);
-                    if (station != null) {
-                        onboard += station.boardingByHour[hour] - station.alightingByHour[hour];
-                    }
-                    int flow = Math.max(0, onboard);
-                    SegmentFlowAccumulator segment = segments.get(i);
-                    segment.flowByHour[hour] = flow;
-                    segment.loadRateByHour[hour] = percent(flow, capacityByHour[hour]);
-                }
-            }
+            // flowByHour 已在 addRideSegments 按乘次累计完成，这里补算满载率与全天合计
             for (SegmentFlowAccumulator segment : segments) {
+                for (int hour = 0; hour < HOURS; hour++) {
+                    segment.loadRateByHour[hour] = percent(segment.flowByHour[hour], capacityByHour[hour]);
+                }
                 segment.finish(capacityTotal);
             }
         }
@@ -1487,6 +1594,10 @@ public final class MatsimRoutePanelCache {
         private int departureCount = 0;
         private double firstTime = Double.MAX_VALUE;
         private double lastTime = 0.0;
+        // 代表方向（组内最长的单向 route），平均站距按该方向计算——
+        // 上下行 facility 并集会把对向站台算成两站，站距被低估约一半
+        private double repDistance = 0.0;
+        private int repStopCount = 0;
 
         private LineGroupAccumulator(String lineId, String lineName, String mode) {
             this.lineId = lineId;
@@ -1502,8 +1613,15 @@ public final class MatsimRoutePanelCache {
             totalAlightings += route.totalAlightings;
             capacityTotal += route.capacityTotal;
             departureCount += route.departureCount;
-            firstTime = Math.min(firstTime, route.firstTime);
-            lastTime = Math.max(lastTime, route.lastTime);
+            if (route.departureCount > 0) {
+                // 无班次的 route 首末班是 0.0 占位，不能参与 min/max（否则首班恒 00:00）
+                firstTime = Math.min(firstTime, route.firstTime);
+                lastTime = Math.max(lastTime, route.lastTime);
+            }
+            if (route.routeDistance > repDistance) {
+                repDistance = route.routeDistance;
+                repStopCount = route.stops.size();
+            }
             vehicleIds.addAll(route.vehicleIds);
             riderIds.addAll(route.riderIds);
             routeDistanceByLine.merge(route.lineId, route.routeDistance, Math::max);
@@ -1586,8 +1704,10 @@ public final class MatsimRoutePanelCache {
             metrics.put("firstTime", firstTime == Double.MAX_VALUE ? 0.0 : firstTime);
             metrics.put("lastTime", lastTime);
             metrics.put("facNum", facilityIds.size());
-            metrics.put("facDist", facilityIds.size() > 1 ? round2(routeDistance / (facilityIds.size() - 1)) : 0.0);
-            metrics.put("lc", 0.0);
+            // 平均站距按代表方向（组内最长单向）计算，站间区间数 = 站数-1
+            metrics.put("facDist", repStopCount > 1 ? round2(repDistance / (repStopCount - 1)) : 0.0);
+            // 组级非直线系数无统一定义，输出 null 由前端显示“暂无数据”；原 0.0 占位会被当真值
+            metrics.put("lc", null);
             metrics.put("passenger", totalBoardings);
             metrics.put("loadRate", percent(totalBoardings, capacityTotal));
             metrics.put("passengerStrength", routeDistance <= 0 ? 0.0 : round2(totalBoardings / (routeDistance / 1000.0)));

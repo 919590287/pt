@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 普通公交站点：白底空心圈 + 线网同色（青绿 #2f6f73）描边，外圈白色光晕保证深色底上可辨。
+<!-- 普通公交站点：白盘 + 钢青蓝（mapTheme station.ring #33608f）空心环。
+     外圈双层白色光晕柔化边缘，玻璃细环收边保证浅色底图上的锐利轮廓。
      与客流分析各模块（断面站点圈/换乘站点圈/可达性圆点）同一视觉语言。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
-  <circle cx="48" cy="48" r="40" fill="#ffffff" fill-opacity="0.9"/>
-  <circle cx="48" cy="48" r="31" fill="#ffffff" stroke="#2f6f73" stroke-width="10"/>
+  <circle cx="48" cy="48" r="44" fill="#ffffff" fill-opacity="0.35"/>
+  <circle cx="48" cy="48" r="39" fill="#ffffff" fill-opacity="0.75"/>
+  <circle cx="48" cy="48" r="33" fill="#ffffff"/>
+  <circle cx="48" cy="48" r="33" fill="none" stroke="#33608f" stroke-opacity="0.28" stroke-width="1.5"/>
+  <circle cx="48" cy="48" r="25.5" fill="#ffffff" stroke="#33608f" stroke-width="9"/>
 </svg>

@@ -112,6 +112,16 @@ public class RealDataServiceImpl implements RealDataService {
     private final Map<String, CachedOverview> overviewCache = new ConcurrentHashMap<>();
     private final Map<String, CachedRealData> realDataCache = new ConcurrentHashMap<>();
     private final Map<String, PendingShpComparison> pendingShpComparisons = new ConcurrentHashMap<>();
+    // 数据盘（外置 USB）探测缓存：状态文件原文按 (size,mtime) 校验、目录签名按短 TTL 复用，
+    // 把每请求的盘 I/O 压到近零；一切写路径经 writeEditState 统一失效。
+    private static final long FS_PROBE_TTL_MS = 2_000;
+    private final Map<String, CachedStateText> stateTextCache = new ConcurrentHashMap<>();
+    private final Map<String, CachedSignature> signatureCache = new ConcurrentHashMap<>();
+    private final Map<String, CachedRealData> adminDistrictCache = new ConcurrentHashMap<>();
+    // 冷缓存单飞：core/routeStops 双请求与并发用户共享同一次全量 SHP 读取
+    private final Map<String, Object> realDataComputeLocks = new ConcurrentHashMap<>();
+    // 提交/切版按区域加锁，替代方法级 synchronized 的跨区域串行
+    private final Map<String, Object> areaWriteLocks = new ConcurrentHashMap<>();
 
     @Override
     public List<String> areaList() {
@@ -125,7 +135,14 @@ public class RealDataServiceImpl implements RealDataService {
             throw new BusinessException("区域名称不能为空");
         }
         Path root = matsimConfig.realDataPath(safeAreaName);
-        Map<String, Object> collection = readFirstShp(root.resolve(ADMIN_AREA_FOLDER));
+        Path folder = root.resolve(ADMIN_AREA_FOLDER);
+        // 行政区边界基本静态却每次全量读 SHP：按目录签名缓存，外部替换文件时自动失效
+        String signature = cachedSignature("admin@" + folder.toAbsolutePath().normalize(), () -> overviewSignature(folder));
+        CachedRealData cachedDistricts = adminDistrictCache.get(safeAreaName);
+        if (cachedDistricts != null && cachedDistricts.signature().equals(signature)) {
+            return cachedDistricts.data();
+        }
+        Map<String, Object> collection = readFirstShp(folder);
         List<Map<String, Object>> features = mutableMapList(collection.get("features"));
         List<String> districts = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
@@ -146,6 +163,7 @@ public class RealDataServiceImpl implements RealDataService {
         result.put("areaName", safeAreaName);
         result.put("districts", districts);
         result.put("collection", collection);
+        adminDistrictCache.put(safeAreaName, new CachedRealData(signature, result, System.currentTimeMillis()));
         return result;
     }
 
@@ -161,30 +179,67 @@ public class RealDataServiceImpl implements RealDataService {
         if (cached != null && cached.signature().equals(signature)) {
             return cached.data();
         }
-        Map<String, Object> lines = readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
-        Map<String, Object> routeStops = readStationData(dataRoot.resolve(BUS_STATION_FOLDER));
-        Map<String, Object> depots = readFirstShp(dataRoot.resolve(BUS_DEPOT_FOLDER));
-        if (!target.materializedData()) {
-            applyCurrentEdits(target.operations(), lines, routeStops, depots);
+        synchronized (realDataComputeLocks.computeIfAbsent(cacheKey, key -> new Object())) {
+            cached = realDataCache.get(cacheKey);
+            if (cached != null && cached.signature().equals(signature)) {
+                return cached.data();
+            }
+            Map<String, Object> lines = readStandardShp(dataRoot.resolve(BUS_LINE_FOLDER), STANDARD_ROUTE_FIELDS, LineString.class, "线路");
+            Map<String, Object> routeStops = readStationData(dataRoot.resolve(BUS_STATION_FOLDER));
+            Map<String, Object> depots = readFirstShp(dataRoot.resolve(BUS_DEPOT_FOLDER));
+            if (!target.materializedData()) {
+                applyCurrentEdits(target.operations(), lines, routeStops, depots);
+            }
+            enrichDerivedAttributes(lines, routeStops);
+            Map<String, Object> stations = uniqueStationsFromRouteStops(routeStops);
+            int lineCount = numberValue(lines.get("featureCount")).intValue();
+            int stationCount = numberValue(stations.get("featureCount")).intValue();
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("areaName", areaName);
+            result.put("versionId", target.id());
+            result.put("versionLabel", target.label());
+            result.put("lines", lines);
+            result.put("stations", stations);
+            result.put("routeStops", routeStops);
+            result.put("depots", depots);
+            result.put("bounds", mergeBounds(mergeBounds(boundsOf(lines), boundsOf(stations)), boundsOf(depots)));
+            result.put("overview", overview(areaName, dataRoot, stateFile(root), lineCount, stationCount, stations));
+            result.put("history", historySummary(root));
+            realDataCache.put(cacheKey, new CachedRealData(signature, result, System.currentTimeMillis()));
+            trimRealDataCache();
+            return result;
         }
-        enrichDerivedAttributes(lines, routeStops);
-        Map<String, Object> stations = uniqueStationsFromRouteStops(routeStops);
-        int lineCount = numberValue(lines.get("featureCount")).intValue();
-        int stationCount = numberValue(stations.get("featureCount")).intValue();
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("areaName", areaName);
-        result.put("versionId", target.id());
-        result.put("versionLabel", target.label());
-        result.put("lines", lines);
-        result.put("stations", stations);
-        result.put("routeStops", routeStops);
-        result.put("depots", depots);
-        result.put("bounds", mergeBounds(mergeBounds(boundsOf(lines), boundsOf(stations)), boundsOf(depots)));
-        result.put("overview", overview(areaName, dataRoot, stateFile(root), lineCount, stationCount, stations));
-        result.put("history", historySummary(root));
-        realDataCache.put(cacheKey, new CachedRealData(signature, result, System.currentTimeMillis()));
-        trimRealDataCache();
-        return result;
+    }
+
+    @Override
+    public Map<String, Object> busLineStation(String areaName, String versionId, String include) {
+        Map<String, Object> full = busLineStation(areaName, versionId);
+        String mode = safeText(include).toLowerCase();
+        if (mode.isBlank() || "all".equals(mode)) {
+            return full;
+        }
+        if ("routestops".equals(mode)) {
+            Map<String, Object> projected = new LinkedHashMap<>();
+            projected.put("areaName", full.get("areaName"));
+            projected.put("versionId", full.get("versionId"));
+            projected.put("routeStops", full.get("routeStops"));
+            return projected;
+        }
+        if ("core".equals(mode)) {
+            // 浅拷贝共享内部集合（缓存对象只读），routeStops 以计数占位换掉最大的一份要素
+            Map<String, Object> projected = new LinkedHashMap<>(full);
+            Map<String, Object> stub = new LinkedHashMap<>();
+            stub.put("type", "FeatureCollection");
+            stub.put("features", List.of());
+            Object routeStops = full.get("routeStops");
+            if (routeStops instanceof Map<?, ?> routeStopMap && routeStopMap.get("featureCount") != null) {
+                stub.put("featureCount", routeStopMap.get("featureCount"));
+            }
+            stub.put("deferred", Boolean.TRUE);
+            projected.put("routeStops", stub);
+            return projected;
+        }
+        return full;
     }
 
     @Override
@@ -360,7 +415,16 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     @Override
-    public synchronized Map<String, Object> commitEdits(String username, RealDataCommitParam param) {
+    public Map<String, Object> commitEdits(String username, RealDataCommitParam param) {
+        // 写锁按区域粒度：区域 A 的提交不再阻塞区域 B（读路径由签名机制自愈，无需与写互斥）
+        synchronized (areaWriteLock(param == null ? null : param.getAreaName())) {
+            return doCommitEdits(username, param);
+        }
+    }
+
+    private Map<String, Object> doCommitEdits(String username, RealDataCommitParam param) {
+        // 写路径绕开探测缓存：修订号冲突检查必须基于盘上最新状态
+        stateTextCache.clear();
         String areaName = safeText(param == null ? null : param.getAreaName());
         String datasetType = normalizeDatasetType(param == null ? null : param.getDatasetType());
         List<Map<String, Object>> operations = param == null || param.getOperations() == null ? List.of() : param.getOperations();
@@ -434,7 +498,14 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     @Override
-    public synchronized Map<String, Object> revertEdits(String username, RealDataParam param) {
+    public Map<String, Object> revertEdits(String username, RealDataParam param) {
+        synchronized (areaWriteLock(param == null ? null : param.getAreaName())) {
+            return doRevertEdits(username, param);
+        }
+    }
+
+    private Map<String, Object> doRevertEdits(String username, RealDataParam param) {
+        stateTextCache.clear();
         String areaName = safeText(param == null ? null : param.getAreaName());
         String targetVersionId = safeText(param == null ? null : param.getVersionId());
         if (areaName.isBlank()) {
@@ -1687,14 +1758,43 @@ public class RealDataServiceImpl implements RealDataService {
 
     private Map<String, Object> readEditState(Path root) {
         Path file = stateFile(root);
-        if (!Files.isRegularFile(file)) {
+        String text = readEditStateText(file);
+        if (text == null) {
             return new LinkedHashMap<>();
         }
         try {
-            Map<String, Object> parsed = JSON.parseObject(Files.readString(file), new TypeReference<Map<String, Object>>() {
+            Map<String, Object> parsed = JSON.parseObject(text, new TypeReference<Map<String, Object>>() {
             });
             return parsed == null ? new LinkedHashMap<>() : new LinkedHashMap<>(parsed);
         } catch (Exception error) {
+            throw new BusinessException("读取真实数据编辑库失败: " + file, error);
+        }
+    }
+
+    // 原文级缓存：短 TTL 内免 stat，TTL 外按 (size,mtime) 校验后复用；命中时省去数据盘读取。
+    // 每次调用仍重新解析成新对象，调用方（提交/切版等）对返回结构的就地修改不会污染缓存。
+    private String readEditStateText(Path file) {
+        String key = file.toAbsolutePath().normalize().toString();
+        long now = System.currentTimeMillis();
+        CachedStateText cached = stateTextCache.get(key);
+        if (cached != null && now - cached.checkedAt() < FS_PROBE_TTL_MS) {
+            return cached.text();
+        }
+        try {
+            if (!Files.isRegularFile(file)) {
+                stateTextCache.remove(key);
+                return null;
+            }
+            long size = Files.size(file);
+            long mtime = Files.getLastModifiedTime(file).toMillis();
+            if (cached != null && cached.size() == size && cached.mtime() == mtime) {
+                stateTextCache.put(key, new CachedStateText(size, mtime, now, cached.text()));
+                return cached.text();
+            }
+            String text = Files.readString(file);
+            stateTextCache.put(key, new CachedStateText(size, mtime, now, text));
+            return text;
+        } catch (IOException error) {
             throw new BusinessException("读取真实数据编辑库失败: " + file, error);
         }
     }
@@ -1753,6 +1853,9 @@ public class RealDataServiceImpl implements RealDataService {
         } catch (AtomicMoveNotSupportedException ignored) {
             Files.move(tempFile, file, StandardCopyOption.REPLACE_EXISTING);
         }
+        // 状态文件的唯一写入汇点：写后立即失效原文/签名探测缓存（writeEditState 与 switchActiveVersion 都经此）
+        stateTextCache.clear();
+        signatureCache.clear();
     }
 
     private void assertFreshRevision(Path root, Long baseRevision) {
@@ -3861,17 +3964,35 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private String realDataSignature(Path root, Path dataRoot) {
-        return overviewSignature(
+        String key = "real@" + dataRoot.toAbsolutePath().normalize() + "@" + root.toAbsolutePath().normalize();
+        return cachedSignature(key, () -> overviewSignature(
                 dataRoot.resolve(BUS_LINE_FOLDER),
                 dataRoot.resolve(BUS_STATION_FOLDER),
                 dataRoot.resolve(BUS_DEPOT_FOLDER),
                 root.resolve(ADMIN_AREA_FOLDER),
                 stateFile(root)
-        );
+        ));
+    }
+
+    // 目录签名的短 TTL 缓存：签名本身就是"变更探测器"，TTL 内复用只是把外部文件变动的
+    // 感知延迟收敛到 ≤2s；平台自身的写路径都会经 writeEditState 立即清空本缓存。
+    private String cachedSignature(String key, java.util.function.Supplier<String> compute) {
+        long now = System.currentTimeMillis();
+        CachedSignature cached = signatureCache.get(key);
+        if (cached != null && now - cached.computedAt() < FS_PROBE_TTL_MS) {
+            return cached.value();
+        }
+        String value = compute.get();
+        signatureCache.put(key, new CachedSignature(now, value));
+        return value;
     }
 
     private String realDataCacheKey(String areaName, String versionId) {
         return safeText(areaName) + "::" + (safeText(versionId).isBlank() ? "__base__" : safeText(versionId));
+    }
+
+    private Object areaWriteLock(String areaName) {
+        return areaWriteLocks.computeIfAbsent(safeText(areaName), key -> new Object());
     }
 
     private void invalidateAreaRealDataCaches(String areaName) {
@@ -4309,6 +4430,12 @@ public class RealDataServiceImpl implements RealDataService {
     }
 
     private record CachedOverview(String signature, Map<String, Object> overview) {
+    }
+
+    private record CachedStateText(long size, long mtime, long checkedAt, String text) {
+    }
+
+    private record CachedSignature(long computedAt, String value) {
     }
 
     private record CachedRealData(String signature, Map<String, Object> data, long createdAt) {

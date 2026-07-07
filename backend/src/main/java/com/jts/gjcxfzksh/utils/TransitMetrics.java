@@ -105,6 +105,8 @@ public final class TransitMetrics {
     /**
      * 分时平均候车时间（秒）。候车时间 = PT leg 计划出发时间 - 上一段（步行到站）到达时间，
      * 按候车开始时刻所在小时分桶，桶内【累加】后取均值。
+     * 跨零点时刻（MATSim 计划时间可 >86400，如 25:30）折叠回当日小时；
+     * 计划数据异常产生的负候车时间样本直接丢弃，避免拉低均值。
      *
      * @return 长度 24 的数组，无样本的小时为 0（未四舍五入）
      */
@@ -128,11 +130,13 @@ public final class TransitMetrics {
                         continue;
                     }
                     double start = previousLeg.getDepartureTime().seconds() + previousLeg.getTravelTime().seconds();
-                    int hour = (int) (start / 3600);
-                    if (hour >= 0 && hour < 24) {
-                        sum[hour] += leg.getDepartureTime().seconds() - start;
-                        count[hour]++;
+                    double await = leg.getDepartureTime().seconds() - start;
+                    if (start < 0 || await < 0) {
+                        continue;
                     }
+                    int hour = ((int) (start / 3600)) % 24;
+                    sum[hour] += await;
+                    count[hour]++;
                 }
             }
         }
@@ -259,8 +263,6 @@ public final class TransitMetrics {
      * 口径与 {@link #avgAwaitTimeByHour} 一致（基于 plans 计划时间）。
      */
     public static Double averageAwaitMinutes(Population population) {
-        double[] byHour = avgAwaitTimeByHour(population);
-        // avgAwaitTimeByHour 已按桶均值输出，这里需要原始加权：重算一遍累计值
         double sum = 0;
         long count = 0;
         if (population != null) {
@@ -277,7 +279,11 @@ public final class TransitMetrics {
                         continue;
                     }
                     double start = previousLeg.getDepartureTime().seconds() + previousLeg.getTravelTime().seconds();
-                    sum += leg.getDepartureTime().seconds() - start;
+                    double await = leg.getDepartureTime().seconds() - start;
+                    if (await < 0) { // 计划数据异常的负候车时间不参与均值（与 avgAwaitTimeByHour 口径一致）
+                        continue;
+                    }
+                    sum += await;
                     count++;
                 }
             }

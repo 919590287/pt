@@ -109,7 +109,7 @@ export function updateBaseNetwork(map, routeFeatures, stopFeatures) {
     type: "line",
     source: SOURCES.baseLines,
     paint: {
-      "line-color": ["case", ["==", ["get", "mode"], "subway"], "#8b5cf6", "#3f82e0"],
+      "line-color": ["case", ["==", ["get", "mode"], "subway"], "#8b5cf6", "#3d6ea6"],
       "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 13, 1.6, 16, 3],
       "line-opacity": 0.55,
     },
@@ -129,7 +129,7 @@ export function updateBaseNetwork(map, routeFeatures, stopFeatures) {
     paint: {
       "circle-radius": ["interpolate", ["linear"], ["zoom"], 12.5, 2, 15, 4.5, 17, 7],
       "circle-color": "#ffffff",
-      "circle-stroke-color": "#2563eb",
+      "circle-stroke-color": "#33608f",
       "circle-stroke-width": 1.6,
       "circle-opacity": 0.95,
     },
@@ -150,7 +150,7 @@ export function updateBaseNetwork(map, routeFeatures, stopFeatures) {
       "text-padding": 2,
     },
     paint: {
-      "text-color": "#1f3132",
+      "text-color": "#1f3140",
       "text-halo-color": "rgba(248, 251, 252, 0.94)",
       "text-halo-width": 1.5,
       "text-halo-blur": 0.4,
@@ -245,19 +245,19 @@ export function updateArea(map, polygon, bufferRing) {
     id: LAYER_IDS.areaFill,
     type: "fill",
     source: SOURCES.area,
-    paint: { "fill-color": "#1569de", "fill-opacity": 0.05 },
+    paint: { "fill-color": "#0071e3", "fill-opacity": 0.05 },
   });
   ensureLayer(map, {
     id: LAYER_IDS.areaLine,
     type: "line",
     source: SOURCES.area,
-    paint: { "line-color": "#1569de", "line-width": 3, "line-dasharray": [2.4, 1.6] },
+    paint: { "line-color": "#0071e3", "line-width": 3, "line-dasharray": [2.4, 1.6] },
   });
   ensureLayer(map, {
     id: LAYER_IDS.areaBuffer,
     type: "line",
     source: SOURCES.areaBuffer,
-    paint: { "line-color": "#1569de", "line-width": 1.2, "line-opacity": 0.45, "line-dasharray": [1, 2] },
+    paint: { "line-color": "#0071e3", "line-width": 1.2, "line-opacity": 0.45, "line-dasharray": [1, 2] },
   });
 }
 
@@ -417,7 +417,7 @@ export function updateEditPreview(map, features) {
     source: SOURCES.editPreview,
     filter: ["==", ["geometry-type"], "LineString"],
     paint: {
-      "line-color": ["match", ["get", "state"], "drawn", "#0f9f6e", "gap", "#dc2626", "#3f82e0"],
+      "line-color": ["match", ["get", "state"], "drawn", "#0f9f6e", "gap", "#dc2626", "#3d6ea6"],
       "line-width": ["match", ["get", "state"], "gap", 3, 4.5],
       "line-opacity": 0.9,
       "line-dasharray": ["match", ["get", "state"], "gap", ["literal", [1.4, 1.2]], ["literal", [1, 0]]],
@@ -431,7 +431,7 @@ export function updateEditPreview(map, features) {
     paint: {
       "circle-radius": ["match", ["get", "ptState"], "hover", 9, "new", 6.5, 5],
       "circle-color": ["match", ["get", "ptState"], "hover", "#f97316", "new", "#16a34a", "#ffffff"],
-      "circle-stroke-color": ["match", ["get", "ptState"], "hover", "#ffffff", "new", "#ffffff", "#1569de"],
+      "circle-stroke-color": ["match", ["get", "ptState"], "hover", "#ffffff", "new", "#ffffff", "#0071e3"],
       "circle-stroke-width": 2,
     },
   });
@@ -485,7 +485,7 @@ export function updateToolPreview(map, { anchors = [], pathGeometry = null, curs
     filter: ["==", ["geometry-type"], "Point"],
     paint: {
       "circle-radius": ["match", ["get", "role"], "snap", 8, "endpoint", 9, 5.5],
-      "circle-color": ["match", ["get", "role"], "snap", "#0f9f6e", "endpoint", "#16a34a", "#1569de"],
+      "circle-color": ["match", ["get", "role"], "snap", "#0f9f6e", "endpoint", "#16a34a", "#0071e3"],
       "circle-stroke-color": "#ffffff",
       "circle-stroke-width": 2,
     },
@@ -516,7 +516,7 @@ export function updateHighlight(map, routeGeometry, stopPoint, routeStops = []) 
     type: "line",
     source: SOURCES.highlight,
     filter: ["==", ["geometry-type"], "LineString"],
-    paint: { "line-color": "#1569de", "line-width": 6, "line-opacity": 0.85 },
+    paint: { "line-color": "#0071e3", "line-width": 6, "line-opacity": 0.85 },
   });
   ensureLayer(map, {
     id: LAYER_IDS.highlightStop,
@@ -526,7 +526,7 @@ export function updateHighlight(map, routeGeometry, stopPoint, routeStops = []) 
     paint: {
       "circle-radius": ["match", ["get", "role"], "route-stop", 4.5, 10],
       "circle-color": ["match", ["get", "role"], "route-stop", "#ffffff", "rgba(21,105,222,0.15)"],
-      "circle-stroke-color": "#1569de",
+      "circle-stroke-color": "#0071e3",
       "circle-stroke-width": ["match", ["get", "role"], "route-stop", 2, 3],
     },
   });

@@ -67,7 +67,16 @@ public final class MatsimPrecomputedCache {
     //      保有量/车均日载客量分母改用"高峰同时在营车辆数"车队估算，需重算缓存
     // v12: 线路摘要(lines.json)新增抽稀后的真实路网走向 geometry，
     //      前端全网线路图层按 network.xml 几何绘制（原为站点直线连接），需重算缓存
-    public static final String VISUAL_CACHE_VERSION = "visual-v12";
+    // v13: 统计口径修复批次（需重算缓存）：
+    //      ①lines.json/route-details 补齐 lc(非直线系数)/takeRate(满载率)/passenger(日客流)——
+    //        原缓存构建只调构造器，三指标恒为 0，缓存命中时前端显示 0%/0；
+    //      ②大模型（population 为空）时人口类指标（czrkmd/fxfdl/yxsdb/pjhcsj）输出 null，
+    //        不再把 0 值当真值固化进 info.json；
+    //      ③指纹补充 transitVehicles 与 desc.json 面积，容量/面积变更后旧值不再静默下发；
+    //      ④linkstats 流量列剔除 HRS0-24avg 全跨度汇总列（原与逐时列一起累加，flow≈真值×2）；
+    //      ⑤线路客流强度(xlklqd)分组与键改用 lineId+routeId 复合键，跨线路同名 routeId 不再混计；
+    //      ⑥出行分担率(fxfdl)精度提升到 0.01%（原 1% 步进）。
+    public static final String VISUAL_CACHE_VERSION = "visual-v13";
     private static final int VISUAL_TILE_ZOOM = 12;
     private static final int MIN_VISUAL_TILE_ZOOM = 8;
     private static final int ROUTE_DETAIL_SHARD_COUNT = 32;
@@ -84,6 +93,38 @@ public final class MatsimPrecomputedCache {
     private static final String NETWORK_TILES_DIR = "network-tiles";
     private static final String ROUTE_TILES_DIR = "route-tiles";
     private static final String ROUTE_DETAILS_DIR = "route-details";
+
+    // —— 读路径内存缓存 ——
+    // routeDetail 原来每次请求都读盘：解析 route-index.json + 解压解析整个分片
+    // （含全模型 1/32 线路的完整 links；模型数据常在外置盘），选线（正向+反向并发）
+    // 单次可达数百毫秒。索引/分片解析结果按绝对路径（含缓存版本目录）做小容量 LRU，
+    // manifest 就绪校验结果按 cacheDir 记忆化；同 JVM 内重建缓存时统一失效（见 invalidateMemoryCache）。
+    private static final int ROUTE_INDEX_MEMORY_LIMIT = 4;
+    private static final int ROUTE_SHARD_MEMORY_LIMIT = 8;
+    private static final Map<String, Map<String, String>> ROUTE_INDEX_MEMORY =
+            java.util.Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Map<String, String>> eldest) {
+                    return size() > ROUTE_INDEX_MEMORY_LIMIT;
+                }
+            });
+    private static final Map<String, Map<String, RouteDetailVO>> ROUTE_SHARD_MEMORY =
+            java.util.Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Map<String, RouteDetailVO>> eldest) {
+                    return size() > ROUTE_SHARD_MEMORY_LIMIT;
+                }
+            });
+    private static final Set<String> READY_CACHE_DIRS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private static void invalidateMemoryCache(MatsimData data) {
+        String cacheDirPrefix = cacheDir(data).toString();
+        READY_CACHE_DIRS.remove(cacheDirPrefix);
+        ROUTE_INDEX_MEMORY.remove(routeIndexPath(data).toString());
+        synchronized (ROUTE_SHARD_MEMORY) {
+            ROUTE_SHARD_MEMORY.keySet().removeIf(key -> key.startsWith(cacheDirPrefix));
+        }
+    }
 
     private MatsimPrecomputedCache() {
     }
@@ -159,13 +200,23 @@ public final class MatsimPrecomputedCache {
             return null;
         }
         try {
-            Map<String, String> index = JSON.readValue(routeIndexPath(data).toFile(), STRING_MAP_TYPE);
+            Path indexPath = routeIndexPath(data);
+            Map<String, String> index = ROUTE_INDEX_MEMORY.get(indexPath.toString());
+            if (index == null) {
+                index = JSON.readValue(indexPath.toFile(), STRING_MAP_TYPE);
+                ROUTE_INDEX_MEMORY.put(indexPath.toString(), index);
+            }
             String key = lineId == null || lineId.isBlank() ? routeId : routeKey(lineId, routeId);
             String file = index.get(key);
             if (file == null || file.isBlank()) {
                 return null;
             }
-            Map<String, RouteDetailVO> shard = readGzipJson(routeDetailsDir(data).resolve(file), ROUTE_DETAIL_MAP_TYPE);
+            Path shardPath = routeDetailsDir(data).resolve(file);
+            Map<String, RouteDetailVO> shard = ROUTE_SHARD_MEMORY.get(shardPath.toString());
+            if (shard == null) {
+                shard = readGzipJson(shardPath, ROUTE_DETAIL_MAP_TYPE);
+                ROUTE_SHARD_MEMORY.put(shardPath.toString(), shard);
+            }
             return shard.get(key);
         } catch (Exception e) {
             log.warn("读取线路详情预计算失败: model={}, lineId={}, routeId={}", data.getName(), lineId, routeId, e);
@@ -185,6 +236,7 @@ public final class MatsimPrecomputedCache {
             return;
         }
         try {
+            invalidateMemoryCache(data);
             deleteDirectory(cacheDir(data));
             Files.createDirectories(cacheDir(data));
             Map<String, Object> info = buildInfo(data);
@@ -201,6 +253,8 @@ public final class MatsimPrecomputedCache {
             writeTileDirectory(data, ROUTE_TILES_DIR, VISUAL_TILE_ZOOM, routeTiles);
             writeJsonAtomic(routeIndexPath(data), writeRouteDetails(data, routeDetails));
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            // 重建窗口期并发读者可能把删除前的旧文件解析结果写回内存，完成后再失效一次兜底
+            invalidateMemoryCache(data);
 
             log.info("模型可视化预计算完成: model={}, lines={}, stations={}, networkTiles={}, routeTiles={}",
                     data.getName(), lines.size(), stations.size(), networkTiles.size(), routeTiles.size());
@@ -214,6 +268,12 @@ public final class MatsimPrecomputedCache {
     }
 
     public static boolean isVisualCacheReady(MatsimData data) {
+        // 就绪校验（8 次 stat + manifest 解析）在每次瓦片/详情读取时都会执行，外置盘上开销可观；
+        // 校验通过后按 cacheDir 记忆化（缓存只在 ensureVisualCacheLocked 内重建，重建时失效）
+        String memoKey = cacheDir(data).toString();
+        if (READY_CACHE_DIRS.contains(memoKey)) {
+            return true;
+        }
         Path manifestPath = manifestPath(data);
         if (!Files.exists(manifestPath)
                 || !Files.exists(infoPath(data))
@@ -227,9 +287,13 @@ public final class MatsimPrecomputedCache {
         }
         try {
             Map<String, Object> manifest = JSON.readValue(manifestPath.toFile(), MAP_TYPE);
-            return "ready".equals(manifest.get("status"))
+            boolean ready = "ready".equals(manifest.get("status"))
                     && VISUAL_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
+            if (ready) {
+                READY_CACHE_DIRS.add(memoKey);
+            }
+            return ready;
         } catch (Exception e) {
             log.warn("可视化缓存状态读取失败: {}", manifestPath, e);
             return false;
@@ -244,16 +308,22 @@ public final class MatsimPrecomputedCache {
         // 口径修正：常住人口取全体 agent 数（原实现只数公交乘客）；
         // 面积在 desc.json 未提供时用站点凸包估算（原实现退化为除以 1）
         double configuredArea = data.getArea();
-        Double areaKm2 = configuredArea > 1.0 ? configuredArea : TransitMetrics.serviceAreaKm2(coords);
+        // 两分支必须同为 Double：三元表达式混用 double/Double 时结果按 double 拆箱，
+        // serviceAreaKm2 返回 null（站点<3 个）会直接 NPE
+        Double areaKm2 = configuredArea > 1.0 ? Double.valueOf(configuredArea) : TransitMetrics.serviceAreaKm2(coords);
         int personCount = data.getPopulation() == null ? 0 : data.getPopulation().getPersons().size();
-        result.put("czrkmd", areaKm2 == null ? null : (int) Math.round(personCount / areaKm2));
+        // 大模型不加载 plans，population 是空对象而非 null——人口/出行计划类指标必须输出 null
+        // （前端显示"暂无数据"），否则 0 值会被当真值固化进 info.json 永久下发。
+        // 实时路径对大模型返回 "generating"，buildEvaluation 对同类指标输出 null，此处保持同一口径。
+        boolean hasPopulation = personCount > 0;
+        result.put("czrkmd", areaKm2 == null || !hasPopulation ? null : (int) Math.round(personCount / areaKm2));
 
         double networkLength = ptNetworkLength(data.getSchedule(), data.getNetwork());
         result.put("gjxwmd", areaKm2 == null ? null : round2((networkLength / 1000.0) / areaKm2));
 
         result.put("fgl_300", TransitMetrics.coverageResult(
                 TransitMetrics.coverage300Percent(coords, data.getPopulation())));
-        result.put("fxfdl", legTypeRate(data.getPopulation()));
+        result.put("fxfdl", hasPopulation ? legTypeRate(data.getPopulation()) : null);
 
         Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = data.getPersonTracks().stream()
                 .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
@@ -282,24 +352,40 @@ public final class MatsimPrecomputedCache {
                 .limit(5)
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        Map.Entry::getValue,
+                        entry -> round2(entry.getValue()),
                         (oldValue, newValue) -> oldValue,
                         LinkedHashMap::new
                 )));
         result.put("xlklqd_sum", round2(xlklqd.values().stream().mapToDouble(Double::doubleValue).sum()));
-        result.put("yxsdb", runSpeed(data.getPopulation()));
-        double[] awaitByHour = TransitMetrics.avgAwaitTimeByHour(data.getPopulation());
-        double[] pjhcsj = new double[awaitByHour.length];
-        for (int i = 0; i < awaitByHour.length; i++) {
-            pjhcsj[i] = round2(awaitByHour[i]);
+        if (hasPopulation) {
+            result.put("yxsdb", runSpeed(data.getPopulation()));
+            double[] awaitByHour = TransitMetrics.avgAwaitTimeByHour(data.getPopulation());
+            double[] pjhcsj = new double[awaitByHour.length];
+            for (int i = 0; i < awaitByHour.length; i++) {
+                pjhcsj[i] = round2(awaitByHour[i]);
+            }
+            result.put("pjhcsj", pjhcsj);
+        } else {
+            result.put("yxsdb", null);
+            result.put("pjhcsj", null);
         }
-        result.put("pjhcsj", pjhcsj);
         return result;
     }
 
     private static List<LineVO> buildLines(MatsimData data) {
         List<LineVO> lineList = new ArrayList<>();
         Network network = data.getNetwork();
+        // 客流/满载率所需索引一次预建：缓存构建发生在 personTracks 就绪之后（Datasource.loadEvent 顺序保证）。
+        // 原实现只调 RouteDetailVO 构造器，lc/takeRate/passenger 恒为 0 被落盘，
+        // routeDetail/lineAll 命中缓存时（默认常态）前端满载率/日客流永远显示 0。
+        Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = data.getPersonTracks().stream()
+                .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
+        Map<String, Long> boardingsByLineRoute = new HashMap<>();
+        for (PTPersonTrack track : data.getPersonTracks()) {
+            if (Boolean.TRUE.equals(track.getEnter()) && track.getRouteId() != null) {
+                boardingsByLineRoute.merge(track.getLineId() + "::" + track.getRouteId(), 1L, Long::sum);
+            }
+        }
         for (Map.Entry<Id<TransitLine>, TransitLine> line : data.getSchedule().getTransitLines().entrySet()) {
             TransitLine transitLine = line.getValue();
             LineVO vo = new LineVO();
@@ -307,13 +393,53 @@ public final class MatsimPrecomputedCache {
             vo.setLineId(transitLine.getId().toString());
             List<RouteDetailVO> routes = new ArrayList<>();
             for (TransitRoute route : transitLine.getRoutes().values()) {
-                routes.add(new RouteDetailVO(route, network));
+                RouteDetailVO detail = new RouteDetailVO(route, network);
+                fillRouteStatistics(detail, transitLine.getId().toString(), route, data, tracksByVehicle, boardingsByLineRoute);
+                routes.add(detail);
             }
             vo.setRoutes(routes);
             vo.setMode(lineMode(routes));
             lineList.add(vo);
         }
         return lineList;
+    }
+
+    /**
+     * 填充实时路径（RouteServiceImpl.routeDetail）同口径的三个统计指标：
+     * lc=非直线系数（线路长度/首末站直线距离）、takeRate=满载率（日周转系数口径，小数）、
+     * passenger=日客流（该线路上车人次，lineId+routeId 复合键）。
+     */
+    private static void fillRouteStatistics(
+            RouteDetailVO detail,
+            String lineId,
+            TransitRoute route,
+            MatsimData data,
+            Map<VehicleId, List<PTPersonTrack>> tracksByVehicle,
+            Map<String, Long> boardingsByLineRoute
+    ) {
+        detail.getInfo().setLc(routeDirectness(route, data.getNetwork()));
+        List<VehicleId> vehicleIds = new ArrayList<>();
+        route.getDepartures().values().forEach(departure -> {
+            if (departure.getVehicleId() != null) {
+                vehicleIds.add(VehicleId.create(departure.getVehicleId()));
+            }
+        });
+        detail.getInfo().setTakeRate(TransitMetrics.fullLoadRate(
+                vehicleIds, tracksByVehicle, data.getTv().getVehicles()));
+        detail.getInfo().setPassenger(boardingsByLineRoute.getOrDefault(lineId + "::" + route.getId(), 0L));
+    }
+
+    /** 单条 route 的非直线系数：线路长度 / 首末站直线距离；环线（直线距离 0）返回 0。 */
+    private static double routeDirectness(TransitRoute route, Network network) {
+        if (route.getStops().size() < 2) {
+            return 0.0;
+        }
+        double distance = DistanceUtil.distance(route.getRoute(), network);
+        TransitRouteStop first = route.getStops().getFirst();
+        TransitRouteStop last = route.getStops().getLast();
+        double straight = NetworkUtils.getEuclideanDistance(
+                first.getStopFacility().getCoord(), last.getStopFacility().getCoord());
+        return straight <= 0 ? 0.0 : round2(distance / straight);
     }
 
     private static List<LineVO> buildLineSummaries(List<LineVO> lines) {
@@ -558,7 +684,9 @@ public final class MatsimPrecomputedCache {
         double carDist = 0.0;
         for (Person person : population.getPersons().values()) {
             for (PlanElement element : person.getSelectedPlan().getPlanElements()) {
-                if (element instanceof Leg leg && leg.getTravelTime().isDefined() && leg.getRoute() != null) {
+                // Route.getDistance() 可为 NaN，累加前过滤，否则均值被污染为 NaN
+                if (element instanceof Leg leg && leg.getTravelTime().isDefined() && leg.getRoute() != null
+                        && !Double.isNaN(leg.getRoute().getDistance())) {
                     if (Constant.ROUTE_MODE_PT.equals(leg.getMode())) {
                         ptTime += leg.getTravelTime().seconds();
                         ptDist += leg.getRoute().getDistance();
@@ -619,17 +747,33 @@ public final class MatsimPrecomputedCache {
         return routeCount == 0 ? 0 : round2(value / routeCount);
     }
 
+    /**
+     * 线路客流强度（未四舍五入，按值降序）。与 PTDataServiceImpl.routePersonStrength 同口径：
+     * TransitRoute ID 只在线路内唯一，上车记录按 lineId+routeId 复合键分组；
+     * 输出键在 routeId 全局唯一时用裸 routeId，重复时用 "lineId::routeId" 消歧。
+     */
     private static Map<String, Double> routePersonStrength(MatsimData data) {
-        Map<String, Double> result = new HashMap<>();
-        Map<RouteId, List<PTPersonTrack>> routeTracks = data.getPersonTracks().stream()
-                .filter(PTPersonTrack::getEnter)
-                .collect(Collectors.groupingBy(PTPersonTrack::getRouteId));
+        Map<String, Long> boardingsByLineRoute = new HashMap<>();
+        for (PTPersonTrack track : data.getPersonTracks()) {
+            if (Boolean.TRUE.equals(track.getEnter()) && track.getRouteId() != null) {
+                boardingsByLineRoute.merge(track.getLineId() + "::" + track.getRouteId(), 1L, Long::sum);
+            }
+        }
+        Map<String, Integer> routeIdCounts = new HashMap<>();
         for (TransitLine transitLine : data.getSchedule().getTransitLines().values()) {
-            for (Map.Entry<Id<TransitRoute>, TransitRoute> route : transitLine.getRoutes().entrySet()) {
+            for (Id<TransitRoute> routeId : transitLine.getRoutes().keySet()) {
+                routeIdCounts.merge(routeId.toString(), 1, Integer::sum);
+            }
+        }
+        Map<String, Double> result = new HashMap<>();
+        for (Map.Entry<Id<TransitLine>, TransitLine> line : data.getSchedule().getTransitLines().entrySet()) {
+            for (Map.Entry<Id<TransitRoute>, TransitRoute> route : line.getValue().getRoutes().entrySet()) {
                 double distance = DistanceUtil.distance(route.getValue().getRoute(), data.getNetwork());
-                List<PTPersonTrack> tracks = routeTracks.get(RouteId.create(route.getKey()));
-                double passenger = tracks == null ? 0.0 : tracks.size();
-                result.put(route.getKey().toString(), distance == 0 ? 0 : round2(passenger / (distance / 1000.0)));
+                String routeId = route.getKey().toString();
+                String lineRouteKey = line.getKey() + "::" + routeId;
+                double passenger = boardingsByLineRoute.getOrDefault(lineRouteKey, 0L);
+                String outputKey = routeIdCounts.getOrDefault(routeId, 0) > 1 ? lineRouteKey : routeId;
+                result.put(outputKey, distance == 0 ? 0 : passenger / (distance / 1000.0));
             }
         }
         return result.entrySet().stream()
@@ -660,7 +804,8 @@ public final class MatsimPrecomputedCache {
             return result;
         }
         BigDecimal total = BigDecimal.valueOf(count);
-        types.forEach((mode, value) -> result.put(mode, new BigDecimal(value).divide(total, 2, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).doubleValue()));
+        // 比例保留 4 位小数再转百分数 → 精确到 0.01%（与 PTDataServiceImpl.legTypeRant 同口径）
+        types.forEach((mode, value) -> result.put(mode, new BigDecimal(value).divide(total, 4, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).doubleValue()));
         return result;
     }
 
@@ -749,16 +894,37 @@ public final class MatsimPrecomputedCache {
 
     private static List<Integer> findFlowIndices(String[] headers) {
         List<Integer> exact = new ArrayList<>();
-        List<Integer> series = new ArrayList<>();
+        List<Integer> hourly = new ArrayList<>();
+        List<Integer> fullSpan = new ArrayList<>();
         for (int i = 0; i < headers.length; i++) {
             String header = normalizeHeader(headers[i]);
             if (header.equals("simulated_traffic_volume") || header.equals("traffic_volume") || header.equals("simulated_volume") || header.equals("flow") || header.equals("volume")) {
                 exact.add(i);
+            } else if (isFullSpanFlowHeader(header)) {
+                fullSpan.add(i);
             } else if (isFlowSeriesHeader(header)) {
-                series.add(i);
+                hourly.add(i);
             }
         }
-        return exact.isEmpty() ? series : exact;
+        if (!exact.isEmpty()) {
+            return exact;
+        }
+        // MATSim CalcLinkStats 同时输出 HRS0-1avg…HRS23-24avg 逐时列和 HRS0-24avg 日汇总列，
+        // 两类一起累加会得到日总量×2。有逐时列时只累加逐时列，否则用汇总列。
+        return hourly.isEmpty() ? fullSpan : hourly;
+    }
+
+    /** HRS0-24avg 之类的全跨度日汇总列（跨度 ≥24 小时）。 */
+    private static boolean isFullSpanFlowHeader(String header) {
+        java.util.regex.Matcher matcher = Pattern.compile("^hrs(\\d+)_(\\d+)avg$").matcher(header);
+        if (!matcher.matches()) {
+            return false;
+        }
+        try {
+            return Integer.parseInt(matcher.group(2)) - Integer.parseInt(matcher.group(1)) >= 24;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     private static boolean isFlowSeriesHeader(String header) {
@@ -832,6 +998,10 @@ public final class MatsimPrecomputedCache {
         putFileFingerprint(result, "schedule", data.getOutfile().getTransitSchedule());
         putFileFingerprint(result, "plans", data.getOutfile().getPlans());
         putFileFingerprint(result, "linkstats", data.getOutfile().getLinkstats());
+        // 车辆容量进 xlmzl/takeRate 分母、面积进密度类指标分母：这两个输入变化必须触发重建，
+        // 否则用户补填真实面积/换车辆文件后旧统计继续下发
+        putFileFingerprint(result, "transitVehicles", data.getOutfile().getTransitVehicles());
+        result.put("areaKm2", String.valueOf(data.getArea()));
     }
 
     private static void putFileFingerprint(Map<String, Object> result, String key, String filePath) {

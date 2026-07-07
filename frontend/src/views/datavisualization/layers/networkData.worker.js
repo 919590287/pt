@@ -1,14 +1,31 @@
+// 路网二进制数据 Worker（模块级共享，一个 Worker 服务全部 NetworkLayer 实例）。
+// 每个图层实例以 ns（命名空间）隔离：tileCache / generation / 裁剪上下文互不干扰。
+// 行政区裁剪（原主线程 P1 瓶颈）下沉至此：combine 后按 ns 的 clipContext + 网格索引顺带裁剪，
+// 结果按 (combinedCacheKey, contextKey) 记忆化。
+import { buildDistrictClipIndex, clipRenderableBinaryData } from "./districtClipIndex.js";
+
 const EARTH_RADIUS = 6378137.0;
 const BINARY_MAGIC = "GJNB";
 const BINARY_VERSION = 1;
 const BINARY_HEADER_BYTES = 64;
 const BINARY_LAYOUT_COLUMNAR = 1;
+const CLIP_MEMO_LIMIT = 4;
 const EMPTY_FLOAT32 = new Float32Array(0);
 const EMPTY_UINT32 = new Uint32Array(0);
 const EMPTY_FLOAT64 = new Float64Array(0);
 
-let generation = 0;
-const tileCache = new Map();
+// ns -> { generation, tiles: Map, clip: null | { key, context, index }, clipMemo: Map }
+const states = new Map();
+
+function ensureNsState(ns) {
+  const key = String(ns ?? "");
+  let state = states.get(key);
+  if (!state) {
+    state = { generation: 0, tiles: new Map(), clip: null, clipMemo: new Map() };
+    states.set(key, state);
+  }
+  return state;
+}
 
 function webMercatorToLngLat(x, y) {
   const lng = (Number(x) / EARTH_RADIUS) * (180 / Math.PI);
@@ -70,10 +87,6 @@ function hashString(value) {
     hash2 = Math.imul(hash2, 0x01000193);
   }
   return [hash1 >>> 0, hash2 >>> 0];
-}
-
-function hashKey(hash, hash2) {
-  return `${hash >>> 0}:${hash2 >>> 0}`;
 }
 
 function parseBinaryTileBuffer(arrayBuffer, version = 0) {
@@ -215,28 +228,65 @@ function tileDataToRenderable(tile, version = tile.version || 0) {
   }, version);
 }
 
-function combineTiles(keys = [], version = 0) {
+// (hash,hash2) 双 32 位键去重：嵌套 Map/Set 避免 10 万级 link 每趟合并产生 2×N 个临时字符串
+function makePairSeen() {
+  const outer = new Map();
+  return {
+    addIfAbsent(a, b) {
+      let inner = outer.get(a);
+      if (!inner) {
+        inner = new Set();
+        outer.set(a, inner);
+      }
+      if (inner.has(b)) return false;
+      inner.add(b);
+      return true;
+    },
+    clear() {
+      outer.clear();
+    },
+  };
+}
+
+function combineTiles(state, keys = [], version = 0, options = {}) {
+  // 粗档位合并选项（与 NetworkLayer.COARSE_DETAIL_COMBINE_OPTS 对应）：
+  // precision:"f32" —— 粗档位 >36m/px 下 f32 经度精度 ≈1.3m 远小于 1 像素，免 fp64 拆分、传输显存减半；
+  // cullLengthMeters —— 剔除亚像素短链，全市路网 district 档近百万段时是压回帧预算的关键
+  const useF32 = options.precision === "f32";
+  const cullLength = Math.max(0, Number(options.cullLengthMeters) || 0);
+  const cullLengthSq = cullLength * cullLength;
   const tiles = keys
-    .map((key) => tileCache.get(key))
+    .map((key) => state.tiles.get(key))
     .filter((tile) => tile?.binary && tile.count > 0);
   if (!tiles.length) return emptyRenderableData(version);
 
-  const seen = new Set();
+  // 计数趟与写入趟必须用同一过滤谓词，保证 (hash,hash2) 去重序列一致
+  const keepLink = (tile, i) => {
+    if (!cullLength) return true;
+    const linkLength = tile.length[i] || 0;
+    if (linkLength > 0) return linkLength >= cullLength;
+    // 无长度属性时退化为端点距离（web mercator 单位近似米）
+    const dx = tile.target[i * 2] - tile.source[i * 2];
+    const dy = tile.target[i * 2 + 1] - tile.source[i * 2 + 1];
+    return dx * dx + dy * dy >= cullLengthSq;
+  };
+
+  const seen = makePairSeen();
   let total = 0;
   for (const tile of tiles) {
     for (let i = 0; i < tile.count; i++) {
-      const key = hashKey(tile.hash[i], tile.hash2[i]);
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (!keepLink(tile, i)) continue;
+      if (!seen.addIfAbsent(tile.hash[i], tile.hash2[i])) continue;
       total++;
     }
   }
   if (!total) return emptyRenderableData(version);
 
+  const PositionArray = useF32 ? Float32Array : Float64Array;
   const hash = new Uint32Array(total);
   const hash2 = new Uint32Array(total);
-  const source = new Float64Array(total * 2);
-  const target = new Float64Array(total * 2);
+  const source = new PositionArray(total * 2);
+  const target = new PositionArray(total * 2);
   const flow = new Float32Array(total);
   const length = new Float32Array(total);
   const lanes = new Float32Array(total);
@@ -245,9 +295,8 @@ function combineTiles(keys = [], version = 0) {
   let writeIndex = 0;
   for (const tile of tiles) {
     for (let i = 0; i < tile.count; i++) {
-      const key = hashKey(tile.hash[i], tile.hash2[i]);
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (!keepLink(tile, i)) continue;
+      if (!seen.addIfAbsent(tile.hash[i], tile.hash2[i])) continue;
 
       const sourceLngLat = webMercatorToLngLat(
         tile.origin[0] + tile.source[i * 2],
@@ -286,14 +335,50 @@ function combineTiles(keys = [], version = 0) {
   }, version);
 }
 
-function assertGeneration(message) {
-  if (message.generation !== generation) {
+// 应用 ns 的裁剪上下文；索引懒建，contextKey 变化时由 setClipContext 重置
+function applyClip(state, data, version) {
+  if (!state.clip || !data?.count) return data;
+  if (!state.clip.index) {
+    state.clip.index = buildDistrictClipIndex(state.clip.context);
+  }
+  return clipRenderableBinaryData(data, state.clip.index, version);
+}
+
+// 记忆化结果必须存克隆：respond 会 transfer（detach）发出的 buffer
+function cloneRenderable(data, version = data.version || 0) {
+  return {
+    binary: true,
+    count: data.count,
+    origin: [Number(data.origin?.[0]) || 0, Number(data.origin?.[1]) || 0],
+    hash: data.hash.slice(),
+    hash2: data.hash2.slice(),
+    source: data.source.slice(),
+    target: data.target.slice(),
+    flow: data.flow.slice(),
+    length: data.length.slice(),
+    lanes: data.lanes.slice(),
+    minFlow: data.minFlow,
+    maxFlow: data.maxFlow,
+    version,
+  };
+}
+
+function trimMemo(map, limit) {
+  while (map.size > limit) {
+    map.delete(map.keys().next().value);
+  }
+}
+
+function assertGeneration(state, message) {
+  if (message.generation !== state.generation) {
     throw new Error("stale worker generation");
   }
 }
 
+// transfer 列表必须去重（同一 buffer 重复出现直接抛 DataCloneError），
+// 且过滤零长 buffer：模块级 EMPTY_* 常量的 buffer 一旦 transfer 会被永久 detach
 function transferablesForData(data) {
-  return [
+  const buffers = [
     data.hash?.buffer,
     data.hash2?.buffer,
     data.source?.buffer,
@@ -301,7 +386,8 @@ function transferablesForData(data) {
     data.flow?.buffer,
     data.length?.buffer,
     data.lanes?.buffer,
-  ].filter(Boolean);
+  ].filter((buffer) => buffer instanceof ArrayBuffer && buffer.byteLength > 0);
+  return [...new Set(buffers)];
 }
 
 function respond(id, result, transfer = []) {
@@ -320,36 +406,77 @@ self.onmessage = (event) => {
   const message = event.data || {};
   const { id, type } = message;
   try {
+    const state = ensureNsState(message.ns);
+
     if (type === "reset") {
-      generation = Number(message.generation) || 0;
-      tileCache.clear();
-      respond(id, { generation });
+      state.generation = Number(message.generation) || 0;
+      state.tiles.clear();
+      state.clipMemo.clear();
+      respond(id, { generation: state.generation });
       return;
     }
 
-    assertGeneration(message);
+    if (type === "setClipContext") {
+      // 与 generation 正交：裁剪上下文跨 setTileSource/reset 存续，不做断言
+      const context = message.context || null;
+      state.clip = context
+        ? { key: String(message.contextKey ?? ""), context, index: null }
+        : null;
+      state.clipMemo.clear();
+      respond(id, { contextKey: state.clip?.key ?? null });
+      return;
+    }
+
+    if (type === "dispose") {
+      states.delete(String(message.ns ?? ""));
+      respond(id, { disposed: true });
+      return;
+    }
+
+    assertGeneration(state, message);
 
     if (type === "setTileBinary") {
       const tile = parseBinaryTileBuffer(message.buffer, message.version);
-      tileCache.set(message.key, tile);
+      state.tiles.set(message.key, tile);
       respond(id, { key: message.key, count: tile.count, version: tile.version });
       return;
     }
 
     if (type === "setTileJson") {
       const tile = linksToTileData(message.links, message.version);
-      tileCache.set(message.key, tile);
+      state.tiles.set(message.key, tile);
       respond(id, { key: message.key, count: tile.count, version: tile.version });
       return;
     }
 
     if (type === "combine") {
-      const data = combineTiles(message.keys, message.version);
+      const combineOptions = {
+        precision: message.precision,
+        cullLengthMeters: message.cullLengthMeters,
+      };
+      const memoKey = state.clip && message.cacheKey
+        ? `${message.cacheKey}::${state.clip.key}::${message.precision || "f64"}:${Number(message.cullLengthMeters) || 0}`
+        : "";
+      if (memoKey) {
+        const cached = state.clipMemo.get(memoKey);
+        if (cached) {
+          const clone = cloneRenderable(cached, message.version);
+          respond(id, clone, transferablesForData(clone));
+          return;
+        }
+      }
+      let data = combineTiles(state, message.keys, message.version, combineOptions);
+      data = applyClip(state, data, message.version);
+      if (memoKey) {
+        state.clipMemo.set(memoKey, cloneRenderable(data, message.version));
+        trimMemo(state.clipMemo, CLIP_MEMO_LIMIT);
+      }
       respond(id, data, transferablesForData(data));
       return;
     }
 
     if (type === "setLinks") {
+      // 与原主线程语义一致：setData 路径不做行政区裁剪
       const data = linksToRenderableData(message.links, message.version);
       respond(id, data, transferablesForData(data));
       return;
@@ -357,7 +484,7 @@ self.onmessage = (event) => {
 
     if (type === "dropTiles") {
       for (const key of message.keys || []) {
-        tileCache.delete(key);
+        state.tiles.delete(key);
       }
       respond(id, { dropped: message.keys?.length || 0 });
       return;

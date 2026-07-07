@@ -1,6 +1,6 @@
 <template>
   <div class="datebase_box model-picker-bar" role="search" aria-label="母本仿真模型选择">
-    <label class="handle" for="scenarioedit-scheme-selector">母本仿真模型</label>
+    <label class="handle" for="scenarioedit-scheme-selector">基础方案</label>
     <el-select
       id="scenarioedit-scheme-selector"
       v-model="scheme"
@@ -68,6 +68,7 @@ const loadingSchemes = ref(false);
 const loadingModels = ref(false);
 let pollTimer = null;
 let pollSeq = 0;
+let disposed = false;
 
 const selectedItem = computed(() => modelList.value.find((m) => m.name === modelName.value) || null);
 
@@ -89,9 +90,11 @@ async function fetchSchemes() {
   loadingSchemes.value = true;
   try {
     const res = await getSchemeList({});
+    if (disposed) return [];
     schemeList.value = Array.isArray(res?.data) ? res.data : [];
+    return schemeList.value;
   } finally {
-    loadingSchemes.value = false;
+    if (!disposed) loadingSchemes.value = false;
   }
 }
 
@@ -103,10 +106,11 @@ async function fetchModels() {
   loadingModels.value = true;
   try {
     const res = await getModelList({ schemeName: scheme.value });
+    if (disposed) return [];
     modelList.value = Array.isArray(res?.data) ? res.data : [];
     return modelList.value;
   } finally {
-    loadingModels.value = false;
+    if (!disposed) loadingModels.value = false;
   }
 }
 
@@ -121,9 +125,11 @@ async function ensureLoadedAndActivate(name) {
   const seq = pollSeq;
   const current = modelList.value.find((m) => m.name === name);
   if (current?.loadStatus) {
+    if (disposed) return;
     await store.setParentModel(name, true);
     return;
   }
+  if (disposed) return;
   await store.setParentModel(name, false);
   try {
     await loadModel({ name });
@@ -131,8 +137,9 @@ async function ensureLoadedAndActivate(name) {
     /* loadModel 幂等，报错继续轮询 */
   }
   const poll = async () => {
-    if (seq !== pollSeq) return;
+    if (disposed || seq !== pollSeq) return;
     const list = await fetchModels();
+    if (disposed || seq !== pollSeq) return;
     const item = list.find((m) => m.name === name);
     if (item?.loadStatus) {
       store.markParentReady();
@@ -194,11 +201,14 @@ function pickDesiredSelection() {
 }
 
 onMounted(async () => {
+  disposed = false;
   await fetchSchemes();
+  if (disposed) return;
   const desired = pickDesiredSelection();
   if (desired.scheme && schemeList.value.includes(desired.scheme)) {
     scheme.value = desired.scheme;
     await fetchModels();
+    if (disposed) return;
     const item = desired.model ? modelList.value.find((m) => m.name === desired.model) : null;
     if (item && item.cuttable) {
       modelName.value = desired.model;
@@ -213,7 +223,10 @@ onMounted(async () => {
   }
 });
 
-onUnmounted(() => stopPolling());
+onUnmounted(() => {
+  disposed = true;
+  stopPolling();
+});
 </script>
 
 <style lang="scss" scoped>
@@ -225,7 +238,7 @@ onUnmounted(() => stopPolling());
   display: flex;
   align-items: center;
   gap: var(--space-xs, 8px);
-  max-width: min(62vw, 680px);
+  max-width: min(46vw, 520px);
   min-width: 0;
   scale: var(--app-panel-scale, 1);
   transform: translateY(-50%);
@@ -241,7 +254,11 @@ onUnmounted(() => stopPolling());
   }
 
   .bar-status {
-    max-width: 180px;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
     font-size: 12px;
     font-weight: 600;
     color: var(--app-ink-weak, #6b7789);
@@ -255,7 +272,7 @@ onUnmounted(() => stopPolling());
   }
 
   .el-select {
-    width: clamp(150px, 14vw, 210px);
+    width: clamp(128px, 10vw, 176px);
 
     :deep(.el-input__wrapper) {
       padding: 6px 12px;
@@ -292,7 +309,7 @@ onUnmounted(() => stopPolling());
   }
 
   .model-select {
-    width: clamp(190px, 18vw, 260px);
+    width: clamp(168px, 14vw, 220px);
   }
 }
 
@@ -316,7 +333,7 @@ onUnmounted(() => stopPolling());
 @media (max-width: 1024px) {
   .datebase_box {
     right: calc(var(--app-edge, 16px) + 36px);
-    max-width: 52vw;
+    max-width: 48vw;
   }
 }
 
@@ -335,14 +352,17 @@ onUnmounted(() => stopPolling());
     left: var(--app-edge, 16px);
     transform: none;
 
-    .handle,
-    .bar-status {
+    .handle {
       width: 100%;
       text-align: right;
     }
 
     .el-select {
-      width: min(100%, 190px);
+      width: min(100%, 176px);
+    }
+
+    .model-select {
+      width: min(100%, 220px);
     }
   }
 }

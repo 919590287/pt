@@ -22,8 +22,12 @@
   /* 玻璃表面（浮于地图之上的面板/控件 —— 磨砂折射感） */
   --dm2-glass: rgba(255, 255, 255, 0.72); /* 轻量浮层（搜索/工具条/弹出层） */
   --dm2-glass-strong: rgba(255, 255, 255, 0.86); /* 密集数据面板（保证可读性） */
-  --dm2-glass-blur: blur(28px) saturate(185%); /* 标准磨砂 */
-  --dm2-glass-blur-soft: blur(20px) saturate(170%); /* 轻磨砂 */
+  /* 常驻表面（无 backdrop-filter）：地图每帧重绘时 blur 需对底图区域反复取样合成，
+     常驻面板改用高不透明背景，磨砂只保留给短暂出现的弹出层 */
+  --dm2-veil: rgba(255, 255, 255, 0.94); /* 常驻轻量表面（搜索/工具条/区域选择器） */
+  --dm2-veil-strong: rgba(252, 253, 255, 0.97); /* 常驻数据面板 */
+  --dm2-glass-blur: blur(14px) saturate(180%); /* 标准磨砂（半径由 28→14，降低叠在实时地图上的每帧合成成本） */
+  --dm2-glass-blur-soft: blur(10px) saturate(165%); /* 轻磨砂（20→10） */
   --dm2-glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.72); /* 顶部高光（边缘折射） */
   --dm2-glass-edge: rgba(255, 255, 255, 0.62); /* 玻璃内描边 */
 
@@ -130,12 +134,10 @@
   border: 0;
   border-right: 1px solid var(--dm2-line);
   border-radius: 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 254, 0.82));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(247, 250, 254, 0.94));
   color: var(--dm2-ink);
   font-family: var(--dm2-font);
   box-shadow: 16px 0 48px -24px rgba(13, 38, 76, 0.24), var(--dm2-glass-highlight);
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
   scrollbar-width: none;
   cursor: default;
   user-select: text;
@@ -499,14 +501,12 @@
   justify-content: center;
   padding: 0;
   border: 1px solid var(--dm2-line);
-  background: var(--dm2-glass-strong);
+  background: var(--dm2-veil-strong);
   color: var(--dm2-ink-soft);
   cursor: pointer;
   touch-action: manipulation;
   user-select: none;
   box-shadow: var(--dm2-shadow-pop), var(--dm2-glass-highlight);
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
   scale: var(--dm-panel-scale);
   transform: translateY(-50%);
   transition:
@@ -568,12 +568,10 @@
   isolation: isolate;
   border: 1px solid var(--dm2-line);
   border-radius: var(--dm2-radius-lg);
-  background: var(--dm2-glass-strong) !important;
+  background: var(--dm2-veil-strong) !important;
   color: var(--dm2-ink);
   font-family: var(--dm2-font);
   box-shadow: var(--dm2-shadow-panel), var(--dm2-glass-highlight);
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
   transform-origin: right top;
   scale: var(--dm-panel-scale) !important;
   transition:
@@ -637,10 +635,8 @@
   overflow: hidden;
   border: 1px solid var(--dm2-line) !important;
   border-radius: var(--dm2-radius);
-  background: var(--dm2-glass) !important;
+  background: var(--dm2-veil) !important;
   box-shadow: var(--dm2-shadow-pop), var(--dm2-glass-highlight) !important;
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
 }
 
 .control-btn {

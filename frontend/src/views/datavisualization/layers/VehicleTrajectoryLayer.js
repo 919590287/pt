@@ -276,6 +276,7 @@ export class VehicleTrajectoryLayer extends Layer {
     this.vehicleMetaById = new Map();
     this.routeMetaById = new Map();
     this.vehicleVisibilityMode = "all";
+    this.segmentBucketSeconds = 1;
     this.follow3DOrbitYaw = 0;
     this.isApplyingFollowCamera = false;
     this.lastFollowCameraAt = 0;
@@ -344,6 +345,20 @@ export class VehicleTrajectoryLayer extends Layer {
       this.requestWorkerTime(this.currentTime);
     } else {
       this.renderVehicleLayer();
+    }
+  }
+
+  setSegmentBucketSeconds(seconds) {
+    const next = Math.max(1, Math.min(8, Math.floor(Number(seconds) || 1)));
+    if (next === this.segmentBucketSeconds) return;
+    this.segmentBucketSeconds = next;
+    this.segmentFrameCache.clear();
+    this.segmentFrameRequests.clear();
+    this.workerTimeSeq++;
+    if (this.activeSegmentFrame || this.activeFrame || this.binaryChunk || this.vehicles.length) {
+      this.setTime(this.currentTime);
+    } else if (this.ensureWorker()) {
+      this.requestWorkerTime(this.currentTime);
     }
   }
 
@@ -462,14 +477,22 @@ export class VehicleTrajectoryLayer extends Layer {
     this.activeSegmentFrame = null;
   }
 
-  segmentFrameKey(seconds, visibilityMode = this.vehicleVisibilityMode) {
-    return `${normalizeVisibilityMode(visibilityMode)}:${Math.floor(Math.max(0, Number(seconds) || 0))}`;
+  // key 掺入 workerActiveSeq（块激活序号）：不同分块下同一秒的帧不可互换。
+  // 否则块边界预取的旧块帧会在新块激活后被命中，整秒显示旧块的部分车辆（闪烁/瞬时减员）。
+  segmentBucketStart(seconds) {
+    const bucketSeconds = Math.max(1, Number(this.segmentBucketSeconds) || 1);
+    return Math.floor(Math.max(0, Number(seconds) || 0) / bucketSeconds) * bucketSeconds;
+  }
+
+  segmentFrameKey(seconds, visibilityMode = this.vehicleVisibilityMode, activeSeq = this.workerActiveSeq) {
+    return `${activeSeq}:${normalizeVisibilityMode(visibilityMode)}:${this.segmentBucketSeconds}:${this.segmentBucketStart(seconds)}`;
   }
 
   cacheSegmentFrame(frame, visibilityMode = this.vehicleVisibilityMode) {
     if (frame?.kind !== "vehicle-segment-frame") return null;
     const key = this.segmentFrameKey(frame.bucketSecond, visibilityMode);
     frame.__visibilityMode = normalizeVisibilityMode(visibilityMode);
+    frame.__activeSeq = this.workerActiveSeq;
     this.segmentFrameCache.set(key, frame);
     while (this.segmentFrameCache.size > 4) {
       const firstKey = this.segmentFrameCache.keys().next().value;
@@ -588,6 +611,7 @@ export class VehicleTrajectoryLayer extends Layer {
         seconds: this.currentTime,
         visibilityMode: this.vehicleVisibilityMode,
         gpuSegments: true,
+        bucketSeconds: this.segmentBucketSeconds,
       })
         .then((result) => {
           if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) {
@@ -621,7 +645,13 @@ export class VehicleTrajectoryLayer extends Layer {
     // 乐观登记，避免并发预取重复下发；失败时回滚。
     if (key != null) this.workerChunkKeys.add(key);
     const { payload, transfer } = trajectoryWorkerPayload(data);
-    const message = { data: payload, key, visibilityMode: this.vehicleVisibilityMode, gpuSegments: true };
+    const message = {
+      data: payload,
+      key,
+      visibilityMode: this.vehicleVisibilityMode,
+      gpuSegments: true,
+      bucketSeconds: this.segmentBucketSeconds,
+    };
     if (activate) message.seconds = this.currentTime;
     this.postWorker(activate ? "setData" : "addChunk", message, transfer)
       .then((result) => {
@@ -706,11 +736,16 @@ export class VehicleTrajectoryLayer extends Layer {
     if (!this.binaryChunk && !this.vehicles.length && this.ensureWorker()) {
       this.modelLayer?.setTrajectoryTime(this.currentTime);
       const key = this.segmentFrameKey(this.currentTime);
+      // activeKey 用帧自身记录的块序号：换块后旧帧的 key 必然不等于新 key，自动走重新采样
       const activeKey = this.activeSegmentFrame?.kind === "vehicle-segment-frame"
-        ? this.segmentFrameKey(this.activeSegmentFrame.bucketSecond, this.activeSegmentFrame.__visibilityMode)
+        ? this.segmentFrameKey(
+            this.activeSegmentFrame.bucketSecond,
+            this.activeSegmentFrame.__visibilityMode,
+            this.activeSegmentFrame.__activeSeq ?? this.workerActiveSeq,
+          )
         : "";
       if (activeKey === key) {
-        this.prefetchWorkerSegmentFrame(Math.floor(this.currentTime) + 1);
+        this.prefetchWorkerSegmentFrame(this.segmentBucketStart(this.currentTime) + this.segmentBucketSeconds);
         this.modelLayer?.setTrajectoryTime(this.currentTime);
         this.applyFollowCamera();
         return this.getCurrentStats();
@@ -718,7 +753,7 @@ export class VehicleTrajectoryLayer extends Layer {
       const cached = this.segmentFrameCache.get(key);
       if (cached) {
         this.activateSegmentFrame(cached);
-        this.prefetchWorkerSegmentFrame(Math.floor(this.currentTime) + 1);
+        this.prefetchWorkerSegmentFrame(this.segmentBucketStart(this.currentTime) + this.segmentBucketSeconds);
       } else {
         this.requestWorkerTime(this.currentTime);
       }
@@ -748,12 +783,15 @@ export class VehicleTrajectoryLayer extends Layer {
     if (this.segmentFrameCache.has(key) || this.segmentFrameRequests.has(key)) return;
     this.segmentFrameRequests.add(key);
     const version = this.workerDataVersion;
+    const activeSeq = this.workerActiveSeq;
     this.postWorker("setSegmentTime", {
       seconds: Math.max(0, Number(seconds) || 0),
       visibilityMode: this.vehicleVisibilityMode,
+      bucketSeconds: this.segmentBucketSeconds,
     })
       .then((result) => {
-        if (this.isDisposed || version !== this.workerDataVersion) return;
+        // activeSeq 变化说明响应期间发生了换块，worker 采样的是不确定的块状态，丢弃不落缓存
+        if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) return;
         if (result?.segmentFrame?.kind === "vehicle-segment-frame") {
           this.cacheSegmentFrame(result.segmentFrame);
         }
@@ -771,7 +809,11 @@ export class VehicleTrajectoryLayer extends Layer {
     this.workerTimeInFlight = true;
     const seq = ++this.workerTimeSeq;
     const version = this.workerDataVersion;
-    this.postWorker("setSegmentTime", { seconds, visibilityMode: this.vehicleVisibilityMode })
+    this.postWorker("setSegmentTime", {
+      seconds,
+      visibilityMode: this.vehicleVisibilityMode,
+      bucketSeconds: this.segmentBucketSeconds,
+    })
       .then((result) => {
         if (this.isDisposed || seq !== this.workerTimeSeq || version !== this.workerDataVersion) {
           this.releaseWorkerFrame(result?.frame, true);
@@ -1066,6 +1108,8 @@ export class VehicleTrajectoryLayer extends Layer {
     this.followedVehicleKey = vehicle.key;
     this.followedVehicleIndex = Number.isFinite(Number(vehicle.vehicleIndex)) ? Number(vehicle.vehicleIndex) : null;
     this.syncFollowOrbitFromVehicle(vehicle, true);
+    // 选中瞬间立即通知一次（面板即时出现），后续帧内回调由 applyFollowCamera 节流
+    this.lastFollowCallbackAt = typeof performance !== "undefined" ? performance.now() : Date.now();
     this.followCallback?.(enrichedVehicle);
     this.applyFollowCamera(vehicle);
     this.renderVehicleLayer();
@@ -1108,7 +1152,13 @@ export class VehicleTrajectoryLayer extends Layer {
     if (!this.followedVehicleKey || !this.map?.map) return;
     const vehicle = currentVehicle || this.findFollowedVehicle();
     if (!vehicle?.position) return;
-    this.followCallback?.(this.enrichVehicle(vehicle));
+    // 信息面板回调节流：相机必须每帧锁定（见下方注释），但面板是 Vue 响应式状态，
+    // 每帧 enrichVehicle（对象展开+meta 查表）+ 触发面板重渲染是纯浪费，~6Hz 足够肉眼平滑。
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (this.followCallback && now - (this.lastFollowCallbackAt || 0) >= 150) {
+      this.lastFollowCallbackAt = now;
+      this.followCallback(this.enrichVehicle(vehicle));
+    }
     if (this.is3DView()) {
       this.applyFollowCamera3D(vehicle);
       return;
@@ -1257,38 +1307,44 @@ export class VehicleTrajectoryLayer extends Layer {
     };
   }
 
-  findFollowedVehicle() {
-    if (this.activeSegmentFrame?.kind === "vehicle-segment-frame") {
-      const count = this.activeCount();
-      const ids = this.activeSegmentFrame.ids || [];
+  // 跟随查找每帧执行：先扫数值 ids 定位、命中才构造车辆对象。
+  // vehicleAt 每次调用都会分配对象+坐标数组+key 字符串，逐个候选调用会造成每帧 O(N) 分配与 GC 抖动。
+  // 同一 id 在一帧内可能有多段（段切换跨秒），命中 id 后仍需 vehicleAt 校验时间窗，取非空的那段。
+  findFollowedVehicleInFrame(ids, count) {
+    // 换块时 setData 会把 followedVehicleIndex 置空、只留 key；
+    // 二进制帧 key 恒为 binary:${id}，可直接解析回数值索引，避免退回逐候选构造对象的慢路径。
+    if (this.followedVehicleIndex == null && typeof this.followedVehicleKey === "string" && this.followedVehicleKey.startsWith("binary:")) {
+      const parsed = Number(this.followedVehicleKey.slice(7));
+      if (Number.isFinite(parsed)) this.followedVehicleIndex = parsed;
+    }
+    if (this.followedVehicleIndex != null) {
       for (let i = 0; i < count; i++) {
-        const vehicle = this.vehicleAt(i);
-        if (vehicle?.key === this.followedVehicleKey) return vehicle;
-      }
-      if (this.followedVehicleIndex != null) {
-        for (let i = 0; i < count; i++) {
-          if (Number(ids[i]) === this.followedVehicleIndex) {
-            return this.vehicleAt(i);
-          }
+        if (Number(ids[i]) === this.followedVehicleIndex) {
+          const vehicle = this.vehicleAt(i);
+          if (vehicle) return vehicle;
         }
       }
       return null;
     }
-    if (this.activeFrame?.kind === "vehicle-frame") {
-      const count = this.activeCount();
-      const ids = this.activeFrame.ids || [];
-      for (let i = 0; i < count; i++) {
-        const vehicle = this.vehicleAt(i);
-        if (vehicle?.key === this.followedVehicleKey) return vehicle;
-      }
-      if (this.followedVehicleIndex != null) {
-        for (let i = 0; i < count; i++) {
-          if (Number(ids[i]) === this.followedVehicleIndex) {
-            return this.vehicleAt(i);
-          }
+    // 非 binary key（旧 JSON 数据路径）兜底：命中后缓存数值索引，下一帧走快路径
+    for (let i = 0; i < count; i++) {
+      const vehicle = this.vehicleAt(i);
+      if (vehicle?.key === this.followedVehicleKey) {
+        if (Number.isFinite(Number(vehicle.vehicleIndex))) {
+          this.followedVehicleIndex = Number(vehicle.vehicleIndex);
         }
+        return vehicle;
       }
-      return null;
+    }
+    return null;
+  }
+
+  findFollowedVehicle() {
+    if (this.activeSegmentFrame?.kind === "vehicle-segment-frame") {
+      return this.findFollowedVehicleInFrame(this.activeSegmentFrame.ids || [], this.activeCount());
+    }
+    if (this.activeFrame?.kind === "vehicle-frame") {
+      return this.findFollowedVehicleInFrame(this.activeFrame.ids || [], this.activeCount());
     }
     return this.activeVehicles.find((item) => item.key === this.followedVehicleKey) || null;
   }

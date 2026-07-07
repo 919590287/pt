@@ -202,16 +202,38 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
 
     private List<Integer> findFlowIndices(String[] headers) {
         List<Integer> exact = new ArrayList<>();
-        List<Integer> series = new ArrayList<>();
+        List<Integer> hourly = new ArrayList<>();
+        List<Integer> fullSpan = new ArrayList<>();
         for (int i = 0; i < headers.length; i++) {
             String header = normalizeHeader(headers[i]);
             if (header.equals("simulated_traffic_volume") || header.equals("traffic_volume") || header.equals("simulated_volume") || header.equals("flow") || header.equals("volume")) {
                 exact.add(i);
+            } else if (isFullSpanFlowHeader(header)) {
+                fullSpan.add(i);
             } else if (isFlowSeriesHeader(header)) {
-                series.add(i);
+                hourly.add(i);
             }
         }
-        return exact.isEmpty() ? series : exact;
+        if (!exact.isEmpty()) {
+            return exact;
+        }
+        // MATSim CalcLinkStats 同时输出 HRS0-1avg…HRS23-24avg 逐时列和 HRS0-24avg 日汇总列，
+        // 两类一起累加会得到日总量×2。有逐时列时只累加逐时列，否则用汇总列。
+        // （与 MatsimPrecomputedCache.findFlowIndices 同步维护）
+        return hourly.isEmpty() ? fullSpan : hourly;
+    }
+
+    /** HRS0-24avg 之类的全跨度日汇总列（跨度 ≥24 小时）。 */
+    private boolean isFullSpanFlowHeader(String header) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^hrs(\\d+)_(\\d+)avg$").matcher(header);
+        if (!matcher.matches()) {
+            return false;
+        }
+        try {
+            return Integer.parseInt(matcher.group(2)) - Integer.parseInt(matcher.group(1)) >= 24;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     private boolean isFlowSeriesHeader(String header) {

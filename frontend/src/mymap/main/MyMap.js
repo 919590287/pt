@@ -207,6 +207,10 @@ export class MyMap extends EventListener {
     this.applyInteractionFlags();
     this.bindMapEvents();
     this.bindCustomInteractionEvents();
+
+    if (import.meta.env.DEV) {
+      window.__mymap = this;
+    }
   }
 
   get cameraHeight() {
@@ -557,6 +561,18 @@ export class MyMap extends EventListener {
     if (!center || center.length < 2) return;
     this.center = [Number(center[0]), Number(center[1])];
     this.map?.jumpTo({ center: webMercatorToLngLat(this.center[0], this.center[1]) });
+  }
+
+  // 一次 jumpTo 同时更新中心与缩放：分开调用 setCenter+setZoom 会触发两次相机变更与重绘
+  setCenterAndZoom(center, zoom) {
+    if (!center || center.length < 2) return;
+    this.center = [Number(center[0]), Number(center[1])];
+    const nextZoom = Math.max(MAP_ZOOM_RANGE.MIN, Math.min(MAP_ZOOM_RANGE.MAX, Number(zoom) || this.zoom));
+    this.zoom = nextZoom;
+    this.map?.jumpTo({
+      center: webMercatorToLngLat(this.center[0], this.center[1]),
+      zoom: nextZoom,
+    });
   }
 
   setPitchAndRotation(pitch = this.pitch, rotation = this.rotation) {

@@ -82,6 +82,11 @@ public class AuthServiceImpl implements AuthService {
     public AuthVO register(String username, String password) {
         String normalizedUsername = normalizeUsername(username);
         validatePassword(password);
+        if (users.containsKey(normalizedUsername)) {
+            throw new BusinessException("用户名已存在");
+        }
+        // PBKDF2 计算量大（百毫秒级），必须在 writeLock 外执行，否则并发请求会在锁上串行排队
+        String passwordHash = createPasswordHash(password);
         synchronized (writeLock) {
             if (users.containsKey(normalizedUsername)) {
                 throw new BusinessException("用户名已存在");
@@ -89,7 +94,7 @@ public class AuthServiceImpl implements AuthService {
             UserRecord user = new UserRecord();
             long now = System.currentTimeMillis();
             user.username = normalizedUsername;
-            user.passwordHash = createPasswordHash(password);
+            user.passwordHash = passwordHash;
             user.createdAt = now;
             user.updatedAt = now;
             user.lastLoginAt = now;
@@ -107,39 +112,54 @@ public class AuthServiceImpl implements AuthService {
         String normalizedUsername = normalizeUsername(username);
         validatePassword(password);
         checkLoginRateLimit(normalizedUsername);
-        synchronized (writeLock) {
-            UserRecord user = users.get(normalizedUsername);
-            if (user == null || !verifyPassword(password, user.passwordHash)) {
+        // PBKDF2 校验在锁外完成；入锁后核对哈希未被并发修改，变了则放锁重新校验
+        for (int attempt = 0; attempt < 3; attempt++) {
+            UserRecord observed = users.get(normalizedUsername);
+            String observedHash = observed == null ? null : observed.passwordHash;
+            if (observed == null || !verifyPassword(password, observedHash)) {
                 recordLoginFailure(normalizedUsername);
                 throw new BusinessException("用户名或密码错误");
             }
-            loginFailures.remove(normalizedUsername);
-            long now = System.currentTimeMillis();
-            if (isLegacyHash(user.passwordHash)) {
-                // 旧的单轮 SHA-256 哈希验证通过后透明升级为 PBKDF2
-                user.passwordHash = createPasswordHash(password);
+            // 旧的单轮 SHA-256 哈希验证通过后透明升级为 PBKDF2，重哈希同样在锁外准备好
+            String upgradedHash = isLegacyHash(observedHash) ? createPasswordHash(password) : null;
+            synchronized (writeLock) {
+                UserRecord user = users.get(normalizedUsername);
+                if (user == null || !observedHash.equals(user.passwordHash)) {
+                    continue;
+                }
+                loginFailures.remove(normalizedUsername);
+                long now = System.currentTimeMillis();
+                if (upgradedHash != null) {
+                    user.passwordHash = upgradedHash;
+                }
+                user.lastLoginAt = now;
+                user.updatedAt = now;
+                ensureUserFolder(normalizedUsername);
+                matsimConfig.init();
+                AuthVO auth = createSession(normalizedUsername, now);
+                persist();
+                return auth;
             }
-            user.lastLoginAt = now;
-            user.updatedAt = now;
-            ensureUserFolder(normalizedUsername);
-            matsimConfig.init();
-            AuthVO auth = createSession(normalizedUsername, now);
-            persist();
-            return auth;
         }
+        throw new BusinessException("登录冲突，请重试");
     }
 
     @Override
     public AuthVO resetPassword(String username, String newPassword) {
         String normalizedUsername = normalizeUsername(username);
         validatePassword(newPassword);
+        if (!users.containsKey(normalizedUsername)) {
+            throw new BusinessException("用户不存在");
+        }
+        // 同 login：哈希计算在锁外完成
+        String passwordHash = createPasswordHash(newPassword);
         synchronized (writeLock) {
             UserRecord user = users.get(normalizedUsername);
             if (user == null) {
                 throw new BusinessException("用户不存在");
             }
             long now = System.currentTimeMillis();
-            user.passwordHash = createPasswordHash(newPassword);
+            user.passwordHash = passwordHash;
             user.lastLoginAt = now;
             user.updatedAt = now;
             ensureUserFolder(normalizedUsername);
@@ -470,7 +490,8 @@ public class AuthServiceImpl implements AuthService {
 
     public static class UserRecord {
         public String username;
-        public String passwordHash;
+        // login 在锁外读该字段做 PBKDF2 校验，volatile 保证读到锁内写入的最新值
+        public volatile String passwordHash;
         public long createdAt;
         public long updatedAt;
         public long lastLoginAt;

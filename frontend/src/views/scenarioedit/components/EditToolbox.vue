@@ -101,9 +101,10 @@
       </div>
     </div>
 
-    <!-- 新增/修改线路：Teleport 到右侧面板挂载点，作为右面板的一个视图（确认/取消才切回清单） -->
-    <Teleport to="#netopt-route-form-host">
-      <div v-if="isRouteForm" class="route-form-panel">
+    <template v-if="teleportTargetReady">
+      <!-- 新增/修改线路：Teleport 到右侧面板挂载点，作为右面板的一个视图（确认/取消才切回清单） -->
+      <Teleport to="#netopt-route-form-host">
+        <div v-if="isRouteForm" class="route-form-panel">
         <div class="rfp-header">
           <span class="rfp-title">{{ isRouteEdit ? `修改线路：${routeEditBaseName}` : "新增线路" }}</span>
           <button v-if="isRouteEdit && store.selectedRoute" class="rfp-del" type="button" @click="deleteSelectedRoute">删除此线路</button>
@@ -166,12 +167,12 @@
           <el-button size="small" @click="closeForm">取消</el-button>
           <el-button type="primary" size="small" :disabled="!canConfirmRoute" @click="confirmRouteForm">✓ 加入修改清单</el-button>
         </div>
-      </div>
-    </Teleport>
+        </div>
+      </Teleport>
 
-    <!-- 新增站点：右侧面板视图（地图点选位置） -->
-    <Teleport to="#netopt-route-form-host">
-      <div v-if="activeForm === 'stop.add'" class="route-form-panel">
+      <!-- 新增站点：右侧面板视图（地图点选位置） -->
+      <Teleport to="#netopt-route-form-host">
+        <div v-if="activeForm === 'stop.add'" class="route-form-panel">
         <div class="rfp-header"><span class="rfp-title">新增站点</span></div>
         <el-scrollbar class="rfp-body">
           <div class="rfp-body-inner">
@@ -185,12 +186,12 @@
           <el-button size="small" @click="closeForm">取消</el-button>
           <el-button type="primary" size="small" :disabled="!store.toolDraft.placedPoint" @click="confirmStopAdd">✓ 加入修改清单</el-button>
         </div>
-      </div>
-    </Teleport>
+        </div>
+      </Teleport>
 
-    <!-- 修改站点：右侧面板视图（先搜索/点选站点，再改名/移位） -->
-    <Teleport to="#netopt-route-form-host">
-      <div v-if="activeForm === 'stop.move'" class="route-form-panel">
+      <!-- 修改站点：右侧面板视图（先搜索/点选站点，再改名/移位） -->
+      <Teleport to="#netopt-route-form-host">
+        <div v-if="activeForm === 'stop.move'" class="route-form-panel">
         <div class="rfp-header"><span class="rfp-title">修改站点{{ store.selectedStop ? `：${store.selectedStop.name}` : "" }}</span></div>
         <el-scrollbar class="rfp-body">
           <div v-if="store.selectedStop" class="rfp-body-inner">
@@ -206,12 +207,12 @@
           <el-button size="small" @click="closeForm">取消</el-button>
           <el-button type="primary" size="small" :disabled="!store.selectedStop || (!stopForm.name && !store.toolDraft.placedPoint)" @click="confirmStopMove">✓ 加入修改清单</el-button>
         </div>
-      </div>
-    </Teleport>
+        </div>
+      </Teleport>
 
-    <!-- 删除站点：右侧面板视图（先搜索/点选站点） -->
-    <Teleport to="#netopt-route-form-host">
-      <div v-if="activeForm === 'stop.delete'" class="route-form-panel">
+      <!-- 删除站点：右侧面板视图（先搜索/点选站点） -->
+      <Teleport to="#netopt-route-form-host">
+        <div v-if="activeForm === 'stop.delete'" class="route-form-panel">
         <div class="rfp-header"><span class="rfp-title">删除站点{{ store.selectedStop ? `：${store.selectedStop.name}` : "" }}</span></div>
         <el-scrollbar class="rfp-body">
           <div v-if="store.selectedStop" class="rfp-body-inner">
@@ -226,13 +227,14 @@
           <el-button size="small" @click="closeForm">取消</el-button>
           <el-button type="danger" size="small" :disabled="!store.selectedStop" @click="confirmStopDelete">✓ 加入删除清单</el-button>
         </div>
-      </div>
-    </Teleport>
+        </div>
+      </Teleport>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { computed, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useScenarioEditStore } from "../store";
 import { optSnapRoute } from "@/api/optimization";
@@ -279,6 +281,7 @@ for (const g of GROUPS) for (const t of g.children) FORM_GROUP[t.key] = g.key;
 
 const activeForm = ref("");
 const expanded = reactive({ route: true, stop: false, link: false });
+const teleportTargetReady = ref(false);
 
 const activeFormGroup = computed(() => FORM_GROUP[activeForm.value] || "");
 // 新增/修改线路共用同一套中央弹窗表单
@@ -406,7 +409,16 @@ function closeForm() {
 
 // 把当前表单类型同步到 store，供 index.vue 判断（搜索仅定位 / 屏蔽删除键）
 watch(activeForm, (v) => { store.activeFormKind = v || ""; }, { immediate: true });
-onUnmounted(() => { store.activeFormKind = ""; });
+
+onMounted(async () => {
+  await nextTick();
+  teleportTargetReady.value = typeof document !== "undefined" && Boolean(document.getElementById("netopt-route-form-host"));
+});
+
+onUnmounted(() => {
+  teleportTargetReady.value = false;
+  store.activeFormKind = "";
+});
 
 // 修改线路面板已打开时，搜索选中/换线即填入（不再"搜索自动弹出"，需先点开修改线路）
 watch(

@@ -19,7 +19,7 @@ import { ArrowDownBold } from "@element-plus/icons-vue";
 const props = defineProps({
   title: {
     type: String,
-    default: "&nbsp;",
+    default: "",
   },
   open: {
     type: Boolean,

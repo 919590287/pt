@@ -2,9 +2,9 @@ import { COORDINATE_SYSTEM } from "@deck.gl/core";
 import { LineLayer, PathLayer } from "@deck.gl/layers";
 import { Layer, MAP_EVENT, webMercatorToLngLat } from "@/mymap/index.js";
 import { getTileNetwork, getTileNetworkBinary, getFullNetworkBinary } from "@/api/network.js";
-import { clipSegmentToDistrictContext } from "@/utils/adminDistrictRange.js";
 import { colorToCss, lineWidthToPixels } from "./maplibreLayerUtils.js";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "./deckOverlayRegistry.js";
+import { buildDistrictClipIndex, clipRenderableBinaryData } from "./districtClipIndex.js";
 
 const TILE_ZOOM = 12;
 const MIN_TILE_ZOOM = 8;
@@ -23,6 +23,11 @@ const TILE_SCHEDULE_DELAY = {
   corridor: 140,
   full: 120,
 };
+// debounce 的最大等待：连续相机运动期间也保证按此周期加载一次可见瓦片
+const TILE_SCHEDULE_MAX_WAIT = 420;
+// 瓦片密集到达期的合并刷新节流（带 trailing）：rAF 合帧之外再限最小间隔，
+// 避免流式加载时逐帧触发全量 combine（每次都是 O(总链路) 的 worker 计算 + GPU 上传）
+const TILE_REFRESH_THROTTLE_MS = 120;
 const BINARY_MAGIC = "GJNB";
 const BINARY_VERSION = 1;
 const BINARY_HEADER_BYTES = 64;
@@ -43,6 +48,14 @@ const DETAIL_ZOOM_STOPS = [
   { minZoom: 8.8, level: "city", z: 10 },
   { minZoom: -Infinity, level: "overview", z: MIN_TILE_ZOOM },
 ];
+// 粗档位合并选项：Float32 坐标（这些档位 >36m/px，f32 经度精度 ≈0.85m 远小于 1 像素，
+// deck 免 fp64 拆分、传输显存减半）+ 亚像素短链剔除（阈值按各档位最小 m/px 取约 0.5-0.8 像素）。
+// 全市路网在 district 档合并近百万段，短链剔除与 f32 是把重建尖刺压回帧预算的关键。
+const COARSE_DETAIL_COMBINE_OPTS = {
+  district: { precision: "f32", cullLengthMeters: 30 },
+  city: { precision: "f32", cullLengthMeters: 90 },
+  overview: { precision: "f32", cullLengthMeters: 240 },
+};
 
 function runtimeNumber(name, fallback) {
   const value = Number(typeof window !== "undefined" ? window.APP_CONFIG?.[name] : undefined);
@@ -120,10 +133,6 @@ function hashString(value) {
     hash2 = Math.imul(hash2, 0x01000193);
   }
   return [hash1 >>> 0, hash2 >>> 0];
-}
-
-function hashKey(hash, hash2) {
-  return `${hash >>> 0}:${hash2 >>> 0}`;
 }
 
 function calcFlowStats(flow) {
@@ -288,19 +297,37 @@ function parseTileResponse(response, version = 0) {
   return linksToBinaryData(Array.isArray(response) ? response : response?.data || [], version);
 }
 
+// (hash,hash2) 双 32 位键去重：嵌套 Map/Set 避免每趟合并产生 2×N 个临时字符串（与 worker 同款）
+function makePairSeen() {
+  const outer = new Map();
+  return {
+    addIfAbsent(a, b) {
+      let inner = outer.get(a);
+      if (!inner) {
+        inner = new Set();
+        outer.set(a, inner);
+      }
+      if (inner.has(b)) return false;
+      inner.add(b);
+      return true;
+    },
+    clear() {
+      outer.clear();
+    },
+  };
+}
+
 function combineBinaryTiles(keys, tileCache, version = 0) {
   const tiles = keys
     .map((key) => tileCache.get(key))
     .filter((tile) => tile?.binary && tile.count > 0);
   if (!tiles.length) return emptyBinaryData(version);
 
-  const seen = new Set();
+  const seen = makePairSeen();
   let total = 0;
   for (const tile of tiles) {
     for (let i = 0; i < tile.count; i++) {
-      const key = hashKey(tile.hash[i], tile.hash2[i]);
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (!seen.addIfAbsent(tile.hash[i], tile.hash2[i])) continue;
       total++;
     }
   }
@@ -318,9 +345,7 @@ function combineBinaryTiles(keys, tileCache, version = 0) {
   let writeIndex = 0;
   for (const tile of tiles) {
     for (let i = 0; i < tile.count; i++) {
-      const key = hashKey(tile.hash[i], tile.hash2[i]);
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (!seen.addIfAbsent(tile.hash[i], tile.hash2[i])) continue;
       const sourceLngLat = webMercatorToLngLat(
         tile.origin[0] + tile.source[i * 2],
         tile.origin[1] + tile.source[i * 2 + 1],
@@ -356,47 +381,8 @@ function combineBinaryTiles(keys, tileCache, version = 0) {
   }, version);
 }
 
-function clipRenderableBinaryData(data, context, version = data?.version || 0) {
-  if (!context || !data?.count) return data || emptyBinaryData(version);
-  const sourceValues = [];
-  const targetValues = [];
-  const hashValues = [];
-  const hash2Values = [];
-  const flowValues = [];
-  const lengthValues = [];
-  const laneValues = [];
-
-  for (let i = 0; i < data.count; i += 1) {
-    const source = [data.source[i * 2], data.source[i * 2 + 1]];
-    const target = [data.target[i * 2], data.target[i * 2 + 1]];
-    const clippedSegments = clipSegmentToDistrictContext(source, target, context);
-    clippedSegments.forEach(([from, to], segmentIndex) => {
-      const [hashA, hashB] = hashString(`${data.hash?.[i] || 0}:${data.hash2?.[i] || 0}:${segmentIndex}:${from.join(",")}:${to.join(",")}`);
-      hashValues.push(hashA);
-      hash2Values.push(hashB);
-      sourceValues.push(from[0], from[1]);
-      targetValues.push(to[0], to[1]);
-      flowValues.push(Number(data.flow?.[i]) || 0);
-      lengthValues.push(Number(data.length?.[i]) || 0);
-      laneValues.push(Number(data.lanes?.[i]) || 1);
-    });
-  }
-
-  const count = hashValues.length;
-  if (!count) return emptyBinaryData(version);
-  return attachStats({
-    binary: true,
-    count,
-    origin: [0, 0],
-    hash: Uint32Array.from(hashValues),
-    hash2: Uint32Array.from(hash2Values),
-    source: Float64Array.from(sourceValues),
-    target: Float64Array.from(targetValues),
-    flow: Float32Array.from(flowValues),
-    length: Float32Array.from(lengthValues),
-    lanes: Float32Array.from(laneValues),
-  }, version);
-}
+// 行政区裁剪实现（含网格索引与分段身份哈希）统一收敛到 districtClipIndex.js，
+// 主线程回退路径与 worker 共用同一实现，保证两模式裁剪结果一致
 
 function colorToRgba(color, opacity = 1) {
   const css = colorToCss(color);
@@ -451,6 +437,75 @@ function createNetworkDataWorker() {
   return new Worker(new URL("./networkData.worker.js", import.meta.url), { type: "module" });
 }
 
+// 模块级共享 worker：一个 Worker 服务全部 NetworkLayer 实例（监测页同时存在 ~8 个
+// workerEnabled 图层，原先每实例一个 worker 常驻）。消息按实例的 ns 命名空间隔离，
+// 引用计数归零（全部实例 dispose）时 terminate。
+const sharedNetworkWorker = {
+  worker: null,
+  broken: false,
+  refs: new Set(),
+  callbacks: new Map(),
+  nextRequestId: 0,
+};
+
+function rejectSharedWorkerCallbacks(error) {
+  const pending = [...sharedNetworkWorker.callbacks.values()];
+  sharedNetworkWorker.callbacks.clear();
+  pending.forEach((callback) => callback.reject(error));
+}
+
+function acquireSharedNetworkWorker(layer) {
+  if (sharedNetworkWorker.broken) return null;
+  if (!sharedNetworkWorker.worker) {
+    let worker = null;
+    try {
+      worker = createNetworkDataWorker();
+    } catch (error) {
+      console.warn("[NetworkLayer] shared worker init failed", error);
+    }
+    if (!worker) {
+      sharedNetworkWorker.broken = true;
+      return null;
+    }
+    worker.onmessage = (event) => {
+      const message = event.data || {};
+      const callback = sharedNetworkWorker.callbacks.get(message.id);
+      if (!callback) return;
+      sharedNetworkWorker.callbacks.delete(message.id);
+      if (message.ok) {
+        callback.resolve(message.result);
+      } else {
+        callback.reject(new Error(message.error || "worker error"));
+      }
+    };
+    worker.onerror = (error) => {
+      // worker 异常：terminate 并整体置为不可用（本会话内降级主线程同步路径），
+      // reject 全部 pending，防止后续请求对着死 worker 永久挂起
+      rejectSharedWorkerCallbacks(error instanceof Error ? error : new Error(error?.message || "worker error"));
+      try {
+        worker.terminate();
+      } catch (terminateError) {
+        void terminateError;
+      }
+      if (sharedNetworkWorker.worker === worker) {
+        sharedNetworkWorker.worker = null;
+        sharedNetworkWorker.broken = true;
+      }
+    };
+    sharedNetworkWorker.worker = worker;
+  }
+  sharedNetworkWorker.refs.add(layer);
+  return sharedNetworkWorker.worker;
+}
+
+function releaseSharedNetworkWorker(layer) {
+  sharedNetworkWorker.refs.delete(layer);
+  if (sharedNetworkWorker.refs.size || !sharedNetworkWorker.worker) return;
+  rejectSharedWorkerCallbacks(new Error("worker terminated"));
+  sharedNetworkWorker.worker.terminate();
+  sharedNetworkWorker.worker = null;
+}
+
 export class NetworkLayer extends Layer {
   name = "NetworkLayer";
 
@@ -485,25 +540,39 @@ export class NetworkLayer extends Layer {
     this.datasource = opt.datasource || "";
     this.tileExtraParams = opt.tileExtraParams || {};
     this.lineClipContext = opt.lineClipContext || null;
+    // 裁剪上下文修订号：worker 端 memo 与主线程网格索引缓存的失效依据
+    this.lineClipContextKey = this.lineClipContext ? 1 : 0;
+    this.lineClipIndex = null;
+    this.lineClipIndexKey = -1;
     this.tileCache = new Map();
     this.loadingTiles = new Set();
     this.visibleTileKeys = [];
     this.displayTileKeys = [];
-    this.tileLastSeen = new Map();
     this.tileLoadToken = 0;
+    this.tileAbortController = null;
+    this.tileLastSeen = new Map();
     this.tileUpdateTimer = null;
     this.renderFrame = null;
     this.refreshFrame = null;
+    this.refreshTimer = null;
+    this.lastTileRefreshAt = 0;
     this.dataVersion = 0;
     this.deckData = emptyBinaryData(this.dataVersion);
     this.flowWidthCache = null;
+    this.lineDataCache = null;
+    this.pathGroupsCache = null;
     this.combinedCacheKey = "";
     this.detailKey = "";
-    this.worker = null;
-    this.workerRequestId = 0;
-    this.workerCallbacks = new Map();
+    // 共享 worker：ns 为消息命名空间；workerAttachedTo 记录已向哪个 worker 实例声明过该 ns
+    this.workerNs = String(this.id);
+    this.workerAttachedTo = null;
     this.workerGeneration = 0;
     this.combineSeq = 0;
+    this.combineInFlight = false;
+    this.pendingCombine = null;
+    this.combineFallbackWarned = false;
+    // 粗档位优化默认开启；纯像素级精确场景可传 coarseCombineOptimization:false 关闭
+    this.coarseCombineOptimization = opt.coarseCombineOptimization !== false;
     this.rawLinks = [];
   }
 
@@ -523,50 +592,36 @@ export class NetworkLayer extends Layer {
   }
 
   ensureWorker() {
-    if (!this.workerEnabled) return null;
-    if (this.worker || this.worker === false) return this.worker || null;
-    try {
-      this.worker = createNetworkDataWorker();
-      if (!this.worker) {
-        this.worker = false;
-        return null;
+    if (!this.workerEnabled || this.isDisposed) return null;
+    const worker = acquireSharedNetworkWorker(this);
+    if (!worker) return null;
+    if (this.workerAttachedTo !== worker) {
+      // 首次挂到该 worker（或 worker 重建后）：先声明命名空间的 generation 与裁剪上下文，
+      // FIFO 保证这两条消息先于后续任何 postWorker 请求被处理
+      this.workerAttachedTo = worker;
+      this.postWorkerReset();
+      if (this.lineClipContext) {
+        this.syncWorkerClipContext();
       }
-      this.worker.onmessage = (event) => {
-        const message = event.data || {};
-        const callback = this.workerCallbacks.get(message.id);
-        if (!callback) return;
-        this.workerCallbacks.delete(message.id);
-        if (message.ok) {
-          callback.resolve(message.result);
-        } else {
-          callback.reject(new Error(message.error || "worker error"));
-        }
-      };
-      this.worker.onerror = (error) => {
-        for (const callback of this.workerCallbacks.values()) {
-          callback.reject(error instanceof Error ? error : new Error(error?.message || "worker error"));
-        }
-        this.workerCallbacks.clear();
-      };
-      this.resetWorkerCache();
-      return this.worker;
-    } catch (error) {
-      console.warn(`[${this.name}] worker init failed`, error);
-      this.worker = false;
-      return null;
     }
+    return worker;
+  }
+
+  // 当前实例是否仍挂在活跃的共享 worker 上
+  workerAlive() {
+    return !!this.workerAttachedTo && sharedNetworkWorker.worker === this.workerAttachedTo;
   }
 
   postWorker(type, payload = {}, transfer = []) {
     const worker = this.ensureWorker();
     if (!worker) return Promise.reject(new Error("worker unavailable"));
-    const id = ++this.workerRequestId;
+    const id = ++sharedNetworkWorker.nextRequestId;
     return new Promise((resolve, reject) => {
-      this.workerCallbacks.set(id, { resolve, reject });
+      sharedNetworkWorker.callbacks.set(id, { resolve, reject });
       try {
-        worker.postMessage({ id, type, generation: this.workerGeneration, ...payload }, transfer);
+        worker.postMessage({ id, type, ns: this.workerNs, generation: this.workerGeneration, ...payload }, transfer);
       } catch (error) {
-        this.workerCallbacks.delete(id);
+        sharedNetworkWorker.callbacks.delete(id);
         reject(error);
       }
     });
@@ -574,24 +629,55 @@ export class NetworkLayer extends Layer {
 
   resetWorkerCache() {
     this.workerGeneration++;
-    if (!this.worker || this.worker === false) return;
-    const id = ++this.workerRequestId;
-    this.worker.postMessage({ id, type: "reset", generation: this.workerGeneration });
+    this.postWorkerReset();
+  }
+
+  postWorkerReset() {
+    if (!this.workerAlive()) return;
+    const id = ++sharedNetworkWorker.nextRequestId;
+    try {
+      this.workerAttachedTo.postMessage({ id, type: "reset", ns: this.workerNs, generation: this.workerGeneration });
+    } catch (error) {
+      void error; // worker 失效时静默，后续请求走同步回退
+    }
+  }
+
+  // 裁剪上下文推送到 worker 常驻（#1）：仅在上下文变化或首次挂载时发送一次
+  syncWorkerClipContext() {
+    if (!this.workerAlive()) return;
+    const id = ++sharedNetworkWorker.nextRequestId;
+    try {
+      this.workerAttachedTo.postMessage({
+        id,
+        type: "setClipContext",
+        ns: this.workerNs,
+        context: this.lineClipContext || null,
+        contextKey: String(this.lineClipContextKey),
+      });
+    } catch (error) {
+      void error;
+    }
   }
 
   dropWorkerTiles(keys) {
-    if (!keys?.length || !this.worker || this.worker === false) return;
+    if (!keys?.length || !this.workerAlive()) return;
     this.postWorker("dropTiles", { keys }).catch(() => {});
   }
 
   setData(data) {
+    const links = Array.isArray(data) ? data : [];
+    // 同一数组引用重复 set（调用方常以 computed 缓存引用反复调用）直接短路：
+    // 不 reset worker 缓存、不重传、不重建。注意原地 mutate 数组后重设同一引用不会生效，
+    // 需要更新时传新数组。
+    if (!this.tileMode && links === this.rawLinks) return;
     this.tileMode = false;
     this.tileLoadToken++;
+    this.abortTileRequests();
     this.resetWorkerCache();
     this.dataVersion++;
     const version = this.dataVersion;
-    const links = Array.isArray(data) ? data : [];
     this.rawLinks = links;
+    this.pathGroupsCache = null;
     if (!links.length) {
       this.deckData = emptyBinaryData(version);
       this.flowWidthCache = null;
@@ -636,24 +722,37 @@ export class NetworkLayer extends Layer {
     this.jsonFallbackRequest = opt.jsonFallbackRequest || this.jsonFallbackRequest || getTileNetwork;
     this.tileExtraParams = opt.tileExtraParams || {};
     this.tileLoadToken++;
+    this.abortTileRequests();
     this.resetWorkerCache();
     this.tileCache.clear();
     this.loadingTiles.clear();
     this.visibleTileKeys = [];
     this.displayTileKeys = [];
     this.tileLastSeen.clear();
+    this.pathGroupsCache = null;
     this.dataVersion++;
     this.deckData = emptyBinaryData(this.dataVersion);
     this.flowWidthCache = null;
     this.combinedCacheKey = "";
     this.detailKey = "";
     this.queueDeckUpdate();
-    this.scheduleTileLoad(true);
+    if (this.visible !== false) {
+      this.scheduleTileLoad(true);
+    }
   }
 
   on(type, data) {
     super.on(type, data);
+    // 缩放相关样式（宽度插值 / zoomFadeOpacity / softEdge 门限）依赖 map.zoom；
+    // 原先只在瓦片集变化时重渲染，档位内缩放样式冻结、跨档位跳变。
+    // rAF 已合帧，且 lineLayerData wrapper 引用稳定时 deck 仅做浅比较，重渲染成本低。
+    if (type === MAP_EVENT.UPDATE_ZOOM && this.hasZoomDependentStyle()) {
+      this.queueDeckUpdate();
+    }
     if (!this.tileMode) return;
+    // 隐藏期间不跟随相机加载/合并瓦片（如客流着色激活时底图瓦片层被隐藏，
+    // 原先每次平移/缩放仍触发百万段级 worker 合并，纯属空转）；show() 时补载
+    if (this.visible === false) return;
     if (
       type === MAP_EVENT.UPDATE_CENTER ||
       type === MAP_EVENT.UPDATE_ZOOM ||
@@ -667,17 +766,32 @@ export class NetworkLayer extends Layer {
     }
   }
 
+  hasZoomDependentStyle() {
+    if (this.visible === false || !this.deckData?.count) return false;
+    // 非固定像素宽度：currentLineWidthPixels 按 zoom 插值，softEdge 也有 zoom<11.5 门限
+    if (!this.fixedPixelWidth) return true;
+    // flowControl + zoomFadeOpacity：透明度随缩放衰减
+    return this.flowControl && this.zoomFadeOpacity;
+  }
+
   scheduleTileLoad(immediate = false) {
-    if (!this.map || !this.datasource) return;
+    if (this.visible === false || !this.map || !this.datasource) return;
+    const now = Date.now();
     if (this.tileUpdateTimer) {
       clearTimeout(this.tileUpdateTimer);
+    } else {
+      this.tileScheduleStartedAt = now; // 新一轮 debounce 周期起点
     }
     const detail = this.currentTileDetail();
-    const delay = TILE_SCHEDULE_DELAY[detail.level] ?? 160;
+    const baseDelay = TILE_SCHEDULE_DELAY[detail.level] ?? 160;
+    // debounce 必须带 max-wait：跟随模式每帧 jumpTo / 长距离拖拽会持续重置定时器，
+    // 无上限时瓦片加载被饿死到运动结束，路网长时间缺块。保证周期起点后 TILE_SCHEDULE_MAX_WAIT 内必触发一次。
+    const elapsed = now - (this.tileScheduleStartedAt || now);
+    const delay = immediate ? 0 : Math.max(0, Math.min(baseDelay, TILE_SCHEDULE_MAX_WAIT - elapsed));
     this.tileUpdateTimer = setTimeout(() => {
       this.tileUpdateTimer = null;
       this.loadVisibleTiles();
-    }, immediate ? 0 : delay);
+    }, delay);
   }
 
   visibleTiles() {
@@ -721,7 +835,7 @@ export class NetworkLayer extends Layer {
   }
 
   async loadVisibleTiles() {
-    if (!this.tileMode || !this.datasource || !this.map) return;
+    if (this.visible === false || !this.tileMode || !this.datasource || !this.map) return;
     const token = this.tileLoadToken;
     const tiles = this.visibleTiles();
     const nextDetailKey = detailKey(this.currentTileDetail());
@@ -770,6 +884,28 @@ export class NetworkLayer extends Layer {
     return parsed;
   }
 
+  // token 失效（切数据源/setData/dispose）时中止全部在途瓦片请求。
+  // 注意：真正取消 HTTP 需要 api 层把第二参的 signal 透传给 axios config
+  //（getTileNetworkBinary 等目前忽略额外参数，传入无害）；api 文件不在本图层职责内。
+  abortTileRequests() {
+    if (this.tileAbortController) {
+      try {
+        this.tileAbortController.abort();
+      } catch (error) {
+        void error;
+      }
+      this.tileAbortController = null;
+    }
+  }
+
+  currentTileAbortSignal() {
+    if (typeof AbortController === "undefined") return undefined;
+    if (!this.tileAbortController) {
+      this.tileAbortController = new AbortController();
+    }
+    return this.tileAbortController.signal;
+  }
+
   async loadTile(tile, token = this.tileLoadToken) {
     const key = tileKey(tile);
     this.loadingTiles.add(key);
@@ -781,21 +917,23 @@ export class NetworkLayer extends Layer {
         y: tile.y,
         ...this.tileExtraParams,
       };
+      const requestOptions = { signal: this.currentTileAbortSignal() };
       const request = tile.full ? this.fullRequest : this.tileRequest;
       let res;
       let parsed;
       try {
-        res = await request(params);
+        res = await request(params, requestOptions);
       } catch (binaryError) {
+        if (this.isDisposed || token !== this.tileLoadToken) return;
         if (tile.full || !this.jsonFallbackRequest || request === this.jsonFallbackRequest) throw binaryError;
-        res = await this.jsonFallbackRequest(params);
+        res = await this.jsonFallbackRequest(params, requestOptions);
       }
       if (this.isDisposed || token !== this.tileLoadToken) return;
       try {
         parsed = await this.parseTileResponseAsync(res, key, ++this.dataVersion);
       } catch (parseError) {
         if (tile.full || !this.jsonFallbackRequest || request === this.jsonFallbackRequest) throw parseError;
-        const fallbackRes = await this.jsonFallbackRequest(params);
+        const fallbackRes = await this.jsonFallbackRequest(params, requestOptions);
         if (this.isDisposed || token !== this.tileLoadToken) return;
         parsed = await this.parseTileResponseAsync(fallbackRes, key, ++this.dataVersion);
       }
@@ -804,10 +942,10 @@ export class NetworkLayer extends Layer {
         this.scheduleRefreshVisibleTileData();
       }
     } catch (error) {
+      // token 已失效的失败（含主动 abort）不告警不写缓存
+      if (this.isDisposed || token !== this.tileLoadToken) return;
       console.warn(`[${this.name}] tile load failed`, tile, error);
-      if (!this.isDisposed && token === this.tileLoadToken) {
-        this.tileCache.set(key, emptyBinaryData(++this.dataVersion));
-      }
+      this.tileCache.set(key, emptyBinaryData(++this.dataVersion));
     } finally {
       this.loadingTiles.delete(key);
     }
@@ -815,6 +953,11 @@ export class NetworkLayer extends Layer {
 
   refreshVisibleTileData() {
     if (!this.tileMode) return;
+    this.lastTileRefreshAt = Date.now();
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
     const token = this.tileLoadToken;
     const visibleSet = new Set(this.visibleTileKeys);
     const hasPendingVisibleTiles = this.visibleTileKeys.some((key) => !this.tileCache.has(key));
@@ -842,36 +985,87 @@ export class NetworkLayer extends Layer {
     this.pruneTileCache();
   }
 
+  combineOptsForCurrentDetail() {
+    if (!this.coarseCombineOptimization) return {};
+    return COARSE_DETAIL_COMBINE_OPTS[this.currentTileDetail()?.level] || {};
+  }
+
   async combineVisibleTileData(displayKeys, version, token) {
-    const seq = ++this.combineSeq;
     if (!this.ensureWorker()) {
-      this.deckData = this.applyLineClipContext(combineBinaryTiles(displayKeys, this.tileCache, version), version);
+      this.combineSeq++;
+      const combined = combineBinaryTiles(displayKeys, this.tileCache, version);
+      // worker 中途损坏时主线程缓存里是 worker 返回的摘要（无 binary 字段），合并必为空；
+      // 此时保留上一次成功渲染的数据（新瓦片会经主线程解析逐步恢复），避免静默清空路网
+      const expectingLinks = displayKeys.some((key) => (this.tileCache.get(key)?.count || 0) > 0);
+      if (!combined.count && expectingLinks) {
+        this.warnCombineDegradedOnce("tile cache holds worker summaries");
+        return;
+      }
+      this.deckData = this.applyLineClipContext(combined, version);
       this.queueDeckUpdate();
       return;
     }
+    // 在途合并去抖：瓦片流式到达期间每个到达都会请求一次全量合并，百万段级合并
+    // 单次超百毫秒，排队执行时前面的结果全部作废（seq 检查），worker 长时间白算。
+    // 只保留一个在途合并，期间的新请求记为 pending，完成后仅补跑最新一次。
+    if (this.combineInFlight) {
+      this.pendingCombine = { displayKeys, version, token };
+      return;
+    }
+    this.combineInFlight = true;
+    const seq = ++this.combineSeq;
     try {
-      const deckData = await this.postWorker("combine", { keys: displayKeys, version });
+      const deckData = await this.postWorker("combine", {
+        keys: displayKeys,
+        version,
+        // 行政区裁剪已下沉 worker：cacheKey 供 worker 端 (combinedCacheKey, contextKey) 记忆化
+        cacheKey: this.lineClipContext ? this.combinedCacheKey : "",
+        ...this.combineOptsForCurrentDetail(),
+      });
       if (this.isDisposed || token !== this.tileLoadToken || seq !== this.combineSeq) return;
-      this.deckData = this.applyLineClipContext(deckData, version);
+      // worker 已按 clipContext 完成裁剪，主线程不再重复裁剪
+      this.deckData = deckData;
       this.queueDeckUpdate();
     } catch (error) {
       if (this.isDisposed || token !== this.tileLoadToken || seq !== this.combineSeq) return;
-      console.warn(`[${this.name}] worker tile combine failed`, error);
-      this.deckData = this.applyLineClipContext(combineBinaryTiles(displayKeys, this.tileCache, version), version);
-      this.queueDeckUpdate();
+      // worker 模式下主线程缓存是摘要，回退 combineBinaryTiles 必得空集——
+      // 保留上一次成功渲染的数据并只告警一次，而不是静默清空路网
+      this.warnCombineDegradedOnce(error);
+    } finally {
+      this.combineInFlight = false;
+      const pending = this.pendingCombine;
+      this.pendingCombine = null;
+      if (pending && !this.isDisposed && pending.token === this.tileLoadToken) {
+        this.combineVisibleTileData(pending.displayKeys, pending.version, pending.token);
+      }
     }
   }
 
+  warnCombineDegradedOnce(error) {
+    if (this.combineFallbackWarned) return;
+    this.combineFallbackWarned = true;
+    console.warn(`[${this.name}] worker tile combine failed; keeping last rendered data`, error);
+  }
+
+  // 非 worker 模式的主线程裁剪：网格索引按 contextKey 缓存复用
   applyLineClipContext(data, version = data?.version || 0) {
-    return clipRenderableBinaryData(data, this.lineClipContext, version);
+    if (!this.lineClipContext) return data || emptyBinaryData(version);
+    if (!this.lineClipIndex || this.lineClipIndexKey !== this.lineClipContextKey) {
+      this.lineClipIndex = buildDistrictClipIndex(this.lineClipContext);
+      this.lineClipIndexKey = this.lineClipContextKey;
+    }
+    return clipRenderableBinaryData(data, this.lineClipIndex, version);
   }
 
   setLineClipContext(context = null) {
     const nextContext = context || null;
     if (this.lineClipContext === nextContext) return;
     this.lineClipContext = nextContext;
+    this.lineClipContextKey++;
+    this.lineClipIndex = null;
     this.flowWidthCache = null;
     this.combinedCacheKey = "";
+    this.syncWorkerClipContext();
     if (this.tileMode) {
       this.refreshVisibleTileData();
       if (!this.visibleTileKeys.length) {
@@ -883,16 +1077,25 @@ export class NetworkLayer extends Layer {
   }
 
   scheduleRefreshVisibleTileData() {
-    if (this.refreshFrame || typeof requestAnimationFrame !== "function") {
-      if (typeof requestAnimationFrame !== "function") {
-        this.refreshVisibleTileData();
-      }
+    if (typeof requestAnimationFrame !== "function") {
+      this.refreshVisibleTileData();
       return;
     }
-    this.refreshFrame = requestAnimationFrame(() => {
-      this.refreshFrame = null;
+    if (this.refreshFrame || this.refreshTimer) return;
+    // rAF 合帧之外的 ~120ms 节流（带 trailing）：refreshVisibleTileData 落地时会
+    // 清掉尚未触发的 trailing 定时器，loadVisibleTiles 完成后的直呼保证最终一致
+    const elapsed = Date.now() - (this.lastTileRefreshAt || 0);
+    if (elapsed >= TILE_REFRESH_THROTTLE_MS) {
+      this.refreshFrame = requestAnimationFrame(() => {
+        this.refreshFrame = null;
+        this.refreshVisibleTileData();
+      });
+      return;
+    }
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
       this.refreshVisibleTileData();
-    });
+    }, TILE_REFRESH_THROTTLE_MS - elapsed);
   }
 
   pruneTileCache() {
@@ -1038,6 +1241,8 @@ export class NetworkLayer extends Layer {
   }
 
   publishDebug(data, attributes) {
+    // 调试通道默认关闭：每次 deck 更新的 slice+Array.from+JSON.stringify 在生产是纯开销
+    if (typeof window === "undefined" || !window.APP_CONFIG?.debug) return;
     if (typeof document === "undefined" || !document.documentElement?.dataset) return;
     if (this.name !== "NetworkLayer") return;
     const sampleColors = attributes.getColor?.value
@@ -1061,23 +1266,21 @@ export class NetworkLayer extends Layer {
     }
 
     const data = this.deckData;
-    const attributes = {
-      getSourcePosition: { value: data.source, size: 2 },
-      getTargetPosition: { value: data.target, size: 2 },
-    };
     const baseWidth = lineWidthToPixels(this.lineWidth);
     const zoomWidth = this.currentLineWidthPixels();
     const visualOpacity = this.currentLineOpacity();
     let getWidth = zoomWidth;
     let widthScale = 1;
 
+    const flowStyle = this.flowControl ? this.flowStyleAttributes(data, visualOpacity) : null;
     if (this.flowControl) {
-      const flowStyle = this.flowStyleAttributes(data, visualOpacity);
-      attributes.getWidth = { value: flowStyle.widths, size: 1 };
-      attributes.getColor = { value: flowStyle.colors, size: 4 };
       getWidth = 1;
       widthScale = baseWidth > 0 ? zoomWidth / baseWidth : 1;
     }
+    // data wrapper 引用稳定（deckData 与 flowStyle 未变时复用同一对象）：
+    // deck 浅比较 data 未变即跳过 attribute 重绑定/上传，缩放触发的重渲染近乎零成本
+    const lineData = this.lineLayerData(data, flowStyle);
+    const attributes = lineData.attributes;
 
     const lineColor = colorToRgba(this.color, visualOpacity);
     const softEdgePixels = this.fixedPixelWidth || this.flowControl || Number(this.map?.zoom) < 11.5 ? 0 : networkLineSoftEdgePixels();
@@ -1092,6 +1295,9 @@ export class NetworkLayer extends Layer {
     };
     const commonProps = {
       coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+      // 现状说明：本页未挂 CityBuildingsLayer 时 buildingLayerId 为 null，deck 层与其后
+      // addLayer 的 maplibre 业务层的相对顺序取决于插入时序；统一 anchor 层需要动共享
+      // 地图初始化（本轮范围外），deck 层之间的顺序由注册表 order（zIndex）保证
       beforeId: this.map?.buildingLayerId,
       widthScale,
       widthUnits: "pixels",
@@ -1117,10 +1323,7 @@ export class NetworkLayer extends Layer {
       layers.push(new LineLayer({
         ...commonProps,
         id: `${this.layerId}-soft-edge`,
-        data: {
-          length: data.count,
-          attributes,
-        },
+        data: lineData,
         opacity: 0.28,
         widthScale: this.flowControl
           ? widthScale * (1 + softEdgePixels / Math.max(1, zoomWidth))
@@ -1134,10 +1337,7 @@ export class NetworkLayer extends Layer {
     const layer = new LineLayer({
       ...commonProps,
       id: this.layerId,
-      data: {
-        length: data.count,
-        attributes,
-      },
+      data: lineData,
       getColor: this.flowControl ? flowColorAccessor : lineColor,
       getWidth,
       widthMinPixels: this.fixedPixelWidth
@@ -1149,36 +1349,66 @@ export class NetworkLayer extends Layer {
     setSharedDeckLayer(this.map, this.layerId, layers, this.zIndex);
   }
 
-  buildContinuousPathData(data, lineColor, zoomWidth, opacity) {
+  // {length, attributes} 包装对象按 (deckData, flowStyle) 引用记忆化，
+  // 内容未变时 deck 得到同一 data 引用即可跳过 attribute 更新
+  lineLayerData(data, flowStyle = null) {
+    const cached = this.lineDataCache;
+    if (cached && cached.source === data && cached.flowStyle === flowStyle) {
+      return cached.value;
+    }
+    const attributes = {
+      getSourcePosition: { value: data.source, size: 2 },
+      getTargetPosition: { value: data.target, size: 2 },
+    };
+    if (flowStyle) {
+      attributes.getWidth = { value: flowStyle.widths, size: 1 };
+      attributes.getColor = { value: flowStyle.colors, size: 4 };
+    }
+    const value = { length: data.count, attributes };
+    this.lineDataCache = { source: data, flowStyle, value };
+    return value;
+  }
+
+  // 连续路径几何分组：按 (rawLinks 引用, flowControl, stops 引用, data.version, tolerance) 缓存。
+  // 分组与坐标重投影是路径构建的全部重活；透明度/线宽等 paint 变化只需在 buildContinuousPathData
+  // 里对少量分组重套样式，不再全量重算重投影
+  continuousPathGroups(data) {
     const links = Array.isArray(this.rawLinks) ? this.rawLinks : [];
     if (links.length < 2) return [];
-
-    const baseWidth = Math.max(3, lineWidthToPixels(this.lineWidth));
-    const stepWidth = Math.max(1, lineWidthToPixels(this.flowWidthStep || this.flowMaxWidth));
-    const alpha = Math.max(0, Math.min(255, Math.round((Number(opacity) || 0) * 255)));
+    const stopsRef = this.flowControl ? this.flowStyleStops : null;
+    const dataVersion = data?.version || 0;
     const tolerance = routePathJoinToleranceMeters();
+    const cached = this.pathGroupsCache;
+    if (
+      cached &&
+      cached.links === links &&
+      cached.flowControl === this.flowControl &&
+      cached.stopsRef === stopsRef &&
+      cached.dataVersion === dataVersion &&
+      cached.tolerance === tolerance
+    ) {
+      return cached.groups;
+    }
+
     const toleranceSq = tolerance * tolerance;
-    const paths = [];
+    const groups = [];
     let current = null;
 
     const flush = () => {
       if (current?.points?.length > 1) {
-        paths.push({
+        groups.push({
+          stop: current.stop,
           path: current.points.map((point) => webMercatorToLngLat(point[0], point[1])),
-          color: current.color,
-          width: current.width,
         });
       }
       current = null;
     };
 
+    // 分组 key 只由样式档位（颜色 + widthStep）决定，与 alpha/线宽无关，
+    // 因此几何分组可跨 paint 变化复用
     const styleForLink = (link) => {
       if (!this.flowControl) {
-        return {
-          key: "default",
-          color: lineColor,
-          width: zoomWidth,
-        };
+        return { key: "default", stop: null };
       }
       const flow = linkFlowValue(link);
       let ratio = 0;
@@ -1187,14 +1417,8 @@ export class NetworkLayer extends Layer {
       } else {
         ratio = data.maxFlow > 0 ? 1 : 0;
       }
-      const style = this.flowStyleForValue(flow, ratio);
-      const color = [style.color[0], style.color[1], style.color[2], alpha];
-      const width = baseWidth + stepWidth * style.widthStep;
-      return {
-        key: `${style.color.join(",")}:${style.widthStep}`,
-        color,
-        width,
-      };
+      const stop = this.flowStyleForValue(flow, ratio);
+      return { key: `${stop.color.join(",")}:${stop.widthStep}`, stop };
     };
 
     for (const link of links) {
@@ -1207,7 +1431,7 @@ export class NetworkLayer extends Layer {
 
       if (!current || current.key !== style.key) {
         flush();
-        current = { key: style.key, color: style.color, width: style.width, points: [start, end] };
+        current = { key: style.key, stop: style.stop, points: [start, end] };
         continue;
       }
 
@@ -1221,7 +1445,7 @@ export class NetworkLayer extends Layer {
       const joinDistance = Math.min(sourceDistance, targetDistance);
       if (joinDistance > toleranceSq) {
         flush();
-        current = { key: style.key, color: style.color, width: style.width, points: [start, end] };
+        current = { key: style.key, stop: style.stop, points: [start, end] };
         continue;
       }
 
@@ -1235,7 +1459,32 @@ export class NetworkLayer extends Layer {
     }
 
     flush();
-    return paths;
+    this.pathGroupsCache = {
+      links,
+      flowControl: this.flowControl,
+      stopsRef,
+      dataVersion,
+      tolerance,
+      groups,
+    };
+    return groups;
+  }
+
+  buildContinuousPathData(data, lineColor, zoomWidth, opacity) {
+    const groups = this.continuousPathGroups(data);
+    if (!groups.length) return [];
+    const baseWidth = Math.max(3, lineWidthToPixels(this.lineWidth));
+    const stepWidth = Math.max(1, lineWidthToPixels(this.flowWidthStep || this.flowMaxWidth));
+    const alpha = Math.max(0, Math.min(255, Math.round((Number(opacity) || 0) * 255)));
+    return groups.map((group) => ({
+      path: group.path,
+      color: group.stop
+        ? [group.stop.color[0], group.stop.color[1], group.stop.color[2], alpha]
+        : lineColor,
+      width: group.stop
+        ? baseWidth + stepWidth * group.stop.widthStep
+        : zoomWidth,
+    }));
   }
 
   renderPathLayers(pathData, commonProps, softEdgePixels, widthMaxPixels, widthScale, zoomWidth) {
@@ -1306,6 +1555,9 @@ export class NetworkLayer extends Layer {
 
   setFlowStyleStops(stops) {
     if (!Array.isArray(stops) || !stops.length) return;
+    // 引用相等短路：调用方（index.vue 的同步 burst）常以同一 computed 缓存引用反复调用，
+    // 无短路会导致断面层每轮丢 flowWidthCache 全量重绘
+    if (stops === this.flowStyleStops) return;
     this.flowStyleStops = stops;
     this.flowWidthCache = null;
     this.queueDeckUpdate();
@@ -1322,12 +1574,27 @@ export class NetworkLayer extends Layer {
 
   hide() {
     super.hide();
+    if (this.tileMode) {
+      this.tileLoadToken++;
+      if (this.tileUpdateTimer) {
+        clearTimeout(this.tileUpdateTimer);
+        this.tileUpdateTimer = null;
+      }
+      this.abortTileRequests();
+      this.loadingTiles.clear();
+      this.combineSeq++;
+      this.pendingCombine = null;
+    }
     removeSharedDeckLayer(this.map, this.layerId);
   }
 
   show() {
     super.show();
     this.queueDeckUpdate();
+    // 隐藏期间跳过了相机跟随，重新可见时立即按当前视野补载瓦片
+    if (this.tileMode) {
+      this.scheduleTileLoad(true);
+    }
   }
 
   lowerOverlayCanvas() {
@@ -1355,16 +1622,30 @@ export class NetworkLayer extends Layer {
       cancelAnimationFrame(this.refreshFrame);
       this.refreshFrame = null;
     }
+    if (this.refreshTimer) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
     this.tileLoadToken++;
+    this.abortTileRequests();
     this.tileCache.clear();
     this.loadingTiles.clear();
     this.flowWidthCache = null;
+    this.lineDataCache = null;
+    this.pathGroupsCache = null;
     this.combineSeq++;
-    if (this.worker && this.worker !== false) {
-      this.worker.terminate();
+    this.pendingCombine = null;
+    // 通知 worker 释放本命名空间的瓦片/裁剪状态；引用计数归零时整体 terminate
+    if (this.workerAlive()) {
+      const id = ++sharedNetworkWorker.nextRequestId;
+      try {
+        this.workerAttachedTo.postMessage({ id, type: "dispose", ns: this.workerNs });
+      } catch (error) {
+        void error;
+      }
     }
-    this.worker = null;
-    this.workerCallbacks.clear();
+    this.workerAttachedTo = null;
+    releaseSharedNetworkWorker(this);
     removeSharedDeckLayer(this.map, this.layerId);
     super.dispose();
   }

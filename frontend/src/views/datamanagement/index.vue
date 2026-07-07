@@ -12,53 +12,7 @@
     </el-select>
   </div>
 
-  <div :class="['dm-sidebar', isLeftPanelCollapsed ? 'is-collapsed' : '']">
-    <div class="sidebar-brand">
-      <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
-      </svg>
-      <span class="brand-text">数据管理</span>
-    </div>
-
-    <nav class="sidebar-nav" aria-label="数据管理导航">
-      <div v-for="item in menuItems" :key="item.key" class="menu-group">
-        <button
-          type="button"
-          :class="[
-            'nav-item',
-            activeKey === item.key || (item.children && item.children.some((child) => child.key === activeKey)) ? 'active' : '',
-          ]"
-          :aria-expanded="item.children ? isExpanded(item.key) : undefined"
-          @click="handleItemClick(item)"
-        >
-          <span class="nav-icon" v-html="item.icon"></span>
-          <span class="nav-label">{{ item.label }}</span>
-          <span v-if="item.children" class="chevron-icon" :class="{ expanded: isExpanded(item.key) }">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </span>
-        </button>
-
-        <transition name="slide-fade">
-          <div v-if="item.children && isExpanded(item.key)" class="sub-nav-list">
-            <button
-              v-for="sub in item.children"
-              :key="sub.key"
-              type="button"
-              :class="['sub-nav-item', activeKey === sub.key ? 'active' : '']"
-              @click.stop="setActiveKey(sub.key)"
-            >
-              <span class="sub-dot"></span>
-              <span class="nav-label">{{ sub.label }}</span>
-            </button>
-          </div>
-        </transition>
-      </div>
-    </nav>
-
-    <div class="sidebar-footer"></div>
-  </div>
+  <DmSidebar :active-key="activeKey" :collapsed="isLeftPanelCollapsed" @select="setActiveKey" />
 
   <button
     type="button"
@@ -74,74 +28,15 @@
     </svg>
   </button>
 
-  <div
+  <MapSearchBox
     v-if="showMapSearch"
-    :class="['map-search', { 'is-focused': isSearchFocused, 'is-left-collapsed': isLeftPanelCollapsed }]"
-    role="search"
-    aria-label="搜索站点或线路"
-    @click.stop
-  >
-    <svg class="search-icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <circle cx="11" cy="11" r="8"></circle>
-      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-    </svg>
-    <input
-      v-model="searchKeyword"
-      class="search-input"
-      type="search"
-      :placeholder="searchPlaceholder"
-      :aria-label="searchPlaceholder"
-      @focus="handleSearchFocus"
-      @input="handleSearchInput"
-      @blur="handleSearchBlur"
-      @keydown.enter.prevent="selectFirstSearchResult"
-      @keydown.esc.prevent="closeSearchResults"
-    />
-    <button v-if="searchKeyword" class="search-clear-btn" type="button" title="清空搜索" aria-label="清空搜索" @mousedown.prevent="clearSearchKeyword">
-      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-        <line x1="18" y1="6" x2="6" y2="18"></line>
-        <line x1="6" y1="6" x2="18" y2="18"></line>
-      </svg>
-    </button>
-    <Transition name="search-dropdown-fade">
-      <div v-if="showSearchResults" class="search-result-list" role="listbox">
-        <button
-          v-for="result in searchResults"
-          :key="result.key"
-          class="search-result-item"
-          type="button"
-          role="option"
-          @mousedown.prevent="selectSearchResult(result)"
-        >
-          <div class="result-icon-wrapper" :class="result.type">
-            <!-- Station Icon -->
-            <svg v-if="result.type === 'station'" viewBox="0 0 24 24" class="type-svg" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-              <circle cx="12" cy="10" r="3"></circle>
-            </svg>
-            <!-- Line Icon -->
-            <svg v-else-if="result.type === 'line'" viewBox="0 0 24 24" class="type-svg" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="4" width="18" height="12" rx="2"></rect>
-              <circle cx="7" cy="10" r="1"></circle>
-              <circle cx="17" cy="10" r="1"></circle>
-              <path d="M6 16v2"></path>
-              <path d="M18 16v2"></path>
-            </svg>
-            <!-- Depot Icon -->
-            <svg v-else viewBox="0 0 24 24" class="type-svg" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-              <polyline points="9 22 9 12 15 12 15 22"></polyline>
-            </svg>
-          </div>
-          <div class="result-meta-block">
-            <span class="result-name">{{ result.name }}</span>
-            <span class="result-type-text">{{ result.typeLabel }}</span>
-          </div>
-        </button>
-        <p v-if="!searchResults.length" class="search-empty">未找到匹配项</p>
-      </div>
-    </Transition>
-  </div>
+    ref="searchBoxRef"
+    :placeholder="searchPlaceholder"
+    :left-collapsed="isLeftPanelCollapsed"
+    :search-fn="searchIndexEntries"
+    @focus="handleSearchBoxFocus"
+    @select="selectSearchResult"
+  />
 
   <div v-if="activeKey === 'overview' || historyPreview.visible" :class="['dm-overview-panel', isRightPanelCollapsed ? 'is-collapsed' : '']">
     <div class="overview-title-row" :class="{ 'is-station-detail': selectedStation || selectedRoute || selectedDepot }">
@@ -185,8 +80,8 @@
         </div>
         <div v-if="selectedStation.routes.length" class="ranking-scroll-list">
           <button
-            v-for="(route, index) in selectedStation.routes" 
-            :key="index"
+            v-for="(route, index) in selectedStation.routes"
+            :key="`${route.name}-${index}`"
             type="button"
             :class="['ranking-row', route.feature ? 'is-clickable' : 'is-disabled']"
             :disabled="!route.feature"
@@ -426,115 +321,26 @@
     </svg>
   </button>
 
-  <div v-if="isMapDataPage(activeKey) || historyPreview.visible" :class="['map-controls-toolbar', hasVisibleRightSidePanel ? 'with-panel' : 'without-panel']">
-    <div class="control-block">
-      <button class="control-btn" type="button" @click="handleZoomIn" title="放大" aria-label="放大地图">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-        </svg>
-      </button>
-      <button class="control-btn" type="button" @click="handleZoomOut" title="缩小" aria-label="缩小地图">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-        </svg>
-      </button>
-      <button :class="['control-btn', 'td-btn', is3DActive ? 'active' : '']" type="button" @click="handleToggle3D" title="3D视图" aria-label="切换3D视图" :aria-pressed="is3DActive">
-        3D
-      </button>
-      <button class="control-btn compass-btn" type="button" @click="handleResetCompass" title="指北针" aria-label="重置地图朝北">
-        <div class="pitch-arrows">
-          <svg class="caret-up" viewBox="0 0 24 24" width="10" height="10" fill="currentColor">
-            <polygon points="12,4 2,18 22,18"></polygon>
-          </svg>
-          <svg class="caret-down" viewBox="0 0 24 24" width="10" height="10" fill="currentColor">
-            <polygon points="12,20 2,6 22,6"></polygon>
-          </svg>
-        </div>
-      </button>
-    </div>
-
-    <div class="control-block settings-block">
-      <button
-        :class="['control-btn', selectedDisplayRange !== DISPLAY_RANGE_ALL || showRangePopover ? 'active' : '']"
-        type="button"
-        @click="toggleRangePopover"
-        :title="displayRangeButtonTitle"
-        :aria-label="displayRangeButtonAriaLabel"
-        :aria-expanded="showRangePopover"
-        aria-controls="dm-range-popover"
-      >
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 6.5 8 4l8 2.5 5-2.5v13.5L16 20l-8-2.5-5 2.5V6.5Z"></path>
-          <path d="M8 4v13.5"></path>
-          <path d="M16 6.5V20"></path>
-        </svg>
-      </button>
-      <button
-        :class="['control-btn', showStylePopover ? 'active' : '']"
-        type="button"
-        @click="toggleStylePopover"
-        title="线路和站点样式"
-        aria-label="打开线路和站点样式"
-        :aria-expanded="showStylePopover"
-        aria-controls="dm-style-popover"
-      >
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <line x1="4" y1="7" x2="20" y2="7"></line>
-          <circle cx="15" cy="7" r="1.5" fill="currentColor"></circle>
-          <line x1="4" y1="12" x2="20" y2="12"></line>
-          <circle cx="17" cy="12" r="1.5" fill="currentColor"></circle>
-          <line x1="4" y1="17" x2="20" y2="17"></line>
-          <circle cx="9" cy="17" r="1.5" fill="currentColor"></circle>
-        </svg>
-      </button>
-    </div>
-
-    <Transition name="popover-fade">
-      <div v-if="showRangePopover" id="dm-range-popover" class="range-popover" role="dialog" aria-modal="false" @click.stop @keydown.esc.stop.prevent="closeRangePopover">
-        <div class="popover-title">选择行政区</div>
-        <div v-if="isLoadingDisplayRanges" class="range-state">行政区加载中</div>
-        <div v-else-if="displayRangeOptions.length" class="range-list" role="listbox" aria-label="行政区显示范围">
-          <button
-            v-for="item in displayRangeOptions"
-            :key="item"
-            :class="['range-option', selectedDisplayRange === item ? 'active' : '']"
-            type="button"
-            role="option"
-            :aria-selected="selectedDisplayRange === item"
-            @click="selectDisplayRange(item)"
-          >
-            <span class="range-option-name">{{ item }}</span>
-            <svg v-if="selectedDisplayRange === item" class="range-option-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="20 6 9 17 4 12"></polyline>
-            </svg>
-          </button>
-        </div>
-        <p v-else class="range-state">暂无行政区范围</p>
-        <p v-if="displayRangeError" class="range-error">{{ displayRangeError }}</p>
-      </div>
-    </Transition>
-
-    <Transition name="popover-fade">
-      <div v-if="showStylePopover" id="dm-style-popover" class="style-popover" role="dialog" aria-modal="false" @click.stop @keydown.esc.stop.prevent="closeStylePopover">
-        <div class="popover-title">图层样式</div>
-        <div class="slider-row">
-          <span class="label">
-            <span>线路粗细</span>
-            <span class="val-text">{{ `${lineWidth}px` }}</span>
-          </span>
-          <el-slider v-model="lineWidth" :min="0.1" :max="2" :step="0.1" @input="applyLayerPaint" />
-        </div>
-        <div class="slider-row">
-          <span class="label">
-            <span>站点大小</span>
-            <span class="val-text">{{ `${stationSize}px` }}</span>
-          </span>
-          <el-slider v-model="stationSize" :min="32" :max="96" :step="1" @input="applyLayerPaint" />
-        </div>
-      </div>
-    </Transition>
-  </div>
+  <MapControlsToolbar
+    v-if="isMapDataPage(activeKey) || historyPreview.visible"
+    ref="mapToolbarRef"
+    v-model:line-width="lineWidth"
+    v-model:station-size="stationSize"
+    :with-panel="hasVisibleRightSidePanel"
+    :is3d-active="is3DActive"
+    :range-options="displayRangeOptions"
+    :selected-range="selectedDisplayRange"
+    :all-range-label="DISPLAY_RANGE_ALL"
+    :loading-ranges="isLoadingDisplayRanges"
+    :range-error="displayRangeError"
+    @zoom-in="handleZoomIn"
+    @zoom-out="handleZoomOut"
+    @toggle-3d="handleToggle3D"
+    @reset-compass="handleResetCompass"
+    @select-range="selectDisplayRange"
+    @before-open="handleToolbarBeforeOpen"
+    @paint-input="scheduleApplyLayerPaint"
+  />
 
   <div
     v-if="lineRoutePicker.visible"
@@ -777,19 +583,39 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { commitRealDataEdits, compareRealDataShp, exportRealDataVersion } from "@/api/realData.js";
 import { saveAs } from "file-saver";
 import {
+  ensureCachedRouteStops,
   getCachedAdminDistricts,
   getCachedAreaList,
   getCachedRealData,
   getCachedRealDataHistory,
   invalidateCachedHistory,
   invalidateCachedRealData,
+  isRouteStopsDeferred,
   readCachedHistory,
   readCachedRealData,
 } from "@/utils/realDataCache.js";
 import "./tokens.css";
+import {
+  collectionFeatures,
+  expandGeometryBounds,
+  featureCollectionBounds,
+  featureCollectionFromFeatures,
+  filterCollectionsByDistrict,
+  firstAvailableValue,
+  lineCoordinatePaths,
+  pointCoordinates,
+  routeDataId,
+  routeStopSequence,
+  validLngLat,
+  valueOrEmpty,
+} from "./districtFilterCore.js";
 import AttributeTableDialog from "./components/AttributeTableDialog.vue";
 import OverviewMetrics from "./components/OverviewMetrics.vue";
 import HistoryPanel from "./components/HistoryPanel.vue";
+import DmSidebar from "./components/DmSidebar.vue";
+import MapSearchBox from "./components/MapSearchBox.vue";
+import MapControlsToolbar from "./components/MapControlsToolbar.vue";
+import { MAP_THEME } from "@/utils/mapTheme.js";
 import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
 import busStationHighlightIconUrl from "@/assets/images/datamanagement/bus-station_highlight.svg?url";
 import busDepotIconUrl from "@/assets/images/datamanagement/bus-depot.svg?url";
@@ -801,7 +627,8 @@ defineOptions({
 
 const MapRef = inject("MapRef", ref(null));
 const activeKey = ref("overview");
-const expandedKeys = ref(["update"]);
+const searchBoxRef = ref(null);
+const mapToolbarRef = ref(null);
 const areaList = ref(["广州市"]);
 const selectedArea = ref("广州市");
 const DISPLAY_RANGE_ALL = "全市";
@@ -809,7 +636,6 @@ const selectedDisplayRange = ref(DISPLAY_RANGE_ALL);
 const displayRangeList = ref([DISPLAY_RANGE_ALL]);
 const isLoadingDisplayRanges = ref(false);
 const displayRangeError = ref("");
-const showRangePopover = ref(false);
 const isLoadingAreas = ref(false);
 const isLoadingLayer = ref(false);
 const isLoadingHistory = ref(false);
@@ -859,7 +685,6 @@ let overviewStatsBaseline = {
 };
 const lineWidth = ref(1.2);
 const stationSize = ref(32);
-const showStylePopover = ref(false);
 const is3DActive = ref(false);
 const isLeftPanelCollapsed = ref(false);
 const isRightPanelCollapsed = ref(false);
@@ -868,8 +693,6 @@ const selectedRoute = ref(null);
 const selectedDepot = ref(null);
 const shpUploadInput = ref(null);
 const evidenceImageInput = ref(null);
-const searchKeyword = ref("");
-const isSearchFocused = ref(false);
 const isSubmittingEdit = ref(false);
 const pendingAddDataset = ref("");
 const EDIT_OPERATION_RENDER_BATCH = 300;
@@ -970,6 +793,19 @@ let realDataRenderToken = 0;
 let realDataSourceDataRefs = new Map();
 let displayRangeFilterCache = new Map();
 let routeStopIndexCache = { token: -1, collection: null, byRouteId: new Map() };
+// 搜索索引与点选索引的重建守卫：集合引用未变且未被本地编辑弄脏时跳过全量重建
+let searchIndexSource = { lines: null, stations: null, routeStops: null, depots: null };
+let searchIndexesDirty = false;
+// 站点点击热路径索引：stop_id/名称 -> routeStops、线路名/线路键 -> 搜索索引项（替代全量线性扫描）
+let stationRouteLookup = { byStopId: new Map(), byStopKey: new Map(), byStopName: new Map() };
+let lineLookup = { byName: new Map(), byEntry: new Map() };
+let lineFeatureIndexCache = { token: -1, collection: null, byKey: new Map() };
+// 规范化结果单槽缓存：同一份缓存数据在页面切换时跳过全量 normalize + 索引重建 + setData
+let lastNormalizedData = null;
+let lastNormalizedCollections = null;
+// 规范化时的 data.routeStops 引用：懒加载合并会替换该引用；若合并发生在集合容器被
+// clearRealDataLayers 换代之后（如停留历史页时），命中校验因引用不一致自动降级为全量重建
+let lastNormalizedRouteStopsRaw = null;
 let isSuppressingRightMouseGesture = false;
 let suppressNextPanelToggleClick = false;
 let realDataCollections = {
@@ -992,6 +828,7 @@ const SOURCE_SELECTED_STATION = "dm-real-bus-selected-station-source";
 const SOURCE_SELECTED_LINE = "dm-real-bus-selected-line-source";
 const SOURCE_SELECTED_ROUTE_STATIONS = "dm-real-bus-selected-route-stations-source";
 const SOURCE_SELECTED_DEPOT = "dm-real-bus-selected-depot-source";
+const SOURCE_BY_DATASET = { line: SOURCE_LINES, station: SOURCE_STATIONS, depot: SOURCE_DEPOTS };
 const LAYER_LINES = "dm-real-bus-lines";
 const LAYER_LINE_SELECTED = "dm-real-bus-line-selected";
 const LAYER_STATIONS = "dm-real-bus-stations";
@@ -1002,8 +839,10 @@ const LAYER_ROUTE_STATION_LABELS = "dm-real-bus-route-station-labels";
 const LAYER_DEPOTS = "dm-real-bus-depots";
 const LAYER_DEPOT_LABELS = "dm-real-bus-depot-labels";
 const LAYER_DEPOT_SELECTED = "dm-real-bus-depot-selected";
-const SELECTED_LINE_COLOR = "#f97316";
-const SELECTED_LINE_GLOW_COLOR = "#facc15";
+const SELECTED_LINE_COLOR = MAP_THEME.route.up;
+const SELECTED_LINE_GLOW_COLOR = MAP_THEME.route.upHalo;
+const NETWORK_LINE_COLOR = MAP_THEME.network.line;
+const NETWORK_LINE_DIMMED_COLOR = MAP_THEME.network.dimmed;
 const STATION_ICON_ID = "dm-real-bus-station-icon";
 const STATION_HIGHLIGHT_ICON_ID = "dm-real-bus-station-highlight-icon";
 const DEPOT_ICON_ID = "dm-real-bus-depot-icon";
@@ -1065,7 +904,6 @@ const DERIVED_ATTRIBUTE_FIELD_ORDER = {
 };
 const EDIT_DATASET_TYPES = ["line", "station", "depot"];
 
-const isExpanded = (key) => expandedKeys.value.includes(key);
 const showMapSearch = computed(() => isMapDataPage(activeKey.value) || historyPreview.visible);
 const activeEditDataset = computed(() => editDatasetFromKey(activeKey.value));
 const hasRightSidePanel = computed(() => activeKey.value === "overview" || Boolean(activeEditDataset.value) || historyPreview.visible);
@@ -1081,17 +919,6 @@ const displayRangeOptions = computed(() => {
   }
   return names;
 });
-const selectedDisplayRangeLabel = computed(() => selectedDisplayRange.value || DISPLAY_RANGE_ALL);
-const displayRangeButtonTitle = computed(() =>
-  selectedDisplayRange.value === DISPLAY_RANGE_ALL
-    ? "选择行政区显示范围"
-    : `显示范围：${selectedDisplayRangeLabel.value}，点击恢复全市`,
-);
-const displayRangeButtonAriaLabel = computed(() =>
-  selectedDisplayRange.value === DISPLAY_RANGE_ALL
-    ? "打开行政区显示范围列表"
-    : `恢复全市显示范围，当前为${selectedDisplayRangeLabel.value}`,
-);
 const searchPlaceholder = computed(() => {
   if (activeKey.value === "update_station") return "搜索站点";
   if (activeKey.value === "update_line") return "搜索线路";
@@ -1144,18 +971,21 @@ const selectedStationRouteCount = computed(() => {
   }
   return count;
 });
-const searchResults = computed(() => {
-  const query = normalizeSearchText(searchKeyword.value);
+// MapSearchBox 的 search-fn：按当前页面模式在对应索引里评分排序。
+// 组件内部对入参做了防抖，这里保持纯函数即可
+function searchIndexEntries(rawKeyword) {
+  const query = normalizeSearchText(rawKeyword);
   if (!query) return [];
   const isOverviewSearch = activeKey.value === "overview" || historyPreview.visible;
   const stationItems = isOverviewSearch || activeKey.value === "update_station" ? rankSearchItems(stationSearchIndex, query) : [];
   const lineItems = isOverviewSearch || activeKey.value === "update_line" ? rankSearchItems(lineSearchIndex, query) : [];
   const depotItems = isOverviewSearch || activeKey.value === "update_depot" ? rankSearchItems(depotSearchIndex, query) : [];
+  // 排序在轻量 {item, score} 条目上进行，仅对最终 8 条做对象展开
   return [...stationItems, ...lineItems, ...depotItems]
-    .sort((left, right) => left.score - right.score || left.name.localeCompare(right.name, "zh-Hans-CN"))
-    .slice(0, 8);
-});
-const showSearchResults = computed(() => isSearchFocused.value && Boolean(searchKeyword.value.trim()));
+    .sort((left, right) => left.score - right.score || left.item.name.localeCompare(right.item.name, "zh-Hans-CN"))
+    .slice(0, 8)
+    .map(({ item, score }) => ({ ...item, score }));
+}
 const activeEditOperations = computed(() =>
   EDIT_DATASET_TYPES.flatMap((datasetType) =>
     editOperations[datasetType].map((operation) => ({
@@ -1307,35 +1137,17 @@ const editDialogSubtitle = computed(() => {
   return "确认后可在右侧待提交列表核对。";
 });
 
-const handleItemClick = async (item) => {
-  if (item.children) {
-    const index = expandedKeys.value.indexOf(item.key);
-    if (index > -1) {
-      expandedKeys.value.splice(index, 1);
-    } else {
-      expandedKeys.value.push(item.key);
-    }
-    if (!item.children.some((child) => child.key === activeKey.value)) {
-      await setActiveKey(item.children[0].key);
-    }
-  } else {
-    await setActiveKey(item.key);
-  }
-};
 
+let mapChromeResizeTimer = 0;
 function scheduleMapChromeResize() {
   nextTick(() => {
     MapRef.value?.map?.resize?.();
   });
-  window.setTimeout(() => {
+  // 面板开合动画时长 var(--dm2-dur)=240ms，动画结束后补一次即可，无需中间帧反复 resize
+  window.clearTimeout(mapChromeResizeTimer);
+  mapChromeResizeTimer = window.setTimeout(() => {
     MapRef.value?.map?.resize?.();
-  }, 90);
-  window.setTimeout(() => {
-    MapRef.value?.map?.resize?.();
-  }, 180);
-  window.setTimeout(() => {
-    MapRef.value?.map?.resize?.();
-  }, 260);
+  }, 280);
 }
 
 function handlePanelTogglePointer(event, side) {
@@ -1389,28 +1201,6 @@ function isUpdateModeSwitch(fromKey, toKey) {
   return Boolean(editDatasetFromKey(fromKey) && editDatasetFromKey(toKey));
 }
 
-const menuItems = [
-  {
-    key: "overview",
-    label: "数据总览",
-    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>`,
-  },
-  {
-    key: "update",
-    label: "数据更新",
-    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>`,
-    children: [
-      { key: "update_line", label: "线路数据更新" },
-      { key: "update_station", label: "站点数据更新" },
-      { key: "update_depot", label: "场站数据更新" },
-    ],
-  },
-  {
-    key: "history",
-    label: "历史数据查询",
-    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`,
-  },
-];
 
 async function handleGetAreaList() {
   const seq = ++areaRequestSeq;
@@ -1483,26 +1273,30 @@ function editDatasetFromKey(key = activeKey.value) {
 async function loadOverviewLayers(options = {}) {
   const { force = false, fit = false } = options;
   const mode = mapDataMode();
-  if (!selectedArea.value || !mode) return;
-  const cachedData = readCachedRealData(selectedArea.value);
+  const areaName = selectedArea.value;
+  if (!areaName || !mode) return;
+  const cachedData = readCachedRealData(areaName);
   if (!force && cachedData) {
     const data = cachedData;
     setOverviewStats(data);
     syncHistorySummary(data.history);
     renderRealDataLayers(data, mode);
     if (fit) fitBounds(data.bounds);
+    scheduleRouteStopsHydration(data);
     return;
   }
   const seq = ++layerRequestSeq;
   isLoadingLayer.value = true;
   loadError.value = "";
   try {
-    const data = await getCachedRealData(selectedArea.value, { force });
-    if (seq !== layerRequestSeq) return;
+    const data = await getCachedRealData(areaName, { force });
+    // 与 loadDisplayRanges 对称的双重守卫：seq 之外再校验区域未被切换（如首载并行时 areaList 纠正了 selectedArea）
+    if (seq !== layerRequestSeq || selectedArea.value !== areaName) return;
     setOverviewStats(data);
     syncHistorySummary(data.history);
     renderRealDataLayers(data, mode);
     if (fit) fitBounds(data.bounds);
+    scheduleRouteStopsHydration(data);
   } catch (error) {
     if (seq === layerRequestSeq) {
       loadError.value = error?.message || "真实数据加载失败";
@@ -1514,6 +1308,39 @@ async function loadOverviewLayers(options = {}) {
       isLoadingLayer.value = false;
     }
   }
+}
+
+// routeStops 懒加载水合：首屏只拉核心数据（去掉最大的一份要素），routeStops 到达后
+// 原地并入同一 data 对象并重建派生索引/区划缓存。竞态由 token + 区域/数据引用三重校验兜住。
+let routeStopsHydrationToken = 0;
+function scheduleRouteStopsHydration(data) {
+  if (!isRouteStopsDeferred(data)) return;
+  const token = ++routeStopsHydrationToken;
+  const areaName = selectedArea.value;
+  ensureCachedRouteStops(areaName)
+    .then((merged) => {
+      if (token !== routeStopsHydrationToken || selectedArea.value !== areaName) return;
+      if (merged !== lastNormalizedData) return;
+      // 集合容器已被 clearRealDataLayers 换代（如停留历史页）：不写入废弃容器；
+      // 返回地图页时命中校验会因 routeStopsRaw 引用不一致而全量重建，数据不丢
+      if (realDataAllCollections !== lastNormalizedCollections) return;
+      if (isRouteStopsDeferred(merged)) return;
+      hydrateRouteStops(merged);
+    })
+    .catch(() => {});
+}
+
+function hydrateRouteStops(data) {
+  lastNormalizedRouteStopsRaw = data.routeStops;
+  mutateRealDataCollections(() => {
+    realDataAllCollections.routeStops = normalizeFeatureCollection(data.routeStops);
+    // 水合前产生的站点类本地编辑预览是打在旧（空）集合上的，重放到新集合保证预览不丢
+    editOperations.station.forEach((operation) => applyUploadOperationPreview("station", operation));
+    if (editOperations.station.length) {
+      realDataAllCollections.stations = deriveStationsFromRouteStops(realDataAllCollections.routeStops);
+    }
+  }, { datasets: ["station"] });
+  syncSelectedStationWithCurrentData();
 }
 
 function setOverviewStats(data) {
@@ -1687,22 +1514,29 @@ function ensureMapReady(callback) {
 function renderRealDataLayers(data, mode = "overview") {
   ensureMapReady(async (map) => {
     clearSelectionState();
-    realDataRenderToken += 1;
-    clearDisplayRangeFilterCache();
     const isOverview = mode === "overview";
     const isStationUpdate = mode === "station_update";
     const isLineUpdate = mode === "line_update";
     const isDepotUpdate = mode === "depot_update";
-    realDataAllCollections = {
-      lines: normalizeLineFeatureCollection(data.lines),
-      stations: normalizeStationFeatureCollection(data.stations),
-      routeStops: normalizeFeatureCollection(data.routeStops),
-      depots: normalizeDepotFeatureCollection(data.depots),
-    };
+    if (data && data === lastNormalizedData && lastNormalizedCollections && lastNormalizedRouteStopsRaw === data.routeStops) {
+      // 同一份缓存数据在页面间来回切换：复用规范化结果与全部派生索引，
+      // setGeoJsonSourceData 因引用未变自动短路，整条链路无重计算
+      realDataAllCollections = lastNormalizedCollections;
+    } else {
+      realDataRenderToken += 1;
+      clearDisplayRangeFilterCache();
+      realDataAllCollections = {
+        lines: normalizeLineFeatureCollection(data.lines),
+        stations: normalizeStationFeatureCollection(data.stations),
+        routeStops: normalizeFeatureCollection(data.routeStops),
+        depots: normalizeDepotFeatureCollection(data.depots),
+      };
+      lastNormalizedData = data || null;
+      lastNormalizedCollections = realDataAllCollections;
+      lastNormalizedRouteStopsRaw = data?.routeStops || null;
+    }
+    // applyDisplayRangeFilter 内部已重建三类搜索索引，这里不再重复构建（省一次上万要素遍历）
     applyDisplayRangeFilter({ updateSources: false, clearSelection: false });
-    lineSearchIndex = buildLineSearchIndex(realDataCollections.lines);
-    stationSearchIndex = buildStationSearchIndex(realDataCollections.stations);
-    depotSearchIndex = buildDepotSearchIndex(realDataCollections.depots);
     ensureSourceData(map, SOURCE_LINES, realDataCollections.lines);
     ensureSourceData(map, SOURCE_SELECTED_LINE, emptyFeatureCollection());
     ensureSourceData(map, SOURCE_STATIONS, realDataCollections.stations);
@@ -1760,8 +1594,64 @@ function setGeoJsonSourceData(sourceId, data, map = MapRef.value?.map) {
   return true;
 }
 
-function invalidateRenderedRealDataSources() {
-  [SOURCE_LINES, SOURCE_STATIONS, SOURCE_DEPOTS].forEach((sourceId) => realDataSourceDataRefs.delete(sourceId));
+function invalidateRenderedRealDataSources(options = {}) {
+  const { datasets = EDIT_DATASET_TYPES, except = [] } = options;
+  datasets.forEach((datasetType) => {
+    if (except.includes(datasetType)) return;
+    const sourceId = SOURCE_BY_DATASET[datasetType];
+    if (sourceId) realDataSourceDataRefs.delete(sourceId);
+  });
+  // 集合内容被原地修改而引用不变，派生索引必须强制重建
+  searchIndexesDirty = true;
+  if (datasets.includes("line")) {
+    lineFeatureIndexCache = { token: -1, collection: null, byKey: new Map() };
+  }
+}
+
+// 统一集合突变入口：对 realDataAllCollections 的一切本地修改都应经由此函数，由它成对完成
+// 「区划缓存失效 + 图源/索引失效 + 重新应用过滤」，新增编辑路径不再需要记住手工调用顺序。
+// sourceDiffs: { datasetType: () => diff }（在 mutate 之后求值）；全市视图下尝试 MapLibre
+// updateData 增量更新，成功的数据集保留图源数据引用（跳过全量 setData 重切片），失败自动回退。
+function mutateRealDataCollections(mutate, options = {}) {
+  const { datasets = EDIT_DATASET_TYPES, clearSelection: shouldClearSelection = false, sourceDiffs = null } = options;
+  if (typeof mutate === "function") mutate();
+  const diffedDatasets = [];
+  if (sourceDiffs && selectedDisplayRange.value === DISPLAY_RANGE_ALL) {
+    for (const [datasetType, buildDiff] of Object.entries(sourceDiffs)) {
+      if (typeof buildDiff !== "function") continue;
+      if (applyGeoJsonSourceDiff(datasetType, buildDiff())) diffedDatasets.push(datasetType);
+    }
+  }
+  clearDisplayRangeFilterCache();
+  invalidateRenderedRealDataSources({ datasets, except: diffedDatasets });
+  applyDisplayRangeFilter({ updateSources: true, clearSelection: shouldClearSelection });
+}
+
+function applyGeoJsonSourceDiff(datasetType, diff) {
+  const sourceId = SOURCE_BY_DATASET[datasetType];
+  const source = sourceId ? MapRef.value?.map?.getSource?.(sourceId) : null;
+  if (!source?.updateData || !diff) return false;
+  try {
+    source.updateData(diff);
+    return true;
+  } catch {
+    // 源中缺 id 等情况：回退全量 setData
+    return false;
+  }
+}
+
+function featureUpdateDiff(feature) {
+  if (feature?.id === undefined || feature?.id === null) return null;
+  return {
+    update: [
+      {
+        id: feature.id,
+        ...(feature.geometry ? { newGeometry: feature.geometry } : {}),
+        addOrUpdateProperties: Object.entries(feature.properties || {})
+          .map(([key, value]) => ({ key, value })),
+      },
+    ],
+  };
 }
 
 function ensureRealDataLayerSet(map) {
@@ -1773,7 +1663,7 @@ function ensureRealDataLayerSet(map) {
       paint: {
         "line-color": lineColorPaint(),
         "line-opacity": lineOpacityPaint(),
-        "line-width": lineWidth.value,
+        "line-width": networkLineWidth(),
       },
     });
   }
@@ -1788,8 +1678,9 @@ function ensureRealDataLayerSet(map) {
       },
       paint: {
         "line-color": SELECTED_LINE_GLOW_COLOR,
-        "line-opacity": 0.42,
-        "line-width": selectedLineWidth() * 2.2,
+        "line-opacity": MAP_THEME.route.haloOpacity,
+        "line-width": selectedLineWidth() * MAP_THEME.route.haloWidthRatio,
+        "line-blur": selectedLineWidth() * 0.9,
       },
     });
   }
@@ -1953,9 +1844,9 @@ function stationLabelLayout() {
 
 function stationLabelPaint() {
   return {
-    "text-color": "#1f3132",
+    "text-color": MAP_THEME.station.label,
     "text-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.72, 11, 0.92, 14, 1],
-    "text-halo-color": "rgba(248, 251, 252, 0.94)",
+    "text-halo-color": MAP_THEME.station.labelHalo,
     "text-halo-width": 1.5,
     "text-halo-blur": 0.4,
   };
@@ -2031,18 +1922,19 @@ function loadImage(url) {
 
 function stationIconScale() {
   const highZoomScale = stationSize.value / STATION_ICON_BASE_SIZE;
+  // 低缩放档位刻意压小：中低缩放下站点极密，收成细粒纹理避免"泡泡纸"观感
   return [
     "interpolate",
     ["exponential", 1.25],
     ["zoom"],
     8,
-    0.024,
+    0.018,
     10,
-    highZoomScale * 0.12,
+    highZoomScale * 0.08,
     12,
-    highZoomScale * 0.32,
+    highZoomScale * 0.24,
     14,
-    highZoomScale * 0.68,
+    highZoomScale * 0.62,
     16,
     highZoomScale * 1.08,
   ];
@@ -2110,30 +2002,50 @@ function selectedStationLineKeys() {
   return [...new Set(keys)];
 }
 
-function lineColorPaint() {
-  const keys = selectedRouteLineKeys();
-  if (!keys.length) {
-    const stationLineKeys = selectedStationLineKeys();
-    if (stationLineKeys.length) {
-      return ["match", ["to-string", ["get", "_lineKey"]], stationLineKeys, "#2f6f73", "#8ca0a4"];
-    }
-    return "#2f6f73";
-  }
-  return ["match", ["to-string", ["get", "_lineKey"]], keys, "#2f6f73", "#8ca0a4"];
+// 选中态涂装键只算一次：route/station 两条键路径各含一次索引聚合，调用方在同一次刷新里复用
+function selectedLinePaintKeys() {
+  const routeKeys = selectedRouteLineKeys();
+  if (routeKeys.length) return { scope: "route", keys: routeKeys };
+  const stationKeys = selectedStationLineKeys();
+  if (stationKeys.length) return { scope: "station", keys: stationKeys };
+  return { scope: "none", keys: [] };
 }
 
-function lineOpacityPaint() {
-  const keys = selectedRouteLineKeys();
-  if (!keys.length) {
-    const stationLineKeys = selectedStationLineKeys();
-    if (stationLineKeys.length) {
-      return ["match", ["to-string", ["get", "_lineKey"]], stationLineKeys, 0.72, 0.12];
-    }
-    return 0.7;
+function lineColorPaint(paintKeys = selectedLinePaintKeys()) {
+  if (paintKeys.scope === "route" || paintKeys.scope === "station") {
+    return ["match", ["to-string", ["get", "_lineKey"]], paintKeys.keys, NETWORK_LINE_COLOR, NETWORK_LINE_DIMMED_COLOR];
   }
-  // 选中线路后底图线网整体隐藏：选中线路由橙色高亮图层绘制，其余线路不再淡化保留
-  // （opacity=0 不影响 queryRenderedFeatures 命中测试，仍可点选切换线路）
-  return 0;
+  return NETWORK_LINE_COLOR;
+}
+
+function lineOpacityPaint(paintKeys = selectedLinePaintKeys()) {
+  if (paintKeys.scope === "station") {
+    return ["match", ["to-string", ["get", "_lineKey"]], paintKeys.keys, 0.72, 0.12];
+  }
+  if (paintKeys.scope === "route") {
+    // 选中线路后底图线网整体隐藏：选中线路由橙色高亮图层绘制，其余线路不再淡化保留
+    // （opacity=0 不影响 queryRenderedFeatures 命中测试，仍可点选切换线路）
+    return 0;
+  }
+  return MAP_THEME.network.lineOpacity;
+}
+
+// 线网宽度随 zoom 增长：远景收细成"电路板"底纹，近景加粗便于点选与阅读
+function networkLineWidth() {
+  const width = lineWidth.value;
+  return [
+    "interpolate",
+    ["exponential", 1.4],
+    ["zoom"],
+    9,
+    width * 0.45,
+    12,
+    width * 0.75,
+    14,
+    width * 1.25,
+    16,
+    width * 2.1,
+  ];
 }
 
 function stationOpacityPaint() {
@@ -2145,7 +2057,8 @@ function stationOpacityPaint() {
     // 选中线路后底图站点整体隐藏：线路自身站点由高亮图层（LAYER_ROUTE_STATION_SELECTED）绘制
     return 0;
   }
-  return 0.96;
+  // 中低缩放淡出为纹理，高缩放完全实体，与 stationIconScale 的收细策略配合
+  return ["interpolate", ["linear"], ["zoom"], 8, 0.4, 11, 0.62, 13, 0.85, 14, 0.96];
 }
 
 function normalizeLineFeatureCollection(collection) {
@@ -2233,6 +2146,10 @@ function normalizeStationFeature(feature, index = 0) {
   feature.geometry = feature.geometry || null;
   properties._featureId = properties._featureId || feature.id || properties._featureId;
   properties._stationKey = properties._stationKey || stationFeatureKey(feature, index);
+  // 稳定 feature.id 是 GeoJSONSource.updateData 增量更新的前提
+  if (feature.id === undefined || feature.id === null) {
+    feature.id = String(properties._stationKey);
+  }
   return feature;
 }
 
@@ -2270,6 +2187,9 @@ function normalizeDepotFeature(feature, index = 0) {
   feature.geometry = feature.geometry || null;
   properties._featureId = properties._featureId || feature.id || properties._featureId;
   properties._depotKey = properties._depotKey || depotFeatureKey(feature, index);
+  if (feature.id === undefined || feature.id === null) {
+    feature.id = String(properties._depotKey);
+  }
   return feature;
 }
 
@@ -2330,10 +2250,12 @@ function districtFeatureName(feature) {
 function applyDisplayRangeFilter(options = {}) {
   const { updateSources = true, clearSelection: shouldClearSelection = false } = options;
   const context = activeDisplayRangeContext();
-  const cacheKey = context ? `${realDataRenderToken}:${context.name}` : `${realDataRenderToken}:${DISPLAY_RANGE_ALL}`;
-  const cachedCollections = displayRangeFilterCache.get(cacheKey);
-  if (cachedCollections) {
-    realDataCollections = cachedCollections;
+  const cacheKey = context ? context.name : DISPLAY_RANGE_ALL;
+  // 缓存条目携带来源集合引用做有效性校验，避免 clearRealDataLayers 后残留的过期条目被复用
+  const cachedEntry = displayRangeFilterCache.get(cacheKey);
+  let activeEntry = cachedEntry && cachedEntry.source === realDataAllCollections ? cachedEntry : null;
+  if (activeEntry) {
+    realDataCollections = activeEntry.collections;
   } else if (!context) {
     realDataCollections = {
       lines: realDataAllCollections.lines,
@@ -2341,22 +2263,42 @@ function applyDisplayRangeFilter(options = {}) {
       routeStops: realDataAllCollections.routeStops,
       depots: realDataAllCollections.depots,
     };
-    displayRangeFilterCache.set(cacheKey, realDataCollections);
+    activeEntry = { source: realDataAllCollections, collections: realDataCollections };
+    displayRangeFilterCache.set(cacheKey, activeEntry);
   } else {
-    const routeStopsInRange = featureCollectionFromFeatures((realDataAllCollections.routeStops?.features || []).filter((feature) => pointFeatureInRange(feature, context)));
-    realDataCollections = {
-      lines: stationScopedLineFeatureCollection(realDataAllCollections.lines, realDataAllCollections.routeStops, context),
-      stations: featureCollectionFromFeatures((realDataAllCollections.stations?.features || []).filter((feature) => pointFeatureInRange(feature, context))),
-      routeStops: routeStopsInRange,
-      depots: featureCollectionFromFeatures((realDataAllCollections.depots?.features || []).filter((feature) => pointFeatureInRange(feature, context))),
-    };
-    displayRangeFilterCache.set(cacheKey, realDataCollections);
+    // 未缓存的行政区：优先交给 worker 后台计算（保持当前集合渲染，结果写入缓存后重入本函数走命中路径）；
+    // worker 不可用或构建失败时同步回退
+    if (scheduleDistrictWorkerFilter(context, cacheKey)) {
+      if (shouldClearSelection) {
+        clearSelectionState();
+      }
+      return;
+    }
+    realDataCollections = filterCollectionsByDistrict(realDataAllCollections, context);
+    activeEntry = { source: realDataAllCollections, collections: realDataCollections };
+    displayRangeFilterCache.set(cacheKey, activeEntry);
   }
-  updateOverviewCollectionCounts(context);
+  // 区级总览统计（去重计数+线网长度积分）随缓存条目存储：区间来回切换不再全量重算
+  if (!context) {
+    updateOverviewCollectionCounts(null);
+  } else if (activeEntry.stats) {
+    overviewStats.lineCount = activeEntry.stats.lineCount;
+    overviewStats.stationCount = activeEntry.stats.stationCount;
+    overviewStats.networkScaleKm = activeEntry.stats.networkScaleKm;
+    overviewStats.networkDensityKmPerKm2 = activeEntry.stats.networkDensityKmPerKm2;
+    overviewStats.adminAreaKm2 = activeEntry.stats.adminAreaKm2;
+  } else {
+    updateOverviewCollectionCounts(context);
+    activeEntry.stats = {
+      lineCount: overviewStats.lineCount,
+      stationCount: overviewStats.stationCount,
+      networkScaleKm: overviewStats.networkScaleKm,
+      networkDensityKmPerKm2: overviewStats.networkDensityKmPerKm2,
+      adminAreaKm2: overviewStats.adminAreaKm2,
+    };
+  }
   realDataCollectionsRevision.value += 1;
-  lineSearchIndex = buildLineSearchIndex(realDataCollections.lines);
-  stationSearchIndex = buildStationSearchIndex(realDataCollections.stations);
-  depotSearchIndex = buildDepotSearchIndex(realDataCollections.depots);
+  rebuildSearchIndexesIfNeeded();
   if (shouldClearSelection) {
     clearSelectionState();
   }
@@ -2365,9 +2307,125 @@ function applyDisplayRangeFilter(options = {}) {
   }
 }
 
+function rebuildSearchIndexesIfNeeded() {
+  if (
+    !searchIndexesDirty &&
+    searchIndexSource.lines === realDataCollections.lines &&
+    searchIndexSource.stations === realDataCollections.stations &&
+    searchIndexSource.routeStops === realDataCollections.routeStops &&
+    searchIndexSource.depots === realDataCollections.depots
+  ) {
+    return;
+  }
+  lineSearchIndex = buildLineSearchIndex(realDataCollections.lines);
+  stationSearchIndex = buildStationSearchIndex(realDataCollections.stations);
+  depotSearchIndex = buildDepotSearchIndex(realDataCollections.depots);
+  lineLookup = buildLineLookup(lineSearchIndex);
+  stationRouteLookup = buildStationRouteLookup(realDataCollections.routeStops);
+  searchIndexSource = {
+    lines: realDataCollections.lines,
+    stations: realDataCollections.stations,
+    routeStops: realDataCollections.routeStops,
+    depots: realDataCollections.depots,
+  };
+  searchIndexesDirty = false;
+}
+
 function clearDisplayRangeFilterCache() {
   displayRangeFilterCache = new Map();
   routeStopIndexCache = { token: -1, collection: null, byRouteId: new Map() };
+  lineFeatureIndexCache = { token: -1, collection: null, byKey: new Map() };
+  // worker 持有的集合副本随之过期，下次过滤请求前需要重发 setData
+  districtWorkerDataStale = true;
+}
+
+// —— 行政区裁剪后台线程管理 ——
+// worker 持有集合副本（数据换代/本地编辑后按需重发），过滤请求以 token 防竞态；
+// 结果到达且区选/数据仍有效时写入 displayRangeFilterCache 并重入 applyDisplayRangeFilter。
+let districtWorker = null;
+let districtWorkerFailed = false;
+let districtWorkerDataStale = true;
+let districtWorkerSource = null;
+let districtWorkerRequestSeq = 0;
+let activeDistrictFilterToken = 0;
+const pendingDistrictFilterResolvers = new Map();
+
+function districtFilterWorkerInstance() {
+  if (districtWorkerFailed) return null;
+  if (districtWorker) return districtWorker;
+  try {
+    districtWorker = new Worker(new URL("./districtFilter.worker.js", import.meta.url), { type: "module" });
+    districtWorker.onmessage = (event) => {
+      const message = event?.data || {};
+      if (message.type !== "filterResult") return;
+      const resolve = pendingDistrictFilterResolvers.get(message.requestId);
+      if (resolve) {
+        pendingDistrictFilterResolvers.delete(message.requestId);
+        resolve(message.collections || null);
+      }
+    };
+    districtWorker.onerror = () => {
+      districtWorkerFailed = true;
+      pendingDistrictFilterResolvers.forEach((resolve) => resolve(null));
+      pendingDistrictFilterResolvers.clear();
+      districtWorker?.terminate?.();
+      districtWorker = null;
+    };
+  } catch {
+    districtWorkerFailed = true;
+    districtWorker = null;
+  }
+  return districtWorker;
+}
+
+function scheduleDistrictWorkerFilter(context, cacheKey) {
+  const worker = districtFilterWorkerInstance();
+  if (!worker) return false;
+  try {
+    if (districtWorkerSource !== realDataAllCollections || districtWorkerDataStale) {
+      worker.postMessage({
+        type: "setData",
+        collections: {
+          lines: realDataAllCollections.lines,
+          stations: realDataAllCollections.stations,
+          routeStops: realDataAllCollections.routeStops,
+          depots: realDataAllCollections.depots,
+        },
+      });
+      districtWorkerSource = realDataAllCollections;
+      districtWorkerDataStale = false;
+    }
+  } catch {
+    districtWorkerFailed = true;
+    return false;
+  }
+  const requestId = ++districtWorkerRequestSeq;
+  const token = ++activeDistrictFilterToken;
+  const source = realDataAllCollections;
+  new Promise((resolve) => {
+    pendingDistrictFilterResolvers.set(requestId, resolve);
+    worker.postMessage({
+      type: "filter",
+      requestId,
+      context: { name: context.name, polygons: context.polygons, bounds: context.bounds },
+    });
+  }).then((collections) => {
+    if (token !== activeDistrictFilterToken) return;
+    if (source !== realDataAllCollections) return;
+    if (activeDisplayRangeContext()?.name !== context.name) return;
+    if (!collections) {
+      // worker 侧异常：同步回退一次，保证区选最终可用
+      displayRangeFilterCache.set(cacheKey, {
+        source,
+        collections: filterCollectionsByDistrict(realDataAllCollections, context),
+      });
+      applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
+      return;
+    }
+    displayRangeFilterCache.set(cacheKey, { source, collections });
+    applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
+  });
+  return true;
 }
 
 function activeDisplayRangeContext() {
@@ -2385,21 +2443,18 @@ function activeDisplayRangeContext() {
     polygons,
     bounds,
     areaKm2: geometryPolygonAreaKm2(polygons),
-    boundarySegments: buildBoundarySegments(polygons),
   };
 }
 
 function displayRangeFitBounds() {
+  // featureCollectionBounds 接收要素数组：此前误传集合对象导致切回全市时 fit 静默抛错失效
   return activeDisplayRangeContext()?.bounds
-    || featureCollectionBounds(adminDistrictCollection)
-    || featureCollectionBounds({
-      type: "FeatureCollection",
-      features: [
-        ...(realDataCollections.lines?.features || []),
-        ...(realDataCollections.stations?.features || []),
-        ...(realDataCollections.depots?.features || []),
-      ],
-    });
+    || featureCollectionBounds(adminDistrictCollection?.features || [])
+    || featureCollectionBounds([
+      ...(realDataCollections.lines?.features || []),
+      ...(realDataCollections.stations?.features || []),
+      ...(realDataCollections.depots?.features || []),
+    ]);
 }
 
 function fitDisplayRangeBounds() {
@@ -2420,418 +2475,6 @@ function syncRealDataSourceData() {
   }
   updateSelectedDepotLayer(selectedDepot.value?.feature || null);
   applyLayerPaint();
-}
-
-function featureCollectionFromFeatures(features = []) {
-  return {
-    type: "FeatureCollection",
-    features,
-    featureCount: features.length,
-    bounds: featureCollectionBounds(features),
-  };
-}
-
-function pointFeatureInRange(feature, context) {
-  const coordinate = pointCoordinates(feature?.geometry);
-  return coordinate ? pointInRangeContext(coordinate, context) : false;
-}
-
-function lineFeatureIntersectsRange(feature, context) {
-  const paths = lineCoordinatePaths(feature?.geometry);
-  if (!paths.length) return pointFeatureInRange(feature, context);
-  for (const path of paths) {
-    const coordinates = path.map(validLngLat).filter(Boolean);
-    if (!coordinates.length) continue;
-    if (coordinates.some((coordinate) => pointInRangeContext(coordinate, context))) {
-      return true;
-    }
-    for (let index = 1; index < coordinates.length; index += 1) {
-      if (segmentIntersectsRangeContext(coordinates[index - 1], coordinates[index], context)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function stationScopedLineFeatureCollection(collection, routeStops, context) {
-  const runsByRouteKey = stationRunsByRouteKey(routeStops, context);
-  const features = [];
-  for (const feature of collectionFeatures(collection)) {
-    const routeRuns = stationRunsForLineFeature(feature, runsByRouteKey);
-    if (!routeRuns.length) continue;
-    features.push(...trimLineFeatureToStationRuns(feature, routeRuns));
-  }
-  return featureCollectionFromFeatures(features);
-}
-
-function stationRunsByRouteKey(routeStops, context) {
-  const groups = new Map();
-  collectionFeatures(routeStops).forEach((feature, sourceIndex) => {
-    const coordinate = pointCoordinates(feature?.geometry);
-    if (!coordinate) return;
-    const properties = feature?.properties || {};
-    const keys = routeMatchKeys(properties);
-    if (!keys.length) return;
-    const stop = {
-      coordinate,
-      inRange: pointInRangeContext(coordinate, context),
-      sequence: routeStopSequence(properties),
-      sourceIndex,
-    };
-    keys.forEach((key) => {
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(stop);
-    });
-  });
-
-  const runsByRouteKey = new Map();
-  groups.forEach((stops, key) => {
-    const runs = inRangeArrivalLineRuns(stops);
-    if (runs.length) runsByRouteKey.set(key, runs);
-  });
-  return runsByRouteKey;
-}
-
-function inRangeArrivalLineRuns(stops = []) {
-  // District view keeps only the first contiguous in-range span for each route.
-  // Once the sequence leaves the current district, later re-entry spans are not
-  // drawn, otherwise the map visually bridges across the missing out-of-range stop.
-  const sortedStops = [...stops].sort((left, right) => left.sequence - right.sequence || left.sourceIndex - right.sourceIndex);
-  const runs = [];
-  let hasVisibleSpan = false;
-  for (let index = 1; index < sortedStops.length; index += 1) {
-    const previous = sortedStops[index - 1];
-    const current = sortedStops[index];
-    if (previous.inRange && current.inRange && !pointsAlmostEqual(previous.coordinate, current.coordinate)) {
-      runs.push({
-        start: previous.coordinate,
-        end: current.coordinate,
-      });
-      hasVisibleSpan = true;
-      continue;
-    }
-    if (previous.inRange || current.inRange) {
-      hasVisibleSpan = true;
-    }
-    if (hasVisibleSpan && !current.inRange) {
-      break;
-    }
-  }
-  return runs;
-}
-
-function stationRunsForLineFeature(feature, runsByRouteKey) {
-  const properties = feature?.properties || {};
-  for (const key of routeMatchKeys(properties)) {
-    const runs = runsByRouteKey.get(key);
-    if (runs?.length) return runs;
-  }
-  return [];
-}
-
-function routeMatchKeys(properties = {}) {
-  const lineId = valueOrEmpty(properties.line_id || properties.lineId);
-  const dir = valueOrEmpty(properties.dir || properties.direction || properties.Direction);
-  const routeId = valueOrEmpty(properties.route_id || properties.routeId);
-  const keys = [];
-  if (lineId && dir && routeId) keys.push(`line-dir-route:${lineId}|${dir}|${routeId}`);
-  if (lineId && dir) keys.push(`line-dir:${lineId}|${dir}`);
-  if (routeId) keys.push(`route:${routeId}`);
-  if (lineId) keys.push(`line:${lineId}`);
-  const fallbackId = routeDataId(properties);
-  if (fallbackId) keys.push(`id:${fallbackId}`);
-  return [...new Set(keys)];
-}
-
-function trimLineFeatureToStationRuns(feature, runs = []) {
-  const paths = lineCoordinatePaths(feature?.geometry)
-    .map((path) => (Array.isArray(path) ? path.map(validLngLat).filter(Boolean) : []))
-    .filter((path) => path.length >= 2);
-  if (!paths.length) return [];
-  const features = [];
-  runs.forEach((run, runIndex) => {
-    const coordinates = lineCoordinatesBetweenStops(paths, run.start, run.end);
-    if (coordinates.length < 2) return;
-    features.push({
-      type: "Feature",
-      id: runIndex ? `${feature?.id || feature?.properties?._lineKey || "line"}-${runIndex}` : feature?.id,
-      geometry: {
-        type: "LineString",
-        coordinates,
-      },
-      properties: {
-        ...(feature?.properties || {}),
-      },
-    });
-  });
-  return features;
-}
-
-function lineCoordinatesBetweenStops(paths, start, end) {
-  const startProjection = projectPointToLinePaths(paths, start);
-  const endProjection = projectPointToLinePaths(paths, end);
-  if (!startProjection || !endProjection || startProjection.pathIndex !== endProjection.pathIndex) return [];
-  return sliceLinePathBetweenProjections(paths[startProjection.pathIndex], startProjection, endProjection);
-}
-
-function projectPointToLinePaths(paths, coordinate) {
-  const point = validLngLat(coordinate);
-  if (!point) return null;
-  const projectedPoint = lngLatToWebMercator(point[0], point[1]);
-  let nearest = null;
-  paths.forEach((path, pathIndex) => {
-    let cumulative = 0;
-    for (let segmentIndex = 1; segmentIndex < path.length; segmentIndex += 1) {
-      const startLngLat = path[segmentIndex - 1];
-      const endLngLat = path[segmentIndex];
-      const start = lngLatToWebMercator(startLngLat[0], startLngLat[1]);
-      const end = lngLatToWebMercator(endLngLat[0], endLngLat[1]);
-      const projection = projectWebMercatorPointToSegment(projectedPoint, start, end);
-      const distance = Math.hypot(projectedPoint[0] - projection.point[0], projectedPoint[1] - projection.point[1]);
-      const distanceAlong = cumulative + projection.segmentLength * projection.ratio;
-      if (!nearest || distance < nearest.distance) {
-        nearest = {
-          distance,
-          pathIndex,
-          segmentIndex,
-          ratio: projection.ratio,
-          distanceAlong,
-          coordinate: pointAlongSegment(startLngLat, endLngLat, projection.ratio),
-        };
-      }
-      cumulative += projection.segmentLength;
-    }
-  });
-  return nearest;
-}
-
-function projectWebMercatorPointToSegment(point, start, end) {
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const lengthSquared = dx * dx + dy * dy;
-  if (!lengthSquared) {
-    return {
-      point: start,
-      ratio: 0,
-      segmentLength: 0,
-    };
-  }
-  const ratio = Math.max(0, Math.min(1, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / lengthSquared));
-  return {
-    point: [start[0] + dx * ratio, start[1] + dy * ratio],
-    ratio,
-    segmentLength: Math.sqrt(lengthSquared),
-  };
-}
-
-function sliceLinePathBetweenProjections(path, firstProjection, secondProjection) {
-  const forward = firstProjection.distanceAlong <= secondProjection.distanceAlong;
-  const startProjection = forward ? firstProjection : secondProjection;
-  const endProjection = forward ? secondProjection : firstProjection;
-  const coordinates = [startProjection.coordinate];
-  const startVertexIndex = startProjection.ratio >= 1 - 1e-9 ? startProjection.segmentIndex + 1 : startProjection.segmentIndex;
-  const endVertexIndex = endProjection.ratio >= 1 - 1e-9 ? endProjection.segmentIndex : endProjection.segmentIndex - 1;
-  for (let index = startVertexIndex; index <= endVertexIndex; index += 1) {
-    const coordinate = path[index];
-    if (coordinate && !pointsAlmostEqual(coordinates[coordinates.length - 1], coordinate)) coordinates.push(coordinate);
-  }
-  if (!pointsAlmostEqual(coordinates[coordinates.length - 1], endProjection.coordinate)) {
-    coordinates.push(endProjection.coordinate);
-  }
-  return forward ? coordinates : coordinates.reverse();
-}
-
-function pointInRangeContext(coordinate, context) {
-  if (!coordinate || !boundsContainPoint(context.bounds, coordinate)) return false;
-  return context.polygons.some((rings) => pointInPolygonRings(coordinate, rings));
-}
-
-function segmentIntersectsRangeContext(start, end, context) {
-  const currentBounds = segmentBounds(start, end);
-  if (!boundsIntersect(currentBounds, context.bounds)) return false;
-  const boundarySegments = context.boundarySegments || buildBoundarySegments(context.polygons);
-  for (const segment of boundarySegments) {
-    if (!boundsIntersect(currentBounds, segment.bounds)) continue;
-    if (segmentsIntersect(start, end, segment.start, segment.end)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function clipLineFeatureCollection(collection, context) {
-  const features = [];
-  for (const feature of collectionFeatures(collection)) {
-    features.push(...clipLineFeature(feature, context));
-  }
-  return featureCollectionFromFeatures(features);
-}
-
-function clipLineFeature(feature, context) {
-  if (!feature?.geometry) return [];
-  const properties = { ...(feature.properties || {}) };
-  const clipped = [];
-  for (const path of lineCoordinatePaths(feature.geometry)) {
-    const clippedPaths = clipLinePathToRange(path, context);
-    for (const coordinates of clippedPaths) {
-      if (coordinates.length < 2) continue;
-      clipped.push({
-        type: "Feature",
-        id: feature?.id,
-        geometry: {
-          type: "LineString",
-          coordinates,
-        },
-        properties: { ...properties },
-      });
-    }
-  }
-  return clipped;
-}
-
-function clipLinePathToRange(path, context) {
-  const coordinates = Array.isArray(path) ? path.map(validLngLat).filter(Boolean) : [];
-  if (coordinates.length < 2) return [];
-  const clippedPaths = [];
-  let currentPath = [];
-  for (let index = 1; index < coordinates.length; index += 1) {
-    const start = coordinates[index - 1];
-    const end = coordinates[index];
-    const intervals = lineSegmentInsideIntervals(start, end, context);
-    if (!intervals.length) {
-      if (currentPath.length >= 2) clippedPaths.push(currentPath);
-      currentPath = [];
-      continue;
-    }
-    intervals.forEach(([startT, endT], intervalIndex) => {
-      const intervalStart = pointAlongSegment(start, end, startT);
-      const intervalEnd = pointAlongSegment(start, end, endT);
-      if (!currentPath.length) {
-        currentPath = [intervalStart];
-      } else if (!pointsAlmostEqual(currentPath[currentPath.length - 1], intervalStart)) {
-        if (currentPath.length >= 2) clippedPaths.push(currentPath);
-        currentPath = [intervalStart];
-      }
-      if (!pointsAlmostEqual(currentPath[currentPath.length - 1], intervalEnd)) {
-        currentPath.push(intervalEnd);
-      }
-      if (intervalIndex < intervals.length - 1) {
-        if (currentPath.length >= 2) clippedPaths.push(currentPath);
-        currentPath = [];
-      }
-    });
-  }
-  if (currentPath.length >= 2) clippedPaths.push(currentPath);
-  return clippedPaths;
-}
-
-function lineSegmentInsideIntervals(start, end, context) {
-  const startInside = pointInRangeContext(start, context);
-  const endInside = pointInRangeContext(end, context);
-  if (startInside && endInside && !segmentIntersectsRangeContext(start, end, context)) {
-    return [[0, 1]];
-  }
-  if (!startInside && !endInside && !segmentIntersectsRangeContext(start, end, context)) {
-    return [];
-  }
-  const tValues = [0, 1];
-  const boundarySegments = context.boundarySegments || buildBoundarySegments(context.polygons);
-  const segmentBoundsValue = segmentBounds(start, end);
-  for (const segment of boundarySegments) {
-    if (!boundsIntersect(segmentBoundsValue, segment.bounds)) continue;
-    tValues.push(...segmentIntersectionParameters(start, end, segment.start, segment.end));
-  }
-  const sorted = uniqueSortedNumbers(tValues);
-  if (sorted.length < 2) return [];
-  const intervals = [];
-  for (let index = 0; index < sorted.length - 1; index += 1) {
-    const startT = sorted[index];
-    const endT = sorted[index + 1];
-    if (endT - startT <= 1e-9) continue;
-    const midpoint = pointAlongSegment(start, end, (startT + endT) / 2);
-    if (pointInRangeContext(midpoint, context)) {
-      intervals.push([startT, endT]);
-    }
-  }
-  return intervals;
-}
-
-function buildBoundarySegments(polygons = []) {
-  const segments = [];
-  for (const rings of polygons) {
-    for (const ring of rings) {
-      segments.push(...polygonRingSegments(ring));
-    }
-  }
-  return segments;
-}
-
-function polygonRingSegments(ring) {
-  const coordinates = Array.isArray(ring) ? ring.map(validLngLat).filter(Boolean) : [];
-  if (coordinates.length < 2) return [];
-  const segments = [];
-  for (let index = 1; index < coordinates.length; index += 1) {
-    segments.push({
-      start: coordinates[index - 1],
-      end: coordinates[index],
-      bounds: segmentBounds(coordinates[index - 1], coordinates[index]),
-    });
-  }
-  if (coordinates.length > 2 && !pointsAlmostEqual(coordinates[0], coordinates[coordinates.length - 1])) {
-    segments.push({
-      start: coordinates[coordinates.length - 1],
-      end: coordinates[0],
-      bounds: segmentBounds(coordinates[coordinates.length - 1], coordinates[0]),
-    });
-  }
-  return segments;
-}
-
-function segmentIntersectionParameters(start, end, otherStart, otherEnd) {
-  const rX = end[0] - start[0];
-  const rY = end[1] - start[1];
-  const sX = otherEnd[0] - otherStart[0];
-  const sY = otherEnd[1] - otherStart[1];
-  const denominator = rX * sY - rY * sX;
-  const qPX = otherStart[0] - start[0];
-  const qPY = otherStart[1] - start[1];
-  if (Math.abs(denominator) < 1e-12) {
-    const collinear = Math.abs(qPX * rY - qPY * rX) < 1e-12;
-    const lengthSquared = rX * rX + rY * rY;
-    if (!collinear || lengthSquared < 1e-18) return [];
-    const otherStartT = ((otherStart[0] - start[0]) * rX + (otherStart[1] - start[1]) * rY) / lengthSquared;
-    const otherEndT = ((otherEnd[0] - start[0]) * rX + (otherEnd[1] - start[1]) * rY) / lengthSquared;
-    const overlapStart = Math.max(0, Math.min(otherStartT, otherEndT));
-    const overlapEnd = Math.min(1, Math.max(otherStartT, otherEndT));
-    if (overlapEnd + 1e-9 < overlapStart) return [];
-    return [overlapStart, overlapEnd].map((value) => Math.min(1, Math.max(0, value)));
-  }
-  const t = (qPX * sY - qPY * sX) / denominator;
-  const u = (qPX * rY - qPY * rX) / denominator;
-  if (t < -1e-9 || t > 1 + 1e-9 || u < -1e-9 || u > 1 + 1e-9) return [];
-  return [Math.min(1, Math.max(0, t))];
-}
-
-function pointAlongSegment(start, end, ratio) {
-  const t = Number(ratio);
-  if (!Number.isFinite(t)) return [start[0], start[1]];
-  return [
-    start[0] + (end[0] - start[0]) * t,
-    start[1] + (end[1] - start[1]) * t,
-  ];
-}
-
-function uniqueSortedNumbers(values = []) {
-  return [...new Set(values.filter((value) => Number.isFinite(Number(value))).map(Number))]
-    .sort((left, right) => left - right)
-    .filter((value, index, list) => index === 0 || Math.abs(value - list[index - 1]) > 1e-9);
-}
-
-function pointsAlmostEqual(left, right) {
-  if (!Array.isArray(left) || !Array.isArray(right)) return false;
-  return Math.abs(Number(left[0]) - Number(right[0])) <= 1e-9
-    && Math.abs(Number(left[1]) - Number(right[1])) <= 1e-9;
 }
 
 function featureCollectionLineLengthMeters(collection) {
@@ -2923,105 +2566,10 @@ function normalizePolygonRings(rawRings) {
     .filter((ring) => ring.length >= 3);
 }
 
-function pointInPolygonRings(point, rings) {
-  if (!rings.length || !pointInRing(point, rings[0])) return false;
-  for (let index = 1; index < rings.length; index += 1) {
-    if (pointInRing(point, rings[index])) return false;
-  }
-  return true;
-}
-
-function pointInRing(point, ring) {
-  let inside = false;
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
-    const current = ring[i];
-    const previous = ring[j];
-    if (pointOnSegment(point, previous, current)) return true;
-    const intersects = current[1] > point[1] !== previous[1] > point[1]
-      && point[0] < ((previous[0] - current[0]) * (point[1] - current[1])) / (previous[1] - current[1]) + current[0];
-    if (intersects) inside = !inside;
-  }
-  return inside;
-}
-
-function segmentsIntersect(a, b, c, d) {
-  const o1 = orientation(a, b, c);
-  const o2 = orientation(a, b, d);
-  const o3 = orientation(c, d, a);
-  const o4 = orientation(c, d, b);
-  if (o1 !== o2 && o3 !== o4) return true;
-  return (o1 === 0 && pointOnSegment(c, a, b))
-    || (o2 === 0 && pointOnSegment(d, a, b))
-    || (o3 === 0 && pointOnSegment(a, c, d))
-    || (o4 === 0 && pointOnSegment(b, c, d));
-}
-
-function orientation(a, b, c) {
-  const value = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1]);
-  if (Math.abs(value) < 1e-12) return 0;
-  return value > 0 ? 1 : 2;
-}
-
-function pointOnSegment(point, start, end) {
-  const cross = (point[1] - start[1]) * (end[0] - start[0]) - (point[0] - start[0]) * (end[1] - start[1]);
-  if (Math.abs(cross) > 1e-12) return false;
-  return point[0] <= Math.max(start[0], end[0]) + 1e-12
-    && point[0] + 1e-12 >= Math.min(start[0], end[0])
-    && point[1] <= Math.max(start[1], end[1]) + 1e-12
-    && point[1] + 1e-12 >= Math.min(start[1], end[1]);
-}
-
-function segmentBounds(start, end) {
-  return [
-    Math.min(start[0], end[0]),
-    Math.min(start[1], end[1]),
-    Math.max(start[0], end[0]),
-    Math.max(start[1], end[1]),
-  ];
-}
-
-function boundsContainPoint(bounds, point) {
-  return Array.isArray(bounds)
-    && point[0] >= bounds[0]
-    && point[0] <= bounds[2]
-    && point[1] >= bounds[1]
-    && point[1] <= bounds[3];
-}
-
-function boundsIntersect(left, right) {
-  if (!Array.isArray(left) || !Array.isArray(right)) return true;
-  return left[0] <= right[2] && left[2] >= right[0] && left[1] <= right[3] && left[3] >= right[1];
-}
-
-function featureCollectionBounds(features = []) {
-  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
-  features.forEach((feature) => expandGeometryBounds(feature?.geometry, bounds));
-  return Number.isFinite(bounds[0]) ? bounds : null;
-}
-
 function geometryBounds(geometry) {
   const bounds = [Infinity, Infinity, -Infinity, -Infinity];
   expandGeometryBounds(geometry, bounds);
   return Number.isFinite(bounds[0]) ? bounds : null;
-}
-
-function expandGeometryBounds(geometry, bounds) {
-  if (!geometry?.coordinates) return;
-  expandCoordinateBounds(geometry.coordinates, bounds);
-}
-
-function expandCoordinateBounds(value, bounds) {
-  if (!Array.isArray(value)) return;
-  if (value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))) {
-    const lng = Number(value[0]);
-    const lat = Number(value[1]);
-    bounds[0] = Math.min(bounds[0], lng);
-    bounds[1] = Math.min(bounds[1], lat);
-    bounds[2] = Math.max(bounds[2], lng);
-    bounds[3] = Math.max(bounds[3], lat);
-    return;
-  }
-  value.forEach((item) => expandCoordinateBounds(item, bounds));
 }
 
 function stationFeatureKey(feature, index = 0) {
@@ -3033,10 +2581,6 @@ function stationFeatureKey(feature, index = 0) {
       properties.id ||
       `${properties.stop_name || properties.name || "station"}-${coordinates?.[0] ?? "x"}-${coordinates?.[1] ?? "y"}-${index}`,
   );
-}
-
-function collectionFeatures(collection) {
-  return Array.isArray(collection?.features) ? collection.features : [];
 }
 
 function countUniqueFeatures(collection, keyFn) {
@@ -3089,9 +2633,26 @@ function physicalLineGroups(collection) {
   return [...groups.values()];
 }
 
+// 以 properties 为键做记忆化（名称参与失效判断，改名后自动重算）；总览聚合每次 revision 都要遍历全部线路
+const physicalLineKeyCache = new WeakMap();
 function physicalLineKey(feature, index = 0) {
-  const properties = feature?.properties || {};
-  const familyName = physicalLineFamilyName(properties);
+  const rawProperties = feature?.properties;
+  const properties = rawProperties || {};
+  const name = valueOrEmpty(routeName(properties));
+  const cacheable = Boolean(rawProperties && typeof rawProperties === "object");
+  if (cacheable) {
+    const cached = physicalLineKeyCache.get(rawProperties);
+    if (cached && cached.name === name) return cached.key;
+  }
+  const key = computePhysicalLineKey(feature, properties, name, index);
+  if (cacheable && !key.startsWith("line-index:")) {
+    physicalLineKeyCache.set(rawProperties, { name, key });
+  }
+  return key;
+}
+
+function computePhysicalLineKey(feature, properties, name, index) {
+  const familyName = name ? stripRouteEndpointSuffix(name) : "";
   if (familyName) return `line:${familyName}`;
   const routeId = valueOrEmpty(properties.route_id || properties.routeId);
   if (routeId) return `route:${routeId}`;
@@ -3099,12 +2660,6 @@ function physicalLineKey(feature, index = 0) {
   if (lineId) return `lineid:${lineId}`;
   const fallbackKey = valueOrEmpty(properties._lineKey || properties._featureId || feature?.id);
   return fallbackKey ? `feature:${fallbackKey}` : `line-index:${index}`;
-}
-
-function physicalLineFamilyName(properties = {}) {
-  const name = valueOrEmpty(routeName(properties));
-  if (!name) return "";
-  return stripRouteEndpointSuffix(name);
 }
 
 function stripRouteEndpointSuffix(value) {
@@ -3198,6 +2753,10 @@ function clearRealDataLayers() {
   stationSearchIndex = [];
   lineSearchIndex = [];
   depotSearchIndex = [];
+  // 索引数组已清空，来源引用必须同步作废，否则下次守卫会误判"未变化"而跳过重建
+  searchIndexSource = { lines: null, stations: null, routeStops: null, depots: null };
+  stationRouteLookup = { byStopId: new Map(), byStopKey: new Map(), byStopName: new Map() };
+  lineLookup = { byName: new Map(), byEntry: new Map() };
   realDataCollections = {
     lines: emptyFeatureCollection(),
     stations: emptyFeatureCollection(),
@@ -3217,9 +2776,10 @@ function applyLayerPaint() {
   const map = MapRef.value?.map;
   if (!map) return;
   if (map.getLayer(LAYER_LINES)) {
-    map.setPaintProperty(LAYER_LINES, "line-color", lineColorPaint());
-    map.setPaintProperty(LAYER_LINES, "line-width", lineWidth.value);
-    map.setPaintProperty(LAYER_LINES, "line-opacity", lineOpacityPaint());
+    const paintKeys = selectedLinePaintKeys();
+    map.setPaintProperty(LAYER_LINES, "line-color", lineColorPaint(paintKeys));
+    map.setPaintProperty(LAYER_LINES, "line-width", networkLineWidth());
+    map.setPaintProperty(LAYER_LINES, "line-opacity", lineOpacityPaint(paintKeys));
   }
   if (map.getLayer(LAYER_LINE_SELECTED)) {
     map.setPaintProperty(LAYER_LINE_SELECTED, "line-color", SELECTED_LINE_COLOR);
@@ -3227,8 +2787,9 @@ function applyLayerPaint() {
   }
   if (map.getLayer(LAYER_LINE_SELECTED + "-glow")) {
     map.setPaintProperty(LAYER_LINE_SELECTED + "-glow", "line-color", SELECTED_LINE_GLOW_COLOR);
-    map.setPaintProperty(LAYER_LINE_SELECTED + "-glow", "line-opacity", 0.42);
-    map.setPaintProperty(LAYER_LINE_SELECTED + "-glow", "line-width", selectedLineWidth() * 2.2);
+    map.setPaintProperty(LAYER_LINE_SELECTED + "-glow", "line-opacity", MAP_THEME.route.haloOpacity);
+    map.setPaintProperty(LAYER_LINE_SELECTED + "-glow", "line-width", selectedLineWidth() * MAP_THEME.route.haloWidthRatio);
+    map.setPaintProperty(LAYER_LINE_SELECTED + "-glow", "line-blur", selectedLineWidth() * 0.9);
   }
   if (map.getLayer(LAYER_STATIONS)) {
     map.setLayoutProperty(LAYER_STATIONS, "icon-size", stationIconScale());
@@ -3239,6 +2800,16 @@ function applyLayerPaint() {
   if (map.getLayer(LAYER_ROUTE_STATION_SELECTED)) {
     map.setLayoutProperty(LAYER_ROUTE_STATION_SELECTED, "icon-size", selectedRouteStationIconScale());
   }
+}
+
+let layerPaintRaf = 0;
+// 滑块 @input 拖动中高频触发，用 rAF 合并到每帧一次重绘（读 .value 在执行时取最新值）
+function scheduleApplyLayerPaint() {
+  if (layerPaintRaf) return;
+  layerPaintRaf = requestAnimationFrame(() => {
+    layerPaintRaf = 0;
+    applyLayerPaint();
+  });
 }
 
 function fitBounds(bounds) {
@@ -3349,7 +2920,20 @@ function selectableMapLayerIds(map) {
   return layerIds.filter((layerId) => map?.getLayer?.(layerId));
 }
 
+let hoverCursorRaf = 0;
+let hoverCursorEvent = null;
+
+// mousemove 无节流（见 MyMap.js），这里用 rAF 把命中查询合并到每帧一次，避免每个鼠标事件都跑 queryRenderedFeatures
 function updateSelectableMapCursor(event) {
+  hoverCursorEvent = event;
+  if (hoverCursorRaf) return;
+  hoverCursorRaf = requestAnimationFrame(() => {
+    hoverCursorRaf = 0;
+    runSelectableCursorQuery(hoverCursorEvent);
+  });
+}
+
+function runSelectableCursorQuery(event) {
   const map = MapRef.value?.map;
   const canvas = map?.getCanvas?.();
   if (!canvas) return;
@@ -3379,6 +2963,11 @@ function unbindSelectableHoverListener() {
     mapInstance.removeEventListener("handle:mousemove", selectableHoverListenerId);
   }
   selectableHoverListenerId = null;
+  if (hoverCursorRaf) {
+    cancelAnimationFrame(hoverCursorRaf);
+    hoverCursorRaf = 0;
+  }
+  hoverCursorEvent = null;
   const canvas = mapInstance?.map?.getCanvas?.();
   if (canvas) canvas.style.cursor = "";
 }
@@ -3684,8 +3273,9 @@ function isShpDeletionCandidate(operation) {
 
 function openShpDeletionDialog(datasetType, updates, deletions, comparison = {}) {
   shpDeletionDialog.datasetType = datasetType;
-  shpDeletionDialog.updates = deepClone(updates);
-  shpDeletionDialog.deletions = deepClone(deletions);
+  // markRaw：成千上万条带完整几何的操作无需深响应式，分页/勾选依赖的是整体替换与 page/selectedIds
+  shpDeletionDialog.updates = markRaw(deepClone(updates));
+  shpDeletionDialog.deletions = markRaw(deepClone(deletions));
   shpDeletionDialog.selectedIds = [];
   shpDeletionDialog.protectedFeatureCount = Number(comparison.protectedFeatureCount || 0);
   shpDeletionDialog.page = 1;
@@ -4365,14 +3955,16 @@ function setAttributeTableView(view) {
     attributeTable.title = view.scope === "route" ? "线路站点编组" : "线路属性表";
   }
   attributeTable.subtitle = view.subtitle;
-  attributeTable.columns = deepClone(view.columns);
+  // 视图所有权约定：传入的 view 要么是新构建的，要么来自 viewCache（切换离开时 capture 会重新克隆快照），
+  // 这里直接引用即可，省去每次打开/切换的三重深克隆
+  attributeTable.columns = view.columns;
   attributeTable.historyColumns = attributeTableHistoryColumns(
     attributeTable.datasetType,
     view.scope,
     view.columns,
   );
-  attributeTable.rows = deepClone(view.rows);
-  attributeTable.originalRows = deepClone(view.originalRows);
+  attributeTable.rows = view.rows;
+  attributeTable.originalRows = view.originalRows;
 }
 
 function attributeTableHistoryColumns(datasetType, scope, columns = []) {
@@ -5038,7 +4630,12 @@ function routeStopFeatureKey(properties = {}) {
 
 function deepClone(value) {
   if (value === undefined || value === null) return value;
-  return JSON.parse(JSON.stringify(value));
+  try {
+    // structuredClone 比 JSON 往返快且不丢 undefined；toRaw 剥掉响应式代理（代理无法结构化克隆）
+    return structuredClone(toRaw(value));
+  } catch {
+    return JSON.parse(JSON.stringify(value));
+  }
 }
 
 function appendUploadOperations(datasetType, operations) {
@@ -5050,26 +4647,27 @@ function appendUploadOperations(datasetType, operations) {
     const operationDatasetType = ["line", "station", "depot"].includes(operation.datasetType)
       ? operation.datasetType
       : datasetType;
-    editOperations[operationDatasetType].push(operation);
+    // 冻结后 Vue 跳过深代理：操作对象入队后只读，只有队列数组本身保持响应式
+    editOperations[operationDatasetType].push(Object.freeze(operation));
     existingIds.add(operation.operationId);
     acceptedOperations.push({ datasetType: operationDatasetType, operation });
     stationTouched ||= operationDatasetType === "station";
   }
-  if (acceptedOperations.length <= MAX_IMMEDIATE_PREVIEW_OPERATIONS) {
-    acceptedOperations.forEach(({ datasetType: operationDatasetType, operation }) => {
-      applyUploadOperationPreview(operationDatasetType, operation);
-    });
-  } else {
-    ElMessage.info(`本次修改共 ${acceptedOperations.length} 条，数据量较大，地图将在提交后统一刷新`);
-  }
-  if (stationTouched) {
+  const touchedDatasets = [...new Set(acceptedOperations.map((item) => item.datasetType))];
+  mutateRealDataCollections(() => {
     if (acceptedOperations.length <= MAX_IMMEDIATE_PREVIEW_OPERATIONS) {
-      realDataAllCollections.stations = deriveStationsFromRouteStops(realDataAllCollections.routeStops);
+      acceptedOperations.forEach(({ datasetType: operationDatasetType, operation }) => {
+        applyUploadOperationPreview(operationDatasetType, operation);
+      });
+      // routeStops 尚未水合（懒加载在途）时集合近乎为空，此刻派生会把站点图层清空；
+      // 跳过派生，待 hydrateRouteStops 重放 pending 操作后统一派生
+      if (stationTouched && !isRouteStopsDeferred(lastNormalizedData)) {
+        realDataAllCollections.stations = deriveStationsFromRouteStops(realDataAllCollections.routeStops);
+      }
+    } else {
+      ElMessage.info(`本次修改共 ${acceptedOperations.length} 条，数据量较大，地图将在提交后统一刷新`);
     }
-  }
-  clearDisplayRangeFilterCache();
-  invalidateRenderedRealDataSources();
-  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
+  }, { datasets: touchedDatasets.length ? touchedDatasets : undefined });
   if (stationTouched) {
     syncSelectedStationWithCurrentData();
   }
@@ -5203,51 +4801,29 @@ function closeLineRoutePicker() {
   lineRoutePicker.point = null;
 }
 
+// popover 开合状态已内聚到 MapControlsToolbar，父级通过 ref 统一关闭
 function closeStylePopover() {
-  showStylePopover.value = false;
+  mapToolbarRef.value?.closePopovers?.();
 }
 
 function closeRangePopover() {
-  showRangePopover.value = false;
+  mapToolbarRef.value?.closePopovers?.();
 }
 
-function toggleRangePopover() {
-  if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
-    selectedDisplayRange.value = DISPLAY_RANGE_ALL;
-    closeRangePopover();
-    return;
+function handleToolbarBeforeOpen(which) {
+  closeSearchResults();
+  closeEditActionMenu();
+  closeLineRoutePicker();
+  if (which === "range" && !displayRangeOptions.value.length && !isLoadingDisplayRanges.value) {
+    loadDisplayRanges({ force: Boolean(displayRangeError.value) });
   }
-  if (!showRangePopover.value) {
-    closeSearchResults();
-    closeEditActionMenu();
-    closeLineRoutePicker();
-    closeStylePopover();
-    if (!displayRangeOptions.value.length && !isLoadingDisplayRanges.value) {
-      loadDisplayRanges({ force: Boolean(displayRangeError.value) });
-    }
-  }
-  showRangePopover.value = !showRangePopover.value;
 }
 
 function selectDisplayRange(rangeName) {
   const nextRange = String(rangeName || "").trim();
   if (!nextRange) return;
-  if (nextRange === selectedDisplayRange.value) {
-    closeRangePopover();
-    return;
-  }
+  if (nextRange === selectedDisplayRange.value) return;
   selectedDisplayRange.value = nextRange;
-  closeRangePopover();
-}
-
-function toggleStylePopover() {
-  if (!showStylePopover.value) {
-    closeSearchResults();
-    closeEditActionMenu();
-    closeLineRoutePicker();
-    closeRangePopover();
-  }
-  showStylePopover.value = !showStylePopover.value;
 }
 
 function closeTransientSurfaces() {
@@ -5318,7 +4894,7 @@ function addEditOperation(datasetType, type, target, payload = {}, lngLat = null
   const title = operationTitle(datasetType, type, target, payload);
   const detail = operationDetail(type, target, payload, lngLat);
   const changedFields = changedFieldsForEditOperation(datasetType, type, target);
-  editOperations[datasetType].push({
+  editOperations[datasetType].push(Object.freeze({
     operationId,
     datasetType,
     type,
@@ -5335,7 +4911,7 @@ function addEditOperation(datasetType, type, target, payload = {}, lngLat = null
       depotKey: target?.properties?._depotKey || "",
       ...(datasetType === "station" ? { stationScope: "physical" } : {}),
     },
-  });
+  }));
 }
 
 function changedFieldsForEditOperation(datasetType, type, target) {
@@ -5381,10 +4957,16 @@ function applyLocalEdit(datasetType, action, target, payload) {
 function applyLocalDelete(datasetType, target) {
   const collection = collectionForDataset(datasetType, "all");
   const targetId = featureTargetId(target);
-  collection.features = collection.features.filter((feature) => featureTargetId(feature) !== targetId);
-  clearDisplayRangeFilterCache();
-  invalidateRenderedRealDataSources();
-  applyDisplayRangeFilter({ updateSources: true, clearSelection: true });
+  const removedFeature = collection.features.find((feature) => featureTargetId(feature) === targetId);
+  mutateRealDataCollections(() => {
+    collection.features = collection.features.filter((feature) => featureTargetId(feature) !== targetId);
+  }, {
+    datasets: [datasetType],
+    clearSelection: true,
+    sourceDiffs: removedFeature?.id !== undefined && removedFeature?.id !== null
+      ? { [datasetType]: () => ({ remove: [removedFeature.id] }) }
+      : null,
+  });
   clearSelection();
 }
 
@@ -5404,15 +4986,18 @@ function addLocalFeature(datasetType, payload) {
     properties.lon = Number(payload.lng);
     properties.lat = Number(payload.lat);
   }
-  collection.features.push({
+  const feature = {
     type: "Feature",
     id: featureId,
     geometry: { type: "Point", coordinates: [Number(payload.lng), Number(payload.lat)] },
     properties,
+  };
+  mutateRealDataCollections(() => {
+    collection.features.push(feature);
+  }, {
+    datasets: [datasetType],
+    sourceDiffs: { [datasetType]: () => ({ add: [plainGeoJsonFeature(feature)] }) },
   });
-  clearDisplayRangeFilterCache();
-  invalidateRenderedRealDataSources();
-  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
 }
 
 function updateLocalFeatureProperties(datasetType, target, updater) {
@@ -5424,14 +5009,10 @@ function updateLocalFeature(datasetType, target, updater) {
   const targetId = featureTargetId(target);
   const feature = collection.features.find((item) => featureTargetId(item) === targetId);
   if (!feature) return;
-  updater(feature);
-  clearDisplayRangeFilterCache();
-  invalidateRenderedRealDataSources();
-  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
-}
-
-function refreshDatasetSource(datasetType) {
-  applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
+  mutateRealDataCollections(() => updater(feature), {
+    datasets: [datasetType],
+    sourceDiffs: { [datasetType]: () => featureUpdateDiff(feature) },
+  });
 }
 
 function collectionForDataset(datasetType, scope = "visible") {
@@ -5599,8 +5180,6 @@ function formatLngLat(lng, lat) {
 
 function selectSearchResult(result) {
   if (!result) return;
-  searchKeyword.value = result.name;
-  closeSearchResults();
   closeStylePopover();
   closeEditActionMenu();
   closeLineRoutePicker();
@@ -5623,36 +5202,14 @@ function selectSearchResult(result) {
   focusFeature(result.feature, { minZoom: 12, maxZoom: 15 });
 }
 
-function selectFirstSearchResult() {
-  if (searchResults.value.length) {
-    selectSearchResult(searchResults.value[0]);
-  }
-}
-
 function closeSearchResults() {
-  isSearchFocused.value = false;
+  searchBoxRef.value?.close?.();
 }
 
-function handleSearchFocus() {
+function handleSearchBoxFocus() {
   closeStylePopover();
   closeEditActionMenu();
   closeLineRoutePicker();
-  isSearchFocused.value = true;
-}
-
-function handleSearchInput() {
-  isSearchFocused.value = true;
-}
-
-function clearSearchKeyword() {
-  searchKeyword.value = "";
-  isSearchFocused.value = true;
-}
-
-function handleSearchBlur() {
-  window.setTimeout(() => {
-    isSearchFocused.value = false;
-  }, 120);
 }
 
 function selectStation(feature) {
@@ -5668,7 +5225,7 @@ function selectStation(feature) {
   };
   const routeNames = routesForStation(selectedFeature);
   const enrichedRoutes = routeNames.map((name) => {
-    const matched = lineSearchIndex.find((item) => item.name === name);
+    const matched = lineLookup.byName.get(name);
     const passengerFlow = routePassengerFlowValue(matched?.feature?.properties);
     return {
       name,
@@ -5772,7 +5329,7 @@ function stationRouteOptions(station = selectedStation.value) {
       if (route?.feature) {
         return routeOptionFromProperties(route.feature.properties || {}, route.feature);
       }
-      const matched = lineSearchIndex.find((item) => item.name === route?.name);
+      const matched = route?.name ? lineLookup.byName.get(route.name) : null;
       return matched ? routeOptionFromProperties(matched.feature.properties || {}, matched.feature) : null;
     })
     .filter(Boolean);
@@ -5784,20 +5341,25 @@ function stationRouteOptionsFromRouteStops(station = selectedStation.value) {
   const stationProperties = stationFeature?.properties || {};
   const stationId = valueOrEmpty(station.id || stationProperties.stop_id || stationProperties._stationKey);
   const stationLabel = station.name || stationName(stationProperties);
-  const routeStops = Array.isArray(realDataCollections.routeStops?.features) ? realDataCollections.routeStops.features : [];
+  // 索引双通道命中（stop_id/_stationKey + 名称），按 sourceIndex 合并去重以保持源顺序遍历语义
+  const candidateEntries = new Map();
+  if (stationId) {
+    for (const entry of stationRouteLookup.byStopKey.get(stationId) || []) candidateEntries.set(entry.sourceIndex, entry);
+  }
+  if (stationLabel) {
+    for (const entry of stationRouteLookup.byStopName.get(stationLabel) || []) candidateEntries.set(entry.sourceIndex, entry);
+  }
+  const candidates = [...candidateEntries.values()].sort((left, right) => left.sourceIndex - right.sourceIndex);
   const options = [];
   const seen = new Set();
-  for (const feature of routeStops) {
+  for (const { feature } of candidates) {
     const properties = feature?.properties || {};
-    const stopId = valueOrEmpty(properties.stop_id || properties._stationKey);
-    const matchesStation = (stationId && stopId && stationId === stopId) || Boolean(stationLabel && stationName(properties) === stationLabel);
-    if (!matchesStation) continue;
     const routeId = routeDataId(properties);
     const routeLabel = routeName(properties);
     const key = routeId || routeLabel;
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const matchedLine = lineSearchIndex.find((item) => isSameLogicalRoute(properties, item.feature?.properties || {}));
+    const matchedLine = lineItemMatchingRoute(properties);
     options.push(routeOptionFromProperties(matchedLine?.feature?.properties || properties, matchedLine?.feature || null));
   }
   return options;
@@ -5990,8 +5552,9 @@ function clearSelectedLineLayer() {
 function updateBaseLineOpacity() {
   const map = MapRef.value?.map;
   if (map?.getLayer?.(LAYER_LINES)) {
-    map.setPaintProperty(LAYER_LINES, "line-color", lineColorPaint());
-    map.setPaintProperty(LAYER_LINES, "line-opacity", lineOpacityPaint());
+    const paintKeys = selectedLinePaintKeys();
+    map.setPaintProperty(LAYER_LINES, "line-color", lineColorPaint(paintKeys));
+    map.setPaintProperty(LAYER_LINES, "line-opacity", lineOpacityPaint(paintKeys));
   }
 }
 
@@ -6068,19 +5631,18 @@ function routeNamesForStation(feature) {
   const properties = feature?.properties || {};
   const stopId = valueOrEmpty(properties.stop_id || properties._stationKey);
   const name = stationName(properties);
-  const routeStops = Array.isArray(realDataCollections.routeStops?.features) ? realDataCollections.routeStops.features : [];
-  if (!routeStops.length || (!stopId && !name)) return [];
+  if (!stopId && !name) return [];
+  // 与原全量 filter 语义一致：有 stopId 时仅按 stop_id 命中，否则按名称命中
+  const candidates = stopId
+    ? stationRouteLookup.byStopId.get(stopId) || []
+    : stationRouteLookup.byStopName.get(name) || [];
+  if (!candidates.length) return [];
   const seen = new Set();
-  return routeStops
-    .filter((stopFeature) => {
-      const stopProperties = stopFeature.properties || {};
-      const matchesId = stopId && valueOrEmpty(stopProperties.stop_id) === stopId;
-      const matchesName = !stopId && name && stationName(stopProperties) === name;
-      return matchesId || matchesName;
-    })
+  return candidates
+    .map((entry) => entry.feature)
     .sort((left, right) => routeStopSequence(left.properties) - routeStopSequence(right.properties))
     .map((stopFeature) => {
-      const matchedLine = lineSearchIndex.find((item) => isSameLogicalRoute(stopFeature.properties || {}, item.feature?.properties || {}));
+      const matchedLine = lineItemMatchingRoute(stopFeature.properties || {});
       return {
         key: routeDataId(stopFeature.properties) || routeName(stopFeature.properties),
         name: matchedLine?.name || routeName(stopFeature.properties),
@@ -6245,19 +5807,9 @@ function isRouteStopMatch(stopProperties = {}, routeId = "") {
   return false;
 }
 
-function routeStopSequence(properties = {}) {
-  const value = Number(firstAvailableValue(properties, ["seq"]));
-  return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
-}
-
-function routeDataId(properties = {}) {
-  return valueOrEmpty(properties.line_id || properties.lineId || properties.route_id || properties.routeId);
-}
-
 function routeFeaturesForOption(route = selectedRoute.value) {
   const routeProperties = route?.properties || route?.feature?.properties || {};
-  const features = Array.isArray(realDataAllCollections.lines?.features) ? realDataAllCollections.lines.features : [];
-  const matchedFeatures = features.filter((feature) => isSameLogicalRoute(routeProperties, feature.properties || {}));
+  const matchedFeatures = linesMatchingRoute(routeProperties);
   if (matchedFeatures.length) return matchedFeatures;
   return route?.feature ? [route.feature] : [];
 }
@@ -6407,20 +5959,6 @@ function compareStationRoutesByPassenger(left, right) {
   return String(left?.name || "").localeCompare(String(right?.name || ""), "zh-Hans-CN");
 }
 
-function firstAvailableValue(properties, keys) {
-  for (const key of keys) {
-    const value = valueOrEmpty(properties?.[key]);
-    if (value) return value;
-  }
-  return "";
-}
-
-function valueOrEmpty(value) {
-  if (value === undefined || value === null) return "";
-  const text = String(value).trim();
-  return text && text !== "[]" ? text : "";
-}
-
 function splitOperatorCompanies(value) {
   const text = valueOrEmpty(value);
   if (!text) return [];
@@ -6511,13 +6049,102 @@ function buildDepotSearchIndex(collection) {
   });
 }
 
+function buildStationRouteLookup(collection) {
+  const byStopId = new Map();
+  const byStopKey = new Map();
+  const byStopName = new Map();
+  const push = (map, key, entry) => {
+    if (!key) return;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(entry);
+  };
+  collectionFeatures(collection).forEach((feature, sourceIndex) => {
+    const properties = feature?.properties || {};
+    const entry = { feature, sourceIndex };
+    push(byStopId, valueOrEmpty(properties.stop_id), entry);
+    push(byStopKey, valueOrEmpty(properties.stop_id || properties._stationKey), entry);
+    push(byStopName, stationName(properties), entry);
+  });
+  return { byStopId, byStopKey, byStopName };
+}
+
+function buildLineLookup(indexItems) {
+  const byName = new Map();
+  const byEntry = new Map();
+  indexItems.forEach((item, index) => {
+    if (!byName.has(item.name)) byName.set(item.name, item);
+    const properties = item.feature?.properties || {};
+    const featureKey = valueOrEmpty(properties._lineKey || properties._featureId);
+    if (featureKey && !byEntry.has(`k:${featureKey}`)) byEntry.set(`k:${featureKey}`, { item, index });
+    const routeId = routeDataId(properties);
+    if (routeId && !byEntry.has(`r:${routeId}`)) byEntry.set(`r:${routeId}`, { item, index });
+  });
+  return { byName, byEntry };
+}
+
+// 等价于 lineSearchIndex.find((item) => isSameLogicalRoute(properties, item.feature.properties))：
+// 线路键与 route_id 双通道命中后取索引序最小者，保持 find 的首个命中语义
+function lineItemMatchingRoute(properties = {}) {
+  const candidates = [];
+  const featureKey = valueOrEmpty(properties._lineKey || properties._featureId);
+  if (featureKey) {
+    const entry = lineLookup.byEntry.get(`k:${featureKey}`);
+    if (entry) candidates.push(entry);
+  }
+  const routeId = routeDataId(properties);
+  if (routeId) {
+    const entry = lineLookup.byEntry.get(`r:${routeId}`);
+    if (entry) candidates.push(entry);
+  }
+  if (!candidates.length) return null;
+  if (candidates.length > 1 && candidates[1].index < candidates[0].index) return candidates[1].item;
+  return candidates[0].item;
+}
+
+function lineFeatureIndexByRouteKey() {
+  const collection = realDataAllCollections.lines;
+  if (lineFeatureIndexCache.token === realDataRenderToken && lineFeatureIndexCache.collection === collection) {
+    return lineFeatureIndexCache.byKey;
+  }
+  const byKey = new Map();
+  const push = (key, entry) => {
+    if (!byKey.has(key)) byKey.set(key, []);
+    byKey.get(key).push(entry);
+  };
+  collectionFeatures(collection).forEach((feature, index) => {
+    const properties = feature?.properties || {};
+    const featureKey = valueOrEmpty(properties._lineKey || properties._featureId);
+    if (featureKey) push(`k:${featureKey}`, { feature, index });
+    const routeId = routeDataId(properties);
+    if (routeId) push(`r:${routeId}`, { feature, index });
+  });
+  lineFeatureIndexCache = { token: realDataRenderToken, collection, byKey };
+  return byKey;
+}
+
+// 等价于 realDataAllCollections.lines.features.filter((f) => isSameLogicalRoute(properties, f.properties))，按源顺序返回
+function linesMatchingRoute(properties = {}) {
+  const byKey = lineFeatureIndexByRouteKey();
+  const merged = new Map();
+  const featureKey = valueOrEmpty(properties._lineKey || properties._featureId);
+  if (featureKey) {
+    for (const entry of byKey.get(`k:${featureKey}`) || []) merged.set(entry.index, entry.feature);
+  }
+  const routeId = routeDataId(properties);
+  if (routeId) {
+    for (const entry of byKey.get(`r:${routeId}`) || []) merged.set(entry.index, entry.feature);
+  }
+  if (!merged.size) return [];
+  return [...merged.entries()].sort((left, right) => left[0] - right[0]).map(([, feature]) => feature);
+}
+
 function rankSearchItems(items, query) {
-  return items
-    .map((item) => {
-      const score = searchScore(item.searchText, query);
-      return score >= 0 ? { ...item, score } : null;
-    })
-    .filter(Boolean);
+  const entries = [];
+  for (const item of items) {
+    const score = searchScore(item.searchText, query);
+    if (score >= 0) entries.push({ item, score });
+  }
+  return entries;
 }
 
 function searchScore(text, query) {
@@ -6561,13 +6188,6 @@ function nearestLineSegment(geometry, lngLat) {
   return nearest;
 }
 
-function lineCoordinatePaths(geometry) {
-  if (!geometry?.coordinates) return [];
-  if (geometry.type === "LineString") return [geometry.coordinates];
-  if (geometry.type === "MultiLineString") return geometry.coordinates;
-  return [];
-}
-
 function distanceToSegment(point, start, end) {
   const dx = end[0] - start[0];
   const dy = end[1] - start[1];
@@ -6575,19 +6195,6 @@ function distanceToSegment(point, start, end) {
   if (!lengthSquared) return Math.hypot(point[0] - start[0], point[1] - start[1]);
   const ratio = Math.max(0, Math.min(1, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / lengthSquared));
   return Math.hypot(point[0] - (start[0] + ratio * dx), point[1] - (start[1] + ratio * dy));
-}
-
-function pointCoordinates(geometry) {
-  if (geometry?.type !== "Point" || !Array.isArray(geometry.coordinates)) return null;
-  const [lng, lat] = geometry.coordinates;
-  return Number.isFinite(Number(lng)) && Number.isFinite(Number(lat)) ? [Number(lng), Number(lat)] : null;
-}
-
-function validLngLat(coordinate) {
-  if (!Array.isArray(coordinate) || coordinate.length < 2) return null;
-  const lng = Number(coordinate[0]);
-  const lat = Number(coordinate[1]);
-  return Number.isFinite(lng) && Number.isFinite(lat) ? [lng, lat] : null;
 }
 
 function isValidPoint(point) {
@@ -6817,6 +6424,9 @@ function exitHistoryPreview() {
   historyPreview.error = "";
   historyPreview.version = null;
   closeTransientSurfaces();
+  // 预览渲染占用了规范化缓存槽（指向历史版本数据），退出时作废，杜绝任何误命中可能
+  lastNormalizedData = null;
+  lastNormalizedCollections = null;
   clearRealDataLayers();
   unbindStationClickListener();
   loadHistoryList();
@@ -6866,6 +6476,9 @@ function clearAllEditOperations() {
     editOperations[datasetType].splice(0);
   });
   editOperationRenderCount.value = EDIT_OPERATION_RENDER_BATCH;
+  // 放弃/提交修改后，规范化缓存里可能带着本地预览的增删结果，必须作废以便下次从原始数据重建
+  lastNormalizedData = null;
+  lastNormalizedCollections = null;
 }
 
 function preventDefaultIfPossible(event) {
@@ -7032,13 +6645,15 @@ function parsePickerRoute(fullName) {
   return { mainName: fullName, desc: "" };
 }
 
-onMounted(async () => {
+onMounted(() => {
   bindBrowserGestureGuards();
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleEscapeKey);
-  await handleGetAreaList();
-  await loadDisplayRanges();
-  await loadOverviewLayers({ fit: true });
+  // 三个请求互不依赖（默认区域已就位），并行发出省两个串行往返；
+  // 若区域列表纠正了 selectedArea，watch(selectedArea) 会自动重载后两者
+  handleGetAreaList().catch(() => {});
+  loadDisplayRanges();
+  loadOverviewLayers({ fit: true });
 });
 
 onBeforeUnmount(() => {
@@ -7051,6 +6666,17 @@ onBeforeUnmount(() => {
   }
   unbindSelectableHoverListener();
   unbindStationClickListener();
+  if (layerPaintRaf) {
+    cancelAnimationFrame(layerPaintRaf);
+    layerPaintRaf = 0;
+  }
+  window.clearTimeout(mapChromeResizeTimer);
+  activeDistrictFilterToken += 1;
+  pendingDistrictFilterResolvers.clear();
+  districtWorker?.terminate?.();
+  districtWorker = null;
+  districtWorkerSource = null;
+  districtWorkerDataStale = true;
   clearRealDataLayers();
 });
 </script>
@@ -7059,8 +6685,6 @@ onBeforeUnmount(() => {
 .datebase_box,
 .dm-overview-panel,
 .dm-edit-panel,
-.map-controls-toolbar,
-.map-search,
 .edit-action-menu,
 .history-preview-panel {
   scale: var(--app-panel-scale);
@@ -7128,521 +6752,6 @@ onBeforeUnmount(() => {
   }
 }
 
-.dm-sidebar {
-  position: fixed;
-  left: 0;
-  top: var(--app-header-height);
-  bottom: 0;
-  width: 260px;
-  background: #ffffff;
-  border-right: 1px solid rgba(0, 0, 0, 0.06);
-  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.03);
-  display: flex;
-  flex-direction: column;
-  z-index: var(--z-panel);
-  cursor: default;
-  user-select: text;
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: none;
-
-  &::-webkit-scrollbar {
-    display: none;
-  }
-}
-
-.sidebar-brand {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 24px 20px 10px;
-  border-bottom: none !important;
-  margin-bottom: 4px;
-
-  .brand-icon {
-    color: var(--app-blue);
-    opacity: 0.9;
-    flex-shrink: 0;
-  }
-
-  .brand-text {
-    font-size: 15px;
-    font-weight: 700;
-    color: #111827;
-    letter-spacing: 0.03em;
-    text-transform: uppercase;
-  }
-}
-
-.map-search {
-  position: fixed;
-  top: calc(var(--app-header-height) + 18px);
-  left: 278px;
-  z-index: calc(var(--z-header) + 6);
-  width: 240px;
-  transform-origin: top left;
-  transition: filter var(--app-motion-normal) var(--app-ease-out);
-
-  &.is-focused {
-    width: 300px;
-  }
-}
-
-.search-icon-svg {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
-  color: rgba(21, 105, 222, 0.45);
-  pointer-events: none;
-  transition: color 0.25s ease, transform 0.25s ease;
-  z-index: 2;
-}
-
-.map-search.is-focused .search-icon-svg {
-  color: var(--app-blue);
-  transform: translateY(-50%) scale(1.08);
-}
-
-.search-input {
-  width: 100%;
-  height: 34px;
-  padding: 0 32px 0 34px;
-  border: 1px solid rgba(21, 105, 222, 0.15);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(12px) saturate(180%);
-  -webkit-backdrop-filter: blur(12px) saturate(180%);
-  color: #0f253e;
-  font-size: 13px;
-  font-weight: 600;
-  outline: none;
-  box-shadow: 
-    0 4px 12px rgba(15, 39, 68, 0.04), 
-    0 1px 2px rgba(0, 0, 0, 0.02),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  transition:
-    border-color 0.25s cubic-bezier(0.25, 1, 0.5, 1),
-    box-shadow 0.25s cubic-bezier(0.25, 1, 0.5, 1),
-    background-color 0.25s cubic-bezier(0.25, 1, 0.5, 1);
-
-  &::placeholder {
-    color: #94a3b8;
-    font-weight: 500;
-  }
-
-  &:hover {
-    background: rgba(255, 255, 255, 0.92);
-    border-color: rgba(21, 105, 222, 0.3);
-    box-shadow: 
-      0 6px 16px rgba(15, 39, 68, 0.06), 
-      0 1px 2px rgba(0, 0, 0, 0.02),
-      inset 0 1px 0 rgba(255, 255, 255, 0.8);
-  }
-
-  &:focus {
-    background: #ffffff;
-    border-color: var(--app-blue);
-    box-shadow: 
-      0 0 0 3px rgba(21, 105, 222, 0.15),
-      0 8px 24px rgba(21, 105, 222, 0.08),
-      inset 0 1px 0 rgba(255, 255, 255, 1);
-  }
-}
-
-.search-clear-btn {
-  position: absolute;
-  top: 50%;
-  right: 9px;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: rgba(100, 116, 139, 0.08);
-  color: #64748b;
-  transform: translateY(-50%) scale(1);
-  cursor: pointer;
-  z-index: 2;
-  transition: 
-    transform var(--app-motion-normal) var(--app-ease-out),
-    background-color 0.2s ease,
-    color 0.2s ease;
-
-  &:hover {
-    background: rgba(21, 105, 222, 0.12);
-    color: var(--app-blue);
-    transform: translateY(-50%) rotate(90deg) scale(1.15);
-  }
-
-  &:active {
-    transform: translateY(-50%) rotate(90deg) scale(0.92);
-  }
-}
-
-.search-result-list {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  right: 0;
-  z-index: calc(var(--z-panel) + 20);
-  max-height: 320px;
-  overflow-y: auto;
-  padding: 6px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(20px) saturate(190%);
-  -webkit-backdrop-filter: blur(20px) saturate(190%);
-  border: 1px solid rgba(21, 105, 222, 0.12);
-  box-shadow: 
-    0 12px 36px rgba(15, 39, 68, 0.12),
-    0 4px 12px rgba(15, 39, 68, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
-  scrollbar-width: thin;
-  scrollbar-color: rgba(21, 105, 222, 0.15) transparent;
-
-  &::-webkit-scrollbar {
-    width: 4px;
-  }
-  &::-webkit-scrollbar-thumb {
-    background: rgba(21, 105, 222, 0.15);
-    border-radius: 10px;
-  }
-  &::-webkit-scrollbar-track {
-    background: transparent;
-  }
-}
-
-.search-result-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  margin-bottom: 2px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #1e293b;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color 0.2s cubic-bezier(0.25, 1, 0.5, 1),
-    transform 0.2s cubic-bezier(0.25, 1, 0.5, 1);
-
-  &:last-child {
-    margin-bottom: 0;
-  }
-
-  &:hover {
-    background: linear-gradient(135deg, rgba(21, 105, 222, 0.06) 0%, rgba(21, 105, 222, 0.02) 100%);
-    transform: translateX(4px);
-  }
-
-  &:active {
-    transform: translateX(2px);
-  }
-}
-
-.result-icon-wrapper {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  flex-shrink: 0;
-  transition: transform 0.2s ease;
-
-  .type-svg {
-    width: 14px;
-    height: 14px;
-  }
-
-  &.station {
-    background: rgba(13, 148, 136, 0.1);
-    color: #0d9488;
-    border: 1px solid rgba(13, 148, 136, 0.12);
-  }
-
-  &.line {
-    background: rgba(21, 105, 222, 0.1);
-    color: var(--app-blue);
-    border: 1px solid rgba(21, 105, 222, 0.12);
-  }
-
-  &.depot {
-    background: rgba(124, 58, 237, 0.1);
-    color: #7c3aed;
-    border: 1px solid rgba(124, 58, 237, 0.12);
-  }
-}
-
-.result-meta-block {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 2px;
-}
-
-.result-name {
-  color: #1e293b;
-  font-size: 13px;
-  line-height: 1.3;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.result-type-text {
-  color: #64748b;
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-}
-
-.search-empty {
-  margin: 0;
-  padding: 12px 10px;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 500;
-  text-align: center;
-}
-
-.search-dropdown-fade-enter-active,
-.search-dropdown-fade-leave-active {
-  transition: 
-    opacity var(--app-motion-normal) var(--app-ease-out),
-    transform var(--app-motion-normal) var(--app-ease-out);
-}
-
-.search-dropdown-fade-enter-from,
-.search-dropdown-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-8px) scale(0.97);
-}
-
-.sidebar-nav {
-  display: flex;
-  flex-direction: column;
-  padding: 4px 12px;
-  gap: 4px;
-}
-
-.menu-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.nav-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  cursor: pointer;
-  color: #4b5563;
-  font-size: 14px;
-  font-weight: 500;
-  font-family: inherit;
-  text-align: left;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.15s ease;
-
-  .nav-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    flex-shrink: 0;
-    transition: color 0.2s ease;
-  }
-
-  .nav-label {
-    flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .chevron-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: transform 0.2s ease;
-    color: #9ca3af;
-
-    &.expanded {
-      transform: rotate(180deg);
-    }
-  }
-
-  &:hover {
-    background: rgba(21, 105, 222, 0.05);
-    color: #1f2937;
-
-    .nav-icon {
-      color: var(--app-blue);
-    }
-
-    .chevron-icon {
-      color: #4b5563;
-    }
-  }
-
-  &:active {
-    transform: scale(0.98);
-  }
-
-  &.active {
-    background: rgba(21, 105, 222, 0.09);
-    color: var(--app-blue);
-    font-weight: 600;
-
-    .nav-icon {
-      color: var(--app-blue);
-    }
-  }
-}
-
-.sub-nav-list {
-  padding-left: 28px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 4px;
-  overflow: hidden;
-}
-
-.sub-nav-item {
-  position: relative;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 14px 8px 16px !important;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-  color: #6b7280;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: inherit;
-  text-align: left;
-  transition: 
-    padding-left var(--app-motion-normal) var(--app-ease-out),
-    color 0.25s ease,
-    background-color 0.25s ease !important;
-
-  .sub-dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: currentColor;
-    opacity: 0;
-    transform: scale(0.7);
-    transition:
-      opacity var(--app-motion-normal) var(--app-ease-out),
-      transform var(--app-motion-normal) var(--app-ease-out);
-  }
-
-  .nav-label {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  &:hover {
-    background: rgba(21, 105, 222, 0.04) !important;
-    color: #111827 !important;
-    padding-left: 20px !important;
-
-    .sub-dot {
-      opacity: 0.5;
-      transform: scale(0.9);
-    }
-  }
-
-  &:active {
-    transform: scale(0.98);
-  }
-
-  &.active {
-    background: rgba(21, 105, 222, 0.07) !important;
-    color: var(--app-blue-strong) !important;
-    font-weight: 700;
-    padding-left: 22px !important;
-
-    .sub-dot {
-      opacity: 1;
-      transform: scale(1);
-    }
-  }
-}
-
-.slide-fade-enter-active {
-  transition:
-    opacity var(--app-motion-normal) var(--app-ease-out),
-    transform var(--app-motion-normal) var(--app-ease-out);
-
-  .sub-nav-item {
-    transition: 
-      transform var(--app-motion-normal) var(--app-ease-out),
-      opacity var(--app-motion-normal) var(--app-ease-out),
-      padding-left var(--app-motion-normal) var(--app-ease-out),
-      color 0.25s ease,
-      background-color 0.25s ease !important;
-      
-    @starting-style {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    
-    &:nth-child(1) {
-      transition-delay: 0.04s;
-    }
-    &:nth-child(2) {
-      transition-delay: 0.09s;
-    }
-    &:nth-child(3) {
-      transition-delay: 0.14s;
-    }
-  }
-}
-
-.slide-fade-leave-active {
-  transition:
-    opacity 0.2s ease-in,
-    transform 0.25s cubic-bezier(0.4, 0, 1, 1);
-}
-
-.slide-fade-enter-from,
-.slide-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-6px);
-}
-
-.sidebar-footer {
-  flex: 1;
-}
-
 .dm-overview-panel,
 .dm-edit-panel {
   position: fixed;
@@ -7665,8 +6774,7 @@ onBeforeUnmount(() => {
     0 18px 44px rgba(15, 66, 125, 0.14),
     0 5px 14px rgba(15, 39, 68, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(18px) saturate(165%);
-  -webkit-backdrop-filter: blur(18px) saturate(165%);
+  /* 背景已近乎不透明（0.98/0.95），blur 视觉收益≈0 但每帧合成代价高，移除 */
   transition: transform var(--app-motion-slow) var(--app-ease-out), opacity var(--app-motion-normal) ease;
 
   &::before,
@@ -7872,7 +6980,9 @@ onBeforeUnmount(() => {
   padding: 22px 26px;
   overflow-y: auto;
   background: #f7f9fc;
-}.overview-title-row {
+}
+
+.overview-title-row {
   position: relative;
   display: flex;
   align-items: flex-start;
@@ -7921,7 +7031,9 @@ onBeforeUnmount(() => {
     font-weight: 700;
   }
 }
+
 /* Base Metric Card */
+
 .metric-card {
   position: relative;
   overflow: hidden;
@@ -7958,6 +7070,7 @@ onBeforeUnmount(() => {
 }
 
 /* 1. Hero Card: 线网总规模 */
+
 .hero-card {
   min-height: 94px;
   background:
@@ -7999,12 +7112,15 @@ onBeforeUnmount(() => {
 }
 
 /* 2. Grid Layout */
+
 .metric-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
+
 /* 3. Density Card */
+
 .density-card {
   flex-direction: row;
   align-items: center;
@@ -8048,6 +7164,7 @@ onBeforeUnmount(() => {
 }
 
 /* 4. Coverage Card */
+
 .coverage-card {
   padding: 15px 16px;
   background: rgba(255, 255, 255, 0.88);
@@ -8113,6 +7230,7 @@ onBeforeUnmount(() => {
     }
   }
 }
+
 .load-error {
   margin: 12px 0 0;
   color: var(--app-coral);
@@ -8864,315 +7982,55 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.map-controls-toolbar {
-  position: fixed;
-  top: calc(var(--app-header-height) + var(--space-sm));
-  right: var(--app-edge);
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  z-index: calc(var(--z-header) + 5);
-  transform-origin: top right;
-
-  &.with-panel {
-    right: calc(var(--app-edge) + 394px);
-  }
-}
-
-.control-block {
-  display: flex;
-  flex-direction: column;
-  width: 44px;
-  overflow: hidden;
-  border-radius: var(--app-card-radius);
-  background-color: var(--app-card-bg);
-  border: 1px solid rgba(21, 105, 222, 0.11);
-  box-shadow: var(--app-shadow-sm);
-}
-
-.control-btn {
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--app-ink);
-  cursor: pointer;
-  transition:
-    background-color var(--app-motion-normal) var(--app-ease-out),
-    color var(--app-motion-normal) var(--app-ease-out),
-    transform var(--app-motion-fast) var(--app-ease-press);
-
-  &:not(:last-child) {
-    border-bottom: 1px solid rgba(21, 105, 222, 0.08);
-  }
-
-  &:hover,
-  &.active {
-    background-color: var(--app-cyan-soft);
-    color: var(--app-cyan-strong);
-  }
-
-  &:active {
-    transform: translateY(1px);
-  }
-
-  svg,
-  .pitch-arrows {
-    transition: transform var(--app-motion-normal) var(--app-ease-out);
-  }
-
-  &:hover svg,
-  &:hover .pitch-arrows {
-    transform: translateY(-1px);
-  }
-}
-
-.td-btn {
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.compass-btn .pitch-arrows {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  color: currentColor;
-}
-
-.range-popover,
-.style-popover {
-  position: absolute;
-  right: 48px;
-  width: min(240px, calc(100vw - 96px));
-  padding: 14px 14px 12px;
-  border-radius: 8px;
-  background: rgba(251, 253, 255, 0.96);
-  border: 1px solid rgba(21, 105, 222, 0.14);
-  box-shadow: 0 16px 34px rgba(15, 39, 68, 0.14);
-}
-
-.range-popover {
-  top: 188px;
-}
-
-.style-popover {
-  top: 236px;
-}
-
-.popover-title {
-  color: #12304f;
-  font-size: 13px;
-  font-weight: 700;
-  margin-bottom: 10px;
-}
-
-.range-list {
-  width: 100%;
-  max-height: min(310px, calc(100vh - 260px));
-  display: grid;
-  gap: 6px;
-  overflow-y: auto;
-  padding-right: 2px;
-  scrollbar-width: thin;
-}
-
-.range-option {
-  width: 100%;
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--app-ink);
-  font-size: 13px;
-  line-height: 1.25;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-  transition:
-    background-color var(--app-motion-normal) var(--app-ease-out),
-    border-color var(--app-motion-normal) var(--app-ease-out),
-    color var(--app-motion-normal) var(--app-ease-out),
-    transform var(--app-motion-fast) var(--app-ease-press);
-}
-
-.range-option:hover,
-.range-option:focus-visible {
-  background: var(--app-cyan-soft);
-  border-color: rgba(11, 145, 183, 0.2);
-  color: var(--app-cyan-strong);
-  outline: none;
-  transform: translateX(2px);
-}
-
-.range-option.active {
-  background: rgba(21, 105, 222, 0.1);
-  border-color: rgba(21, 105, 222, 0.26);
-  color: var(--app-blue-strong);
-}
-
-.range-option-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.range-option-check {
-  flex: 0 0 auto;
-}
-
-.range-state {
-  margin: 0;
-  padding: 10px 8px;
-  border-radius: 8px;
-  background: rgba(21, 105, 222, 0.06);
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.45;
-  font-weight: 600;
-  text-align: center;
-}
-
-.range-error {
-  margin: 8px 0 0;
-  color: #b45309;
-  font-size: 12px;
-  line-height: 1.45;
-  font-weight: 600;
-}
-
-.slider-row {
-  display: grid;
-  gap: 6px;
-  margin-top: 6px;
-
-  .label {
-    display: flex;
-    justify-content: space-between;
-    color: #38536e;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .val-text {
-    color: var(--app-blue);
-  }
-}
-
-.popover-fade-enter-active,
-.popover-fade-leave-active {
-  transition:
-    opacity 0.16s ease,
-    transform 0.16s ease;
-}
-
-.popover-fade-enter-from,
-.popover-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-
 @media (max-width: 860px) {
-  .datebase_box {
+.datebase_box {
     top: calc(var(--app-header-height) + var(--space-lg));
     right: var(--app-edge);
     max-width: calc(100vw - (var(--app-edge) * 2));
   }
 
-  .dm-sidebar {
-    width: 220px;
-  }
-
-  .map-search {
-    left: 238px;
-    width: min(220px, calc(100vw - 260px));
-  }
-
-  .search-result-list {
-    width: 100%;
-  }
-
-  .dm-overview-panel {
+.dm-overview-panel {
     right: var(--app-edge);
     width: min(320px, calc(100vw - 260px));
   }
 
-  .dm-edit-panel {
+.dm-edit-panel {
     right: var(--app-edge);
     width: min(320px, calc(100vw - 260px));
   }
 
-  .dm-history-page {
+.dm-history-page {
     left: 220px;
     padding: 18px;
   }
 
-  .history-content {
+.history-content {
     grid-template-columns: 1fr;
   }
 
-  .history-preview-panel {
+.history-preview-panel {
     left: 238px;
     width: min(380px, calc(100vw - 260px));
   }
 
-  .history-version-node {
+.history-version-node {
     grid-template-columns: 20px minmax(0, 1fr);
   }
 
-  .history-version-side {
+.history-version-side {
     grid-column: 2;
     align-items: flex-start;
     margin-top: -8px;
   }
-
-  .map-controls-toolbar.with-panel {
-    right: calc(var(--app-edge) + 334px);
-  }
-
-  .sidebar-brand {
-    padding: 16px 16px 12px;
-
-    .brand-text {
-      font-size: 14px;
-    }
-  }
-
-  .nav-item {
-    padding: 10px 12px;
-    font-size: 13px;
-  }
-
-  .sub-nav-list {
-    padding-left: 20px;
-  }
-
-  .sub-nav-item {
-    padding: 8px 12px;
-    font-size: 12px;
-  }
 }
 
 /* Premium reskin for the data-management module. Kept as overrides to avoid touching behavior. */
+
 .datebase_box,
-.dm-sidebar,
-.map-search,
 .dm-overview-panel,
 .dm-edit-panel,
 .dm-history-page,
 .history-preview-panel,
-.map-controls-toolbar,
 .line-route-picker,
 .edit-action-menu {
   --dm-panel-scale: 0.94;
@@ -9202,137 +8060,9 @@ onBeforeUnmount(() => {
 .datebase_box,
 .dm-overview-panel,
 .dm-edit-panel,
-.map-controls-toolbar,
-.map-search,
 .edit-action-menu,
 .history-preview-panel {
   scale: var(--dm-panel-scale);
-}
-
-.dm-sidebar {
-  left: 16px;
-  top: calc(var(--app-header-height) + 14px);
-  bottom: 18px;
-  width: 250px;
-  padding: 6px;
-  border: 1px solid var(--dm-border);
-  border-radius: 24px;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 252, 0.96), rgba(241, 243, 235, 0.91)),
-    repeating-linear-gradient(135deg, rgba(31, 49, 50, 0.025) 0 1px, transparent 1px 7px);
-  box-shadow: var(--dm-shadow);
-  overflow: hidden auto;
-}
-
-.dm-sidebar::before {
-  content: "";
-  position: absolute;
-  inset: 6px;
-  pointer-events: none;
-  border-radius: 19px;
-  border: 1px solid rgba(255, 255, 255, 0.64);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.sidebar-brand {
-  padding: 18px 16px 14px;
-  margin: 0 0 6px;
-  gap: 11px;
-}
-
-.sidebar-brand .brand-icon {
-  width: 28px;
-  height: 28px;
-  padding: 5px;
-  color: var(--dm-accent);
-  border-radius: 10px;
-  background: var(--dm-accent-soft);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.sidebar-brand .brand-text {
-  color: var(--dm-ink-strong);
-  font-size: 14px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: none;
-}
-
-.sidebar-nav {
-  gap: 6px;
-  padding: 4px 8px 16px;
-}
-
-.nav-item {
-  min-height: 46px;
-  padding: 12px 13px;
-  border-radius: 15px;
-  color: #4e5e5d;
-  font-size: 13.5px;
-  font-weight: 600;
-  transition:
-    background-color 360ms var(--dm-ease),
-    color 360ms var(--dm-ease),
-    box-shadow 360ms var(--dm-ease),
-    transform 260ms var(--dm-ease);
-}
-
-.nav-item .nav-icon svg,
-.chevron-icon svg {
-  stroke-width: 1.75;
-}
-
-.nav-item:hover {
-  background: rgba(255, 255, 255, 0.62);
-  color: var(--dm-ink-strong);
-  transform: translateX(2px);
-  box-shadow: inset 0 0 0 1px rgba(47, 111, 115, 0.08);
-}
-
-.nav-item.active {
-  color: var(--dm-accent-strong);
-  background:
-    linear-gradient(135deg, rgba(47, 111, 115, 0.14), rgba(184, 135, 70, 0.1)),
-    rgba(255, 255, 255, 0.72);
-  box-shadow:
-    inset 0 0 0 1px rgba(47, 111, 115, 0.18),
-    inset 3px 0 0 var(--dm-copper);
-}
-
-.nav-item.active .nav-icon,
-.nav-item:hover .nav-icon {
-  color: var(--dm-accent);
-}
-
-.sub-nav-list {
-  margin: 0 0 5px 22px;
-  padding-left: 11px;
-  border-left: 1px solid rgba(47, 111, 115, 0.16);
-}
-
-.sub-nav-item {
-  padding: 8px 12px !important;
-  border-radius: 12px;
-  color: #697775;
-  font-size: 12.5px;
-  font-weight: 600;
-  transition:
-    background-color 340ms var(--dm-ease),
-    color 340ms var(--dm-ease),
-    transform 260ms var(--dm-ease),
-    padding-left 340ms var(--dm-ease) !important;
-}
-
-.sub-nav-item:hover {
-  padding-left: 16px !important;
-  background: rgba(255, 255, 255, 0.56) !important;
-  color: var(--dm-ink-strong) !important;
-}
-
-.sub-nav-item.active {
-  padding-left: 17px !important;
-  color: var(--dm-accent-strong) !important;
-  background: rgba(47, 111, 115, 0.11) !important;
 }
 
 .datebase_box {
@@ -9367,70 +8097,8 @@ onBeforeUnmount(() => {
   box-shadow: inset 0 0 0 1px var(--dm-border-strong), 0 0 0 4px rgba(47, 111, 115, 0.08) !important;
 }
 
-.map-search {
-  top: calc(var(--app-header-height) + 20px);
-  left: 288px;
-  width: 292px;
-  transition:
-    transform 360ms var(--dm-ease),
-    filter 360ms var(--dm-ease);
-}
-
-.map-search.is-focused {
-  width: 292px;
-  transform: translateY(-2px);
-}
-
-.search-input {
-  height: 42px;
-  padding-left: 40px;
-  border: 1px solid rgba(42, 59, 58, 0.12);
-  border-radius: 16px;
-  background: rgba(252, 250, 244, 0.92);
-  color: var(--dm-ink-strong);
-  font-size: 13px;
-  font-weight: 600;
-  box-shadow: 0 14px 32px rgba(31, 49, 50, 0.11), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  transition:
-    border-color 360ms var(--dm-ease),
-    box-shadow 360ms var(--dm-ease),
-    background-color 360ms var(--dm-ease),
-    transform 260ms var(--dm-ease);
-}
-
-.search-input:hover,
-.search-input:focus {
-  border-color: var(--dm-border-strong);
-  background: rgba(255, 255, 252, 0.98);
-  box-shadow: 0 18px 42px rgba(31, 49, 50, 0.14), 0 0 0 4px rgba(47, 111, 115, 0.08);
-}
-
-.search-icon-svg {
-  left: 15px;
-  color: rgba(47, 111, 115, 0.62);
-  stroke-width: 2;
-}
-
-.search-clear-btn {
-  right: 12px;
-  width: 20px;
-  height: 20px;
-  background: rgba(47, 111, 115, 0.08);
-  color: var(--dm-accent);
-}
-
-.search-clear-btn:hover {
-  background: var(--dm-copper-soft);
-  color: #8f642b;
-}
-
-.search-result-list,
 .line-route-picker,
-.edit-action-menu,
-.range-popover,
-.style-popover {
+.edit-action-menu {
   border: 1px solid rgba(42, 59, 58, 0.14);
   border-radius: 18px;
   background: rgba(252, 250, 244, 0.97);
@@ -9439,7 +8107,6 @@ onBeforeUnmount(() => {
   -webkit-backdrop-filter: none;
 }
 
-.search-result-item,
 .picker-route-btn {
   border-radius: 13px;
   color: var(--dm-ink);
@@ -9450,15 +8117,11 @@ onBeforeUnmount(() => {
     transform 260ms var(--dm-ease);
 }
 
-.search-result-item:hover,
 .picker-route-btn:hover {
   background: rgba(47, 111, 115, 0.08);
   transform: translateX(3px);
 }
 
-.result-icon-wrapper.station,
-.result-icon-wrapper.line,
-.result-icon-wrapper.depot,
 .picker-route-btn .picker-icon-wrapper {
   border-color: rgba(47, 111, 115, 0.14);
   background: rgba(47, 111, 115, 0.09);
@@ -9599,6 +8262,7 @@ onBeforeUnmount(() => {
 .station-route-empty {
   color: var(--dm-muted);
 }
+
 .hero-card .label-row .metric-note,
 .coverage-card .card-title-row .metric-note {
   color: rgba(184, 135, 70, 0.82);
@@ -9622,10 +8286,12 @@ onBeforeUnmount(() => {
 .grid-card .grid-unit {
   color: var(--dm-muted);
 }
+
 .grid-card .card-header .card-icon,
 .density-card .card-left .card-icon {
   color: var(--dm-accent);
 }
+
 .grid-card.stations-card .grid-num,
 .flow-value {
   color: var(--dm-accent);
@@ -9724,53 +8390,8 @@ onBeforeUnmount(() => {
   border-top-color: rgba(42, 59, 58, 0.09);
 }
 
-.map-controls-toolbar {
-  top: calc(var(--app-header-height) + 18px);
-  right: calc(var(--app-edge) + 2px);
-}
-
-.map-controls-toolbar.with-panel {
-  right: calc(var(--app-edge) + 424px);
-}
-
-.control-block {
-  width: 46px;
-  border: 1px solid rgba(42, 59, 58, 0.12);
-  border-radius: 18px;
-  background: rgba(252, 250, 244, 0.94);
-  box-shadow: 0 16px 34px rgba(31, 49, 50, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.72);
-}
-
-.control-btn {
-  width: 46px;
-  height: 46px;
-  color: var(--dm-ink);
-}
-
-.control-btn:hover,
-.control-btn.active {
-  background-color: rgba(47, 111, 115, 0.1);
-  color: var(--dm-accent-strong);
-}
-
-.range-popover {
-  top: 198px;
-  right: 52px;
-}
-
-.style-popover {
-  top: 248px;
-  right: 52px;
-}
-
-.popover-title,
-.slider-row .label,
 .picker-title {
   color: var(--dm-ink);
-}
-
-.slider-row .val-text {
-  color: var(--dm-accent);
 }
 
 .dm-history-page {
@@ -9787,6 +8408,7 @@ onBeforeUnmount(() => {
     repeating-linear-gradient(135deg, rgba(31, 49, 50, 0.026) 0 1px, transparent 1px 9px);
   box-shadow: var(--dm-shadow);
 }
+
 .history-version-node.active-data .history-version-main {
   background: rgba(235, 246, 239, 0.86);
   border-color: rgba(47, 111, 115, 0.36);
@@ -9796,6 +8418,7 @@ onBeforeUnmount(() => {
 .history-current-tag {
   background: var(--dm-accent);
 }
+
 .history-preview-panel {
   left: 288px;
   top: calc(var(--app-header-height) + 76px);
@@ -9853,103 +8476,72 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 860px) {
-  .dm-sidebar {
-    left: 10px;
-    width: 220px;
-    border-radius: 20px;
-  }
-
-  .map-search {
-    left: 244px;
-    width: min(270px, calc(100vw - 268px));
-  }
-
-  .map-search.is-focused {
-    width: min(270px, calc(100vw - 268px));
-  }
-
-  .dm-overview-panel,
-  .dm-edit-panel {
+.dm-overview-panel,
+.dm-edit-panel {
     width: min(350px, calc(100vw - 260px));
   }
 
-  .map-controls-toolbar.with-panel {
-    right: calc(var(--app-edge) + min(360px, calc(100vw - 250px)));
-  }
-
-  .dm-history-page {
+.dm-history-page {
     left: 244px;
     padding: 18px;
   }
 
-  .history-content {
+.history-content {
     grid-template-columns: 1fr;
   }
 
-  .history-preview-panel {
+.history-preview-panel {
     left: 244px;
     width: min(400px, calc(100vw - 268px));
   }
 
-  .history-version-node {
+.history-version-node {
     grid-template-columns: 22px minmax(0, 1fr);
   }
 }
 
 @media (max-width: 720px) {
-  .dm-sidebar {
-    right: 10px;
-    bottom: auto;
-    width: auto;
-    max-height: 48vh;
-  }
-
-  .map-search,
-  .history-preview-panel,
-  .dm-overview-panel,
-  .dm-edit-panel,
-  .dm-history-page {
+.history-preview-panel,
+.dm-overview-panel,
+.dm-edit-panel,
+.dm-history-page {
     left: 10px;
     right: 10px;
     width: auto;
   }
 
-  .dm-overview-panel,
-  .dm-edit-panel {
+.dm-overview-panel,
+.dm-edit-panel {
     top: calc(var(--app-header-height) + 230px);
     height: calc(100vh - var(--app-header-height) - 250px);
   }
 
-  .dm-history-page {
+.dm-history-page {
     top: calc(var(--app-header-height) + 230px);
   }
 
-  .history-current-version,
-  .history-content {
+.history-current-version,
+.history-content {
     grid-template-columns: 1fr;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dm-overview-panel,
-  .dm-edit-panel,
-  .dm-history-page,
-  .history-preview-panel,
-  .map-search,
-  .map-controls-toolbar {
+.dm-overview-panel,
+.dm-edit-panel,
+.dm-history-page,
+.history-preview-panel {
     animation: none;
   }
 }
 
 /* User-requested correction: full-height left rail and cooler unified surfaces. */
+
 .datebase_box,
-.dm-sidebar,
-.map-search,
 .dm-overview-panel,
 .dm-edit-panel,
 .dm-history-page,
 .history-preview-panel,
-.map-controls-toolbar,
 .line-route-picker,
 .edit-action-menu {
   --dm-panel-scale: 0.92;
@@ -9972,79 +8564,18 @@ onBeforeUnmount(() => {
   --dm-shadow: 0 22px 60px rgba(24, 43, 50, 0.16), 0 4px 14px rgba(24, 43, 50, 0.06);
 }
 
-.dm-sidebar {
-  left: 0;
-  top: var(--app-header-height);
-  bottom: 0;
-  width: 260px;
-  padding: 8px 10px 14px;
-  border-width: 0 1px 0 0;
-  border-color: rgba(35, 50, 55, 0.1);
-  border-radius: 0;
-  background:
-    linear-gradient(180deg, rgba(250, 253, 254, 0.98), rgba(241, 247, 249, 0.96)),
-    repeating-linear-gradient(135deg, rgba(35, 50, 55, 0.018) 0 1px, transparent 1px 8px);
-  box-shadow: 12px 0 34px rgba(24, 43, 50, 0.08);
-}
-
-.dm-sidebar::before {
-  display: none;
-}
-
 .datebase_box {
   background: rgba(249, 252, 253, 0.92);
   border-color: rgba(35, 50, 55, 0.1);
   box-shadow: 0 12px 28px rgba(24, 43, 50, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.74);
 }
 
-.sidebar-brand {
-  padding: 18px 12px 14px;
-  border-bottom: 1px solid rgba(35, 50, 55, 0.08) !important;
-}
-
-.sidebar-brand .brand-icon {
-  background: rgba(47, 111, 115, 0.08);
-  color: var(--dm-accent);
-}
-
-.nav-item {
-  border-radius: 10px;
-  color: #4d5d61;
-}
-
-.nav-item.active {
-  color: var(--dm-accent-strong);
-  background: linear-gradient(90deg, rgba(47, 111, 115, 0.13), rgba(49, 93, 138, 0.07));
-  box-shadow:
-    inset 3px 0 0 var(--dm-accent),
-    inset 0 0 0 1px rgba(47, 111, 115, 0.1);
-}
-
-.sub-nav-list {
-  margin-left: 28px;
-  border-left-color: rgba(47, 111, 115, 0.16);
-}
-
-.sub-nav-item.active {
-  color: var(--dm-accent-strong) !important;
-  background: rgba(47, 111, 115, 0.1) !important;
-}
-
-.map-search {
-  left: 282px;
-}
-
-.search-input,
-.search-result-list,
 .line-route-picker,
-.edit-action-menu,
-.range-popover,
-.style-popover {
+.edit-action-menu {
   background: rgba(249, 252, 253, 0.96);
   border-color: rgba(35, 50, 55, 0.12);
 }
 
-.search-clear-btn:hover,
 .detail-close-btn,
 .detail-close-btn:hover,
 .edit-operation-item .operation-type {
@@ -10088,9 +8619,9 @@ onBeforeUnmount(() => {
   background: rgba(250, 253, 254, 0.78);
   border-color: rgba(35, 50, 55, 0.1);
 }
+
 .hero-card .label-row .metric-note,
-.coverage-card .card-title-row .metric-note,
-.slider-row .val-text {
+.coverage-card .card-title-row .metric-note {
   color: var(--dm-secondary);
 }
 
@@ -10116,6 +8647,7 @@ onBeforeUnmount(() => {
 .timeline-container .timeline-item .timeline-dot.last .dot-inner {
   background: var(--dm-secondary);
 }
+
 .dm-history-page {
   left: 260px;
   right: 0;
@@ -10126,6 +8658,7 @@ onBeforeUnmount(() => {
   background: #f7f9fb;
   box-shadow: none;
 }
+
 .history-version-main,
 .history-version-node.active-data .history-version-main,
 .route-name-block {
@@ -10142,58 +8675,29 @@ onBeforeUnmount(() => {
   background: rgba(249, 252, 253, 0.97);
 }
 
-.map-controls-toolbar.with-panel {
-  right: calc(var(--app-edge) + 414px);
-}
-
-.control-block {
-  background: rgba(249, 252, 253, 0.96);
-}
-
 .picker-route-btn.active {
   background: linear-gradient(135deg, rgba(47, 111, 115, 0.13), rgba(49, 93, 138, 0.09));
   box-shadow: inset 3px 0 0 var(--dm-accent), 0 12px 26px rgba(24, 43, 50, 0.08);
 }
 
 @media (max-width: 860px) {
-  .dm-sidebar {
-    left: 0;
-    width: 220px;
-    border-radius: 0;
-  }
-
-  .map-search,
-  .history-preview-panel {
+.history-preview-panel {
     left: 238px;
   }
 
-  .dm-history-page {
+.dm-history-page {
     left: 220px;
-  }
-
-  .map-controls-toolbar.with-panel {
-    right: calc(var(--app-edge) + 344px);
-  }
-}
-
-@media (max-width: 720px) {
-  .dm-sidebar {
-    left: 0;
-    right: 0;
-    width: auto;
   }
 }
 
 /* Apple-like white correction requested by the user. This final layer intentionally neutralizes the prior tinted reskins. */
+
 .datebase_box,
-.dm-sidebar,
-.map-search,
 .dm-overview-panel,
 .dm-edit-panel,
 .dm-history-page,
 .history-preview-exit,
 .history-detail-panel,
-.map-controls-toolbar,
 .line-route-picker,
 .edit-action-menu {
   --dm-panel-scale: 1;
@@ -10215,20 +8719,14 @@ onBeforeUnmount(() => {
   --dm-surface: #ffffff;
 }
 
-.dm-sidebar,
 .dm-history-page,
 .dm-overview-panel,
 .dm-edit-panel,
 .history-preview-exit,
 .history-detail-panel,
 .datebase_box,
-.search-input,
-.search-result-list,
 .line-route-picker,
-.edit-action-menu,
-.range-popover,
-.style-popover,
-.control-block {
+.edit-action-menu {
   background: var(--dm-surface) !important;
   background-image: none !important;
 }
@@ -10254,47 +8752,15 @@ onBeforeUnmount(() => {
   display: none;
 }
 
-.dm-sidebar {
-  border-color: rgba(0, 0, 0, 0.08);
-  box-shadow: 8px 0 24px rgba(15, 23, 42, 0.05);
-}
-
-.sidebar-brand .brand-icon,
-.result-icon-wrapper.station,
-.result-icon-wrapper.line,
-.result-icon-wrapper.depot,
 .picker-route-btn .picker-icon-wrapper {
   color: var(--dm-accent);
   background: var(--dm-accent-soft);
   border-color: rgba(0, 113, 227, 0.12);
 }
 
-.nav-item,
-.sub-nav-item {
-  border-radius: 8px;
-}
-
-.nav-item:hover,
-.sub-nav-item:hover {
-  background: rgba(0, 0, 0, 0.035) !important;
-  color: var(--dm-ink-strong) !important;
-}
-
-.nav-item.active,
-.sub-nav-item.active {
-  color: var(--dm-accent-strong) !important;
-  background: var(--dm-accent-soft) !important;
-  box-shadow: inset 3px 0 0 var(--dm-accent);
-}
-
 .datebase_box,
-.search-input,
-.search-result-list,
 .line-route-picker,
-.edit-action-menu,
-.range-popover,
-.style-popover,
-.control-block {
+.edit-action-menu {
   border: 1px solid var(--dm-border);
   box-shadow: var(--dm-shadow-soft);
 }
@@ -10303,13 +8769,6 @@ onBeforeUnmount(() => {
   border-radius: 999px;
 }
 
-.search-input {
-  border-radius: 12px;
-  color: var(--dm-ink);
-}
-
-.search-input:hover,
-.search-input:focus,
 .datebase_box .el-select :deep(.el-input__wrapper:hover),
 .datebase_box .el-select :deep(.el-input__wrapper.is-focus) {
   border-color: var(--dm-border-strong);
@@ -10419,6 +8878,7 @@ onBeforeUnmount(() => {
   border-color: var(--dm-accent);
   color: #ffffff;
 }
+
 .history-version-side :deep(.el-button) {
   width: 112px;
   margin-left: 0;
@@ -10428,6 +8888,7 @@ onBeforeUnmount(() => {
   padding: 24px 26px;
   overflow-y: auto;
 }
+
 .history-preview-exit {
   position: fixed;
   top: calc(var(--app-header-height) + 16px);
@@ -10879,7 +9340,6 @@ onBeforeUnmount(() => {
   border-color: var(--dm2-accent);
 }
 
-
 .dm-edit-panel .overview-title-row {
   flex-shrink: 0;
   align-items: flex-start;
@@ -11110,24 +9570,24 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 860px) {
-  .history-version-node {
+.history-version-node {
     grid-template-columns: 22px minmax(0, 1fr);
   }
 
-  .history-detail-panel {
+.history-detail-panel {
     left: 238px;
     right: 14px;
     width: auto;
   }
 
-  .history-preview-exit {
+.history-preview-exit {
     max-width: calc(100vw - 260px);
   }
 }
 
 @media (max-width: 720px) {
-  .history-detail-panel,
-  .history-preview-exit {
+.history-detail-panel,
+.history-preview-exit {
     left: 12px;
     right: 12px;
     width: auto;
@@ -11136,45 +9596,22 @@ onBeforeUnmount(() => {
 }
 
 /* Resolution lock: the 1430x686 desktop composition scales as a single system. */
+
 .datebase_box,
-.dm-sidebar,
-.map-search,
 .dm-overview-panel,
 .dm-edit-panel,
 .history-preview-panel,
 .history-preview-exit,
 .history-detail-panel,
-.map-controls-toolbar,
 .line-route-picker,
 .edit-action-menu {
   --dm-panel-scale: var(--app-layout-scale);
-}
-
-.dm-sidebar {
-  top: var(--app-header-height);
-  bottom: auto;
-  left: 0;
-  width: 260px;
-  height: var(--app-dm-sidebar-height);
-  transform-origin: left top;
-  scale: var(--dm-panel-scale);
 }
 
 .datebase_box {
   top: calc(var(--app-header-height) / 2);
   right: calc(var(--app-edge) + var(--app-scaled-70));
   transform-origin: right center;
-}
-
-.map-search {
-  top: calc(var(--app-header-height) + var(--app-scaled-20));
-  left: var(--app-scaled-282);
-  width: 292px;
-  transform-origin: top left;
-}
-
-.map-search.is-focused {
-  width: 292px;
 }
 
 .dm-overview-panel,
@@ -11192,21 +9629,12 @@ onBeforeUnmount(() => {
   max-height: var(--app-dm-history-preview-height);
   transform-origin: left top;
 }
+
 .history-preview-exit {
   top: calc(var(--app-header-height) + var(--app-scaled-16));
   right: var(--app-edge);
   max-width: min(460px, var(--app-dm-history-side-width));
   transform-origin: right top;
-}
-
-.map-controls-toolbar {
-  top: calc(var(--app-header-height) + var(--app-scaled-18));
-  right: calc(var(--app-edge) + var(--app-scaled-2));
-  transform-origin: top right;
-}
-
-.map-controls-toolbar.with-panel {
-  right: calc(var(--app-edge) + var(--app-scaled-414));
 }
 
 .dm-history-page {
@@ -11219,6 +9647,7 @@ onBeforeUnmount(() => {
 }
 
 /* Adapted overview panel: keep the full enterprise table visible at locked desktop scale. */
+
 .dm-overview-panel {
   min-height: 0;
 }
@@ -11232,7 +9661,6 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 
-
 /* ──────────────────────────────────────────────────────────────
    线路/站点/场站数据更新面板 — 整洁化
    仅做减法：移除堆叠装饰、让列表可滚动、按动作类型克制着色。
@@ -11240,6 +9668,7 @@ onBeforeUnmount(() => {
    ────────────────────────────────────────────────────────────── */
 
 /* 1) 面板回归一块干净白卡：去掉彩条 / 光晕 / 纸纹等叠加装饰 */
+
 .dm-edit-panel::before,
 .dm-edit-panel::after {
   content: none;
@@ -11263,6 +9692,7 @@ onBeforeUnmount(() => {
 }
 
 /* 待提交计数：去掉 Element 的琥珀色告警胶囊，改为安静的中性小标 */
+
 .dm-edit-panel .edit-pending-count {
   flex-shrink: 0;
   align-self: flex-start;
@@ -11296,6 +9726,7 @@ onBeforeUnmount(() => {
 }
 
 /* 2) 列表可滚动：min-height:0 让 flex 子项收缩并触发内部滚动；标题/按钮固定 */
+
 .dm-edit-panel .edit-operation-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -11331,6 +9762,7 @@ onBeforeUnmount(() => {
 }
 
 /* 3) 条目：保留两列栅格，只做减法；动作色彩仅靠文字传达，不再加色块/色条 */
+
 .dm-edit-panel .edit-operation-item {
   --k-color: var(--dm2-accent);
   flex-shrink: 0;
@@ -11391,6 +9823,7 @@ onBeforeUnmount(() => {
 }
 
 /* 动作不再用胶囊徽标，改为安静的纯色文字（去掉 AI 感的小色块） */
+
 .dm-edit-panel .edit-operation-item .operation-type {
   min-width: 0 !important;
   height: auto !important;
@@ -11404,6 +9837,7 @@ onBeforeUnmount(() => {
 }
 
 /* 4) 空状态与底部操作区，安静收敛 */
+
 .dm-edit-panel .edit-empty {
   flex-shrink: 0;
   border-radius: var(--dm2-radius);
@@ -11420,6 +9854,7 @@ onBeforeUnmount(() => {
 }
 
 /* ── 数据总览面板：与编辑面板统一为干净白卡，去掉纸纹/内嵌层装饰 ── */
+
 .dm-overview-panel::before,
 .dm-overview-panel::after {
   content: none;
@@ -11441,6 +9876,7 @@ onBeforeUnmount(() => {
 /* ── Action 2 /quieter：历史页统一到令牌冷静配色（青蓝 → 单一蓝），去胶囊、收阴影 ── */
 
 /* 「当前版本」标记：去掉实心彩色胶囊，改为安静浅色文字小标 */
+
 .dm-history-page .history-current-tag {
   background: var(--dm2-accent-weak) !important;
   border-color: transparent !important;
@@ -11448,17 +9884,20 @@ onBeforeUnmount(() => {
 }
 
 /* 当前版本横幅：数值改为中性墨色，不再用青色强调 */
+
 .dm-history-page .history-current-version strong {
   color: var(--dm2-ink);
 }
 
 /* 时间轴「当前数据版本」圆点：青色 → 统一蓝 */
+
 .dm-history-page .history-version-node.active-data .history-timeline-dot {
   background: var(--dm2-accent) !important;
   border-color: var(--dm2-accent) !important;
 }
 
 /* 修改明细的动作标记：去掉青色胶囊，改为安静纯色文字 */
+
 .dm-history-page .history-detail-action {
   padding: 0;
   border-radius: 0;
@@ -11468,6 +9907,7 @@ onBeforeUnmount(() => {
 }
 
 /* 历史卡片：收掉偏重的投影，统一为细边 + 无影的冷静表面 */
+
 .dm-history-page .history-current-version,
 .dm-history-page .history-list-panel,
 .dm-history-page .history-risk-panel,
@@ -11492,16 +9932,14 @@ onBeforeUnmount(() => {
    ════════════════════════════════════════════════════════════════ */
 
 /* A. 令牌统一：历史 --dm-* 全部链接到已升级的 --dm2-*（一处改，处处生效） */
+
 .datebase_box,
-.dm-sidebar,
-.map-search,
 .dm-overview-panel,
 .dm-edit-panel,
 .dm-history-page,
 .history-preview-exit,
 .history-preview-panel,
 .history-detail-panel,
-.map-controls-toolbar,
 .line-route-picker,
 .edit-action-menu {
   --dm-ink: var(--dm2-ink);
@@ -11524,95 +9962,11 @@ onBeforeUnmount(() => {
 }
 
 /* B. 侧栏：磨砂玻璃 + 顶部高光 + 冷调外影 */
-.dm-sidebar {
-  border-right: 1px solid var(--dm2-line);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 254, 0.82)) !important;
-  box-shadow: 16px 0 48px -24px rgba(13, 38, 76, 0.24), var(--dm2-glass-highlight) !important;
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
-}
-
-.sidebar-brand {
-  padding: 20px 14px 14px;
-  border-bottom: 1px solid var(--dm2-line-faint) !important;
-}
-
-.sidebar-brand .brand-icon {
-  width: 30px;
-  height: 30px;
-  padding: 6px;
-  border-radius: var(--dm2-radius-sm);
-  color: #ffffff !important;
-  background: var(--dm2-accent-grad) !important;
-  border-color: transparent !important;
-  box-shadow: var(--dm2-accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.45);
-}
-
-.sidebar-brand .brand-text {
-  color: var(--dm2-ink);
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: none;
-}
 
 /* 主/子导航：克制胶囊 + 激活态左侧蓝条 */
-.nav-item {
-  min-height: 44px;
-  border-radius: var(--dm2-radius) !important;
-  color: var(--dm2-ink-soft);
-  font-size: 13.5px;
-  font-weight: 600;
-  transition:
-    background-color var(--dm2-dur) var(--dm2-ease),
-    color var(--dm2-dur) var(--dm2-ease),
-    box-shadow var(--dm2-dur) var(--dm2-ease),
-    transform var(--dm2-dur-fast) var(--dm2-ease);
-}
-
-.nav-item .nav-icon svg,
-.chevron-icon svg {
-  stroke-width: 1.75;
-}
-
-.nav-item:hover,
-.sub-nav-item:hover {
-  background: rgba(17, 32, 58, 0.045) !important;
-  color: var(--dm2-ink) !important;
-}
-
-.nav-item:hover {
-  transform: translateX(2px);
-}
-
-.nav-item:hover .nav-icon {
-  color: var(--dm2-accent);
-}
-
-.nav-item.active,
-.sub-nav-item.active {
-  color: var(--dm2-accent-strong) !important;
-  background: var(--dm2-accent-weak) !important;
-  box-shadow: inset 3px 0 0 var(--dm2-accent), 0 1px 2px rgba(13, 38, 76, 0.05) !important;
-}
-
-.nav-item.active .nav-icon {
-  color: var(--dm2-accent);
-}
-
-.sub-nav-list {
-  margin-left: 26px;
-  padding-left: 12px;
-  border-left: 1px solid var(--dm2-line);
-}
-
-.sub-nav-item {
-  border-radius: var(--dm2-radius-sm) !important;
-  color: var(--dm2-muted);
-  font-weight: 600;
-}
 
 /* C. 顶部区域选择器（磨砂胶囊） */
+
 .datebase_box .handle {
   color: var(--dm2-muted);
   font-size: 12px;
@@ -11621,10 +9975,8 @@ onBeforeUnmount(() => {
 
 .datebase_box .el-select :deep(.el-input__wrapper) {
   border-radius: var(--dm2-radius-pill);
-  background: var(--dm2-glass) !important;
+  background: var(--dm2-veil) !important;
   box-shadow: inset 0 0 0 1px var(--dm2-line), var(--dm2-shadow-pop) !important;
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
   transition: box-shadow var(--dm2-dur) var(--dm2-ease);
 }
 
@@ -11641,60 +9993,11 @@ onBeforeUnmount(() => {
 }
 
 /* D. 地图搜索：磨砂玻璃药丸 */
-.search-input {
-  height: 42px;
-  border: 1px solid var(--dm2-line);
-  border-radius: var(--dm2-radius);
-  background: var(--dm2-glass) !important;
-  color: var(--dm2-ink);
-  font-weight: 600;
-  box-shadow: var(--dm2-shadow-pop), var(--dm2-glass-highlight);
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
-  transition:
-    background-color var(--dm2-dur) var(--dm2-ease),
-    border-color var(--dm2-dur) var(--dm2-ease),
-    box-shadow var(--dm2-dur) var(--dm2-ease);
-}
-
-.search-input::placeholder {
-  color: var(--dm2-muted-soft);
-  font-weight: 500;
-}
-
-.search-input:hover {
-  border-color: var(--dm2-line-strong);
-}
-
-.search-input:focus {
-  border-color: var(--dm2-accent);
-  background: var(--dm2-glass-strong) !important;
-  box-shadow: 0 0 0 4px var(--dm2-accent-ring), var(--dm2-shadow-pop);
-}
-
-.search-icon-svg {
-  color: var(--dm2-accent);
-  opacity: 0.72;
-  stroke-width: 2.2;
-}
-
-.search-clear-btn {
-  background: rgba(17, 32, 58, 0.06);
-  color: var(--dm2-muted);
-}
-
-.search-clear-btn:hover {
-  background: var(--dm2-accent-weak) !important;
-  border-color: transparent !important;
-  color: var(--dm2-accent) !important;
-}
 
 /* E. 浮层卡片：磨砂玻璃 + 分层投影 */
-.search-result-list,
+
 .line-route-picker,
-.edit-action-menu,
-.range-popover,
-.style-popover {
+.edit-action-menu {
   border: 1px solid var(--dm2-line) !important;
   border-radius: var(--dm2-radius-lg);
   background: var(--dm2-glass-strong) !important;
@@ -11703,7 +10006,6 @@ onBeforeUnmount(() => {
   backdrop-filter: var(--dm2-glass-blur);
 }
 
-.search-result-item,
 .picker-route-btn {
   border-radius: var(--dm2-radius-sm);
   transition:
@@ -11711,15 +10013,11 @@ onBeforeUnmount(() => {
     transform var(--dm2-dur-fast) var(--dm2-ease);
 }
 
-.search-result-item:hover,
 .picker-route-btn:hover {
   background: var(--dm2-accent-weak) !important;
   transform: translateX(2px);
 }
 
-.result-icon-wrapper.station,
-.result-icon-wrapper.line,
-.result-icon-wrapper.depot,
 .picker-route-btn .picker-icon-wrapper {
   border-radius: var(--dm2-radius-sm);
   color: var(--dm2-accent) !important;
@@ -11727,88 +10025,41 @@ onBeforeUnmount(() => {
   border-color: rgba(0, 113, 227, 0.14) !important;
 }
 
-.result-name,
 .route-btn-name {
   color: var(--dm2-ink);
 }
 
-.result-type-text,
 .route-btn-desc,
-.search-empty,
 .picker-empty {
   color: var(--dm2-muted);
 }
 
-/* F. 地图控制条：磨砂玻璃组 + 蓝色激活 */
-.control-block {
-  width: 44px;
-  border: 1px solid var(--dm2-line) !important;
-  border-radius: var(--dm2-radius);
-  background: var(--dm2-glass) !important;
-  box-shadow: var(--dm2-shadow-pop), var(--dm2-glass-highlight) !important;
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
-  overflow: hidden;
-}
-
-.control-btn {
-  width: 44px;
-  height: 42px;
-  color: var(--dm2-ink-soft);
-  transition:
-    background-color var(--dm2-dur) var(--dm2-ease),
-    color var(--dm2-dur) var(--dm2-ease);
-}
-
-.control-btn:not(:last-child) {
-  border-bottom: 1px solid var(--dm2-line-faint);
-}
-
-.control-btn:hover,
-.control-btn.active {
-  background: var(--dm2-accent-weak);
-  color: var(--dm2-accent);
-}
-
-.popover-title {
-  color: var(--dm2-ink);
-  font-weight: 700;
-}
-
-.slider-row .label {
-  color: var(--dm2-ink-soft);
-}
-
-.slider-row .val-text {
-  color: var(--dm2-accent);
-}
+/* F. 地图控制条：常驻高不透明表面 + 蓝色激活（去 blur 省每帧合成） */
 
 .picker-title {
   color: var(--dm2-muted);
 }
 
-/* G. 数据面板：高不透明磨砂（保证密集数据可读）+ 分层投影 + 顶部高光 */
+/* G. 数据面板：常驻高不透明表面（保证密集数据可读）+ 分层投影 + 顶部高光 */
+
 .dm-overview-panel,
 .dm-edit-panel {
   border: 1px solid var(--dm2-line);
   border-radius: var(--dm2-radius-lg);
-  background: var(--dm2-glass-strong) !important;
+  background: var(--dm2-veil-strong) !important;
   box-shadow: var(--dm2-shadow-panel), var(--dm2-glass-highlight);
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
 }
 
 .history-preview-exit,
 .history-preview-panel,
 .history-detail-panel {
   border: 1px solid var(--dm2-line) !important;
-  background: var(--dm2-glass-strong) !important;
+  background: var(--dm2-veil-strong) !important;
   box-shadow: var(--dm2-shadow-panel), var(--dm2-glass-highlight) !important;
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
 }
 
 /* H. 内核卡片（详情面板）：清晰白 + 细微卡片影（托盘+面板 双层质感）*/
+
 .detail-summary-card > div,
 .ranking-row,
 .stations-section,
@@ -11841,6 +10092,7 @@ onBeforeUnmount(() => {
 }
 
 /* 详情数值统一蓝；标签统一冷灰 */
+
 .route-detail-panel .metrics-grid .metric-card .value,
 .detail-summary-card strong {
   color: var(--dm2-ink) !important;
@@ -11868,6 +10120,7 @@ onBeforeUnmount(() => {
 }
 
 /* 沿途站点时间轴：起点绿 / 终点蓝，连接线冷灰 */
+
 .timeline-container .timeline-item::after {
   background-color: var(--dm2-line) !important;
 }
@@ -11898,6 +10151,7 @@ onBeforeUnmount(() => {
 }
 
 /* 排名奖牌：克制的单色阶（金/银/铜 → 文字色阶），去高饱和 */
+
 .rank-badge {
   color: var(--dm2-muted) !important;
   background: rgba(17, 32, 58, 0.06) !important;
@@ -11921,6 +10175,7 @@ onBeforeUnmount(() => {
 }
 
 /* 标题小标（kicker）：克制蓝色文字标签 */
+
 .overview-title-row .panel-kicker {
   width: fit-content;
   margin-bottom: 6px;
@@ -11934,23 +10189,21 @@ onBeforeUnmount(() => {
 }
 
 /* 滚动条统一为冷调细条 */
+
 .overview-metric-list,
 .route-detail-panel,
 .depot-detail-panel,
 .ranking-scroll-list,
 .edit-operation-list,
-.station-scroll-list,
-.dm-sidebar {
+.station-scroll-list {
   scrollbar-color: rgba(17, 32, 58, 0.18) transparent;
 }
 
 /* Visibility fallback: keep the data-management chrome above the map. */
+
 .datebase_box,
-.dm-sidebar,
 .dm-overview-panel,
-.dm-edit-panel,
-.map-search,
-.map-controls-toolbar {
+.dm-edit-panel {
   position: fixed !important;
   visibility: visible !important;
   opacity: 1 !important;
@@ -11963,15 +10216,6 @@ onBeforeUnmount(() => {
   right: calc(var(--app-edge, 24px) + 70px) !important;
 }
 
-.dm-sidebar {
-  display: flex !important;
-  left: 0 !important;
-  top: var(--app-header-height, 58px) !important;
-  bottom: 0 !important;
-  width: 260px !important;
-  height: var(--app-dm-sidebar-height, calc(100vh - var(--app-header-height, 58px))) !important;
-}
-
 .dm-overview-panel,
 .dm-edit-panel {
   display: flex !important;
@@ -11982,43 +10226,18 @@ onBeforeUnmount(() => {
   height: calc((100vh - var(--app-header-height, 58px) - 24px) / var(--dm-panel-scale, 1)) !important;
 }
 
-.map-search {
-  left: var(--app-scaled-282, 282px) !important;
-}
-
-.map-controls-toolbar {
-  top: calc(var(--app-header-height, 58px) + var(--app-scaled-18, 18px)) !important;
-  right: calc(var(--app-edge, 24px) + var(--app-scaled-2, 2px)) !important;
-}
-
 /* 数据面板可见时，工具条让位到面板左侧（必须同为 !important 才能盖过上面的回退定位） */
-.map-controls-toolbar.with-panel {
-  right: calc(var(--app-edge, 24px) + var(--app-scaled-414, 414px)) !important;
-}
-
-@media (max-width: 860px) {
-  .map-controls-toolbar.with-panel {
-    right: calc(var(--app-edge, 24px) + min(360px, 100vw - 250px)) !important;
-  }
-}
 
 /* User-requested panel behavior: side-retract both panels and keep map tools left of the right panel. */
-.dm-sidebar,
+
 .dm-overview-panel,
 .dm-edit-panel,
-.map-search,
-.map-controls-toolbar,
 .dm-history-page {
   transition:
     left 160ms var(--dm2-ease),
     right 160ms var(--dm2-ease),
     transform 160ms var(--dm2-ease),
     opacity var(--dm2-dur) var(--dm2-ease) !important;
-}
-
-.dm-sidebar.is-collapsed {
-  transform: translateX(calc(-100% - 1px)) !important;
-  pointer-events: none;
 }
 
 .dm-overview-panel.is-collapsed,
@@ -12029,18 +10248,6 @@ onBeforeUnmount(() => {
 
 .dm-history-page.is-left-collapsed {
   left: 0 !important;
-}
-
-.map-search.is-left-collapsed {
-  left: calc(var(--app-edge, 24px) + var(--app-scaled-70, 70px)) !important;
-}
-
-.map-controls-toolbar.with-panel {
-  right: calc(var(--app-edge, 24px) + var(--app-scaled-414, 414px)) !important;
-}
-
-.map-controls-toolbar.without-panel {
-  right: calc(var(--app-edge, 24px) + var(--app-scaled-2, 2px)) !important;
 }
 
 .dm-panel-collapse-tab {
@@ -12054,11 +10261,9 @@ onBeforeUnmount(() => {
   height: 72px;
   padding: 0;
   border: 1px solid var(--dm2-line);
-  background: var(--dm2-glass-strong);
+  background: var(--dm2-veil-strong);
   color: var(--dm2-ink-soft);
   box-shadow: var(--dm2-shadow-pop), var(--dm2-glass-highlight);
-  -webkit-backdrop-filter: var(--dm2-glass-blur);
-  backdrop-filter: var(--dm2-glass-blur);
   cursor: pointer;
   touch-action: manipulation;
   user-select: none;
@@ -12128,16 +10333,12 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 720px) {
-  .dm-left-collapse-tab {
+.dm-left-collapse-tab {
     left: var(--app-scaled-260, 260px);
   }
 
-  .dm-right-collapse-tab {
+.dm-right-collapse-tab {
     right: calc(var(--app-edge, 24px) + var(--app-scaled-414, 414px) - var(--app-scaled-16, 16px));
-  }
-
-  .map-controls-toolbar.with-panel {
-    right: calc(var(--app-edge, 24px) + var(--app-scaled-414, 414px)) !important;
   }
 }
 </style>

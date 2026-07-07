@@ -62,7 +62,7 @@ export default defineConfig(({ mode, command }) => {
     },
     // vite 相关配置
     server: {
-      port: 8088,
+      port: Number(process.env.PORT) || 8088,
       host: true,
       open: true,
       proxy: {

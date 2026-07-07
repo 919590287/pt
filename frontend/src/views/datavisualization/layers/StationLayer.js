@@ -3,6 +3,7 @@ import { TextLayer } from "@deck.gl/layers";
 import { Layer, MAP_EVENT, webMercatorToLngLat } from "@/mymap/index.js";
 import { emptyFeatureCollection, stationsToFeatureCollection } from "./maplibreLayerUtils.js";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "./deckOverlayRegistry.js";
+import { MAP_THEME } from "@/utils/mapTheme.js";
 
 const LABEL_MIN_ZOOM = 15.4;
 const BASE_LABEL_CHARACTER_SET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -_()（）./·路站总站东南西北中大一二三四五六七八九十号线";
@@ -53,6 +54,11 @@ export class StationLayer extends Layer {
     this.labelLayerId = `station-label-${this.id}`;
     this.iconLoadStarted = false;
     this.iconLayerAdded = false;
+    // 标签数据/字符集只随 stations 变化，缓存引用避免每次缩放全量重建
+    // （数组身份稳定时 deck 可跳过文字 attribute 重算，数千站点单次重建可达数十 ms）
+    this.labelDataCache = null;
+    this.labelCharacterSetCache = null;
+    this.labelsVisible = false;
   }
 
   onAdd(map) {
@@ -65,10 +71,23 @@ export class StationLayer extends Layer {
     });
   }
 
-  on(type) {
+  on(type, data) {
+    // 必须调 super.on：基类在此派发 EventListener 注册的回调（构造 event 选项 /
+    // addEventListener），漏调会让点击、pick 等外部监听静默失效
+    super.on(type, data);
     if (type === MAP_EVENT.UPDATE_ZOOM || type === MAP_EVENT.UPDATE_CAMERA_ROTATE) {
-      this.renderLabelLayer();
+      // 缩放/旋转动画期间事件可达每帧一次：标签内容不随相机变化，
+      // 只需在跨越显示阈值时增删图层，其余情况 O(1) 短路（deck 自身会随相机重绘已有图层）。
+      this.syncLabelVisibility();
     }
+  }
+
+  syncLabelVisibility() {
+    const shouldShow = Boolean(this.map?.map)
+      && this.visible !== false
+      && Number(this.map.zoom) >= LABEL_MIN_ZOOM;
+    if (shouldShow === this.labelsVisible) return;
+    this.renderLabelLayer();
   }
 
   ensureMapLayer() {
@@ -95,10 +114,10 @@ export class StationLayer extends Layer {
         "circle-color": [
           "case",
           ["==", ["get", "type"], "subway"],
-          "#dc4c5d",
-          "#1569de",
+          MAP_THEME.station.subway,
+          MAP_THEME.station.ring,
         ],
-        "circle-stroke-color": "rgba(255,255,255,0.9)",
+        "circle-stroke-color": "rgba(255,255,255,0.92)",
         "circle-stroke-width": this.circleStrokeWidth(),
         "circle-opacity": this.circleOpacity(),
       },
@@ -241,7 +260,8 @@ export class StationLayer extends Layer {
   }
 
   labelData() {
-    return this.stations
+    if (this.labelDataCache) return this.labelDataCache;
+    this.labelDataCache = this.stations
       .map((station) => {
         const coords = webMercatorToLngLat(station.x, station.y);
         if (!coords.every(Number.isFinite)) return null;
@@ -252,9 +272,11 @@ export class StationLayer extends Layer {
         };
       })
       .filter((station) => station?.name);
+    return this.labelDataCache;
   }
 
   labelCharacterSet() {
+    if (this.labelCharacterSetCache) return this.labelCharacterSetCache;
     const chars = new Set(BASE_LABEL_CHARACTER_SET.split(""));
     for (const station of this.stations) {
       const name = station.name || station.facilityName || "";
@@ -262,11 +284,14 @@ export class StationLayer extends Layer {
         chars.add(char);
       }
     }
-    return [...chars];
+    this.labelCharacterSetCache = [...chars];
+    return this.labelCharacterSetCache;
   }
 
   setData(stations = []) {
     this.stations = Array.isArray(stations) ? stations : [];
+    this.labelDataCache = null;
+    this.labelCharacterSetCache = null;
     this.updateSource();
     this.renderLabelLayer();
   }
@@ -292,7 +317,10 @@ export class StationLayer extends Layer {
 
   renderLabelLayer() {
     if (!this.map?.map || this.visible === false || Number(this.map.zoom) < LABEL_MIN_ZOOM) {
-      removeSharedDeckLayer(this.map, this.labelLayerId);
+      if (this.labelsVisible) {
+        removeSharedDeckLayer(this.map, this.labelLayerId);
+      }
+      this.labelsVisible = false;
       return;
     }
     const layer = new TextLayer({
@@ -318,7 +346,9 @@ export class StationLayer extends Layer {
         depthTest: false,
       },
     });
-    setSharedDeckLayer(this.map, this.labelLayerId, layer);
+    // 第 4 参 order 必传：缺省 0 会让站名标签排在网络/断面层（order 997-1001）之下被粗线覆盖
+    setSharedDeckLayer(this.map, this.labelLayerId, layer, this.zIndex);
+    this.labelsVisible = true;
   }
 
   setMarkerSize(markerSize) {
@@ -339,6 +369,7 @@ export class StationLayer extends Layer {
       this.map.map.setLayoutProperty(this.circleLayerId, "visibility", "none");
     }
     removeSharedDeckLayer(this.map, this.labelLayerId);
+    this.labelsVisible = false;
   }
 
   show() {
@@ -354,6 +385,7 @@ export class StationLayer extends Layer {
 
   dispose() {
     removeSharedDeckLayer(this.map, this.labelLayerId);
+    this.labelsVisible = false;
     if (this.map?.map) {
       if (this.map.map.getLayer(this.iconLayerId)) {
         this.map.map.removeLayer(this.iconLayerId);

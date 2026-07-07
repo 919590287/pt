@@ -22,17 +22,37 @@ const D3_SCHEME_NAMES = [
 const VENDOR_RAMPS = {
   Mako: ["#0b0405", "#1a1339", "#38226a", "#414082", "#3a5e9e", "#2c7fb2", "#2199b2", "#25b9a8", "#5bcfa2", "#aadbb4", "#def5e6"],
   Rocket: ["#03051a", "#241432", "#4b1d4e", "#7a1a4d", "#a71b41", "#cd4247", "#e56b4e", "#f2965a", "#f6bd85", "#f7ddba", "#faebdd"],
+  // 交通语义绿→黄→红：替代 RdYlGn 反转（其正中点近白 #ffffbf，3 档时中档在浅色底图上不可见），
+  // 全程高饱和，任意档数中档都是可辨的琥珀黄
+  GnYlRd: ["#169a52", "#7cbe45", "#f2c037", "#ee8331", "#d7302a"],
 };
 
 // 旧的小写 key → 新 d3 key（含反向）：兼容历史持久化配置与旧调用点
 const LEGACY_ALIAS = {
   ylorrd: { key: "YlOrRd" },
-  gnylrd: { key: "RdYlGn", reverse: true }, // 绿(低)→红(高)
+  gnylrd: { key: "GnYlRd" }, // 绿(低)→红(高)，内置高饱和锚点
   blues: { key: "Blues" },
   viridis: { key: "Viridis" },
   spectral: { key: "Spectral" },
   densityblue: { key: "Turbo" }, // 蓝→青→黄→红，近似人群密度专题图
 };
+
+// —— 采样域裁剪：浅色端在浅色底图上不可见，按色带类型避开近白区段 ——
+// 发散型全程保留（两端都是深色语义端点）
+const DIVERGING_SCHEMES = new Set(["BrBG", "PRGn", "PiYG", "PuOr", "RdBu", "RdGy", "RdYlBu", "RdYlGn", "Spectral"]);
+// 感知均匀多色带：起点为深色，无需裁剪
+const FULL_RANGE_SCHEMES = new Set(["Turbo", "Viridis", "Inferno", "Magma", "Plasma", "Cividis"]);
+// 亮尾色带：终点近白，裁掉尾段
+const PALE_END_SCHEMES = new Set(["Mako", "Rocket"]);
+// ColorBrewer 顺序色带的近白起点裁剪量
+const SEQUENTIAL_START = 0.14;
+
+function schemeDomain(key) {
+  if (DIVERGING_SCHEMES.has(key) || FULL_RANGE_SCHEMES.has(key)) return [0, 1];
+  if (PALE_END_SCHEMES.has(key)) return [0, 0.92];
+  if (typeof d3chromatic[`interpolate${key}`] === "function") return [SEQUENTIAL_START, 1];
+  return [0, 1]; // 自定义锚点色带按原样采样
+}
 
 export const COLOR_SCHEMES = D3_SCHEME_NAMES.map((name) => ({ key: name, name }));
 
@@ -77,22 +97,27 @@ function sampleVendorRamp(anchors, t) {
   ]);
 }
 
-// 解析色系 key（兼容旧 key），返回 { interpolator, reverse }
+// 解析色系 key（兼容旧 key），返回 { interpolator, reverse }；interpolator 已按 schemeDomain 裁剪采样域
 function resolveScheme(schemeKey) {
   const raw = String(schemeKey || "");
   const alias = LEGACY_ALIAS[raw.toLowerCase()];
   const key = alias?.key || raw;
   const aliasReverse = Boolean(alias?.reverse);
   const vendor = VENDOR_RAMPS[key];
+  let base;
+  let domainKey = key;
   if (vendor) {
-    return { interpolator: (t) => sampleVendorRamp(vendor, t), reverse: aliasReverse };
+    base = (t) => sampleVendorRamp(vendor, t);
+  } else if (typeof d3chromatic[`interpolate${key}`] === "function") {
+    base = d3chromatic[`interpolate${key}`];
+  } else {
+    // 兜底：黄橙红
+    base = d3chromatic.interpolateYlOrRd;
+    domainKey = "YlOrRd";
   }
-  const interp = d3chromatic[`interpolate${key}`];
-  if (typeof interp === "function") {
-    return { interpolator: interp, reverse: aliasReverse };
-  }
-  // 兜底：黄橙红
-  return { interpolator: d3chromatic.interpolateYlOrRd, reverse: aliasReverse };
+  const [start, end] = schemeDomain(domainKey);
+  const interpolator = start === 0 && end === 1 ? base : (t) => base(start + (end - start) * t);
+  return { interpolator, reverse: aliasReverse };
 }
 
 function clampClassCount(classCount) {
@@ -161,15 +186,26 @@ export function classifyByPercent(value, maxValue, thresholds) {
 }
 
 /**
+ * 提取正值并升序排序，供 quantileBreaks({ assumeSorted: true }) 快路径复用：
+ * 调用方"排序一次、多次求分位"，色阶阈值/档数调整不再触发全量重排。
+ */
+export function sortFlowValues(values) {
+  return (Array.isArray(values) ? values : [])
+    .map(Number)
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b);
+}
+
+/**
  * 分位数（quantile）分档：由数据分布计算各分位点对应的"绝对值断点"。
  * thresholds 为分位位置（百分比，如 [20,40,60,80]），返回升序的值断点数组（长度 = thresholds.length）。
  * 只统计正值（>0），避免大量 0 把低分位压到 0。
  */
-export function quantileBreaks(values, thresholds) {
-  const sorted = (Array.isArray(values) ? values : [])
-    .map(Number)
-    .filter((v) => Number.isFinite(v) && v > 0)
-    .sort((a, b) => a - b);
+export function quantileBreaks(values, thresholds, options = {}) {
+  // assumeSorted：值分布不变、仅阈值/档数变化的调用方可预排序一次，避免每次调档全量重排
+  const sorted = options.assumeSorted
+    ? (Array.isArray(values) ? values : [])
+    : sortFlowValues(values);
   const list = Array.isArray(thresholds) ? thresholds : [];
   if (!sorted.length) return list.map(() => 0);
   const at = (percent) => {

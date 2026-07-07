@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 地铁站点：白底空心圈 + 地铁红（#dc4c5d）描边，与公交站点（青绿描边）同一视觉语言。 -->
+<!-- 地铁站点：白盘 + 地铁红（mapTheme station.subway #dc4c5d）空心环，
+     与公交站点（钢蓝环）同一视觉语言：双层白光晕 + 玻璃细环收边。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
-  <circle cx="48" cy="48" r="40" fill="#ffffff" fill-opacity="0.9"/>
-  <circle cx="48" cy="48" r="31" fill="#ffffff" stroke="#dc4c5d" stroke-width="10"/>
+  <circle cx="48" cy="48" r="44" fill="#ffffff" fill-opacity="0.35"/>
+  <circle cx="48" cy="48" r="39" fill="#ffffff" fill-opacity="0.75"/>
+  <circle cx="48" cy="48" r="33" fill="#ffffff"/>
+  <circle cx="48" cy="48" r="33" fill="none" stroke="#b23044" stroke-opacity="0.28" stroke-width="1.5"/>
+  <circle cx="48" cy="48" r="25.5" fill="#ffffff" stroke="#dc4c5d" stroke-width="9"/>
 </svg>

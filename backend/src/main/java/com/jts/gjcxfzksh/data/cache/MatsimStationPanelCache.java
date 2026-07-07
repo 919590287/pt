@@ -55,7 +55,14 @@ public final class MatsimStationPanelCache {
     //      ②od 数组上限 12→60，并新增 originX/originY/destinationX/destinationY（经纬度，Web Mercator 反算）。需重算缓存。
     // v14: od 截断口径由“按线路×OD记录取前60条”改为“按对端站点聚合取前60个站点、保留其全部线路明细”，
     //      避免低客流对端站被整站漏掉（前端 OD 图表/表格按对端站聚合展示）。需重算缓存。
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v14";
+    // v15: 统计口径修复批次（需重算缓存）：
+    //      ①跨零点时刻（>86400s）折叠回当日小时，不再全部压进 23 时桶；
+    //      ②OD 到站客流改按【下车时刻】分桶（原按上车时刻，跨小时行程使到站曲线整体左移）；
+    //      ③track 排序补充次键（同秒先下后上、按车辆定序），配对结果可复现；
+    //      ④连续两条上车记录（下车事件缺失）导致的 OD 丢段计数并打日志，不再完全静默；
+    //      ⑤公交/地铁判定收紧（裸“N线”须带地铁/轨道前缀，接驳/巴士等公交词优先判 bus）；
+    //      ⑥上下车归属统一 pt-events-v3 动态映射（TransitDriverStarts + 司机显式过滤）。
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v15";
 
     // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
     // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
@@ -70,8 +77,11 @@ public final class MatsimStationPanelCache {
     private static final int REACHABILITY_STATION_LIMIT = 80;
     // 项目统一投影为 epsg:3857（见 Datasource.ctf），经纬度输出用 Web Mercator 反算。
     private static final double EARTH_RADIUS = 6378137.0;
+    // 裸“N线”必须带“地铁/轨道”前缀才算地铁线号，“N号线”单独成立——
+    // 否则 B1线/K1线 等公交快线命名会被误判为地铁（与 MatsimRoutePanelCache 同步维护）。
     private static final Pattern CHINESE_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
-            "(?i)(?:地铁|轨道|线路)?\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
+            "(?i)(?:地铁|轨道)\\s*([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*(?:号线|线)"
+                    + "|([0-9]{1,2}|[一二三四五六七八九十]{1,4})\\s*号线"
     );
     private static final Pattern ENGLISH_METRO_LINE_NUMBER_PATTERN = Pattern.compile(
             "(?i)(?:metro|subway|mtr)(?:[-_\\s]*line)?[-_\\s]*([0-9]{1,2})\\b|\\bline[-_\\s]*([0-9]{1,2})\\b"
@@ -327,11 +337,17 @@ public final class MatsimStationPanelCache {
             }
         }
 
+        long droppedOpenBoardings = 0;
         for (List<PTPersonTrack> personTracks : byPerson.values()) {
-            personTracks.sort(Comparator.comparingDouble(MatsimStationPanelCache::safeTime));
+            personTracks.sort(TRACK_TIME_ORDER);
             PTPersonTrack openBoarding = null;
             for (PTPersonTrack track : personTracks) {
                 if (Boolean.TRUE.equals(track.getEnter())) {
+                    if (openBoarding != null) {
+                        // 连续两条上车（下车事件缺失）：前一次乘坐无法闭合，OD 丢一段。
+                        // 完全静默会让 Σod.flow 与上车总量的口径差无从解释，至少计数留痕。
+                        droppedOpenBoardings++;
+                    }
                     openBoarding = track;
                     continue;
                 }
@@ -341,17 +357,33 @@ public final class MatsimStationPanelCache {
                 String origin = index.stationName(idString(openBoarding.getFacilityId()));
                 String destination = index.stationName(idString(track.getFacilityId()));
                 if (!origin.equals(destination)) {
-                    int hour = hourOf(safeTime(openBoarding));
+                    // 出发站按上车时刻分桶，到达站按下车时刻分桶——
+                    // 跨小时行程的到站客流原被整体记早一个小时量级。
+                    int boardHour = hourOf(safeTime(openBoarding));
+                    int alightHour = hourOf(safeTime(track));
                     // v11 起 routes 以 lineId::routeId 为键，必须带 lineId 查找；
                     // 旧实现用裸 routeId 恒查空，导致 od 记录的线路信息全部丢失。
                     RouteMeta route = index.routeFor(idString(openBoarding.getLineId()), idString(openBoarding.getRouteId()));
-                    stations.computeIfAbsent(origin, StationPanelAccumulator::new).addOd(origin, destination, route, hour);
-                    stations.computeIfAbsent(destination, StationPanelAccumulator::new).addOd(origin, destination, route, hour);
+                    stations.computeIfAbsent(origin, StationPanelAccumulator::new).addOd(origin, destination, route, boardHour);
+                    stations.computeIfAbsent(destination, StationPanelAccumulator::new).addOd(origin, destination, route, alightHour);
                 }
                 openBoarding = null;
             }
         }
+        if (droppedOpenBoardings > 0) {
+            log.warn("站点客流面板: {} 条上车记录缺失对应下车事件，OD 段被弃计（Σod.flow 会小于上车总量）", droppedOpenBoardings);
+        }
     }
+
+    /**
+     * 同人 track 的时间排序：同一秒内“先下车后上车”（同站零等待换乘的自然顺序），
+     * 最后按车辆 ID 定序——tracks 源是无序 HashSet，无次键时同秒事件顺序不可复现，
+     * OD 配对结果会随每次构建漂移。
+     */
+    private static final Comparator<PTPersonTrack> TRACK_TIME_ORDER =
+            Comparator.comparingDouble(MatsimStationPanelCache::safeTime)
+                    .thenComparingInt(track -> Boolean.TRUE.equals(track.getEnter()) ? 1 : 0)
+                    .thenComparing(track -> String.valueOf(track.getVehicleId()));
 
     private static void indexReachability(Map<String, StationPanelAccumulator> stations, StationNetworkIndex index) {
         for (StationPanelAccumulator station : stations.values()) {
@@ -556,7 +588,9 @@ public final class MatsimStationPanelCache {
         if (Double.isNaN(seconds) || Double.isInfinite(seconds)) {
             return 0;
         }
-        return Math.max(0, Math.min(HOURS - 1, (int) Math.floor(Math.max(0, seconds) / 3600.0)));
+        // MATSim 时刻可 >86400（跨零点班次），折叠回当日小时；
+        // 原 min(23,…) 会把夜间事件全部压进 23 时桶，凌晨客流恒为 0。
+        return ((int) Math.floor(Math.max(0, seconds) / 3600.0)) % HOURS;
     }
 
     private static double safeTime(PTPersonTrack track) {
@@ -612,6 +646,10 @@ public final class MatsimStationPanelCache {
         if (!containsMetroModeKeyword(lineText) && containsBusIdKeyword(lineId + " " + routeId)) {
             return "bus";
         }
+        // “地铁接驳专线”“轨道巴士”等公交命名含地铁关键词，公交业务词优先判 bus
+        if (containsBusServiceKeyword(lineText + " " + routeText)) {
+            return "bus";
+        }
         if (!canonicalMetroLineNumber(lineText).isBlank()
                 || containsMetroModeKeyword(lineText)
                 || !canonicalMetroLineNumber(routeText).isBlank()
@@ -619,6 +657,12 @@ public final class MatsimStationPanelCache {
             return "subway";
         }
         return "bus";
+    }
+
+    private static boolean containsBusServiceKeyword(String text) {
+        String value = nonBlank(text, "").toLowerCase(Locale.ROOT);
+        return value.contains("接驳") || value.contains("专线")
+                || value.contains("巴士") || value.contains("公交") || value.contains("brt");
     }
 
     private static String normalizeDeclaredTransportMode(String rawMode) {
@@ -657,7 +701,8 @@ public final class MatsimStationPanelCache {
         String value = nonBlank(text, "");
         Matcher matcher = CHINESE_METRO_LINE_NUMBER_PATTERN.matcher(value);
         while (matcher.find()) {
-            String number = chineseLineNumber(matcher.group(1));
+            String number = chineseLineNumber(
+                    matcher.group(1) != null ? matcher.group(1) : matcher.group(2));
             if (!number.isBlank()) {
                 return number;
             }

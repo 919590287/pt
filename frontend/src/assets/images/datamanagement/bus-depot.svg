@@ -1,14 +1,26 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 公交场站：紫色（#7c3aed）圆角方形徽标 + 白色车库/公交车图形。
-     方形与站点的圆形区分设施类别，配色与站点/线网/选中色互不冲突。 -->
+<!-- 公交场站：靛蓝渐变（mapTheme depot #6366f1→#4338ca）圆角方形徽标 + 白色公交车图形。
+     方形与站点的圆形区分设施类别；靛蓝与站点钢蓝同族但可区分，顶部高光提升质感。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
-  <rect x="8" y="8" width="80" height="80" rx="20" fill="#7c3aed" stroke="#ffffff" stroke-width="6"/>
-  <rect x="26" y="26" width="44" height="34" rx="8" fill="#ffffff"/>
-  <rect x="31" y="33" width="15" height="12" rx="2.5" fill="#7c3aed"/>
-  <rect x="50" y="33" width="15" height="12" rx="2.5" fill="#7c3aed"/>
-  <rect x="31" y="50" width="34" height="4" rx="2" fill="#7c3aed" fill-opacity="0.55"/>
-  <circle cx="36" cy="65" r="6.5" fill="#ffffff"/>
-  <circle cx="60" cy="65" r="6.5" fill="#ffffff"/>
-  <circle cx="36" cy="65" r="2.6" fill="#7c3aed"/>
-  <circle cx="60" cy="65" r="2.6" fill="#7c3aed"/>
+  <defs>
+    <linearGradient id="depotBody" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#4338ca"/>
+    </linearGradient>
+    <linearGradient id="depotSheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="6" y="6" width="84" height="84" rx="22" fill="#4338ca" fill-opacity="0.22"/>
+  <rect x="8" y="8" width="80" height="80" rx="20" fill="url(#depotBody)" stroke="#ffffff" stroke-width="6"/>
+  <rect x="14" y="14" width="68" height="34" rx="14" fill="url(#depotSheen)"/>
+  <rect x="26" y="27" width="44" height="33" rx="8" fill="#ffffff"/>
+  <rect x="31" y="34" width="15" height="12" rx="3" fill="#4f46e5"/>
+  <rect x="50" y="34" width="15" height="12" rx="3" fill="#4f46e5"/>
+  <rect x="31" y="51" width="34" height="4" rx="2" fill="#4f46e5" fill-opacity="0.5"/>
+  <circle cx="36" cy="66" r="6.5" fill="#ffffff"/>
+  <circle cx="60" cy="66" r="6.5" fill="#ffffff"/>
+  <circle cx="36" cy="66" r="2.6" fill="#312e81"/>
+  <circle cx="60" cy="66" r="2.6" fill="#312e81"/>
 </svg>

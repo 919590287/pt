@@ -1,6 +1,7 @@
 <!-- 轨迹演示 -->
 <template>
-  <div class="GJYS" v-bind="$attrs" v-show="!runMonitorPanels">
+  <!-- 运行监测模式（runMonitorPanels=true）下该子树完全不渲染（v-if），避免隐藏面板随播放状态每 120ms 持续 patch -->
+  <div class="GJYS" v-bind="$attrs" v-if="!runMonitorPanels">
     <MCard class="card" wrap-body-class="body">
       <template #title>
         <div class="title">轨迹演示控制</div>
@@ -153,7 +154,7 @@
     </div>
   </teleport>
 
-  <teleport to="#datavisualization_index_box2" defer v-if="runMonitorPanels && !vehiclePanelInfo">
+  <teleport to="#datavisualization_index_box2" defer v-if="runMonitorPanels && !vehicleStaticInfo">
     <MCard2 class="GJYS_right_card vehicle-status-right-card" title="车辆与状态监控" :open="true">
       <template #body>
         <div class="rm-veh-hero">
@@ -191,14 +192,14 @@
     </MCard2>
   </teleport>
 
-  <teleport to="#datavisualization_index_box2" defer v-if="vehiclePanelInfo">
+  <teleport to="#datavisualization_index_box2" defer v-if="vehicleStaticInfo">
     <MCard2 class="GJYS_right_card" title="车辆信息" :open="true">
       <template #body>
         <div class="vehicle-panel">
           <div class="vehicle-head">
             <div>
-              <div class="vehicle-id">{{ vehiclePanelInfo.id }}</div>
-              <div class="vehicle-type">{{ vehiclePanelInfo.typeLabel }}</div>
+              <div class="vehicle-id">{{ vehicleStaticInfo.id }}</div>
+              <div class="vehicle-type">{{ vehicleStaticInfo.typeLabel }}</div>
             </div>
             <el-button type="primary" size="small" plain @click="clearVehicleFollow">解除跟随</el-button>
           </div>
@@ -206,63 +207,64 @@
           <div class="info-grid">
             <div class="info-item">
               <span class="label">当前速度</span>
-              <span class="value">{{ vehiclePanelInfo.speed }}</span>
+              <span class="value">{{ vehicleDynamicInfo.speed }}</span>
             </div>
-            <template v-if="vehiclePanelInfo.isTransit">
+            <template v-if="vehicleStaticInfo.isTransit">
               <div class="info-item">
                 <span class="label">线路名称</span>
-                <span class="value">{{ vehiclePanelInfo.lineName }}</span>
+                <span class="value">{{ vehicleStaticInfo.lineName }}</span>
               </div>
               <div class="info-item">
                 <span class="label">上一站</span>
-                <span class="value">{{ vehiclePanelInfo.previousStation }}</span>
+                <span class="value">{{ vehicleDynamicInfo.previousStation }}</span>
               </div>
               <div class="info-item">
                 <span class="label">下一站</span>
-                <span class="value">{{ vehiclePanelInfo.nextStation }}</span>
+                <span class="value">{{ vehicleDynamicInfo.nextStation }}</span>
               </div>
               <div class="info-item">
                 <span class="label">车内人员</span>
-                <span class="value">{{ vehiclePanelInfo.passengerCount }}</span>
+                <span class="value">{{ vehicleDynamicInfo.passengerCount }}</span>
               </div>
               <div class="info-item">
                 <span class="label">满载率</span>
-                <span class="value">{{ vehiclePanelInfo.loadRate }}</span>
+                <span class="value">{{ vehicleDynamicInfo.loadRate }}</span>
               </div>
               <div class="info-item wide">
                 <span class="label">运营时段</span>
-                <span class="value">{{ vehiclePanelInfo.schedule }}</span>
+                <span class="value">{{ vehicleStaticInfo.schedule }}</span>
               </div>
             </template>
             <template v-else>
               <div class="info-item">
                 <span class="label">车内人员</span>
-                <span class="value">{{ vehiclePanelInfo.personCount }}</span>
+                <span class="value">{{ vehicleStaticInfo.personCount }}</span>
               </div>
               <div class="info-item wide">
                 <span class="label">出发地</span>
-                <span class="value">{{ vehiclePanelInfo.origin }}</span>
+                <span class="value">{{ vehicleStaticInfo.origin }}</span>
               </div>
               <div class="info-item wide">
                 <span class="label">目的地</span>
-                <span class="value">{{ vehiclePanelInfo.destination }}</span>
+                <span class="value">{{ vehicleStaticInfo.destination }}</span>
               </div>
               <div class="info-item wide">
                 <span class="label">出行目的</span>
-                <span class="value">{{ vehiclePanelInfo.purpose }}</span>
+                <span class="value">{{ vehicleStaticInfo.purpose }}</span>
               </div>
             </template>
           </div>
 
-          <div class="stations-section" v-if="vehiclePanelInfo.isTransit">
+          <div class="stations-section" v-if="vehicleStaticInfo.isTransit">
             <div class="section-title">完整站序</div>
+            <!-- 站点列表遍历原始 stops 数组（不克隆）；上一站/下一站高亮由动态下标比较驱动 -->
             <div class="station-list">
               <div
-                v-for="station in vehiclePanelInfo.stops"
-                :key="station.id || station.index"
-                :class="['station-row', station.role]"
+                v-for="(station, index) in vehicleStaticInfo.stops"
+                :key="station.id || station.index || index + 1"
+                :class="['station-row', index === vehicleDynamicInfo.previousIndex ? 'previous' : index === vehicleDynamicInfo.nextIndex ? 'next' : '']"
               >
-                <span class="station-index">{{ station.index }}</span>
+                <span class="station-index">{{ station.index || index + 1 }}</span>
                 <span class="station-name">{{ station.name }}</span>
               </div>
             </div>
@@ -274,12 +276,13 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, inject, markRaw, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import { dataTrajectory, dataTrajectoryChunk, dataTrajectoryChunkBinary } from "@/api/trajectory.js";
 import { VehicleTrajectoryLayer, VEHICLE_MODE_CONFIG, parseVehicleTrajectoryBinaryChunk } from "../layers/VehicleTrajectoryLayer.js";
 import { getCachedChunk, putCachedChunk, pruneChunkCache } from "@/utils/trajectoryChunkCache.js";
+import { isCanceledRequest } from "../utils/panelShared.js";
 
 const props = defineProps({
   model: String,
@@ -301,13 +304,13 @@ const PREFETCH_WINDOW_SECONDS = 120;
 const MAX_CHUNK_CACHE = 7;
 // 分块缓存按字节预算淘汰，避免大 events 下 7 个大分块常驻导致 OOM。
 const MAX_CHUNK_CACHE_BYTES = 96 * 1024 * 1024;
+const MAX_BACKGROUND_PREFETCH_BYTES = 32 * 1024 * 1024;
+const MAX_PERSISTENT_CACHE_BYTES = 64 * 1024 * 1024;
 // 播放时滑块/时间文本的刷新节流（图层仍按 rAF 每帧驱动，UI 不必每帧重渲染）。
 const UI_SYNC_INTERVAL_MS = 120;
 const SEEK_CHUNK_LOAD_DELAY_MS = 48;
 const loading = ref(false);
-const chunkLoading = ref(false);
 const loadError = ref("");
-const chunkError = ref("");
 const cacheStatus = ref("idle");
 const cacheMessage = ref("");
 const progressInfo = ref({});
@@ -315,12 +318,13 @@ const isPlaying = ref(false);
 const playSpeed = ref(10);
 const currentTime = ref(28800);
 const timeRange = ref({ min: 0, max: 86400 });
-const trajectoryData = ref(null);
-const currentChunkData = ref(null);
+// 轨迹清单/分块/跟随车辆均为接口返回的大对象（未经 modelDataCache），用 shallowRef+markRaw 保持裸对象：
+// 只需整体替换触发响应，深层字段无需代理；传给图层/Worker 时 postMessage 结构化克隆不再走 Proxy 陷阱。
+const trajectoryData = shallowRef(null);
+const currentChunkData = shallowRef(null);
 const cumulativePassengers = ref(0);
-const cumulativeByMode = ref(emptyModeCount());
 const liveStats = ref(emptyStats());
-const followedVehicle = ref(null);
+const followedVehicle = shallowRef(null);
 
 let trajectoryLayer = null;
 let playbackFrame = null;
@@ -333,8 +337,11 @@ let playbackAnchorSim = 0;
 let lastUiSyncAt = 0;
 let lastStatsUiSyncAt = 0;
 let lastPassengerUiSyncAt = 0;
+let seekRenderFrame = null;
+let pendingSeekRenderTime = null;
 // 拖动进度条到未缓存分块时的防抖加载，避免每次 input 都发请求/清空车辆造成闪烁与长时间空白。
 let seekChunkTimer = null;
+let prefetchTimer = null;
 let pollTimer = null;
 let loadSeq = 0;
 let chunkSeq = 0;
@@ -343,6 +350,10 @@ let pendingChunkStart = null;
 let chunkCache = new Map();
 let prefetchingChunks = new Set();
 let chunkRequests = new Map();
+// 当前一代分块请求共用的取消控制器：重新加载/模型切换/卸载时统一 abort 在途请求（含预取）。
+let chunkAbortController = null;
+let foregroundChunkController = null;
+let prefetchAbortController = null;
 let passengerTimeIndex = emptyPassengerIndex();
 let passengerSeriesRows = [];
 
@@ -368,7 +379,40 @@ const buildProgressPercent = computed(() => {
 const activeVehicles = computed(() => liveStats.value.activeTotal || 0);
 const activeByMode = computed(() => liveStats.value.activeByMode || emptyModeCount());
 const avgSpeed = computed(() => (liveStats.value.avgSpeed || 0).toFixed(1));
-const vehiclePanelInfo = computed(() => {
+const segmentBucketSeconds = computed(() => {
+  const speed = Number(playSpeed.value) || 1;
+  if (speed >= 80) return 4;
+  if (speed >= 30) return 2;
+  return 1;
+});
+// 跟随面板信息拆分为"静态/动态"两个 computed：
+// - 静态：车辆身份/线路/原始 stops 数组引用（不 map 不克隆），换车才有实际变化；
+// - 动态：随播放时间与车辆位置变化的轻量标量（速度/载客/上下站下标）。
+// 原先单个 computed 每次 currentTime 节流更新（120ms）都克隆整条线路全部站点，8Hz 全量重算浪费明显。
+const vehicleStaticInfo = computed(() => {
+  const vehicle = followedVehicle.value;
+  if (!vehicle || !isTrajectoryMonitorActive.value) return null;
+  const meta = vehicle.meta || {};
+  const mode = normalizeMode(meta.mode || vehicle.mode);
+  const route = vehicle.route || {};
+  const isTransit = mode === "bus" || mode === "subway";
+  const personCount = Number(meta.personCount) || (Array.isArray(meta.personIds) ? meta.personIds.length : 0) || 1;
+
+  return {
+    id: meta.id || vehicle.id || vehicle.key || "--",
+    typeLabel: modeLabel(mode),
+    isTransit,
+    lineName: meta.lineName || route.lineName || meta.lineId || "--",
+    schedule: formatSchedule(meta.firstTime ?? route.firstTime, meta.lastTime ?? route.lastTime),
+    // 原始站点数组引用：模板直接 v-for，行高亮改由 vehicleDynamicInfo 的下标比较驱动
+    stops: Array.isArray(route.stops) ? route.stops : [],
+    personCount: `${personCount} 人`,
+    origin: formatLocation(meta.origin),
+    destination: formatLocation(meta.destination),
+    purpose: formatPurpose(meta.purpose ?? meta.destination?.type),
+  };
+});
+const vehicleDynamicInfo = computed(() => {
   const vehicle = followedVehicle.value;
   if (!vehicle || !isTrajectoryMonitorActive.value) return null;
   const meta = vehicle.meta || {};
@@ -380,28 +424,15 @@ const vehiclePanelInfo = computed(() => {
   const passengerCount = isTransit ? occupancyAt(meta.passengerEvents, currentTime.value) : 0;
   const capacity = Number(meta.capacity) || 0;
   const loadRate = capacity > 0 ? `${Math.min(999, (passengerCount / capacity) * 100).toFixed(1)}%` : "--";
-  const personCount = Number(meta.personCount) || (Array.isArray(meta.personIds) ? meta.personIds.length : 0) || 1;
 
   return {
-    id: meta.id || vehicle.id || vehicle.key || "--",
-    typeLabel: modeLabel(mode),
-    isTransit,
-    lineName: meta.lineName || route.lineName || meta.lineId || "--",
+    speed: formatSpeed(vehicle.speed),
     previousStation: stationState.previous?.name || "--",
     nextStation: stationState.next?.name || "--",
-    speed: formatSpeed(vehicle.speed),
+    previousIndex: stationState.previousIndex,
+    nextIndex: stationState.nextIndex,
     passengerCount: `${passengerCount} 人`,
     loadRate,
-    schedule: formatSchedule(meta.firstTime ?? route.firstTime, meta.lastTime ?? route.lastTime),
-    stops: stops.map((station, index) => ({
-      ...station,
-      index: station.index || index + 1,
-      role: stationState.previousIndex === index ? "previous" : stationState.nextIndex === index ? "next" : "",
-    })),
-    personCount: `${personCount} 人`,
-    origin: formatLocation(meta.origin),
-    destination: formatLocation(meta.destination),
-    purpose: formatPurpose(meta.purpose ?? meta.destination?.type),
   };
 });
 
@@ -568,11 +599,14 @@ function ensureTrajectoryLayer() {
   trajectoryLayer = new VehicleTrajectoryLayer({ zIndex: 1200, vehicleSize: VehicleSizeRef.value });
   trajectoryLayer.setVehicleMeta(trajectoryData.value?.meta || {});
   trajectoryLayer.setVehicleVisibilityMode(VehicleVisibilityModeRef.value);
+  trajectoryLayer.setSegmentBucketSeconds(segmentBucketSeconds.value);
   trajectoryLayer.setStatsCallback((stats) => {
     publishLiveStats(stats);
   });
   trajectoryLayer.setFollowCallback((vehicle) => {
-    followedVehicle.value = vehicle;
+    // 图层回调传入的车辆对象每次都是新引用（enrichVehicle 展开构建），
+    // markRaw 保持裸对象，面板 computed 读取时不产生深层代理开销。
+    followedVehicle.value = vehicle ? markRaw(vehicle) : null;
   });
   MapRef.value.addLayer(trajectoryLayer);
   if (currentChunkData.value) {
@@ -586,6 +620,9 @@ async function loadTrajectory() {
   stopPlayback();
   stopPolling();
   cancelSeekChunkLoad();
+  cancelScheduledPrefetch();
+  cancelSeekRender();
+  cancelPrefetchRequests();
   trajectoryData.value = null;
   currentChunkData.value = null;
   currentChunkStart = null;
@@ -593,13 +630,17 @@ async function loadTrajectory() {
   chunkCache = new Map();
   prefetchingChunks = new Set();
   chunkRequests = new Map();
+  // 模型切换/重新加载：中止上一代仍在途的分块请求（含预取），避免过期响应占用带宽与解析开销。
+  chunkAbortController?.abort();
+  chunkAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  foregroundChunkController?.abort();
+  foregroundChunkController = null;
   cacheStatus.value = "idle";
   cacheMessage.value = "";
   progressInfo.value = {};
   liveStats.value = emptyStats();
   followedVehicle.value = null;
   cumulativePassengers.value = 0;
-  cumulativeByMode.value = emptyModeCount();
   passengerTimeIndex = emptyPassengerIndex();
   passengerSeriesRows = [];
   if (trajectoryLayer) {
@@ -609,7 +650,6 @@ async function loadTrajectory() {
 
   loading.value = true;
   loadError.value = "";
-  chunkError.value = "";
   try {
     const res = await dataTrajectory({ datasource: props.model });
     if (seq !== loadSeq) return;
@@ -630,7 +670,8 @@ async function applyTrajectoryStatus(data, seq) {
   cacheStatus.value = data.status || "ready";
   cacheMessage.value = data.message || (cacheStatus.value === "generating" ? "正在生成轨迹缓存" : "");
   progressInfo.value = data.progress || {};
-  trajectoryData.value = data;
+  // 接口清单整体替换（shallowRef 即触发依赖）；markRaw 保证后续透传图层/Worker 的是裸对象。
+  trajectoryData.value = markRaw(data);
   if (cacheStatus.value === "failed") {
     loadError.value = data.message || "events轨迹缓存生成失败";
   }
@@ -694,7 +735,8 @@ async function ensureChunkForTime(time) {
   await loadChunkForTime(time, loadSeq, false);
 }
 
-async function loadChunkForTime(time, seq, force = false) {
+async function loadChunkForTime(time, seq, force = false, options = {}) {
+  const { priority = false } = options;
   const start = chunkStartOf(time);
   if (!force && currentChunkStart === start && currentChunkData.value) return;
   if (!force && chunkCache.has(start)) {
@@ -702,41 +744,46 @@ async function loadChunkForTime(time, seq, force = false) {
     return;
   }
   if (!force && pendingChunkStart === start) return;
+  if (priority) {
+    cancelPrefetchRequests();
+    if (foregroundChunkController && pendingChunkStart !== start) {
+      foregroundChunkController.abort();
+    }
+  }
   const myChunkSeq = ++chunkSeq;
   pendingChunkStart = start;
-  chunkLoading.value = true;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  foregroundChunkController = controller;
   try {
-    const data = await requestTrajectoryChunkOnce(start);
+    const data = await requestTrajectoryChunkOnce(start, { signal: controller?.signal });
     if (seq !== loadSeq || myChunkSeq !== chunkSeq) return;
     if (data.status !== "ready") {
       await applyTrajectoryStatus(data, seq);
       return;
     }
     rememberChunk(start, data);
-    chunkError.value = "";
     applyChunkData(start, data);
   } catch (error) {
-    if (seq === loadSeq) {
-      chunkError.value = "轨迹分块加载失败";
-    }
+    // 分块加载失败或被取消（模型切换/卸载时 abort）：静默即可，
+    // 播放/拖动路径跨块时会自动重试，界面由既有加载态兜底。
   } finally {
     if (pendingChunkStart === start) {
       pendingChunkStart = null;
     }
-    if (seq === loadSeq && myChunkSeq === chunkSeq) {
-      chunkLoading.value = false;
+    if (foregroundChunkController === controller) {
+      foregroundChunkController = null;
     }
   }
 }
 
 function applyChunkData(start, data) {
   currentChunkStart = start;
-  currentChunkData.value = data;
+  // markRaw：分块对象会原样透传图层→Worker（postMessage），保持裸对象避免结构化克隆走代理。
+  currentChunkData.value = data ? markRaw(data) : null;
   trajectoryLayer?.setVehicleMeta(data?.meta || trajectoryData.value?.meta || {});
   trajectoryLayer?.setData(data);
   syncStats();
-  prefetchAdjacentChunks(start);
-  prefetchAroundTime(currentTime.value);
+  scheduleChunkPrefetch(start, currentTime.value);
 }
 
 function rememberChunk(start, data) {
@@ -751,6 +798,16 @@ function chunkBytes(data) {
   const count = Number(data?.segmentCount) || 0;
   const stride = Number(data?.stride) || 8;
   return count * stride * 4;
+}
+
+function currentChunkBytes() {
+  return chunkBytes(currentChunkData.value);
+}
+
+function canBackgroundPrefetch() {
+  if (!hasTrajectory.value || !props.model) return false;
+  const bytes = currentChunkBytes();
+  return bytes > 0 && bytes <= MAX_BACKGROUND_PREFETCH_BYTES;
 }
 
 function trimChunkCache(anchorStart) {
@@ -781,30 +838,69 @@ function isChunkStartInRange(start) {
 }
 
 function prefetchAroundTime(time) {
-  if (!hasTrajectory.value || !props.model) return;
+  if (!canBackgroundPrefetch()) return;
   const start = chunkStartOf(time);
   const offset = Math.max(0, Number(time) - start);
   if (offset >= chunkSeconds.value - PREFETCH_WINDOW_SECONDS) {
     prefetchChunk(start + chunkSeconds.value, loadSeq);
   }
-  if (offset <= PREFETCH_WINDOW_SECONDS) {
+  if (!isPlaying.value && offset <= PREFETCH_WINDOW_SECONDS) {
     prefetchChunk(start - chunkSeconds.value, loadSeq);
   }
 }
 
 function prefetchAdjacentChunks(start) {
-  if (!hasTrajectory.value || !props.model) return;
+  if (!canBackgroundPrefetch()) return;
   prefetchChunk(start + chunkSeconds.value, loadSeq);
   prefetchChunk(start - chunkSeconds.value, loadSeq);
+}
+
+function scheduleChunkPrefetch(start, time = currentTime.value) {
+  cancelScheduledPrefetch();
+  const delay = isPlaying.value ? 80 : 650;
+  prefetchTimer = window.setTimeout(() => {
+    prefetchTimer = null;
+    if (!canBackgroundPrefetch()) return;
+    prefetchAroundTime(time);
+    if (!isPlaying.value) {
+      prefetchAdjacentChunks(start);
+    }
+  }, delay);
+}
+
+function cancelScheduledPrefetch() {
+  if (prefetchTimer) {
+    window.clearTimeout(prefetchTimer);
+    prefetchTimer = null;
+  }
+}
+
+function cancelPrefetchRequests() {
+  cancelScheduledPrefetch();
+  prefetchAbortController?.abort();
+  prefetchAbortController = null;
+  prefetchingChunks = new Set();
+  for (const [key, promise] of chunkRequests) {
+    if (String(key).startsWith("bg:")) {
+      chunkRequests.delete(key);
+    }
+  }
 }
 
 async function prefetchChunk(start, seq) {
   if (!isChunkStartInRange(start) || chunkCache.has(start) || prefetchingChunks.has(start) || pendingChunkStart === start) {
     return;
   }
+  if (!canBackgroundPrefetch()) return;
   prefetchingChunks.add(start);
+  if (!prefetchAbortController || prefetchAbortController.signal?.aborted) {
+    prefetchAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  }
   try {
-    const data = await requestTrajectoryChunkOnce(start);
+    const data = await requestTrajectoryChunkOnce(start, {
+      background: true,
+      signal: prefetchAbortController?.signal,
+    });
     if (seq === loadSeq && data?.status === "ready") {
       rememberChunk(start, data);
       // 预取的相邻分块同时推给 Worker 预建每秒索引并常驻，播放越过边界时即可秒切不卡（双缓冲）。
@@ -817,18 +913,19 @@ async function prefetchChunk(start, seq) {
   }
 }
 
-async function requestTrajectoryChunkOnce(start) {
-  if (chunkRequests.has(start)) {
-    return chunkRequests.get(start);
+async function requestTrajectoryChunkOnce(start, options = {}) {
+  const key = `${options.background ? "bg" : "fg"}:${start}`;
+  if (chunkRequests.has(key)) {
+    return chunkRequests.get(key);
   }
   const requestMap = chunkRequests;
-  const promise = requestTrajectoryChunk(start)
+  const promise = requestTrajectoryChunk(start, options)
     .finally(() => {
-      if (requestMap.get(start) === promise) {
-        requestMap.delete(start);
+      if (requestMap.get(key) === promise) {
+        requestMap.delete(key);
       }
     });
-  requestMap.set(start, promise);
+  requestMap.set(key, promise);
   return promise;
 }
 
@@ -843,7 +940,8 @@ function chunkCacheKey(start) {
   return `${props.model}::${eventsTag()}::${start}`;
 }
 
-async function requestTrajectoryChunk(start) {
+async function requestTrajectoryChunk(start, options = {}) {
+  const { background = false, signal } = options;
   const cacheKey = chunkCacheKey(start);
   // 1) 先查本地持久缓存（IndexedDB）：命中即零网络、跨会话直读。
   if (cacheKey) {
@@ -858,20 +956,31 @@ async function requestTrajectoryChunk(start) {
   }
 
   // 2) 走可缓存的 GET 二进制端点；成功后把原始字节写入 IndexedDB（结构化克隆，不影响已解析视图）。
+  // 网络请求挂到当前一代的取消控制器上；重新加载/卸载时统一 abort（IndexedDB 命中路径不涉网，不受影响）。
   try {
-    const res = await dataTrajectoryChunkBinary({ datasource: props.model }, start);
+    const res = await dataTrajectoryChunkBinary({ datasource: props.model }, start, {
+      signal,
+      silentError: background,
+    });
     if (res?.status === 200 && res.data?.byteLength) {
       const parsed = parseVehicleTrajectoryBinaryChunk(res.data, trajectoryData.value || {});
-      if (cacheKey) {
+      if (cacheKey && res.data.byteLength <= MAX_PERSISTENT_CACHE_BYTES) {
         putCachedChunk(cacheKey, res.data, { ds: props.model, ver: eventsTag() }).catch(() => {});
       }
       return parsed;
     }
   } catch (error) {
+    // 被取消的请求直接上抛，不再降级 JSON 重试（调用方按取消静默处理）。
+    if (isCanceledRequest(error)) throw error;
+    const status = error?.cause?.response?.status || error?.response?.status;
+    if (background || status >= 500) throw error;
     // JSON keeps the feature usable when an old cache or browser rejects the binary path.
   }
 
-  const res = await dataTrajectoryChunk({ datasource: props.model }, start);
+  const res = await dataTrajectoryChunk({ datasource: props.model }, start, {
+    signal,
+    silentError: background,
+  });
   return res.data || {};
 }
 
@@ -894,11 +1003,6 @@ function syncPassengerStatsAt(time, force = !isPlaying.value) {
   lastPassengerUiSyncAt = now;
   const passengerCounts = cumulativeAt(time);
   cumulativePassengers.value = passengerCounts.total || 0;
-  cumulativeByMode.value = {
-    bus: passengerCounts.bus || 0,
-    subway: passengerCounts.subway || 0,
-    car: passengerCounts.car || 0,
-  };
 }
 
 function syncStats() {
@@ -912,8 +1016,7 @@ function driveLayerTime(time) {
     if (chunkCache.has(start)) {
       applyChunkData(start, chunkCache.get(start));
     } else {
-      ensureChunkForTime(time);
-      prefetchAdjacentChunks(start);
+      loadChunkForTime(time, loadSeq, false, { priority: true });
       syncPassengerStatsAt(time);
       return;
     }
@@ -925,6 +1028,7 @@ function driveLayerTime(time) {
 
 // 暂停状态下的拖动/跳转：命中缓存即时切换；未缓存则先在当前分块采样（保留车辆），并防抖加载目标分块。
 function seekToTime(time) {
+  cancelPrefetchRequests();
   const start = chunkStartOf(time);
   if (start !== currentChunkStart) {
     if (chunkCache.has(start)) {
@@ -932,20 +1036,18 @@ function seekToTime(time) {
       return;
     }
     syncPassengerStatsAt(time);
-    prefetchAdjacentChunks(start);
-    scheduleSeekChunkLoad(time);
+    scheduleSeekChunkLoad(time, true);
     return;
   }
-  prefetchAroundTime(time);
   syncStatsAt(time);
 }
 
-function scheduleSeekChunkLoad(time) {
+function scheduleSeekChunkLoad(time, priority = false) {
   if (seekChunkTimer) window.clearTimeout(seekChunkTimer);
   seekChunkTimer = window.setTimeout(() => {
     seekChunkTimer = null;
-    ensureChunkForTime(time);
-  }, SEEK_CHUNK_LOAD_DELAY_MS);
+    loadChunkForTime(time, loadSeq, false, { priority });
+  }, priority ? 0 : SEEK_CHUNK_LOAD_DELAY_MS);
 }
 
 function cancelSeekChunkLoad() {
@@ -953,6 +1055,26 @@ function cancelSeekChunkLoad() {
     window.clearTimeout(seekChunkTimer);
     seekChunkTimer = null;
   }
+}
+
+function cancelSeekRender() {
+  pendingSeekRenderTime = null;
+  if (seekRenderFrame) {
+    window.cancelAnimationFrame(seekRenderFrame);
+    seekRenderFrame = null;
+  }
+}
+
+function scheduleSeekRender(time) {
+  pendingSeekRenderTime = clampTime(time);
+  if (seekRenderFrame) return;
+  seekRenderFrame = window.requestAnimationFrame(() => {
+    seekRenderFrame = null;
+    const nextTime = pendingSeekRenderTime;
+    pendingSeekRenderTime = null;
+    if (nextTime == null) return;
+    seekToTime(nextTime);
+  });
 }
 
 function togglePlay() {
@@ -971,14 +1093,17 @@ function resetPlayback() {
   isPlaying.value = false;
   stopPlayback();
   cancelSeekChunkLoad();
+  cancelSeekRender();
+  cancelPrefetchRequests();
   const time = initialTime();
   anchorPlayback(time);
   currentTime.value = time;
-  ensureChunkForTime(time);
+  loadChunkForTime(time, loadSeq, false, { priority: true });
   syncStatsAt(time);
 }
 
 function changeSpeed() {
+  trajectoryLayer?.setSegmentBucketSeconds(segmentBucketSeconds.value);
   // 变速时以当前时刻重锚，避免把新倍速错误地应用到已过去的真实时长上（否则会瞬跳）。
   if (isPlaying.value) {
     anchorPlayback(playbackClock);
@@ -995,6 +1120,7 @@ function anchorPlayback(simTime, now = performance.now()) {
 function startPlayback() {
   stopPlayback();
   cancelSeekChunkLoad();
+  cancelPrefetchRequests();
   const startedAt = performance.now();
   lastUiSyncAt = startedAt;
   anchorPlayback(currentTime.value, startedAt);
@@ -1030,15 +1156,20 @@ function stopPlayback() {
 function handleSliderInput(value) {
   // v-model 已更新 currentTime（watch 负责采样与防抖加载）；此处让播放时钟跟随，便于继续播放。
   const time = clampTime(Number(value) || timeRange.value.min);
+  cancelPrefetchRequests();
   if (isPlaying.value) {
     anchorPlayback(time);
+    loadChunkForTime(time, loadSeq, false, { priority: true });
   } else {
     playbackClock = time;
+    scheduleSeekRender(time);
   }
 }
 
 function handleSliderCommit(value) {
   cancelSeekChunkLoad();
+  cancelSeekRender();
+  cancelPrefetchRequests();
   const time = clampTime(Number(value) || timeRange.value.min);
   if (isPlaying.value) {
     anchorPlayback(time);
@@ -1046,7 +1177,7 @@ function handleSliderCommit(value) {
     playbackClock = time;
   }
   currentTime.value = time;
-  ensureChunkForTime(time);
+  loadChunkForTime(time, loadSeq, false, { priority: true });
   seekToTime(time);
 }
 
@@ -1139,12 +1270,15 @@ watch(VehicleVisibilityModeRef, (mode) => {
   trajectoryLayer?.setVehicleVisibilityMode(mode);
   syncStats();
 });
+watch(playSpeed, () => {
+  trajectoryLayer?.setSegmentBucketSeconds(segmentBucketSeconds.value);
+});
 watch(() => props.model, loadTrajectory, { immediate: true });
 watch(currentTime, (time) => {
   // 播放时由 rAF 的 driveLayerTime 直接驱动图层，跳过此 watch，避免每帧重复 setTime 与滑块重渲染。
   if (isPlaying.value) return;
   playbackClock = clampTime(time);
-  seekToTime(time);
+  scheduleSeekRender(time);
 });
 
 onMounted(() => {
@@ -1159,6 +1293,12 @@ onUnmounted(() => {
   stopPlayback();
   stopPolling();
   cancelSeekChunkLoad();
+  cancelScheduledPrefetch();
+  cancelSeekRender();
+  cancelPrefetchRequests();
+  // 中止仍在途的分块请求（含预取），与上面的序号失效互为双保险。
+  chunkAbortController?.abort();
+  foregroundChunkController?.abort();
   if (trajectoryLayer) {
     trajectoryLayer.dispose();
     trajectoryLayer = null;

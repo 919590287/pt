@@ -33,6 +33,7 @@
         :to="item.to"
         active-class="active"
         class="item"
+        @click.capture="handleNavClick(item.to, $event)"
       >
         <span class="item-title">{{ item.title }}</span>
       </RouterLink>
@@ -92,7 +93,7 @@ import { clearAuth, getUsername, saveAuth } from "@/utils/auth";
 
 const route = useRoute();
 const router = useRouter();
-const hasModelSelector = computed(() => ["datavisualization", "datamanagement"].includes(route.name));
+const hasModelSelector = computed(() => ["datavisualization", "datamanagement", "scenarioedit"].includes(route.name));
 const currentUsername = ref(getUsername() || "用户");
 const renameDialogVisible = ref(false);
 const renameFormRef = ref(null);
@@ -165,6 +166,13 @@ async function handleLogout() {
     clearAuth();
     router.replace({ name: "login" });
   }
+}
+
+function handleNavClick(to, event) {
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.altKey || event.ctrlKey || event.shiftKey) return;
+  event.preventDefault();
+  event.stopPropagation();
+  router.push(to);
 }
 
 onMounted(() => {

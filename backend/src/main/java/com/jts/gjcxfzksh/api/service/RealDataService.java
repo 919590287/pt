@@ -16,6 +16,8 @@ public interface RealDataService {
 
     Map<String, Object> busLineStation(String areaName, String versionId);
 
+    Map<String, Object> busLineStation(String areaName, String versionId, String include);
+
     Map<String, Object> history(String areaName);
 
     RealDataExportVO exportVersion(String areaName, String versionId, String datasetType, String format);
