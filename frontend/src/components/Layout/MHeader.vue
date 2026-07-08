@@ -60,6 +60,43 @@
             </svg>
             <span>修改用户名称</span>
           </el-dropdown-item>
+          <div
+            class="basemap-flyout-wrap"
+            :class="{ 'is-open': basemapSubmenuOpen }"
+            @mouseenter="basemapSubmenuOpen = true"
+            @mouseleave="basemapSubmenuOpen = false"
+            @focusin="basemapSubmenuOpen = true"
+            @focusout="basemapSubmenuOpen = false"
+          >
+            <div class="custom-dropdown-item basemap-trigger" tabindex="0" role="button" aria-haspopup="true" :aria-expanded="basemapSubmenuOpen">
+              <svg class="item-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="14" rx="2" />
+                <path d="M7 20h10" />
+                <path d="M9 16h6" />
+              </svg>
+              <span>底图</span>
+              <svg class="submenu-arrow" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+            </div>
+            <div class="basemap-submenu" role="radiogroup" aria-label="底图选择">
+              <button
+                v-for="option in basemapOptions"
+                :key="option.key"
+                type="button"
+                class="basemap-option"
+                :class="{ active: selectedBasemapKey === option.key }"
+                role="radio"
+                :aria-checked="selectedBasemapKey === option.key"
+                @click.stop="selectBasemap(option)"
+              >
+                <span>{{ option.label }}</span>
+                <svg v-if="selectedBasemapKey === option.key" class="basemap-check" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
           <el-dropdown-item command="logout" divided class="custom-dropdown-item logout-item">
             <svg class="item-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -93,6 +130,7 @@ import { clearAuth, getUsername, saveAuth } from "@/utils/auth";
 
 const route = useRoute();
 const router = useRouter();
+const MapRef = inject("MapRef", ref(null));
 const hasModelSelector = computed(() => ["datavisualization", "datamanagement", "scenarioedit"].includes(route.name));
 const currentUsername = ref(getUsername() || "用户");
 const renameDialogVisible = ref(false);
@@ -108,6 +146,65 @@ const renameRules = {
   ],
 };
 const userInitial = computed(() => (currentUsername.value || "用").slice(0, 1).toUpperCase());
+const fallbackBasemapOptions = [
+  {
+    key: "configured",
+    label: "默认",
+    tiles: [window.APP_CONFIG?.mapTileUrlTemplate || "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"],
+    background: "#f6f8fb",
+  },
+  {
+    key: "carto-light",
+    label: "Light",
+    tiles: ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"],
+    background: "#f6f8fb",
+  },
+  {
+    key: "carto-dark",
+    label: "Dark",
+    tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],
+    background: "#111827",
+  },
+  {
+    key: "carto-voyager",
+    label: "Voyager",
+    tiles: ["https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png"],
+    background: "#f4f0e8",
+  },
+];
+const basemapStorageKey = window.BASEMAP_STORAGE_KEY || "gjcxfzksh:basemap";
+const basemapOptions = computed(() => {
+  const configuredOptions = Array.isArray(window.BASEMAP_OPTIONS) ? window.BASEMAP_OPTIONS : [];
+  return configuredOptions.length ? configuredOptions : fallbackBasemapOptions;
+});
+const selectedBasemapKey = ref(readStoredBasemapKey());
+const basemapSubmenuOpen = ref(false);
+
+watch(basemapOptions, (options) => {
+  if (!options.length || options.some((option) => option.key === selectedBasemapKey.value)) return;
+  selectedBasemapKey.value = window.DEFAULT_BASEMAP_KEY || options[0].key;
+}, { immediate: true });
+
+function readStoredBasemapKey() {
+  try {
+    return window.localStorage?.getItem(basemapStorageKey) || window.DEFAULT_BASEMAP_KEY || "configured";
+  } catch (error) {
+    return window.DEFAULT_BASEMAP_KEY || "configured";
+  }
+}
+
+function selectBasemap(option) {
+  if (!option?.key) return;
+  selectedBasemapKey.value = option.key;
+  try {
+    window.localStorage?.setItem(basemapStorageKey, option.key);
+  } catch (error) {
+    // Ignore storage failures; the current session still switches immediately.
+  }
+  MapRef.value?.setBaseMapStyle?.(option);
+  window.dispatchEvent(new CustomEvent("basemap:changed", { detail: option }));
+  basemapSubmenuOpen.value = false;
+}
 
 function syncCurrentUser() {
   currentUsername.value = getUsername() || "用户";
@@ -710,6 +807,7 @@ const headerMenus = [
   padding: 6px 0 !important;
   background: rgba(255, 255, 255, 0.98) !important;
   backdrop-filter: blur(8px);
+  overflow: visible !important;
   
   // Custom morphing and scaling entry transition
   transform-origin: top right !important;
@@ -741,6 +839,138 @@ const headerMenus = [
 
   .el-dropdown-menu {
     padding: 4px 0 !important;
+    overflow: visible !important;
+  }
+
+  /* Element Plus wraps the dropdown list in an el-scrollbar whose wrap (overflow:auto)
+     and root (overflow:hidden) clip anything painted outside the popper box. The 底图
+     submenu flies out to the LEFT, entirely outside that box, so it was being clipped
+     away. Let these layers overflow so the flyout can render beyond the popper. */
+  .el-scrollbar,
+  .el-scrollbar__wrap,
+  .el-scrollbar__view {
+    overflow: visible !important;
+  }
+
+  .basemap-flyout-wrap {
+    position: relative !important;
+    margin: 2px 6px !important;
+  }
+
+  .basemap-trigger {
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    min-width: 0 !important;
+    width: 100% !important;
+    min-height: 42px !important;
+    padding: 9px 16px !important;
+    margin: 0 !important;
+    border-radius: 10px !important;
+    background: transparent !important;
+    color: #526166 !important;
+    font-size: 13.5px !important;
+    font-weight: 600 !important;
+    line-height: 1.4 !important;
+    box-sizing: border-box !important;
+    outline: none !important;
+    cursor: pointer !important;
+    transition: background-color 0.2s ease, color 0.2s ease !important;
+  }
+
+  .basemap-flyout-wrap:hover .basemap-trigger,
+  .basemap-flyout-wrap:focus-within .basemap-trigger,
+  .basemap-flyout-wrap.is-open .basemap-trigger {
+    background-color: rgba(0, 113, 227, 0.08) !important;
+    color: #005bb5 !important;
+  }
+
+  .basemap-flyout-wrap:hover .basemap-trigger .item-icon,
+  .basemap-flyout-wrap:focus-within .basemap-trigger .item-icon,
+  .basemap-flyout-wrap.is-open .basemap-trigger .item-icon {
+    color: #0071e3 !important;
+  }
+
+  .basemap-trigger .submenu-arrow {
+    margin-left: auto !important;
+    color: #98a2b3 !important;
+  }
+
+  .basemap-trigger .item-icon {
+    flex-shrink: 0 !important;
+    color: #8b95a5 !important;
+    transition: color 0.2s ease !important;
+  }
+
+  .basemap-submenu {
+    position: absolute !important;
+    top: 0 !important;
+    right: calc(100% + 10px) !important;
+    min-width: 136px !important;
+    padding: 6px !important;
+    border: 1px solid rgba(21, 105, 222, 0.15) !important;
+    border-radius: 10px !important;
+    background: rgba(255, 255, 255, 0.98) !important;
+    box-shadow: 0 10px 32px rgba(15, 66, 125, 0.12) !important;
+    z-index: 1 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: translateX(6px) scale(0.98) !important;
+    transform-origin: right top !important;
+    transition: opacity 160ms ease, transform 160ms ease !important;
+  }
+
+  .basemap-submenu::after {
+    content: "" !important;
+    position: absolute !important;
+    top: 0 !important;
+    right: -12px !important;
+    width: 12px !important;
+    height: 100% !important;
+  }
+
+  .basemap-flyout-wrap:hover .basemap-submenu,
+  .basemap-flyout-wrap:focus-within .basemap-submenu,
+  .basemap-flyout-wrap.is-open .basemap-submenu {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: translateX(0) scale(1) !important;
+  }
+
+  .basemap-option {
+    width: 100% !important;
+    min-height: 34px !important;
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) 14px !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding: 7px 9px !important;
+    border: 0 !important;
+    border-radius: 8px !important;
+    background: transparent !important;
+    color: #475467 !important;
+    font: inherit !important;
+    font-size: 13px !important;
+    font-weight: 650 !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    transition: background-color 160ms ease, color 160ms ease !important;
+
+    &:hover,
+    &:focus-visible {
+      background: rgba(21, 105, 222, 0.08) !important;
+      color: #12304f !important;
+      outline: none !important;
+    }
+
+    &.active {
+      background: rgba(21, 105, 222, 0.11) !important;
+      color: #1569de !important;
+    }
+  }
+
+  .basemap-check {
+    color: #1569de !important;
   }
 
   // Gorgeous user info head inside dropdown

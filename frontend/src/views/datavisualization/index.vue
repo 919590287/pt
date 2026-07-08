@@ -2991,24 +2991,31 @@ const showOdCurveLegend = computed(() =>
 
 function buildStationHeatFeatureCollection(stations, context) {
   const coordByName = new Map();
-  for (const facility of busNetworkRawFacilities) {
-    const name = String(facility?.facilityName || "");
-    if (!name || coordByName.has(name)) continue;
-    const lngLat = modelCoordToLngLat(facility?.coord);
-    if (lngLat) coordByName.set(name, lngLat);
+  const modeByName = new Map();
+  for (const feature of busNetworkCollections.stations?.features || []) {
+    const name = String(feature?.properties?.facilityName || feature?.properties?.name || "");
+    const lngLat = feature?.geometry?.coordinates;
+    if (!name || !Array.isArray(lngLat)) continue;
+    if (!coordByName.has(name)) coordByName.set(name, lngLat);
+    if (feature?.properties?.type === "subway") modeByName.set(name, "metro");
+    else if (!modeByName.has(name)) modeByName.set(name, "bus");
   }
+  const wantsMetro = baseMapLineMode.value === "metro-network";
   // 真实密度口径：权重恒按“全网最大站点客流”归一，切换行政区只筛选显示的站点、不重新标定色阶，
   // 同一站点在任何区域视图下颜色一致
   const rows = [];
   const values = [];
   let maxFlow = 0;
   Object.entries(stations || {}).forEach(([name, station]) => {
-    const lngLat = coordByName.get(String(name));
+    const stationName = String(name);
+    const lngLat = coordByName.get(stationName);
     if (!lngLat) return;
+    const isMetroStation = modeByName.get(stationName) === "metro";
+    if (isMetroStation !== wantsMetro) return;
     const flow = sumHourlyFlowArray(station?.hourlyFlow);
     if (!(flow > 0)) return;
     if (flow > maxFlow) maxFlow = flow;
-    values.push(flow); // 全网分布（不受行政区筛选影响），用于分位数断点
+    values.push(flow); // 当前制式全网分布（不受行政区筛选影响），用于分位数断点
     // 选中行政区时只保留区内站点（但 maxFlow / 分布仍按全网统计）
     if (context && !lngLatInDisplayRange(lngLat, context)) return;
     rows.push({ lngLat, flow });
@@ -3070,7 +3077,7 @@ function ensureStationHeatData() {
 }
 
 watch(
-  [stationHeatmapEnabled, effectiveTab, () => selectModel.value?.name, isModelReady, selectedDisplayRange, adminDistrictCollection],
+  [stationHeatmapEnabled, effectiveTab, baseMapLineMode, busNetworkRevision, () => selectModel.value?.name, isModelReady, selectedDisplayRange, adminDistrictCollection],
   () => {
     ensureStationHeatData();
     syncBaseMapLayerVisibility();
@@ -4978,10 +4985,24 @@ function ensureMonitorRoadLayer() {
 
 function handleBaseMapLineModeChange(mode) {
   baseMapLineMode.value = mode;
+  reconcilePfaSelectionForBaseMapMode(mode);
   if (mode === "road-network" && shouldLoadTransitNetworkForCurrentTab()) {
     ensureMonitorRoadLayer();
   }
   syncBaseMapLayerVisibility();
+}
+
+function reconcilePfaSelectionForBaseMapMode(mode = baseMapLineMode.value) {
+  if (props.mode !== "pfa" || (mode !== "bus-network" && mode !== "metro-network")) return;
+  closeLineRoutePicker();
+  runMonitorSearchKeyword.value = "";
+  isSearchFocused.value = false;
+  if (effectiveTab.value === "线路客流监测" && isLineSelectionActive()) {
+    clearLineSelection();
+  }
+  if (effectiveTab.value === "站点客流监测" && (isStationFeatureSelectionActive() || selectedStationName.value)) {
+    clearStationSelection();
+  }
 }
 
 function queryBoxAround(point, radius = 8) {
@@ -6147,6 +6168,7 @@ watch(MapRef, (mapInstance) => {
 });
 
 watch(baseMapLineMode, (mode) => {
+  reconcilePfaSelectionForBaseMapMode(mode);
   if (mode === "road-network" && shouldLoadTransitNetworkForCurrentTab()) {
     ensureMonitorRoadLayer();
   }

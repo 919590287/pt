@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, reactive, ref, shallowRef, watch } from "vue";
-import { getCachedLineAll, clearModelDataCache } from "@/utils/modelDataCache";
+import { getCachedLineAll } from "@/utils/modelDataCache";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 import { optDraftList, optDraftSave, optDraftDelete, optDraftCopy, optAreaStats, optJobStatus } from "@/api/optimization";
 import { checkEditConflict } from "./conflicts";
@@ -22,7 +22,7 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
   const parentReady = ref(false); // loadStatus=true 即可编辑（无需等缓存）
 
   // ---------- 母本线网底图数据 ----------
-  const lines = ref([]); // lineAll 原始数据
+  const lines = shallowRef([]); // lineAll 原始数据
   const linesLoading = ref(false);
 
   const stopIndex = computed(() => {
@@ -528,7 +528,6 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     parentModel.value = name || "";
     parentReady.value = Boolean(ready);
     if (changed) {
-      if (parentModel.value) clearModelDataCache(parentModel.value);
       lines.value = [];
       resetDraftLocal();
       draftList.value = [];

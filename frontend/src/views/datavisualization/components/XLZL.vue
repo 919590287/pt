@@ -794,12 +794,12 @@ function addLineIndex(map, key, line) {
   else map.set(text, [line]);
 }
 
-const rawLineIndexes = computed(() => {
+function buildRawLineIndexes(lines = []) {
   const linesByName = new Map();
   const lineById = new Map();
   const routeByKey = new Map();
   const routeById = new Map();
-  for (const line of rawLines.value) {
+  for (const line of Array.isArray(lines) ? lines : []) {
     const lineId = String(line?.lineId || "");
     if (lineId && !lineById.has(lineId)) lineById.set(lineId, line);
     addLineIndex(linesByName, lineDisplayName(line), line);
@@ -814,6 +814,14 @@ const rawLineIndexes = computed(() => {
     }
   }
   return { linesByName, lineById, routeByKey, routeById };
+}
+
+const rawLineIndexes = computed(() => {
+  const lines = rawLines.value;
+  // 索引只依赖模型线路摘要，按模型缓存后 tab 往返/组件重挂载无需重复构建。
+  return rawLinesModel && lines.length
+    ? getModelDerived(rawLinesModel, "xlzl:rawLineIndexes", () => buildRawLineIndexes(lines))
+    : buildRawLineIndexes(lines);
 });
 
 function linesForDisplayName(displayName) {
@@ -2386,6 +2394,34 @@ const stationOptions = computed(() => {
   return allOptions.filter((option) => runMonitorStationOptionFilter(option));
 });
 
+// 站点名 -> 经过该站的候选线路设施，按模型缓存。
+// 选站时只在候选集合里做显示范围过滤，避免每次都全网扫描线路×方向×站点。
+function buildStationRouteIndex(lines = []) {
+  const byName = new Map();
+  let routeOrdinal = 0;
+  (Array.isArray(lines) ? lines : []).forEach((line) => {
+    (Array.isArray(line?.routes) ? line.routes : []).forEach((route) => {
+      const currentRouteOrdinal = routeOrdinal++;
+      (Array.isArray(route?.facilities) ? route.facilities : []).forEach((fac, facIndex) => {
+        const name = fac?.facilityName;
+        if (!name) return;
+        const entry = { line, route, fac, facIndex, routeOrdinal: currentRouteOrdinal };
+        const list = byName.get(name);
+        if (list) list.push(entry);
+        else byName.set(name, [entry]);
+      });
+    });
+  });
+  return { byName };
+}
+
+function stationRouteIndex() {
+  const lines = rawLines.value;
+  return rawLinesModel && lines.length
+    ? getModelDerived(rawLinesModel, "xlzl:stationRouteIndex", () => buildStationRouteIndex(lines))
+    : buildStationRouteIndex(lines);
+}
+
 // 将线路候选项上抛给 index.vue 的右上角搜索框
 const runMonitorLineOptions = inject("runMonitorLineOptions", null);
 if (runMonitorLineOptions) {
@@ -2585,13 +2621,23 @@ function normalizeLineSearchName(value = "") {
     .toLowerCase();
 }
 
+function findLineBySearchName(target) {
+  if (!target) return null;
+  const exact = rawLineIndexes.value.linesByName.get(target)?.[0];
+  if (exact) return exact;
+  for (const item of rawLines.value) {
+    const rawName = normalizeLineSearchName(item.lineName);
+    if (rawName === target) return item;
+    const displayName = normalizeLineSearchName(lineDisplayName(item));
+    if (displayName.includes(target) || target.includes(displayName)) return item;
+  }
+  return null;
+}
+
 async function selectLineByName(lineName) {
   const target = normalizeLineSearchName(lineName);
   if (!target) return false;
-  const line =
-    rawLineIndexes.value.linesByName.get(target)?.[0] ||
-    rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === target) ||
-    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)).includes(target) || target.includes(normalizeLineSearchName(lineDisplayName(item))));
+  const line = findLineBySearchName(target);
   const displayName = line ? lineDisplayName(line) : "";
   if (!displayName) return false;
   searchMode.value = "line";
@@ -2612,10 +2658,7 @@ async function selectLineByFeature(props = {}) {
   const name = props.lineName || props.line_name || props.routeName || props.route_name || props.name || "";
   const targetName = normalizeLineSearchName(name);
   if (!targetName) return false;
-  const line =
-    rawLineIndexes.value.linesByName.get(targetName)?.[0] ||
-    rawLines.value.find((item) => normalizeLineSearchName(item.lineName) === targetName) ||
-    rawLines.value.find((item) => normalizeLineSearchName(lineDisplayName(item)).includes(targetName) || targetName.includes(normalizeLineSearchName(lineDisplayName(item))));
+  const line = findLineBySearchName(targetName);
   if (!line) return false;
   searchMode.value = "line";
   selectedStationName.value = "";
@@ -3020,34 +3063,36 @@ function handleStationChange(stationName) {
   }
 
   const matches = [];
-  rawLines.value.forEach(line => {
-    if (line.routes) {
-      line.routes.forEach(route => {
-        if (route.facilities) {
-          // 单次 find 同时完成命中判断与取站（原先 some+find 对每条 route 扫两遍）
-          const fac = route.facilities.find((item) => item.facilityName === stationName && runMonitorStationOptionFilter({
-            value: item.facilityName,
-            label: item.facilityName,
-            facilityId: item.facilityId,
-            coord: item.coord,
-          }));
-          if (fac) {
-            matches.push({
-              lineId: line.lineId,
-              lineName: line.lineName,
-              routeId: route.routeId,
-              routeName: route.routeName,
-              info: route.info,
-              links: route.links,
-              geometry: route.geometry,
-              facilities: route.facilities,
-              stationCoord: fac.coord || null,
-            });
-          }
-        }
-      });
+  const winnerByRoute = new Map();
+  for (const entry of stationRouteIndex().byName.get(stationName) || []) {
+    const fac = entry.fac;
+    if (!runMonitorStationOptionFilter({
+      value: fac.facilityName,
+      label: fac.facilityName,
+      facilityId: fac.facilityId,
+      coord: fac.coord,
+    })) {
+      continue;
     }
-  });
+    const existing = winnerByRoute.get(entry.route);
+    if (!existing || entry.facIndex < existing.facIndex) {
+      winnerByRoute.set(entry.route, entry);
+    }
+  }
+  const winners = Array.from(winnerByRoute.values()).sort((a, b) => a.routeOrdinal - b.routeOrdinal);
+  for (const { line, route, fac } of winners) {
+    matches.push({
+      lineId: line.lineId,
+      lineName: line.lineName,
+      routeId: route.routeId,
+      routeName: route.routeName,
+      info: route.info,
+      links: route.links,
+      geometry: route.geometry,
+      facilities: route.facilities,
+      stationCoord: fac.coord || null,
+    });
+  }
 
   matchedRoutes.value = matches;
   activeMatchedRouteId.value = "";

@@ -109,12 +109,7 @@ function createMapStyle() {
   return {
     version: 8,
     sources: {
-      "base-raster": {
-        type: "raster",
-        tiles: urlTemplateFromConfig(config),
-        tileSize: config.tileSize || 256,
-        attribution: config.attribution || "",
-      },
+      "base-raster": rasterSourceConfig(config),
     },
     layers: [
       {
@@ -133,6 +128,15 @@ function createMapStyle() {
         },
       },
     ],
+  };
+}
+
+function rasterSourceConfig(config = {}) {
+  return {
+    type: "raster",
+    tiles: urlTemplateFromConfig(config),
+    tileSize: config.tileSize || 256,
+    attribution: config.attribution || "",
   };
 }
 
@@ -258,6 +262,35 @@ export class MyMap extends EventListener {
       return;
     }
     this._readyCallbacks.push(callback);
+  }
+
+  setBaseMapStyle(config = {}) {
+    this.whenReady(() => {
+      const style = this.map?.getStyle?.();
+      if (!style) return;
+      const sourceId = "base-raster";
+      const layerId = "base-raster";
+      if (this.map.getLayer(layerId)) {
+        this.map.removeLayer(layerId);
+      }
+      if (this.map.getSource(sourceId)) {
+        this.map.removeSource(sourceId);
+      }
+      this.map.addSource(sourceId, rasterSourceConfig(config));
+      const beforeId = (this.map.getStyle()?.layers || [])
+        .find((layer) => layer.id !== "background" && layer.id !== layerId)?.id;
+      this.map.addLayer({
+        id: layerId,
+        type: "raster",
+        source: sourceId,
+        paint: {
+          "raster-opacity": config.opacity ?? 1,
+        },
+      }, beforeId);
+      if (this.map.getLayer("background")) {
+        this.map.setPaintProperty("background", "background-color", numberColorToHex(config.background, "#f5f5f5"));
+      }
+    });
   }
 
   bindMapEvents() {

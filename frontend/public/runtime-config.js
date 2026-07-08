@@ -10,6 +10,7 @@
     cityBuildingsHeightField: "HEIGHT",
     cityBuildingsMaxFeatures: 20000,
     mapTileUrlTemplate: "",
+    defaultBasemapKey: "configured",
     networkLineMinPixels: 0.8,
     networkLineSoftEdgePixels: 0,
     mapPixelRatio: null,

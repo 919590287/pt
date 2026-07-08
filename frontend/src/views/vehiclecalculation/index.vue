@@ -888,7 +888,7 @@ onUnmounted(() => {
 .vehicle-calc-panel {
   position: fixed;
   z-index: var(--z-panel);
-  width: min(1240px, calc((100vw - 40px) / var(--app-panel-scale)));
+  width: min(1680px, calc((100vw - 40px) / var(--app-panel-scale)));
   max-height: calc((100vh - 132px) / var(--app-panel-scale));
   display: flex;
   flex-direction: column;
@@ -1024,10 +1024,9 @@ onUnmounted(() => {
 
 .workbench-grid {
   display: grid;
-  grid-template-columns: minmax(360px, 0.92fr) minmax(520px, 1.28fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 0.66fr) minmax(760px, 1.9fr);
   gap: 12px;
-  align-items: stretch;
+  align-items: start;
 }
 
 .input-column,
@@ -1036,7 +1035,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 12px;
   min-width: 0;
-  height: 100%;
 }
 
 .form-section,
@@ -1046,48 +1044,6 @@ onUnmounted(() => {
   border: 1px solid rgba(21, 105, 222, 0.12);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.94);
-}
-
-.input-column .form-section:last-child,
-.result-column .result-section:last-child {
-  flex: 1 1 auto;
-}
-
-@media (min-width: 1101px) {
-  .input-column,
-  .result-column {
-    display: contents;
-  }
-
-  .input-column > .form-section:nth-child(1) {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .input-column > .form-section:nth-child(2) {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .input-column > .form-section:nth-child(3) {
-    grid-column: 1;
-    grid-row: 3;
-  }
-
-  .result-column > .result-section:nth-child(1) {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .result-column > .result-section:nth-child(2) {
-    grid-column: 2;
-    grid-row: 2;
-  }
-
-  .result-column > .result-section:nth-child(3) {
-    grid-column: 2;
-    grid-row: 3;
-  }
 }
 
 .section-title {
@@ -1130,14 +1086,18 @@ onUnmounted(() => {
 }
 
 .field-row {
-  display: grid;
-  grid-template-columns: minmax(96px, 1fr) 122px;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 10px;
   color: var(--app-ink-soft);
   font-size: 12px;
   font-weight: 620;
+
+  > span {
+    line-height: 1.2;
+    white-space: nowrap;
+  }
 
   &:last-child {
     margin-bottom: 0;
@@ -1208,6 +1168,7 @@ th {
   background: #f2f7fc;
   border-bottom: 1px solid rgba(21, 105, 222, 0.12);
   font-weight: 720;
+  white-space: nowrap;
 }
 
 td {
@@ -1233,13 +1194,17 @@ tbody tr:hover td {
 }
 
 .time-list {
-  min-width: 180px;
   text-align: left;
+  white-space: nowrap;
 
   span {
     display: inline-block;
-    margin: 0 8px 3px 0;
+    margin: 0 10px 0 0;
     white-space: nowrap;
+
+    &:last-child {
+      margin-right: 0;
+    }
   }
 }
 

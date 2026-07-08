@@ -89,10 +89,20 @@
               <span class="section-title">站点乘降客流</span>
               <div class="pfa-section-actions">
                 <span class="pfa-section-meta">上车 {{ stationBoardingSummary.boarding }} · 下车 {{ stationBoardingSummary.alighting }}</span>
-                <el-button size="small" class="pfa-heatmap-btn" @click.stop="boardingHeatmapVisible = true">热力图</el-button>
+                <div class="chart-type-selector" role="group" aria-label="站点乘降客流图表类型">
+                  <button
+                    v-for="type in ['bar', 'heatmap']"
+                    :key="type"
+                    type="button"
+                    :class="['type-pill', boardingChartType === type ? 'active' : '']"
+                    @click="boardingChartType = type"
+                  >
+                    {{ type === 'bar' ? '柱状图' : '热力图' }}
+                  </button>
+                </div>
               </div>
             </div>
-            <div class="chart-container-wrapper">
+            <div v-if="boardingChartType === 'bar'" class="chart-container-wrapper">
               <el-auto-resizer class="chart_box">
                 <template #default="{ height, width }">
                   <VChart
@@ -105,6 +115,26 @@
                 </template>
               </el-auto-resizer>
             </div>
+            <div
+              v-else-if="boardingHeatmapData.hasData"
+              class="chart-container-wrapper station-boarding-heatmap-wrapper"
+              :style="{ height: `${boardingHeatmapPanelHeight}px` }"
+              title="全屏查看"
+              @click="openBoardingHeatmapFullscreen"
+            >
+              <el-auto-resizer class="chart_box">
+                <template #default="{ height, width }">
+                  <VChart
+                    v-if="width > 0 && height > 0"
+                    class="station-boarding-heatmap-chart"
+                    :option="boardingHeatmapOption"
+                    autoresize
+                    :update-options="{ replaceMerge: ['series'], lazyUpdate: true }"
+                  />
+                </template>
+              </el-auto-resizer>
+            </div>
+            <el-empty v-else class="pfa-empty-chart" description="当前时段暂无线路×OD客流数据" />
           </section>
 
           <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'od'" class="pfa-section">
@@ -572,6 +602,7 @@ import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../util
 import { injectSync } from "@/utils";
 import { compareZh, createDebouncedMirror, isCanceledRequest, runWhenIdle } from "../utils/panelShared.js";
 import { webMercatorToLngLat } from "@/mymap/index.js";
+import { isMetroLine } from "@/utils/transitMode.js";
 
 const props = defineProps({
   model: String,
@@ -701,6 +732,15 @@ function hourSlice(values, startHour = 6, endHour = 23) {
   return result;
 }
 
+function sumHourSlice(values, startHour = 6, endHour = 23) {
+  if (!Array.isArray(values)) return 0;
+  let total = 0;
+  for (let hour = startHour; hour < endHour; hour++) {
+    total += toFiniteNumber(values[hour], 0);
+  }
+  return total;
+}
+
 // stations 键的归一化索引按面板数据对象缓存：未命中 fallback 不再逐键归一化全扫
 const stationsNormalizedIndexCache = new WeakMap();
 function stationsNormalizedIndex(stations) {
@@ -723,6 +763,22 @@ function stationPanelByName(stationName) {
   const target = normalizeStationSearchName(stationName);
   const matchedKey = stationsNormalizedIndex(stations).get(target);
   return matchedKey ? stations[matchedKey] : null;
+}
+
+const stationFacilityIndexCache = new WeakMap();
+function stationFacilityIndex(stations) {
+  let index = stationFacilityIndexCache.get(stations);
+  if (!index) {
+    index = new Map();
+    Object.values(stations || {}).forEach((station) => {
+      (Array.isArray(station?.facilityIds) ? station.facilityIds : []).forEach((id) => {
+        const key = String(id || "");
+        if (key && !index.has(key)) index.set(key, station);
+      });
+    });
+    stationFacilityIndexCache.set(stations, index);
+  }
+  return index;
 }
 
 // 同一 (站点面板, 设施面板) 的合并结果缓存：保持返回对象身份稳定，
@@ -748,6 +804,28 @@ function mergedSidePanel(stationPanel, facilityPanel, stationName) {
   return merged;
 }
 
+const facilityPanelIndexCache = new WeakMap();
+function facilityPanelById(stationPanel, id) {
+  const key = String(id || "");
+  if (!key) return null;
+  const facilityPanels = stationPanel?.facilityPanels;
+  if (!facilityPanels || typeof facilityPanels !== "object") return null;
+  let index = facilityPanelIndexCache.get(stationPanel);
+  if (!index) {
+    index = new Map();
+    Object.values(facilityPanels).forEach((panel) => {
+      const panelId = String(panel?.facilityId || "");
+      if (panelId && !index.has(panelId)) index.set(panelId, panel);
+      (Array.isArray(panel?.facilityIds) ? panel.facilityIds : []).forEach((candidate) => {
+        const candidateId = String(candidate || "");
+        if (candidateId && !index.has(candidateId)) index.set(candidateId, panel);
+      });
+    });
+    facilityPanelIndexCache.set(stationPanel, index);
+  }
+  return index.get(key) || null;
+}
+
 function stationPanelForSide(stationName, facilityId = "", options = {}) {
   const { fallbackToAggregate = true } = options || {};
   const stationPanel = stationPanelByName(stationName);
@@ -756,10 +834,7 @@ function stationPanelForSide(stationName, facilityId = "", options = {}) {
   const facilityPanels = stationPanel.facilityPanels;
   if (id && facilityPanels && typeof facilityPanels === "object") {
     if (facilityPanels[id]) return mergedSidePanel(stationPanel, facilityPanels[id], stationName);
-    const matched = Object.values(facilityPanels).find((panel) =>
-      String(panel?.facilityId || "") === id
-      || (Array.isArray(panel?.facilityIds) && panel.facilityIds.some((candidate) => String(candidate || "") === id))
-    );
+    const matched = facilityPanelById(stationPanel, id);
     if (matched) return mergedSidePanel(stationPanel, matched, stationName);
   }
   return fallbackToAggregate ? stationPanel : null;
@@ -780,10 +855,7 @@ const currentStationPanel = computed(() => {
   const stations = stationPanelData.value?.stations || {};
   const facilityId = String(selectedStationFacilityId.value || "");
   if (facilityId && !isDirectionalPair) {
-    return Object.values(stations).find((station) =>
-      Array.isArray(station?.facilityIds)
-      && station.facilityIds.some((id) => String(id || "") === facilityId)
-    ) || null;
+    return stationFacilityIndex(stations).get(facilityId) || null;
   }
   return null;
 });
@@ -842,10 +914,8 @@ const stationMetrics = computed(() => {
 const stationBoardingSummary = computed(() => {
   const startHour = debouncedSegmentTimeRange.value[0];
   const endHour = debouncedSegmentTimeRange.value[1];
-  const boarding = hourSlice(currentStationPanel.value?.boardingByHour, startHour, endHour)
-    .reduce((sum, value) => sum + value, 0);
-  const alighting = hourSlice(currentStationPanel.value?.alightingByHour, startHour, endHour)
-    .reduce((sum, value) => sum + value, 0);
+  const boarding = sumHourSlice(currentStationPanel.value?.boardingByHour, startHour, endHour);
+  const alighting = sumHourSlice(currentStationPanel.value?.alightingByHour, startHour, endHour);
   return {
     boarding: boarding.toLocaleString(),
     alighting: alighting.toLocaleString(),
@@ -1019,9 +1089,18 @@ const stationOptions = computed(() => {
   const lines = rawLines.value;
   // 只有 rawLines 已归属该模型时才写模型级缓存，避免加载前的空数据污染缓存
   const base = rawLinesModel && lines.length
-    ? getModelDerived(rawLinesModel, "zdzl:stationOptions", () => buildStationOptionsBase(lines))
+    ? getModelDerived(rawLinesModel, "zdzl:stationOptions:v2", () => buildStationOptionsBase(lines))
     : buildStationOptionsBase(lines);
   return base.filter((option) => runMonitorStationOptionFilter(option));
+});
+
+const stationOptionExactIndex = computed(() => {
+  const index = new Map();
+  stationOptions.value.forEach((option) => {
+    const key = normalizeStationSearchName(option.value);
+    if (key && !index.has(key)) index.set(key, option);
+  });
+  return index;
 });
 
 // 将站点候选项上抛给 index.vue 的右上角搜索框
@@ -1083,14 +1162,9 @@ function formatSecondsToTime(seconds) {
   return `${h}:${m}`;
 }
 
-function inferStationType(line, route) {
-  const text = [
-    line?.lineName,
-    line?.lineId,
-    route?.routeName,
-    route?.routeId,
-  ].filter(Boolean).join(" ").toLowerCase();
-  return /地铁|轨道|metro|subway|rail|mtr/.test(text) ? "subway" : "bus";
+function inferStationType(line, route = null) {
+  const routeAwareLine = route ? { ...(line || {}), routes: [route] } : line;
+  return isMetroLine(routeAwareLine || {}) ? "subway" : "bus";
 }
 
 function routeTopologyKey(line, route) {
@@ -1164,7 +1238,7 @@ function buildStationCoordCandidates(lines) {
 const stationCoordCandidates = computed(() => {
   const lines = rawLines.value;
   return rawLinesModel && lines.length
-    ? getModelDerived(rawLinesModel, "zdzl:coordCandidates", () => buildStationCoordCandidates(lines))
+    ? getModelDerived(rawLinesModel, "zdzl:coordCandidates:v2", () => buildStationCoordCandidates(lines))
     : buildStationCoordCandidates(lines);
 });
 
@@ -1253,7 +1327,7 @@ function buildStationNetworkTopology(lines) {
 const stationNetworkTopology = computed(() => {
   const lines = rawLines.value;
   return rawLinesModel && lines.length
-    ? getModelDerived(rawLinesModel, "zdzl:topology", () => buildStationNetworkTopology(lines))
+    ? getModelDerived(rawLinesModel, "zdzl:topology:v2", () => buildStationNetworkTopology(lines))
     : buildStationNetworkTopology(lines);
 });
 
@@ -2023,13 +2097,18 @@ function oppositeStationCandidate(stationName, facilityId = "", coord = null) {
   if (candidates.length < 2) return null;
   const currentFacilityId = String(facilityId || "");
   const currentCoordKey = coord ? stationCoordKey(coord.x, coord.y) : "";
-  return candidates
-    .filter((candidate) => {
-      if (currentFacilityId && String(candidate.facilityId || "") === currentFacilityId) return false;
-      if (currentCoordKey && String(candidate.coordKey || "") === currentCoordKey) return false;
-      return true;
-    })
-    .sort((left, right) => stationCoordDistance(coord, left) - stationCoordDistance(coord, right))[0] || null;
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (currentFacilityId && String(candidate.facilityId || "") === currentFacilityId) continue;
+    if (currentCoordKey && String(candidate.coordKey || "") === currentCoordKey) continue;
+    const distance = stationCoordDistance(coord, candidate);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
 }
 
 // 选站调用序号：nextTick 恢复后若已被更新调用超越则放弃后续步骤，
@@ -2040,7 +2119,7 @@ async function selectStationByName(stationName) {
   const target = normalizeStationSearchName(stationName);
   if (!target) return false;
   const option =
-    stationOptions.value.find((item) => normalizeStationSearchName(item.value) === target) ||
+    stationOptionExactIndex.value.get(target) ||
     stationOptions.value.find((item) => {
       const name = normalizeStationSearchName(item.value);
       return name.includes(target) || target.includes(name);
@@ -2295,7 +2374,7 @@ async function loadAllData() {
       rawLines.value = data;
 
       // 站点提取（按坐标去重）按模型记忆化：重挂载/切 tab 直接命中，不再全网三层扫描
-      const stationsList = getModelDerived(model, "zdzl:mapStations", () => {
+      const stationsList = getModelDerived(model, "zdzl:mapStations:v2", () => {
         const list = [];
         const coordsSet = new Set();
         const stationByCoord = new Map();
@@ -2395,6 +2474,7 @@ const segmentTimeRange = ref([8, 18]);
 // 重计算统一消费 180ms 防抖镜像；v-model 与时段文案读原值保证即时反馈
 const { debounced: debouncedSegmentTimeRange, cancel: cancelSegmentTimeMirror } = createDebouncedMirror(segmentTimeRange, 180);
 const odViewMode = ref("table");
+const boardingChartType = ref("bar");
 // 需求8：OD曲线分级色阶配置（色阶控件与图例已移到地图左下角 index.vue），此处复用注入的共享配置；
 // 无注入（独立使用）时回退本地 ref。曲线仍在本组件按该配置着色/定宽。
 const injectedOdCurveScaleConfig = inject("odCurveScaleConfig", null);
@@ -2414,6 +2494,11 @@ function formatHourLabel(hour) {
 
 function formatHourRangeLabel(hour) {
   return `${formatHourLabel(hour)}-${formatHourLabel(hour + 1)}`;
+}
+
+function openBoardingHeatmapFullscreen() {
+  if (!boardingHeatmapData.value.hasData) return;
+  boardingHeatmapVisible.value = true;
 }
 
 function handleExportDetail() {
@@ -2625,7 +2710,7 @@ const odTableData = computed(() => {
   const endHour = debouncedSegmentTimeRange.value[1];
 
   const rows = (currentStationPanel.value?.od || []).map((item) => {
-    const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
+    const flow = sumHourSlice(item.flowByHour, startHour, endHour);
     const routeDesc = item.routeDesc || item.direction || "";
     const routeLabel = [item.lineName, routeDesc || item.routeName].filter(Boolean).join(" · ");
     return {
@@ -2819,7 +2904,7 @@ const odCurveEntries = computed(() => {
     ).trim();
     if (!counterpartName) return;
 
-    const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
+    const flow = sumHourSlice(item.flowByHour, startHour, endHour);
     if (flow <= 0) return;
 
     const counterpartKey = normalizeStationSearchName(counterpartName);
@@ -2909,7 +2994,7 @@ const boardingHeatmapData = computed(() => {
       || ""
     ).trim();
     if (!counterpart) return;
-    const flow = hourSlice(item.flowByHour, startHour, endHour).reduce((sum, value) => sum + value, 0);
+    const flow = sumHourSlice(item.flowByHour, startHour, endHour);
     if (flow <= 0) return;
     lineTotals.set(lineName, (lineTotals.get(lineName) || 0) + flow);
     counterpartTotals.set(counterpart, (counterpartTotals.get(counterpart) || 0) + flow);
@@ -2941,10 +3026,19 @@ const boardingHeatmapData = computed(() => {
   return { lines, counterparts, cells, maxCellFlow, hasData: cells.length > 0 };
 });
 
+const boardingHeatmapPanelHeight = computed(() => {
+  const rows = boardingHeatmapData.value.counterparts?.length || 0;
+  const columns = boardingHeatmapData.value.lines?.length || 0;
+  return Math.max(300, Math.min(680, rows * 24 + (columns > 8 ? 150 : 118)));
+});
+
 const boardingHeatmapOption = computed(() => {
   const { lines, counterparts, cells, maxCellFlow } = boardingHeatmapData.value;
+  const safeMax = Math.max(1, maxCellFlow);
   return {
     backgroundColor: "transparent",
+    animationDuration: 280,
+    animationEasing: "quarticOut",
     tooltip: {
       position: "top",
       backgroundColor: "rgba(30, 41, 59, 0.9)",
@@ -2961,26 +3055,29 @@ const boardingHeatmapOption = computed(() => {
     },
     grid: {
       left: "3%",
-      right: "6%",
-      top: "4%",
-      bottom: "20%",
+      right: 58,
+      top: 8,
+      bottom: 8,
       containLabel: true
     },
     xAxis: {
       type: "category",
       data: lines,
-      splitArea: { show: true },
+      axisLine: { show: false },
+      axisTick: { show: false },
       axisLabel: {
         color: "#64748b",
         fontSize: 11,
         interval: 0,
-        rotate: lines.length > 8 ? 32 : 0
+        rotate: lines.length > 8 ? 45 : 0
       }
     },
     yAxis: {
       type: "category",
       data: counterparts,
-      splitArea: { show: true },
+      inverse: true,
+      axisLine: { show: false },
+      axisTick: { show: false },
       axisLabel: {
         color: "#64748b",
         fontSize: 11,
@@ -2991,16 +3088,15 @@ const boardingHeatmapOption = computed(() => {
     visualMap: {
       type: "continuous",
       min: 0,
-      max: Math.max(1, maxCellFlow),
+      max: safeMax,
       calculable: true,
-      orient: "horizontal",
-      left: "center",
-      bottom: 4,
-      itemWidth: 12,
-      itemHeight: 160,
-      // 白→黄→橙→深红（OrRd），对齐用户指定的经典热力图配色
+      orient: "vertical",
+      right: 0,
+      top: "middle",
+      itemWidth: 14,
+      itemHeight: 220,
       inRange: {
-        color: ["#fff7ec", "#fee8c8", "#fdd49e", "#fdbb84", "#fc8d59", "#ef6548", "#c7302b"]
+        color: ["#1a9850", "#66bd63", "#a6d96a", "#d9ef8b", "#fee08b", "#fdae61", "#f46d43", "#d73027"]
       },
       textStyle: {
         color: "#64748b",
@@ -3011,17 +3107,18 @@ const boardingHeatmapOption = computed(() => {
       {
         name: "线路×OD客流",
         type: "heatmap",
-        // 高值格子（≥55%最大值）文字用白色，低值用深棕，0 不显示数字
+        // 与线路客流分析热力图一致：两端深色格子用白字，中段浅色格子用深色数字
         data: cells.map((cell) => {
           const flow = toFiniteNumber(cell?.[2], 0);
-          if (flow >= Math.max(1, maxCellFlow) * 0.55) {
+          const ratio = flow / safeMax;
+          if (ratio <= 0.18 || ratio >= 0.68) {
             return { value: cell, label: { color: "#ffffff" } };
           }
           return cell;
         }),
         label: {
           show: cells.length <= 120,
-          color: "#7a4a2b",
+          color: "#3f4a3f",
           fontSize: 10,
           formatter: (params) => {
             const flow = toFiniteNumber(params?.value?.[2], 0);
@@ -3688,7 +3785,10 @@ defineExpose({
 
 .pfa-station-sections .chart-type-selector .type-pill {
   padding: 3px 10px;
+  border: 0;
   border-radius: 6px;
+  background: transparent;
+  font: inherit;
   font-size: var(--dm2-text-xs);
   font-weight: var(--dm2-fw-semibold);
   color: var(--dm2-muted);
@@ -3706,6 +3806,16 @@ defineExpose({
   color: #f8fbff;
   background: var(--dm2-accent);
   box-shadow: var(--dm2-accent-glow);
+}
+
+.pfa-station-sections .station-boarding-heatmap-wrapper {
+  min-height: 300px;
+  cursor: zoom-in;
+}
+
+.pfa-station-sections .station-boarding-heatmap-chart {
+  width: 100%;
+  height: 100%;
 }
 
 .pfa-station-sections .demo-groups {
@@ -5086,21 +5196,11 @@ defineExpose({
   }
 }
 
-/* —— 需求9：乘降热力图入口按钮 —— */
 .pfa-station-sections .pfa-section-actions {
   display: flex;
   align-items: center;
   gap: var(--dm2-space-2);
   min-width: 0;
-}
-
-.pfa-station-sections .pfa-heatmap-btn {
-  height: 22px;
-  padding: 0 10px;
-  font-size: var(--dm2-text-xs);
-  border-color: rgba(21, 105, 222, 0.35);
-  color: #1569de;
-  flex-shrink: 0;
 }
 
 /* —— 需求8：OD曲线控制区（色阶 + 图例 + 方向说明） —— */

@@ -5,7 +5,7 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 
 import App from "./App.vue";
-import router from "./router";
+import router, { preloadRouteComponents } from "./router";
 
 // echarts
 import VChart from "vue-echarts";
@@ -86,3 +86,13 @@ app.use(createPinia());
 app.use(router);
 installElementPlus(app);
 app.mount("#app");
+
+function scheduleRoutePreload() {
+  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => preloadRouteComponents(), { timeout: 4000 });
+    return;
+  }
+  setTimeout(() => preloadRouteComponents(), 1200);
+}
+
+router.isReady?.().then(scheduleRoutePreload).catch(scheduleRoutePreload);
