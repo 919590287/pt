@@ -102,7 +102,6 @@ public final class MatsimStationPanelCache {
 
     public static void prepareOnModelLoad(MatsimData data) {
         ensureStationPanelCache(data);
-        loadPanel(data);
     }
 
     public static Map<String, Object> readStationPanel(MatsimData data) {

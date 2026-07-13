@@ -28,9 +28,9 @@ function hasPendingFor(key) {
 
 function evictStaleModels() {
   while (modelCache.size > MAX_CACHED_MODELS) {
-    const oldestKey = modelCache.keys().next().value;
-    // 有在途请求的模型不淘汰，避免撕裂 in-flight promise 去重语义
-    if (hasPendingFor(oldestKey)) break;
+    // 跳过在途模型，但继续寻找其后的最旧可淘汰项，避免一个慢请求让 LRU 整体失去上限。
+    const oldestKey = Array.from(modelCache.keys()).find((key) => !hasPendingFor(key));
+    if (oldestKey == null) break;
     modelCache.delete(oldestKey);
   }
 }
@@ -105,7 +105,9 @@ function sharedModelRequest(model, type, requestFn) {
     })
     .finally(() => {
       if (entry[promiseKey]) delete entry[promiseKey];
-      pendingControllers.delete(controllerKey(key, type));
+      const pendingKey = controllerKey(key, type);
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
     });
 
   return entry[promiseKey];
@@ -146,7 +148,9 @@ function sharedModelPanelRequest(model, type, requestFn) {
     })
     .finally(() => {
       if (entry[promiseKey]) delete entry[promiseKey];
-      pendingControllers.delete(controllerKey(key, type));
+      const pendingKey = controllerKey(key, type);
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
     });
 
   return entry[promiseKey];
@@ -258,7 +262,7 @@ export function warmModelInteractionCache(model, options = {}) {
       return { lines, facilities, routePanel };
     })
     .finally(() => {
-      warmupPromises.delete(warmupKey);
+      if (warmupPromises.get(warmupKey) === promise) warmupPromises.delete(warmupKey);
     });
 
   warmupPromises.set(warmupKey, promise);

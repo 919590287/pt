@@ -13,6 +13,8 @@ public class BuildingTileVO {
     private String heightField;
     private int featureCount;
     private boolean truncated;
+    /** 是否有建筑因低于当前缩放的像素阈值被剔除（放大后需重新请求细节） */
+    private boolean culled;
     private List<BuildingVO> buildings = new ArrayList<>();
 
     @Data

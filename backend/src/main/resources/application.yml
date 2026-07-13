@@ -13,8 +13,9 @@ server:
     direct-buffers: true
     # 设置IO线程数, 它主要执行非阻塞的任务,它们会负责多个连接, 默认设置每个CPU核心一个线程
     threads:
-      worker: 512
-      io: 32
+      # 原固定 512/32 会在常规 8-16 核部署上制造过量线程与上下文切换；保留环境变量供压测后调优。
+      worker: ${UNDERTOW_WORKER_THREADS:128}
+      io: ${UNDERTOW_IO_THREADS:16}
 
 spring:
   servlet:
@@ -41,7 +42,10 @@ matsim:
   # output 顶层关键文件估算超过该值时，自动使用大模型轻量加载模式。
   large-model-threshold-bytes: 21474836480
   # 后台缓存生成并发数；0表示按CPU自动选择，服务器可按磁盘/内存能力调大。
-  cache-build-threads: 0
+  cache-build-threads: ${MATSIM_CACHE_BUILD_THREADS:0}
+  # 单个模型内部的坐标转换、统计与缓存计算线程数；0=逻辑核心数-1（最多32）。
+  # 低内存机器可设为 2-4，高核心服务器可按压测增大。
+  processing-threads: ${MATSIM_PROCESSING_THREADS:0}
   # 轨迹缓存构建并发数；默认1（磁盘友好），多模型并行构建可调大。
   trajectory-build-threads: 1
 

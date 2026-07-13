@@ -263,6 +263,8 @@ function modelLabel(m) {
 }
 const labelA = computed(() => (modelMap.value.get(modelA.value) ? modelLabel(modelMap.value.get(modelA.value)) : "基准模型"));
 const labelB = computed(() => (modelMap.value.get(modelB.value) ? modelLabel(modelMap.value.get(modelB.value)) : "对比模型"));
+let modelsRequestSeq = 0;
+let modelsAbortController = null;
 
 const pairHint = computed(() => {
   const a = modelMap.value.get(modelA.value)?.optimization;
@@ -280,19 +282,38 @@ async function loadSchemes() {
     const res = await getSchemeList(undefined, { silentError: true });
     schemeList.value = Array.isArray(res?.data) ? res.data : [];
     if (!area.value && schemeList.value.length) area.value = schemeList.value[0];
+  } catch (error) {
+    schemeList.value = [];
   } finally {
     schemesLoading.value = false;
   }
 }
 async function loadModels() {
-  if (!area.value) return;
+  const requestedArea = area.value;
+  const seq = ++modelsRequestSeq;
+  modelsAbortController?.abort();
+  modelsAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (!requestedArea) {
+    modelsLoading.value = false;
+    return;
+  }
   modelsLoading.value = true;
   try {
-    const res = await getModelList({ schemeName: area.value }, { silentError: true });
+    const res = await getModelList(
+      { schemeName: requestedArea },
+      { silentError: true, signal: modelsAbortController?.signal },
+    );
+    if (seq !== modelsRequestSeq || requestedArea !== area.value) return;
     models.value = Array.isArray(res?.data) ? res.data : [];
     autoPair();
+  } catch (error) {
+    if (seq === modelsRequestSeq && !modelsAbortController?.signal?.aborted) {
+      models.value = [];
+      modelA.value = "";
+      modelB.value = "";
+    }
   } finally {
-    modelsLoading.value = false;
+    if (seq === modelsRequestSeq) modelsLoading.value = false;
   }
 }
 function autoPair() {
@@ -329,23 +350,36 @@ function swapModels() {
 const evalA = ref(null);
 const evalB = ref(null);
 const netBusy = computed(() => evalA.value?.loading || evalB.value?.loading);
+const evalRequests = {
+  a: { seq: 0, controller: null },
+  b: { seq: 0, controller: null },
+};
 
-async function fetchEval(name, target) {
+async function fetchEval(name, target, slot) {
+  const requestState = evalRequests[slot];
+  const seq = ++requestState.seq;
+  requestState.controller?.abort();
+  requestState.controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   if (!name) {
     target.value = null;
     return;
   }
   target.value = { loading: true };
   try {
-    const res = await dataEvaluation({ datasource: name }, { silentError: true });
+    const res = await dataEvaluation(
+      { datasource: name },
+      { silentError: true, signal: requestState.controller?.signal },
+    );
+    if (seq !== requestState.seq) return;
     const d = res?.data || {};
     target.value = { loading: false, status: d.status, values: d.values || null };
   } catch (e) {
+    if (seq !== requestState.seq || requestState.controller?.signal?.aborted) return;
     target.value = { loading: false, status: "error" };
   }
 }
-watch(modelA, (v) => fetchEval(v, evalA));
-watch(modelB, (v) => fetchEval(v, evalB));
+watch(modelA, (v) => fetchEval(v, evalA, "a"));
+watch(modelB, (v) => fetchEval(v, evalB, "b"));
 watch([modelA, modelB], drawRegions);
 
 // ---------------- 线路指标（单一线路，数据源=线路客流面板缓存 routePanel） ----------------
@@ -356,6 +390,7 @@ const panelA = ref(null); // { status, map: Map<lineId,{lineName, routes:[metric
 const panelB = ref(null);
 const lineBusy = computed(() => lineLoading.value);
 let lineSeq = 0;
+let lineAbortController = null;
 
 function buildLineMap(panel) {
   const routes = Array.isArray(panel?.routes) ? panel.routes : Object.values(panel?.routes || {});
@@ -369,19 +404,24 @@ function buildLineMap(panel) {
 }
 
 async function loadPanels() {
-  if (!modelA.value || !modelB.value) return;
+  const seq = ++lineSeq;
+  lineAbortController?.abort();
+  lineAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (!modelA.value || !modelB.value) {
+    lineLoading.value = false;
+    return;
+  }
   if (!modelMap.value.get(modelA.value)?.loadStatus || !modelMap.value.get(modelB.value)?.loadStatus) {
     panelA.value = { status: "unloaded" };
     panelB.value = { status: "unloaded" };
     lineList.value = [];
     return;
   }
-  const seq = ++lineSeq;
   lineLoading.value = true;
   try {
     const [ra, rb] = await Promise.all([
-      getRoutePanel({ datasource: modelA.value }, { silentError: true }),
-      getRoutePanel({ datasource: modelB.value }, { silentError: true }),
+      getRoutePanel({ datasource: modelA.value }, { silentError: true, signal: lineAbortController?.signal }),
+      getRoutePanel({ datasource: modelB.value }, { silentError: true, signal: lineAbortController?.signal }),
     ]);
     if (seq !== lineSeq) return;
     const da = ra?.data;
@@ -533,6 +573,8 @@ function fmtPct(p) {
 const SRC = "opteval-region-src";
 const FILL = "opteval-region-fill";
 const LINE = "opteval-region-line";
+let pendingMapLoadHandler = null;
+let pendingMapLoadTarget = null;
 function normalizeRing(poly) {
   if (!Array.isArray(poly) || !poly.length) return null;
   let ring = poly;
@@ -547,6 +589,11 @@ function normalizeRing(poly) {
 function drawRegions() {
   const map = MapRef?.value?.map;
   if (!map || typeof map.addSource !== "function") return;
+  if (pendingMapLoadHandler && pendingMapLoadTarget) {
+    pendingMapLoadTarget.off?.("load", pendingMapLoadHandler);
+    pendingMapLoadHandler = null;
+    pendingMapLoadTarget = null;
+  }
   const poly = modelMap.value.get(modelB.value)?.optimization?.regionPolygon || modelMap.value.get(modelA.value)?.optimization?.regionPolygon;
   const ring = normalizeRing(poly);
   const run = () => {
@@ -570,9 +617,22 @@ function drawRegions() {
   };
   const ready = typeof map.isStyleLoaded === "function" ? map.isStyleLoaded() : true;
   if (ready) run();
-  else map.once("load", run);
+  else {
+    pendingMapLoadHandler = () => {
+      pendingMapLoadHandler = null;
+      pendingMapLoadTarget = null;
+      run();
+    };
+    pendingMapLoadTarget = map;
+    map.once("load", pendingMapLoadHandler);
+  }
 }
 function cleanupRegion() {
+  if (pendingMapLoadHandler && pendingMapLoadTarget) {
+    pendingMapLoadTarget.off?.("load", pendingMapLoadHandler);
+    pendingMapLoadHandler = null;
+    pendingMapLoadTarget = null;
+  }
   const map = MapRef?.value?.map;
   if (!map || typeof map.getLayer !== "function") return;
   if (map.getLayer(LINE)) map.removeLayer(LINE);
@@ -585,7 +645,17 @@ onMounted(async () => {
   await loadSchemes();
   await loadModels();
 });
-onUnmounted(cleanupRegion);
+onUnmounted(() => {
+  modelsRequestSeq += 1;
+  modelsAbortController?.abort();
+  Object.values(evalRequests).forEach((requestState) => {
+    requestState.seq += 1;
+    requestState.controller?.abort();
+  });
+  lineSeq += 1;
+  lineAbortController?.abort();
+  cleanupRegion();
+});
 </script>
 
 <style lang="scss" scoped>

@@ -191,8 +191,17 @@
               </div>
               <div class="table-body">
                 <!-- 环线/往返可能出现重名断面：组合键保证唯一稳定 -->
-                <div v-for="(seg, idx) in routeSegments" :key="`${seg.routeKey || ''}-${seg.fromFacilityId || seg.fromName || ''}-${seg.toFacilityId || seg.toName || ''}-${idx}`" class="table-row">
-                  <span class="col-name">{{ seg.name }}</span>
+                <!-- 行背景条 = 客流量占峰值比例，让整张表读作沿线断面客流剖面；峰值断面高亮 -->
+                <div
+                  v-for="(seg, idx) in routeSegments"
+                  :key="`${seg.routeKey || ''}-${seg.fromFacilityId || seg.fromName || ''}-${seg.toFacilityId || seg.toName || ''}-${idx}`"
+                  :class="['table-row', segmentsMaxFlow > 0 && seg.flow === segmentsMaxFlow ? 'is-peak' : '']"
+                  :style="{ '--seg-bar-w': segmentBarPercent(seg.flow) }"
+                >
+                  <span class="col-name">
+                    <span v-if="segmentsMaxFlow > 0 && seg.flow === segmentsMaxFlow" class="peak-tag">峰值</span>
+                    {{ seg.name }}
+                  </span>
                   <span class="col-flow">{{ seg.flow.toLocaleString() }}</span>
                   <span class="col-load">
                     <span :class="['load-indicator', seg.loadRate >= 70 ? 'high' : seg.loadRate >= 45 ? 'medium' : 'low']">{{ seg.loadRate }}%</span>
@@ -515,6 +524,7 @@
 
 <script setup>
 import { ref, shallowRef, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick, unref, markRaw } from "vue";
+import { VChart } from "@/plugins/echarts";
 import { Search, Location, Download } from "@element-plus/icons-vue";
 import { saveAs } from "file-saver";
 import { getRouteDetail, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
@@ -1044,22 +1054,24 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
   const yMax = Math.max(1, ...finiteBoarding);
   const yMin = Math.min(0, ...finiteAlighting);
 
+  // 上车=增(绿) / 下车=离(红)：锁到全局 add/delete 语义色（与满载率徽标、其余面板同源），
+  // 渐变顶部略提亮、底部落在 token 本色，保留立体感又不偏离主色板
   const boardingColor = {
     type: "linear", x: 0, y: 0, x2: 0, y2: 1,
-    colorStops: [{ offset: 0, color: "#0f9f6e" }, { offset: 1, color: "#087a55" }]
+    colorStops: [{ offset: 0, color: "#25a453" }, { offset: 1, color: "#1a8a3f" }]
   };
   const alightingColor = {
     type: "linear", x: 0, y: 0, x2: 0, y2: 1,
-    colorStops: [{ offset: 0, color: "#f43f5e" }, { offset: 1, color: "#e11d48" }]
+    colorStops: [{ offset: 0, color: "#d83a2c" }, { offset: 1, color: "#c4291c" }]
   };
 
   const makeXAxis = (data) => ({
     type: "category",
     data,
-    axisLine: { lineStyle: { color: "rgba(21, 105, 222, 0.15)" } },
-    axisTick: { alignWithLabel: true, lineStyle: { color: "rgba(21, 105, 222, 0.12)" } },
+    axisLine: { lineStyle: { color: "rgba(17, 32, 58, 0.12)" } },
+    axisTick: { alignWithLabel: true, lineStyle: { color: "rgba(17, 32, 58, 0.1)" } },
     axisLabel: {
-      color: "#64748b",
+      color: "#667085",
       fontSize: fullscreen ? 11 : compact ? 9 : 10,
       lineHeight: fullscreen ? 13 : compact ? 10 : 12,
       interval: stationLabelInterval(data.length, fullscreen, compact ? 7 : BOARDING_LABEL_TARGET),
@@ -1077,9 +1089,9 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
     minInterval: 1,
     axisLine: { show: false },
     axisTick: { show: false },
-    splitLine: { lineStyle: { color: "rgba(21, 105, 222, 0.06)", type: "dashed" } },
+    splitLine: { lineStyle: { color: "rgba(17, 32, 58, 0.07)", type: "dashed" } },
     axisLabel: {
-      color: "#64748b",
+      color: "#667085",
       fontSize: 10,
       formatter: (value) => Math.round(Math.abs(Number(value) || 0))
     }
@@ -1107,23 +1119,28 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
     // 拖动时段滑块期间关闭入场动画：防抖镜像连续落值时动画反复重启是主要绘制开销
     animationDuration: segmentTimeRangeDragging.value ? 0 : (fullscreen ? 420 : 280),
     animationEasing: "quarticOut",
+    // 浅色磨砂 tooltip：与总体客流 / 断面 / 体检等其余图表统一（原为深色 slate，是全局唯一的异类）
     tooltip: {
       trigger: "axis",
-      axisPointer: { type: isBar ? "shadow" : "line" },
-      backgroundColor: "rgba(30, 41, 59, 0.9)",
-      borderColor: "rgba(255, 255, 255, 0.15)",
-      textStyle: { color: "#ffffff", fontSize: 12 },
+      appendToBody: true,
+      axisPointer: { type: isBar ? "shadow" : "line", lineStyle: { color: "rgba(17, 32, 58, 0.18)", width: 1 } },
+      backgroundColor: "rgba(255, 255, 255, 0.98)",
+      borderColor: "rgba(17, 32, 58, 0.1)",
+      borderWidth: 1,
+      padding: [8, 11],
+      extraCssText: "border-radius:10px;box-shadow:0 12px 32px -14px rgba(13,38,76,0.34);",
+      textStyle: { color: "#1c2024", fontSize: 12 },
       formatter: (params) => {
         const stationName = params[0].name;
-        let html = `<div style="font-weight: bold; margin-bottom: 4px;">${stationName}</div>`;
+        let html = `<div style="font-weight: 700; margin-bottom: 4px;">${stationName}</div>`;
         params.forEach(p => {
           const val = Math.round(Math.abs(Number(p.value) || 0));
           html += `<div style="display: flex; align-items: center; justify-content: space-between; gap: 16px;">
             <div style="display: flex; align-items: center;">
               <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${p.color}; margin-right: 6px;"></span>
-              <span>${p.seriesName}:</span>
+              <span style="color:#667085;">${p.seriesName}</span>
             </div>
-            <span style="font-weight: bold;">${val.toLocaleString()} 人次</span>
+            <span style="font-weight: 700; font-variant-numeric: tabular-nums;">${val.toLocaleString()} 人次</span>
           </div>`;
         });
         return html;
@@ -1131,9 +1148,11 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
     },
     legend: {
       data: ["上车人数", "下车人数"],
-      textStyle: { color: "#64748b", fontSize: 11 },
+      textStyle: { color: "#667085", fontSize: 11 },
       top: fullscreen ? 18 : 0,
-      icon: "rect"
+      itemWidth: 11,
+      itemHeight: 11,
+      icon: "roundRect"
     },
     grid: {
       left: fullscreen ? 56 : "3%",
@@ -1243,16 +1262,20 @@ const boardingHeatmapOption = computed(() => {
     animationEasing: "quarticOut",
     tooltip: {
       position: "top",
-      backgroundColor: "rgba(30, 41, 59, 0.9)",
-      borderColor: "rgba(255, 255, 255, 0.15)",
-      textStyle: { color: "#ffffff", fontSize: 12 },
+      appendToBody: true,
+      backgroundColor: "rgba(255, 255, 255, 0.98)",
+      borderColor: "rgba(17, 32, 58, 0.1)",
+      borderWidth: 1,
+      padding: [8, 11],
+      extraCssText: "border-radius:10px;box-shadow:0 12px 32px -14px rgba(13,38,76,0.34);",
+      textStyle: { color: "#1c2024", fontSize: 12 },
       formatter: (params) => {
         const [xIndex, yIndex, flow] = params?.value || [];
         const boarding = toFiniteNumber(params?.data?.boarding, 0);
         const alighting = toFiniteNumber(params?.data?.alighting, 0);
-        return `<div style="font-weight: bold; margin-bottom: 4px;">${stationNames[xIndex] || "未知站点"} · ${bucketLabels[yIndex] || ""}</div>
-          <div>乘 ${boarding.toLocaleString()} · 降 ${alighting.toLocaleString()}</div>
-          <div style="text-align: right; font-weight: bold;">合计 ${toFiniteNumber(flow, 0).toLocaleString()} 人次</div>`;
+        return `<div style="font-weight: 700; margin-bottom: 4px;">${stationNames[xIndex] || "未知站点"} · ${bucketLabels[yIndex] || ""}</div>
+          <div style="color:#667085;">乘 ${boarding.toLocaleString()} · 降 ${alighting.toLocaleString()}</div>
+          <div style="text-align: right; font-weight: 700; font-variant-numeric: tabular-nums;">合计 ${toFiniteNumber(flow, 0).toLocaleString()} 人次</div>`;
       }
     },
     // 矩阵风格：右侧竖向色条，格子间白色描边
@@ -1269,7 +1292,7 @@ const boardingHeatmapOption = computed(() => {
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: {
-        color: "#64748b",
+        color: "#667085",
         fontSize: 11,
         interval: 0,
         rotate: manyStations ? 45 : 0
@@ -1281,7 +1304,7 @@ const boardingHeatmapOption = computed(() => {
       inverse: true, // 早时段在上
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: "#64748b", fontSize: 11 }
+      axisLabel: { color: "#667085", fontSize: 11 }
     },
     visualMap: {
       type: "continuous",
@@ -1297,7 +1320,7 @@ const boardingHeatmapOption = computed(() => {
         // 绿(少)→黄→红(多)，与满载率配色语义一致
         color: ["#1a9850", "#66bd63", "#a6d96a", "#d9ef8b", "#fee08b", "#fdae61", "#f46d43", "#d73027"]
       },
-      textStyle: { color: "#64748b", fontSize: 11 }
+      textStyle: { color: "#667085", fontSize: 11 }
     },
     series: [
       {
@@ -1810,6 +1833,16 @@ const routeSegments = computed(() => {
     };
   });
 });
+
+// 断面客流最大值：把断面表当成一张"断面客流断面图"，每行按该值归一化画条，
+// 一眼看出峰值断面落在线路哪一段（断面客流分析的核心诉求）
+const segmentsMaxFlow = computed(() =>
+  routeSegments.value.reduce((max, seg) => (seg.flow > max ? seg.flow : max), 0)
+);
+function segmentBarPercent(flow) {
+  const max = segmentsMaxFlow.value;
+  return max > 0 ? `${Math.max(0, (flow / max) * 100)}%` : "0%";
+}
 
 function pointToLinkDistanceSq(coord, link) {
   const px = Number(coord?.x);
@@ -3527,15 +3560,66 @@ defineExpose({
   scrollbar-gutter: stable;
 }
 .pfa-route-sections .segments-table .table-row {
+  position: relative;
   font-size: var(--dm2-text-sm);
   border-bottom: 1px solid var(--dm2-line-faint);
   transition: background-color var(--dm2-dur-fast) var(--dm2-ease);
 }
+/* 断面客流量条：左起按占峰值比例填充，行尾一条竖线标出条头；各行条头连起来即沿线断面客流剖面 */
+.pfa-route-sections .segments-table .table-row::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--seg-bar-w, 0);
+  background: var(--dm2-accent-weak);
+  transition: width var(--dm2-dur) var(--dm2-ease);
+  pointer-events: none;
+  z-index: 0;
+}
+.pfa-route-sections .segments-table .table-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--seg-bar-w, 0);
+  width: 2px;
+  margin-left: -2px;
+  background: var(--dm2-accent);
+  opacity: 0.45;
+  transition: left var(--dm2-dur) var(--dm2-ease);
+  pointer-events: none;
+  z-index: 0;
+}
+.pfa-route-sections .segments-table .table-row > span {
+  position: relative;
+  z-index: 1;
+}
 .pfa-route-sections .segments-table .table-row:last-child {
   border-bottom: 0;
 }
+/* hover 用中性提亮，别用 accent；否则与蓝色断面条撞色、条头看不出来 */
 .pfa-route-sections .segments-table .table-row:hover {
-  background: var(--dm2-accent-weak);
+  background: rgba(17, 32, 58, 0.035);
+}
+/* 峰值断面：条头竖线加实、客流量数值取深蓝，直接答"最大断面在哪一段" */
+.pfa-route-sections .segments-table .table-row.is-peak::after {
+  opacity: 0.9;
+}
+.pfa-route-sections .segments-table .table-row.is-peak .col-flow {
+  color: var(--dm2-accent-strong);
+}
+.pfa-route-sections .segments-table .peak-tag {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 1px 6px;
+  border-radius: var(--dm2-radius-pill);
+  background: var(--dm2-accent);
+  color: #ffffff;
+  font-family: var(--dm2-font);
+  font-size: 10px;
+  font-weight: var(--dm2-fw-bold);
+  line-height: 1.5;
+  vertical-align: 1px;
 }
 /* 覆盖全局 .col-name / .col-flow（排行榜用的 width:108px / flex 列），改由网格轨道定宽 */
 .pfa-route-sections .segments-table .col-name {
@@ -3583,6 +3667,13 @@ defineExpose({
 .pfa-route-sections .segments-table .load-indicator.low {
   background: var(--dm2-add-weak);
   color: var(--dm2-add);
+}
+/* 断面条随时段变化补间是数据反馈动效；无障碍偏好下改为瞬时 */
+@media (prefers-reduced-motion: reduce) {
+  .pfa-route-sections .segments-table .table-row::before,
+  .pfa-route-sections .segments-table .table-row::after {
+    transition: none;
+  }
 }
 
 /* ② 站点乘降图 & ⑤ 关联线路图 */

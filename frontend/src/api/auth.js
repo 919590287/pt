@@ -25,6 +25,7 @@ export function resetPassword(data, config = {}) {
     url: "/pt/auth/resetPassword",
     method: "POST",
     data,
+    // 修改密码接口使用用户名 + 原密码校验，不依赖可能已过期的会话 token。
     headers: { isToken: false },
     ...config,
   });

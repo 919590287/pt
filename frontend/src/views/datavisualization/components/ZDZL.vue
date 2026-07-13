@@ -591,6 +591,7 @@
 
 <script setup>
 import { ref, shallowRef, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
+import { graphic, VChart } from "@/plugins/echarts";
 import { Location, Download } from "@element-plus/icons-vue";
 import { abortOtherModelDataRequests, getCachedLineAll, getCachedStationPanel, getModelDerived } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
@@ -937,7 +938,7 @@ const passengerFlowChartOption = computed(() => {
   const hours = Array.from({ length: 17 }, (_, index) => formatHourRangeLabel(index + 6));
   const data = hourSlice(currentStationPanel.value?.hourlyFlow, 6, 23);
 
-  const linearGradient = (proxy?.$echarts?.graphic?.LinearGradient) || function() { return null; };
+  const linearGradient = graphic.LinearGradient;
 
   return {
     tooltip: {

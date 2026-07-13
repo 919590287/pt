@@ -110,8 +110,8 @@ export function updateBaseNetwork(map, routeFeatures, stopFeatures) {
     source: SOURCES.baseLines,
     paint: {
       "line-color": ["case", ["==", ["get", "mode"], "subway"], "#8b5cf6", "#3d6ea6"],
-      "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.6, 13, 1.6, 16, 3],
-      "line-opacity": 0.55,
+      "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.5, 13, 1.2, 16, 2.4],
+      "line-opacity": 0.3,
     },
   });
   // 命中放大层（透明宽线，便于点选）
@@ -119,7 +119,7 @@ export function updateBaseNetwork(map, routeFeatures, stopFeatures) {
     id: LAYER_IDS.baseLinesHit,
     type: "line",
     source: SOURCES.baseLines,
-    paint: { "line-color": "#000", "line-opacity": 0.001, "line-width": 14 },
+    paint: { "line-color": "#0b1526", "line-opacity": 0.001, "line-width": 18 },
   });
   ensureLayer(map, {
     id: LAYER_IDS.baseStops,

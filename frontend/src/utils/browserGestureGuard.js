@@ -2,7 +2,7 @@
  * 全局屏蔽浏览器手势，避免与地图交互冲突：
  * ① 右键拖动地图时浏览器的鼠标手势/系统拖拽/右键菜单（与数据管理页同一套判定）；
  * ② 触控板双指横扫触发的前进/后退与页面回弹（overscroll-behavior）；
- * ③ Safari 触控板捏合缩放页面（gesturestart/gesturechange/gestureend）。
+ * 保留浏览器原生捏合/页面缩放，避免阻断低视力用户放大内容。
  */
 
 const RIGHT_MOUSE_BUTTON = 2;
@@ -23,8 +23,13 @@ function isRightMouseGestureEvent(event) {
     || (event?.buttons & RIGHT_MOUSE_BUTTON_MASK) === RIGHT_MOUSE_BUTTON_MASK;
 }
 
+function isMapGestureTarget(event) {
+  const target = event?.target;
+  return typeof Element !== "undefined" && target instanceof Element && Boolean(target.closest("#mapRoot"));
+}
+
 function handleMouseEvent(event) {
-  if (!isRightMouseGestureEvent(event)) return;
+  if (!isMapGestureTarget(event) || !isRightMouseGestureEvent(event)) return;
   if (event.type === "mousedown") {
     suppressingRightMouse = true;
   }
@@ -32,23 +37,19 @@ function handleMouseEvent(event) {
 }
 
 function handleMouseUp(event) {
-  if (!suppressingRightMouse && event?.button !== RIGHT_MOUSE_BUTTON) return;
+  if (!suppressingRightMouse) return;
   preventDefaultIfPossible(event);
   suppressingRightMouse = false;
 }
 
 function handleContextMenu(event) {
-  if (!suppressingRightMouse && !isRightMouseGestureEvent(event)) return;
+  if (!suppressingRightMouse && (!isMapGestureTarget(event) || !isRightMouseGestureEvent(event))) return;
   preventDefaultIfPossible(event);
   suppressingRightMouse = false;
 }
 
 function handleDragStart(event) {
   if (!suppressingRightMouse) return;
-  preventDefaultIfPossible(event);
-}
-
-function handleGesture(event) {
   preventDefaultIfPossible(event);
 }
 
@@ -70,9 +71,6 @@ export function bindBrowserGestureGuard() {
   window.addEventListener("mouseup", handleMouseUp, EVENT_OPTIONS);
   window.addEventListener("contextmenu", handleContextMenu, EVENT_OPTIONS);
   window.addEventListener("dragstart", handleDragStart, EVENT_OPTIONS);
-  window.addEventListener("gesturestart", handleGesture, EVENT_OPTIONS);
-  window.addEventListener("gesturechange", handleGesture, EVENT_OPTIONS);
-  window.addEventListener("gestureend", handleGesture, EVENT_OPTIONS);
   window.addEventListener("blur", resetState);
 }
 
@@ -90,9 +88,6 @@ export function unbindBrowserGestureGuard() {
   window.removeEventListener("mouseup", handleMouseUp, EVENT_OPTIONS);
   window.removeEventListener("contextmenu", handleContextMenu, EVENT_OPTIONS);
   window.removeEventListener("dragstart", handleDragStart, EVENT_OPTIONS);
-  window.removeEventListener("gesturestart", handleGesture, EVENT_OPTIONS);
-  window.removeEventListener("gesturechange", handleGesture, EVENT_OPTIONS);
-  window.removeEventListener("gestureend", handleGesture, EVENT_OPTIONS);
   window.removeEventListener("blur", resetState);
   resetState();
 }

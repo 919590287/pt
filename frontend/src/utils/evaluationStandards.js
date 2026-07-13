@@ -34,7 +34,7 @@ export const EVALUATION_INDICATORS = [
     gzAvg: 9.5, gzAvg2022: 9.7, type: "目标型", modelKey: "wrbyl",
   },
   {
-    key: "cxfdl", dimension: "总体水平", name: "出行分担率", unit: "%",
+    key: "cxfdl", dimension: "总体水平", name: "公交分担率", unit: "%",
     standardText: "6.5", standard: { kind: "point", a: 6.5 }, betterDirection: "higher",
     gzAvg: 4.0, gzAvg2022: 3.1, type: "建议型", modelKey: "cxfdl",
   },

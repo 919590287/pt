@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.ModelProcessingPool;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.handler.PTHandler;
 import com.jts.gjcxfzksh.data.id.DepartureId;
@@ -142,6 +143,65 @@ public final class MatsimAnalysisCache {
 
     public static boolean isTrajectoryBuildActive() {
         return ACTIVE_TRAJECTORY_BUILDS.get() > 0;
+    }
+
+    /**
+     * 一次模型缓存任务内同时准备乘客上下车与车辆轨迹。
+     *
+     * <p>旧流程在小模型首次生成缓存时先为 personTracks 扫一遍 events，随后又为轨迹扫一遍。
+     * 两个 handler 都是流式消费，合并到同一个 EventReader 后可直接省掉一次解压、XML 解析和磁盘读取，
+     * 峰值内存不会因此增加（两份结果原本也会同时驻留）。已有任一缓存时仍只补缺失部分。</p>
+     */
+    public static void prepareAllOnModelLoad(MatsimData data, BuildProgress progress) throws Exception {
+        if (data.isLargeModel()) {
+            ensureLargeTrajectoryCache(data, progress);
+            loadPersonTracksFromCache(data);
+            return;
+        }
+
+        boolean tracksReady = loadPersonTracksFromCache(data);
+        Map<String, Object> trajectoryManifest = readReadyTrajectoryManifest(data);
+        if (tracksReady && trajectoryManifest != null) {
+            return;
+        }
+
+        String cacheKey = trajectoryCacheKey(data);
+        Object lock = BUILD_LOCKS.computeIfAbsent(cacheKey, key -> new Object());
+        synchronized (lock) {
+            tracksReady = data.getPersonTracks() != null && !data.getPersonTracks().isEmpty()
+                    || loadPersonTracksFromCache(data);
+            trajectoryManifest = readReadyTrajectoryManifest(data);
+            if (tracksReady && trajectoryManifest != null) {
+                return;
+            }
+
+            if (!tracksReady && trajectoryManifest == null) {
+                ACTIVE_TRAJECTORY_BUILDS.incrementAndGet();
+                try {
+                    PTHandler ptHandler = new PTHandler(data.getSchedule());
+                    TrajectoryMeta trajectoryMeta = buildTrajectoryMeta(data);
+                    VehicleTrajectoryHandler trajectoryHandler = new VehicleTrajectoryHandler(
+                            data.getNetwork(), trajectoryMeta.transitVehicles, progress);
+                    log.info("单次解析events同时生成乘客与轨迹缓存: model={}", data.getName());
+                    new EventReader(ptHandler, trajectoryHandler).read(data.getOutfile().getEvents());
+
+                    Set<PTPersonTrack> tracks = new LinkedHashSet<>(ptHandler.getPersonTracks());
+                    data.setPersonTracks(tracks);
+                    writePersonTracksCache(data, tracks);
+                    writeTrajectoryCache(data, trajectoryHandler, trajectoryMeta);
+                } finally {
+                    ACTIVE_TRAJECTORY_BUILDS.decrementAndGet();
+                }
+                return;
+            }
+
+            if (!tracksReady) {
+                prepareOnModelLoad(data);
+            }
+            if (trajectoryManifest == null) {
+                ensureTrajectoryCache(data, progress);
+            }
+        }
     }
 
     public static void prepareOnModelLoad(MatsimData data) {
@@ -507,6 +567,133 @@ public final class MatsimAnalysisCache {
         }
     }
 
+    /**
+     * 从磁盘分块中流式抽取“目标时间桶 + 视口”的精确轨迹段。
+     *
+     * <p>时间轴随机跳转不再需要先把整个 300 秒全市分块下载到浏览器。服务端顺序扫描本地二进制文件，
+     * 只返回目标时间桶内、且与当前视口相交的原始段记录；记录格式与普通分块完全一致，因此前端继续
+     * 使用同一套 Worker/GPU 插值和完整 GLB 实例，不产生视觉降级。</p>
+     */
+    public static byte[] readTrajectoryBinaryFrame(
+            MatsimData data,
+            int time,
+            int bucketSeconds,
+            String visibilityMode,
+            Double requestedMinX,
+            Double requestedMinY,
+            Double requestedMaxX,
+            Double requestedMaxY
+    ) {
+        Map<String, Object> manifest = readReadyTrajectoryLightManifest(data);
+        if (manifest == null) {
+            return null;
+        }
+        int windowSeconds = Math.max(1, Math.min(TRAJECTORY_CHUNK_SECONDS, bucketSeconds));
+        int frameStart = Math.floorDiv(Math.max(0, time), windowSeconds) * windowSeconds;
+        int frameEndExclusive = frameStart + windowSeconds;
+        int chunkStart = normalizeChunkStart(frameStart);
+        if (!manifestHasChunk(manifest, chunkStart)) {
+            try {
+                return createTrajectoryBinaryBytes(frameStart, frameEndExclusive - 1, 0, 0, 0.0, 0.0, List.of());
+            } catch (IOException e) {
+                return null;
+            }
+        }
+
+        Path chunkPath = trajectoryCacheDir(data).resolve(chunkBinaryFileName(chunkStart));
+        if (!Files.exists(chunkPath)) {
+            return null;
+        }
+
+        boolean hasBounds = requestedMinX != null && requestedMinY != null
+                && requestedMaxX != null && requestedMaxY != null
+                && Double.isFinite(requestedMinX) && Double.isFinite(requestedMinY)
+                && Double.isFinite(requestedMaxX) && Double.isFinite(requestedMaxY)
+                && requestedMaxX > requestedMinX && requestedMaxY > requestedMinY;
+        String normalizedVisibility = visibilityMode == null ? "all" : visibilityMode.toLowerCase(Locale.ROOT);
+        byte[] header = new byte[TRAJECTORY_BINARY_HEADER_BYTES];
+        byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
+        IntOpenHashSet vehicles = new IntOpenHashSet();
+        ByteArrayOutputStream selectedRows = new ByteArrayOutputStream(1024 * 1024);
+
+        try (InputStream in = new BufferedInputStream(Files.newInputStream(chunkPath), TRAJECTORY_IO_BUFFER_BYTES)) {
+            if (!readFully(in, header)) return null;
+            ByteBuffer headerBuffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+            if (headerBuffer.get() != 'G' || headerBuffer.get() != 'J'
+                    || headerBuffer.get() != 'T' || headerBuffer.get() != 'B') {
+                return null;
+            }
+            int version = Short.toUnsignedInt(headerBuffer.getShort());
+            int headerBytes = Short.toUnsignedInt(headerBuffer.getShort());
+            headerBuffer.getInt(); // source chunk start
+            headerBuffer.getInt(); // source chunk end
+            int segmentCount = headerBuffer.getInt();
+            headerBuffer.getInt(); // source vehicle count
+            headerBuffer.getInt(); // source point count
+            int stride = headerBuffer.getInt();
+            double originX = headerBuffer.getDouble();
+            double originY = headerBuffer.getDouble();
+            if (version != TRAJECTORY_BINARY_VERSION
+                    || headerBytes != TRAJECTORY_BINARY_HEADER_BYTES
+                    || stride != TRAJECTORY_BINARY_STRIDE
+                    || segmentCount < 0) {
+                return null;
+            }
+
+            int selectedCount = 0;
+            ByteBuffer record = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
+            for (int index = 0; index < segmentCount; index++) {
+                if (!readFully(in, row)) {
+                    throw new EOFException("轨迹二进制分块记录数与头部不一致");
+                }
+                record.clear();
+                float startTime = record.getFloat();
+                float endTime = record.getFloat();
+                float startX = record.getFloat();
+                float startY = record.getFloat();
+                float endX = record.getFloat();
+                float endY = record.getFloat();
+                int modeCode = Math.round(record.getFloat());
+                int vehicleIndex = Math.round(record.getFloat());
+                if (!(startTime < frameEndExclusive && endTime > frameStart)) continue;
+                if ("public".equals(normalizedVisibility) && modeCode == 2) continue;
+                if ("private".equals(normalizedVisibility) && modeCode != 2) continue;
+                if (hasBounds) {
+                    double segmentMinX = originX + Math.min(startX, endX);
+                    double segmentMaxX = originX + Math.max(startX, endX);
+                    double segmentMinY = originY + Math.min(startY, endY);
+                    double segmentMaxY = originY + Math.max(startY, endY);
+                    if (segmentMaxX < requestedMinX || segmentMinX > requestedMaxX
+                            || segmentMaxY < requestedMinY || segmentMinY > requestedMaxY) {
+                        continue;
+                    }
+                }
+                selectedRows.write(row);
+                selectedCount++;
+                vehicles.add(vehicleIndex);
+            }
+
+            ByteArrayOutputStream result = new ByteArrayOutputStream(
+                    TRAJECTORY_BINARY_HEADER_BYTES + selectedRows.size()
+            );
+            writeTrajectoryBinaryHeader(
+                    result,
+                    frameStart,
+                    frameEndExclusive - 1,
+                    selectedCount,
+                    vehicles.size(),
+                    selectedCount * 2,
+                    originX,
+                    originY
+            );
+            selectedRows.writeTo(result);
+            return result.toByteArray();
+        } catch (Exception e) {
+            log.warn("轨迹视口快照读取失败: path={}, time={}", chunkPath, time, e);
+            return null;
+        }
+    }
+
     public static Path trajectoryBinaryChunkPath(MatsimData data, int start) {
         Map<String, Object> manifest = readReadyTrajectoryLightManifest(data);
         if (manifest == null) {
@@ -567,6 +754,16 @@ public final class MatsimAnalysisCache {
             return true;
         }
         return loadPersonTracksFromCache(data);
+    }
+
+    /** 仅供按需读取路径在计算完成后释放明细，缓存生成主流程不调用。 */
+    public static void releaseOnDemandPersonTracks(MatsimData data) {
+        if (data == null || data.getPersonTracks() == null || data.getPersonTracks().isEmpty()) {
+            return;
+        }
+        int count = data.getPersonTracks().size();
+        data.setPersonTracks(new it.unimi.dsi.fastutil.objects.ObjectOpenHashSet<>());
+        log.info("释放按需装载的乘客明细: model={}, tracks={}", data.getName(), count);
     }
 
     private static boolean loadPersonTracksFromCache(MatsimData data) {
@@ -1689,8 +1886,7 @@ public final class MatsimAnalysisCache {
     }
 
     private static int largeTrajectoryParallelism() {
-        int cpus = Math.max(1, Runtime.getRuntime().availableProcessors());
-        int fallback = Math.max(1, Math.min(16, cpus - 1));
+        int fallback = Math.max(1, Math.min(16, ModelProcessingPool.parallelism()));
         return positiveIntSetting("gjcxfzksh.events.workers", "GJCXFZKSH_EVENTS_WORKERS", fallback);
     }
 

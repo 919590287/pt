@@ -85,11 +85,10 @@ router.beforeEach((to) => {
   return true;
 });
 
-export function preloadRouteComponents() {
-  const loaders = new Set(Object.values(routeComponentLoaders));
-  loaders.forEach((loader) => {
-    loader().catch(() => {});
-  });
+export function preloadRouteComponent(routeName) {
+  const loader = routeComponentLoaders[routeName];
+  if (!loader) return;
+  loader().catch(() => {});
 }
 
 export default router;

@@ -1,5 +1,6 @@
 package com.jts.gjcxfzksh.api.service.impl;
 
+import com.alibaba.fastjson2.JSON;
 import com.jts.gjcxfzksh.api.model.params.RealDataCommitParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataParam;
 import com.jts.gjcxfzksh.api.model.vo.RealDataExportVO;
@@ -47,10 +48,47 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RealDataServiceImplCommitEditsTest {
 
+    @Test
+    void csvExportNeutralizesSpreadsheetFormulasButKeepsNumericCoordinates() {
+        assertEquals("'=HYPERLINK(\"https://example.test\")",
+                RealDataServiceImpl.safeSpreadsheetCell("=HYPERLINK(\"https://example.test\")"));
+        assertEquals("'+cmd|' /C calc'!A0", RealDataServiceImpl.safeSpreadsheetCell("+cmd|' /C calc'!A0"));
+        assertEquals("'\t123", RealDataServiceImpl.safeSpreadsheetCell("\t123"));
+        assertEquals("-23.129", RealDataServiceImpl.safeSpreadsheetCell("-23.129"));
+        assertEquals("1.2e-4", RealDataServiceImpl.safeSpreadsheetCell("1.2e-4"));
+    }
+
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void overviewDiskCacheSurvivesRestartAndRejectsStaleSignature() throws Exception {
+        Path dataRoot = tempDir.resolve("pt_data");
+        prepareStandardData(dataRoot);
+        Path cacheRoot = tempDir.resolve("pt_cache");
+
+        RealDataServiceImpl firstService = serviceFor(dataRoot, cacheRoot);
+        Map<String, Object> first = firstService.busLineStation("广州", null);
+        assertEquals(1, ((Number) mapValue(first.get("overview")).get("lineCount")).intValue());
+
+        Path cacheFile = cacheRoot.resolve("real-data-overview/广州/overview-v2.json");
+        assertTrue(Files.isRegularFile(cacheFile));
+        Map<String, Object> wrapper = JSON.parseObject(Files.readString(cacheFile, StandardCharsets.UTF_8));
+        mapValue(wrapper.get("overview")).put("lineCount", 777);
+        Files.writeString(cacheFile, JSON.toJSONString(wrapper), StandardCharsets.UTF_8);
+
+        RealDataServiceImpl restartedService = serviceFor(dataRoot, cacheRoot);
+        Map<String, Object> cached = restartedService.busLineStation("广州", null);
+        assertEquals(777, ((Number) mapValue(cached.get("overview")).get("lineCount")).intValue());
+
+        wrapper.put("signature", "stale-signature");
+        Files.writeString(cacheFile, JSON.toJSONString(wrapper), StandardCharsets.UTF_8);
+        RealDataServiceImpl staleCacheService = serviceFor(dataRoot, cacheRoot);
+        Map<String, Object> recomputed = staleCacheService.busLineStation("广州", null);
+        assertEquals(1, ((Number) mapValue(recomputed.get("overview")).get("lineCount")).intValue());
+    }
 
     @Test
     void commitEditsWritesStationChangesIntoVersionShpWithoutDoubleApplying() throws Exception {
@@ -1054,8 +1092,15 @@ class RealDataServiceImplCommitEditsTest {
     }
 
     private static RealDataServiceImpl serviceFor(Path dataRoot) throws Exception {
+        return serviceFor(dataRoot, null);
+    }
+
+    private static RealDataServiceImpl serviceFor(Path dataRoot, Path cacheRoot) throws Exception {
         MatsimConfig config = new MatsimConfig();
         setField(config, "folder", dataRoot.toString());
+        if (cacheRoot != null) {
+            setField(config, "cacheFolder", cacheRoot.toString());
+        }
         RealDataServiceImpl service = new RealDataServiceImpl();
         setField(service, "matsimConfig", config);
         return service;

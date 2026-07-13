@@ -172,7 +172,7 @@ class AuthServiceImplConcurrencyTest {
             Future<AuthVO> pending = pool.submit(() -> service.login("carol", "old-password"));
             assertTrue(service.verifyEntered.await(10, TimeUnit.SECONDS), "登录线程应已进入校验");
             // 旧密码校验被 gate 挡住期间修改密码
-            service.resetPassword("carol", "new-password");
+            service.resetPassword("carol", "old-password", "new-password");
             service.resumeVerify.countDown();
 
             // 旧密码首轮校验通过，但入锁后发现哈希已变，重试后对新哈希校验失败
@@ -186,6 +186,25 @@ class AuthServiceImplConcurrencyTest {
         // 新密码可正常登录，存储未被并发写坏
         AuthVO auth = service.login("carol", "new-password");
         assertEquals("carol", auth.getUsername());
+    }
+
+    @Test
+    void passwordResetRequiresCurrentPasswordAndRevokesOldSessions() throws Exception {
+        AuthServiceImpl service = wire(new AuthServiceImpl());
+        AuthVO oldSession = service.register("erin", "old-password");
+        AuthVO secondOldSession = service.login("erin", "old-password");
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.resetPassword("erin", "wrong-password", "new-password"));
+        assertTrue(error.getMessage().contains("用户名或原密码错误"));
+        assertEquals("erin", service.profile(oldSession.getToken()).getUsername());
+
+        AuthVO newSession = service.resetPassword("erin", "old-password", "new-password");
+        assertThrows(BusinessException.class, () -> service.profile(oldSession.getToken()));
+        assertThrows(BusinessException.class, () -> service.profile(secondOldSession.getToken()));
+        assertEquals("erin", service.profile(newSession.getToken()).getUsername());
+        assertThrows(BusinessException.class, () -> service.login("erin", "old-password"));
+        assertEquals("erin", service.login("erin", "new-password").getUsername());
     }
 
     /** 两个线程都完成锁外哈希计算后才允许进锁，制造注册同名竞争。 */

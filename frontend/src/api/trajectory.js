@@ -35,3 +35,23 @@ export function dataTrajectoryChunkBinary(data, start, config = {}) {
     ...config,
   });
 }
+
+// 任意时刻的视口轨迹快照：随机跳转先取小快照立即显示，完整 300 秒分块随后在后台接管播放。
+export function dataTrajectoryFrameBinary(data, time, options = {}, config = {}) {
+  return request({
+    url: `/pt/data/trajectory/frame.bin`,
+    method: "GET",
+    params: {
+      datasource: data?.datasource,
+      time: Math.max(0, Math.floor(Number(time) || 0)),
+      bucketSeconds: options.bucketSeconds,
+      visibilityMode: options.visibilityMode,
+      minX: options.bounds?.minX,
+      minY: options.bounds?.minY,
+      maxX: options.bounds?.maxX,
+      maxY: options.bounds?.maxY,
+    },
+    responseType: "arraybuffer",
+    ...config,
+  });
+}

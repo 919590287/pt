@@ -54,6 +54,8 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.lang.reflect.Method;
 import java.lang.reflect.Field;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -96,10 +98,22 @@ class MatsimAnalysisCacheLargeStreamTest {
 
         Map<String, Object> manifest = MatsimAnalysisCache.ensureTrajectoryCache(data);
         byte[] chunk = MatsimAnalysisCache.readTrajectoryBinaryChunk(data, 0);
+        byte[] publicFrame = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data, 30, 1, "public", -10.0, -10.0, 110.0, 10.0
+        );
+        byte[] privateFrame = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data, 30, 1, "private", -10.0, -10.0, 110.0, 10.0
+        );
+        byte[] outsideFrame = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data, 30, 1, "all", 1000.0, 1000.0, 1100.0, 1100.0
+        );
 
         assertEquals("ready", manifest.get("status"));
         assertNotNull(chunk);
         assertEquals(64 + 3 * 8 * Float.BYTES, chunk.length);
+        assertEquals(1, binarySegmentCount(publicFrame));
+        assertEquals(2, binarySegmentCount(privateFrame));
+        assertEquals(0, binarySegmentCount(outsideFrame));
         Map<?, ?> summary = (Map<?, ?>) manifest.get("summary");
         assertEquals(3, ((Number) summary.get("totalVehicles")).intValue());
         assertEquals(1L, ((Number) summary.get("totalPassengerBoardings")).longValue());
@@ -178,6 +192,28 @@ class MatsimAnalysisCacheLargeStreamTest {
         Map<String, Object> info = MatsimPrecomputedCache.readInfo(data);
         assertNotNull(info);
         assertEquals(1, ((Number) info.get("rcxcs")).intValue());
+    }
+
+    @Test
+    void smallModelBuildCreatesPassengerAndTrajectoryCachesTogether() throws Exception {
+        Path output = tempDir.resolve("small-model").resolve("output");
+        Path cache = tempDir.resolve("pt_cache").resolve("area").resolve("public").resolve("small-model");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeEvents(output.resolve("output_events.xml.gz"));
+
+        MatsimData data = new MatsimData("area/public/small-model", output.toString(), cache.toString(), false);
+        data.setArea(1);
+        data.setScenario(buildScenario());
+
+        MatsimAnalysisCache.prepareAllOnModelLoad(data, null);
+
+        assertEquals(2, data.getPersonTracks().size());
+        assertNotNull(MatsimAnalysisCache.readReadyTrajectoryManifest(data));
+        assertTrue(MatsimAnalysisCache.preloadPersonTracksIfReady(data));
+        try (Stream<Path> paths = Files.list(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION))) {
+            assertTrue(paths.anyMatch(path -> path.getFileName().toString().endsWith(".bin")));
+        }
     }
 
     @Test
@@ -361,6 +397,11 @@ class MatsimAnalysisCacheLargeStreamTest {
             writer.write("<event time=\"82.0\" type=\"" + PersonLeavesVehicleEvent.EVENT_TYPE + "\" person=\"passenger&amp;1\" vehicle=\"bus1\" />\n");
             writer.write("</events>\n");
         }
+    }
+
+    private int binarySegmentCount(byte[] bytes) {
+        assertNotNull(bytes);
+        return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(16);
     }
 
     private MutableScenario buildScenario() {

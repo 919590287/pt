@@ -105,7 +105,7 @@ export class StationLayer extends Layer {
 
   addCircleLayer() {
     if (!this.map?.map || this.map.map.getLayer(this.circleLayerId)) return;
-    this.map.map.addLayer({
+    const layer = {
       id: this.circleLayerId,
       type: "circle",
       source: this.sourceId,
@@ -121,12 +121,14 @@ export class StationLayer extends Layer {
         "circle-stroke-width": this.circleStrokeWidth(),
         "circle-opacity": this.circleOpacity(),
       },
-    });
+    };
+    const beforeId = this.map.buildingLayerId;
+    this.map.map.addLayer(layer, beforeId && this.map.map.getLayer(beforeId) ? beforeId : undefined);
   }
 
   addIconLayer() {
     if (!this.map?.map || this.iconLayerAdded || this.map.map.getLayer(this.iconLayerId)) return;
-    this.map.map.addLayer({
+    const layer = {
       id: this.iconLayerId,
       type: "symbol",
       source: this.sourceId,
@@ -147,7 +149,9 @@ export class StationLayer extends Layer {
         "icon-halo-width": 0,
         "icon-opacity": this.iconOpacity(),
       },
-    });
+    };
+    const beforeId = this.map.buildingLayerId;
+    this.map.map.addLayer(layer, beforeId && this.map.map.getLayer(beforeId) ? beforeId : undefined);
     this.iconLayerAdded = true;
   }
 
@@ -327,6 +331,7 @@ export class StationLayer extends Layer {
       id: this.labelLayerId,
       data: this.labelData(),
       coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+      beforeId: this.map?.buildingLayerId,
       getPosition: (item) => item.position,
       getText: (item) => item.name,
       getSize: 12,

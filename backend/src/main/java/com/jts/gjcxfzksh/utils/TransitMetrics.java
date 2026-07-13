@@ -1,6 +1,7 @@
 package com.jts.gjcxfzksh.utils;
 
 import com.jts.gjcxfzksh.api.common.Constant;
+import com.jts.gjcxfzksh.data.ModelProcessingPool;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.VehicleId;
 import org.locationtech.jts.geom.Envelope;
@@ -59,9 +60,10 @@ public final class TransitMetrics {
         }
         index.build();
         long total = population.getPersons().size();
-        long covered = population.getPersons().values().parallelStream()
-                .filter(person -> personInCoverage(person, index))
-                .count();
+        long covered = ModelProcessingPool.count(
+                population.getPersons().values(),
+                person -> personInCoverage(person, index)
+        );
         return covered * 100.0 / total;
     }
 
@@ -155,7 +157,16 @@ public final class TransitMetrics {
      */
     public static double fullLoadRate(Map<VehicleId, List<PTPersonTrack>> tracksByVehicle,
                                       Map<Id<Vehicle>, Vehicle> vehicleMap) {
-        return fullLoadRate(tracksByVehicle.keySet(), tracksByVehicle, vehicleMap);
+        return fullLoadRate(tracksByVehicle.keySet(), tracksByVehicle, vehicleMap, 1.0);
+    }
+
+    /**
+     * 全网满载率，按人口抽样比例把乘客记录扩样到全量口径。
+     */
+    public static double fullLoadRate(Map<VehicleId, List<PTPersonTrack>> tracksByVehicle,
+                                      Map<Id<Vehicle>, Vehicle> vehicleMap,
+                                      double sampleRate) {
+        return fullLoadRate(tracksByVehicle.keySet(), tracksByVehicle, vehicleMap, sampleRate);
     }
 
     /**
@@ -167,6 +178,13 @@ public final class TransitMetrics {
     public static double fullLoadRate(Collection<VehicleId> vehicleIds,
                                       Map<VehicleId, List<PTPersonTrack>> tracksByVehicle,
                                       Map<Id<Vehicle>, Vehicle> vehicleMap) {
+        return fullLoadRate(vehicleIds, tracksByVehicle, vehicleMap, 1.0);
+    }
+
+    public static double fullLoadRate(Collection<VehicleId> vehicleIds,
+                                      Map<VehicleId, List<PTPersonTrack>> tracksByVehicle,
+                                      Map<Id<Vehicle>, Vehicle> vehicleMap,
+                                      double sampleRate) {
         double capacity = 0.0;
         double boardings = 0.0;
         for (VehicleId vehId : new LinkedHashSet<>(vehicleIds)) {
@@ -182,11 +200,137 @@ public final class TransitMetrics {
                 boardings += tracks.stream().filter(track -> Boolean.TRUE.equals(track.getEnter())).count();
             }
         }
-        return capacity <= 0 ? 0.0 : boardings / capacity;
+        double normalizedSampleRate = sampleRate > 0.0 && sampleRate <= 1.0 ? sampleRate : 1.0;
+        return capacity <= 0 ? 0.0 : (boardings / normalizedSampleRate) / capacity;
     }
 
     private static double valueOf(Integer value) {
         return value == null ? 0.0 : value;
+    }
+
+    /** 轨道制式判定：与 routeModeIndex 同一套正则，供"公交线网"剔除地铁线路 */
+    private static boolean isRailMode(String transportMode) {
+        return transportMode != null && transportMode.toLowerCase()
+                .matches(".*(subway|metro|rail|train|轨道|地铁).*");
+    }
+
+    /**
+     * MATSim 把一条双向道路存成两条方向相反的 Link。按无序节点对归并，
+     * 双向都有线路经过的道路只计一次里程。
+     * 同一节点对之间的平行 link 也会被并成一条（与 SnapRoutingService.roadNetwork 的底图口径一致）。
+     */
+    private static String undirectedRoadKey(org.matsim.api.core.v01.network.Link link) {
+        String from = link.getFromNode().getId().toString();
+        String to = link.getToNode().getId().toString();
+        return from.compareTo(to) <= 0 ? from + "|" + to : to + "|" + from;
+    }
+
+    /**
+     * 线网里程（米）：有线路经过的**道路**长度，而非各线路长度之和。
+     *
+     * @param excludeRail true = 只统计公共汽电车线路（"公交线网密度"口径，剔除地铁/轨道）
+     */
+    public static double networkLengthMeters(org.matsim.pt.transitSchedule.api.TransitSchedule schedule,
+                                             org.matsim.api.core.v01.network.Network network,
+                                             boolean excludeRail) {
+        Set<String> seenRoads = new java.util.HashSet<>();
+        double length = 0;
+        for (org.matsim.pt.transitSchedule.api.TransitLine line : schedule.getTransitLines().values()) {
+            for (org.matsim.pt.transitSchedule.api.TransitRoute route : line.getRoutes().values()) {
+                if (excludeRail && isRailMode(route.getTransportMode())) {
+                    continue;
+                }
+                org.matsim.core.population.routes.NetworkRoute networkRoute = route.getRoute();
+                if (networkRoute == null) {
+                    continue;
+                }
+                List<Id<org.matsim.api.core.v01.network.Link>> linkIds = new java.util.ArrayList<>();
+                linkIds.add(networkRoute.getStartLinkId());
+                linkIds.addAll(networkRoute.getLinkIds());
+                linkIds.add(networkRoute.getEndLinkId());
+                for (Id<org.matsim.api.core.v01.network.Link> linkId : linkIds) {
+                    org.matsim.api.core.v01.network.Link link = network.getLinks().get(linkId);
+                    // 线路引用了路网里不存在的 link（如独立 pt 网络）时跳过，而不是 NPE 打穿接口
+                    if (link == null || !seenRoads.add(undirectedRoadKey(link))) {
+                        continue;
+                    }
+                    length += link.getLength();
+                }
+            }
+        }
+        return length;
+    }
+
+    /**
+     * 出行(trip)主方式优先级。数值越大越优先；未知方式取 1（高于步行、低于机动化），
+     * 避免 MATSim DefaultAnalysisMainModeIdentifier 遇到未登记方式直接抛 IllegalStateException。
+     */
+    private static int mainModeRank(String mode) {
+        if (mode == null) {
+            return 1;
+        }
+        return switch (mode) {
+            case "walk", "transit_walk", "access_walk", "egress_walk", "non_network_walk" -> 0;
+            case "bike" -> 2;
+            case "ride", "taxi", "drt", "motorcycle", "truck", Constant.ROUTE_MODE_CAR -> 3;
+            case Constant.ROUTE_MODE_PT, "train", "subway", "rail", "tram", "ferry" -> 4;
+            default -> 1;
+        };
+    }
+
+    /** 一次出行的主方式：取该次出行内优先级最高的 leg 的 mode（含 pt 段即计为公交出行） */
+    private static String tripMainMode(org.matsim.core.router.TripStructureUtils.Trip trip) {
+        String mainMode = null;
+        int bestRank = Integer.MIN_VALUE;
+        for (Leg leg : trip.getLegsOnly()) {
+            int rank = mainModeRank(leg.getMode());
+            if (rank > bestRank) {
+                bestRank = rank;
+                mainMode = leg.getMode();
+            }
+        }
+        return mainMode == null ? "walk" : mainMode;
+    }
+
+    /**
+     * 按出行(trip)主方式统计的方式分担率（%）。
+     *
+     * 不能用 leg 数占比代替：output_plans 是路径规划之后的计划，一次公交出行会展开成
+     * walk → pt (→ walk → pt)* → walk，接驳/换乘步行 leg 会进分母，带换乘的出行还会在
+     * 分子里贡献多条 pt leg。TripStructureUtils.getTrips 以真实活动切分出行
+     * （pt interaction 等过渡活动不算终点），一次出行只计一次。
+     *
+     * 比例保留 4 位小数再转百分数 → 百分比精确到 0.01%。
+     */
+    public static Map<String, Double> tripModeSharePercent(Population population) {
+        Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        int total = 0;
+        if (population != null) {
+            for (Person person : population.getPersons().values()) {
+                org.matsim.api.core.v01.population.Plan plan = person.getSelectedPlan();
+                if (plan == null) {
+                    continue;
+                }
+                for (org.matsim.core.router.TripStructureUtils.Trip trip
+                        : org.matsim.core.router.TripStructureUtils.getTrips(plan)) {
+                    counts.merge(tripMainMode(trip), 1, Integer::sum);
+                    total += 1;
+                }
+            }
+        }
+        Map<String, Double> share = new java.util.LinkedHashMap<>();
+        if (total == 0) {
+            return share;
+        }
+        java.math.BigDecimal denominator = java.math.BigDecimal.valueOf(total);
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            double percent = java.math.BigDecimal.valueOf(entry.getValue())
+                    .divide(denominator, 4, java.math.RoundingMode.HALF_UP)
+                    .multiply(java.math.BigDecimal.valueOf(100))
+                    .doubleValue();
+            share.put(entry.getKey(), percent);
+        }
+        return share;
     }
 
     /**

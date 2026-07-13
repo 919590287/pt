@@ -32,96 +32,119 @@
     </div>
   </div>
 
+  <!-- 右侧报告卡：与「总体客流变化 / 线路客流 / 站点客流」三块面板同一套外壳（无卡中卡、无蓝色标题条）。
+       teleport 出去的节点带的是本组件的 scope，套不到 index.vue 的 .rm-right-card，样式在本文件内自持。 -->
   <teleport to="#datavisualization_index_box2" defer>
-    <MCard2 class="SJZL_right_card evaluation-report-card" title="公交网络体检评估报告" :open="true">
-      <template #body>
-        <div class="report-panel">
-          <!-- 加载中 / 生成中 / 失败 -->
-          <div v-if="evalStatus !== 'ready'" class="status-box">
-            <template v-if="evalStatus === 'loading'">
-              <el-icon class="status-icon is-loading"><Loading /></el-icon>
-              <div class="status-text">正在统计体检评估指标…</div>
-            </template>
-            <template v-else-if="evalStatus === 'generating'">
-              <el-icon class="status-icon is-loading"><Loading /></el-icon>
-              <div class="status-text">体检指标正在随模型缓存生成，就绪后将自动展示</div>
-            </template>
-            <template v-else>
-              <el-icon class="status-icon error"><WarningFilled /></el-icon>
-              <div class="status-text error">{{ evalError || "体检评估数据加载失败" }}</div>
-              <el-button size="small" type="primary" plain @click="fetchEvaluation">重试</el-button>
-            </template>
+    <section class="eval-report-card">
+      <header class="eval-card-title">
+        <h2>公交网络体检评估报告</h2>
+      </header>
+
+      <!-- 右侧面板整体不滚动（box2 overflow hidden），正文在这里滚 -->
+      <div class="eval-card-body">
+        <div v-if="evalStatus === 'error'" class="eval-state eval-status" role="alert">
+          <span class="eval-status-icon is-error" aria-hidden="true">
+            <el-icon><WarningFilled /></el-icon>
+          </span>
+          <p class="eval-status-title">体检评估数据加载失败</p>
+          <p class="eval-status-desc">{{ evalError || "请稍后重试，或切换模型后重新评估。" }}</p>
+          <button type="button" class="eval-retry" @click="fetchEvaluation">重试</button>
+        </div>
+
+        <div v-else-if="evalStatus === 'generating'" class="eval-state eval-status" role="status">
+          <span class="eval-status-icon" aria-hidden="true">
+            <el-icon class="is-loading"><Loading /></el-icon>
+          </span>
+          <p class="eval-status-title">体检指标生成中</p>
+          <p class="eval-status-desc">后端正在随模型缓存生成体检指标，就绪后本页会自动展示。</p>
+        </div>
+
+        <!-- 骨架按最终版式排布（主指标 → 雷达 → 表格），不用转圈 -->
+        <div v-else-if="evalStatus === 'loading'" class="eval-state eval-skeleton" aria-hidden="true">
+          <div class="eval-sk eval-sk-hero"></div>
+          <div class="eval-sk eval-sk-radar"></div>
+          <div class="eval-sk eval-sk-row" v-for="n in 4" :key="n"></div>
+        </div>
+
+        <template v-else>
+          <div class="eval-hero">
+            <div class="eval-hero-head">
+              <span class="eval-hero-label">指标达标情况</span>
+            </div>
+            <p class="eval-hero-value">
+              <strong>{{ complianceSummary.pass }}</strong>
+              <em>/ {{ complianceSummary.judged }} 项达标</em>
+            </p>
           </div>
 
-          <template v-else>
-            <!-- 五维评估雷达图 -->
-            <div class="radar-section">
-              <div class="section-title">五维评估雷达</div>
-              <div class="chart-container-wrapper radar-chart-container">
-                <el-auto-resizer class="chart_box">
-                  <template #default="{ height, width }">
-                    <VChart
-                      v-if="width > 0 && height > 0"
-                      class="radar-chart"
-                      :option="radarChartOption"
-                      autoresize
-                      :update-options="{ notMerge: true }"
-                    />
-                  </template>
-                </el-auto-resizer>
-              </div>
-            </div>
-
-            <!-- 指标明细对比表 -->
-            <div class="table-section">
-              <div class="section-title">评估指标明细对比</div>
-              <div class="indicator-table">
-                <div class="t-row t-head">
-                  <span class="col-name">评估指标名称</span>
-                  <span class="col-value">模型统计值</span>
-                  <span class="col-standard">规范建议值</span>
-                </div>
-                <template v-for="group in indicatorGroups" :key="group.dimension">
-                  <div class="t-dim">
-                    <span class="dim-accent"></span>
-                    {{ group.dimension }}
-                  </div>
-                  <div class="t-row" v-for="ind in group.indicators" :key="ind.key">
-                    <span class="col-name">
-                      {{ ind.name }}
-                      <em v-if="ind.unit" class="unit">({{ ind.unit }})</em>
-                    </span>
-                    <span :class="['col-value', ind.display.cls]">
-                      {{ ind.display.text }}
-                    </span>
-                    <span class="col-standard">{{ ind.standardText }}</span>
-                  </div>
+          <section class="eval-section">
+            <h3 class="eval-section-title">五维评估雷达</h3>
+            <div class="radar-chart-container">
+              <el-auto-resizer class="chart_box">
+                <template #default="{ height, width }">
+                  <VChart
+                    v-if="width > 0 && height > 0"
+                    class="radar-chart"
+                    :option="radarChartOption"
+                    autoresize
+                    :update-options="{ notMerge: true }"
+                  />
                 </template>
-              </div>
+              </el-auto-resizer>
             </div>
+          </section>
 
-            <div class="footnote">
-              注：① 模型统计值优于规范建议值时显示绿色，劣于时显示红色，无建议值或暂无统计时中性展示；
-              ② 车均场站面积暂无模型数据，“场站设施”维度模型得分按 0 计；
-              ③ 广州市平均参考值取 2023 年统计口径。
+          <section class="eval-section">
+            <h3 class="eval-section-title">评估指标明细对比</h3>
+            <div class="indicator-table">
+              <div class="t-row t-head">
+                <span>评估指标</span>
+                <span class="col-value">模型统计值</span>
+                <span class="col-standard">规范建议值</span>
+              </div>
+              <template v-for="group in indicatorGroups" :key="group.dimension">
+                <div class="t-dim">
+                  <span class="dim-accent" aria-hidden="true"></span>
+                  {{ group.dimension }}
+                </div>
+                <div class="t-row" v-for="ind in group.indicators" :key="ind.key">
+                  <span class="col-name">
+                    {{ ind.name }}
+                    <em v-if="ind.unit" class="unit">{{ ind.unit }}</em>
+                  </span>
+                  <!-- 达标与否只用红绿呈现（业务要求不加钩叉）；aria-label 里带上达标结论，
+                       让读屏用户不依赖颜色也能听到 -->
+                  <span :class="['col-value', ind.display.cls]" :aria-label="ind.display.ariaLabel">
+                    {{ ind.display.text }}
+                  </span>
+                  <span class="col-standard">{{ ind.standardText }}</span>
+                </div>
+              </template>
             </div>
-          </template>
-        </div>
-      </template>
-    </MCard2>
+          </section>
+
+          <p class="footnote">
+            注：① 模型统计值达到规范建议值时显示绿色，未达到时显示红色；无建议值或暂无统计时中性展示。
+            ② 车均场站面积暂无模型数据，“场站设施”维度模型得分按 0 计，雷达图上已标注。
+            ③ 广州市平均参考值取 2023 年统计口径。
+          </p>
+        </template>
+      </div>
+    </section>
   </teleport>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, inject, watch } from "vue";
 import { Opportunity, Loading, WarningFilled } from "@element-plus/icons-vue";
+import { VChart } from "@/plugins/echarts";
 import MCard from "./MCard.vue";
-import MCard2 from "./MCard2.vue";
 import { getCachedEvaluation } from "@/utils/modelDataCache.js";
 import {
   EVALUATION_DIMENSIONS,
   EVALUATION_INDICATORS,
   isBetterThanStandard,
+  normalizeIndicator,
   dimensionScores,
 } from "@/utils/evaluationStandards.js";
 
@@ -251,18 +274,35 @@ function formatNumber(value) {
   return String(rounded);
 }
 
-// 表格“模型统计值”单元格：优于建议值→绿色；劣于→红色；无建议值/无数据→中性
+// 表格“模型统计值”单元格：达标→绿色；未达标→红色；无建议值/无数据→中性。
+// 视觉上只有颜色，达标结论写进 aria-label 兜底
 function modelValueDisplay(indicator) {
   const raw = modelValueOf(indicator);
   if (raw == null || !Number.isFinite(Number(raw))) {
-    return { text: "暂无数据", cls: "is-none" };
+    return { text: "暂无数据", cls: "is-none", ariaLabel: `${indicator.name}：暂无数据` };
   }
   const formatted = formatNumber(raw);
   const better = isBetterThanStandard(raw, indicator);
-  if (better === true) return { text: formatted, cls: "is-better" };
-  if (better === false) return { text: formatted, cls: "is-worse" };
-  return { text: formatted, cls: "is-neutral" };
+  if (better === true) return { text: formatted, cls: "is-better", ariaLabel: `${formatted}，达标` };
+  if (better === false) return { text: formatted, cls: "is-worse", ariaLabel: `${formatted}，未达标` };
+  return { text: formatted, cls: "is-neutral", ariaLabel: formatted };
 }
+
+// 面板主指标：达标数 / 可评定数。可评定 = 既有模型统计值、又有规范建议值的指标；
+// 无建议值的指标（平均换乘次数、公交-轨道接驳比例）不参与分母
+const complianceSummary = computed(() => {
+  let pass = 0;
+  let judged = 0;
+  EVALUATION_INDICATORS.forEach((indicator) => {
+    const raw = modelValueOf(indicator);
+    if (raw == null || !Number.isFinite(Number(raw))) return;
+    const better = isBetterThanStandard(raw, indicator);
+    if (better === null) return;
+    judged += 1;
+    if (better) pass += 1;
+  });
+  return { pass, judged };
+});
 
 // 表格按 5 个评估维度分组；display 预计算（模板原先每行调用 modelValueDisplay 两次）
 const indicatorGroups = computed(() => EVALUATION_DIMENSIONS.map((dimension) => ({
@@ -280,46 +320,81 @@ const modelDimScores = computed(() => dimensionScores((ind) => modelValueOf(ind)
 const gzDimScores = computed(() => dimensionScores((ind) => ind.gzAvg));
 
 /******************************** 五维雷达图 ********************************/
-const MODEL_SERIES_COLOR = "#1569de";
+// 模型系列用平台强调蓝（与 dm2 令牌一致），广州参考沿用橙色 —— 与本模块其他图表的
+// 「主体蓝 / 参考橙」一致
+const MODEL_SERIES_COLOR = "#0071e3";
 const GZ_SERIES_COLOR = "#f97316";
+const MODEL_SERIES_NAME = "模型统计值";
+const GZ_SERIES_NAME = "广州市平均(2023)";
+
+// dimensionScores 对"维度内没有任何可归一化指标"的情况记 0。0 分和"真的很差"在雷达图上
+// 画出来一模一样，会把"测不到"读成"做得烂"。这里把这类维度单独标出来。
+const modelNoDataDimensions = computed(() => new Set(
+  EVALUATION_DIMENSIONS.filter((dimension) => EVALUATION_INDICATORS
+    .filter((indicator) => indicator.dimension === dimension)
+    .every((indicator) => normalizeIndicator(modelValueOf(indicator), indicator) == null))
+));
+
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+}
 
 const radarChartOption = computed(() => {
   const round3 = (n) => Math.round((n || 0) * 1000) / 1000;
   const modelData = EVALUATION_DIMENSIONS.map((dim) => round3(modelDimScores.value[dim]));
   const gzData = EVALUATION_DIMENSIONS.map((dim) => round3(gzDimScores.value[dim]));
+  const noData = modelNoDataDimensions.value;
+  const reduceMotion = prefersReducedMotion();
   return {
+    backgroundColor: "transparent",
+    animation: !reduceMotion,
+    animationDuration: reduceMotion ? 0 : 700,
+    animationEasing: "cubicOut",
     tooltip: {
       trigger: "item",
       appendToBody: true,
-      extraCssText: "z-index: 999; border-radius: 8px; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.12);",
+      padding: [8, 11],
+      extraCssText: "z-index:999;border-radius:10px;box-shadow:0 12px 32px -14px rgba(13,38,76,0.34);",
       backgroundColor: "rgba(255, 255, 255, 0.98)",
-      textStyle: { color: "#2d3748", fontSize: 12 },
+      borderColor: "rgba(17, 32, 58, 0.1)",
+      borderWidth: 1,
+      textStyle: { color: "#1c2024", fontSize: 12 },
       formatter: (params) => {
-        const rows = EVALUATION_DIMENSIONS
-          .map((dim, i) => `${dim}: <strong>${params.value?.[i] ?? "-"}</strong>`)
-          .join("<br/>");
+        const isModel = params.name === MODEL_SERIES_NAME;
+        const rows = EVALUATION_DIMENSIONS.map((dim, index) => {
+          const value = isModel && noData.has(dim) ? "暂无数据" : (params.value?.[index] ?? "-");
+          return `${dim}：<strong>${value}</strong>`;
+        }).join("<br/>");
         return `<strong style="color:${params.color};">${params.name}</strong><br/>${rows}`;
       },
     },
     legend: {
       bottom: 0,
       icon: "circle",
-      itemWidth: 10,
-      itemHeight: 10,
+      itemWidth: 9,
+      itemHeight: 9,
       itemGap: 18,
-      textStyle: { fontSize: 12, color: "#60758e" },
-      data: ["模型统计值", "广州市平均(2023)"],
+      textStyle: { fontSize: 11.5, color: "#667085", fontWeight: 650 },
+      data: [MODEL_SERIES_NAME, GZ_SERIES_NAME],
     },
     radar: {
-      indicator: EVALUATION_DIMENSIONS.map((dim) => ({ name: dim, max: 1.2 })),
+      indicator: EVALUATION_DIMENSIONS.map((dim) => ({
+        name: noData.has(dim) ? `{name|${dim}}\n{na|暂无模型数据}` : `{name|${dim}}`,
+        max: 1.2,
+      })),
       center: ["50%", "46%"],
-      radius: "62%",
+      radius: "60%",
       splitNumber: 4,
-      axisName: { color: "#60758e", fontSize: 12, fontWeight: 600 },
-      axisLine: { lineStyle: { color: "rgba(21, 105, 222, 0.15)" } },
-      splitLine: { lineStyle: { color: "rgba(21, 105, 222, 0.12)" } },
+      axisName: {
+        rich: {
+          name: { color: "#667085", fontSize: 12, fontWeight: 650 },
+          na: { color: "#98a2b3", fontSize: 10, fontWeight: 500, padding: [3, 0, 0, 0] },
+        },
+      },
+      axisLine: { lineStyle: { color: "rgba(17, 32, 58, 0.1)" } },
+      splitLine: { lineStyle: { color: "rgba(17, 32, 58, 0.08)" } },
       splitArea: {
-        areaStyle: { color: ["rgba(21, 105, 222, 0.02)", "rgba(21, 105, 222, 0.05)"] },
+        areaStyle: { color: ["rgba(17, 32, 58, 0.015)", "rgba(17, 32, 58, 0.035)"] },
       },
     },
     series: [
@@ -329,17 +404,17 @@ const radarChartOption = computed(() => {
         data: [
           {
             value: modelData,
-            name: "模型统计值",
+            name: MODEL_SERIES_NAME,
             itemStyle: { color: MODEL_SERIES_COLOR },
             lineStyle: { color: MODEL_SERIES_COLOR, width: 2 },
-            areaStyle: { color: "rgba(21, 105, 222, 0.18)" },
+            areaStyle: { color: "rgba(0, 113, 227, 0.16)" },
           },
           {
             value: gzData,
-            name: "广州市平均(2023)",
+            name: GZ_SERIES_NAME,
             itemStyle: { color: GZ_SERIES_COLOR },
             lineStyle: { color: GZ_SERIES_COLOR, width: 2 },
-            areaStyle: { color: "rgba(249, 115, 22, 0.14)" },
+            areaStyle: { color: "rgba(249, 115, 22, 0.12)" },
           },
         ],
       },
@@ -427,188 +502,368 @@ export default {
   }
 }
 
-/* Evaluation Report Card Right Side */
-.evaluation-report-card {
-  --theme-color: #1569de;
-  width: 470px;
-  background: var(--app-card-bg-tint);
-  border-radius: var(--app-panel-radius);
-  box-shadow: none;
-
-  /* 体检评估分析所在的 run-monitor 右侧面板不滚动（box2 overflow hidden），
-     卡片需占满剩余高度并让报告内容在卡片体内滚动，否则表格底部被裁切 */
+/* ── 右侧报告卡：标题 → 达标主指标 → 雷达 → 指标明细 → 注释 ──
+   外壳与三块客流面板同构（透明底、发丝线标题、无卡中卡） */
+.eval-report-card {
+  width: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--dm2-font);
+}
 
-  :deep(.MCard2_body_box) {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
+.eval-card-title {
+  flex: none;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--dm2-line-faint);
+
+  h2 {
+    margin: 0;
+    color: var(--dm2-ink);
+    font-size: 20px;
+    line-height: 1.18;
+    font-weight: 780;
+    letter-spacing: -0.01em;
   }
 }
 
-.report-panel {
+/* 右侧面板整体不滚动（box2 overflow hidden），报告正文自己滚，滚动条按令牌收细 */
+.eval-card-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 32, 58, 0.18) transparent;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: var(--dm2-radius-pill);
+    background: rgba(17, 32, 58, 0.18);
+  }
+}
+
+.eval-hero {
+  margin-top: 14px;
+  padding: 13px 15px 14px;
+  border-radius: var(--dm2-radius);
+  background: var(--dm2-surface-sunken);
+}
+
+.eval-hero-head {
   display: flex;
-  flex-direction: column;
-  padding: var(--space-xs) var(--space-2xs);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-/* 加载/生成中/失败 状态 */
-.status-box {
+.eval-hero-label {
+  flex: none;
+  color: var(--dm2-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.eval-hero-value {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-xs);
-  padding: var(--space-lg) var(--space-sm);
-  min-height: 160px;
+  align-items: baseline;
+  gap: 6px;
+  margin: 5px 0 0;
 
-  .status-icon {
-    font-size: 26px;
-    color: var(--app-blue);
-
-    &.error {
-      color: var(--app-coral);
-    }
+  strong {
+    color: var(--dm2-ink);
+    font-family: var(--dm2-font-num);
+    font-size: 32px;
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+    font-variant-numeric: tabular-nums;
   }
 
-  .status-text {
-    font-size: 13px;
-    color: var(--app-muted);
-    text-align: center;
-    line-height: 20px;
-
-    &.error {
-      color: var(--app-coral);
-    }
+  em {
+    color: var(--dm2-muted);
+    font-size: 12px;
+    font-style: normal;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
   }
 }
 
-.section-title {
-  font-size: 14px;
-  font-weight: bold;
-  color: var(--app-ink);
-  margin-bottom: 10px;
+.eval-section {
+  margin-top: 16px;
+}
+
+.eval-section-title {
+  margin: 0 0 8px;
+  color: var(--dm2-ink-soft);
+  font-size: 13px;
+  font-weight: 720;
 }
 
 /* 五维雷达图 */
-.radar-section {
-  margin-bottom: var(--space-sm);
-}
-
 .radar-chart-container {
-  height: 250px;
-  width: 100%;
   position: relative;
+  height: 262px;
+  width: 100%;
+  padding: 6px 4px 2px;
+  box-sizing: border-box;
+  border: 1px solid rgba(17, 32, 58, 0.08);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(247, 250, 254, 0.78)),
+    var(--dm2-surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
 
-  .chart_box {
-    width: 100%;
-    height: 100%;
-  }
-
+  .chart_box,
   .radar-chart {
     width: 100%;
     height: 100%;
   }
 }
 
-/* 指标明细对比表 */
-.table-section {
-  border-top: 1px solid rgba(21, 105, 222, 0.08);
-  padding-top: var(--space-sm);
-}
-
+/* 指标明细对比表：靠发丝线分组，不再每行上下都描边，也不再套一层卡片 */
 .indicator-table {
-  border: 1px solid rgba(21, 105, 222, 0.12);
-  border-radius: var(--app-card-radius);
-  overflow: hidden;
-  background: var(--app-card-bg-tint);
-
   .t-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 96px 84px;
+    grid-template-columns: minmax(0, 1fr) 86px 74px;
     align-items: center;
-    gap: 6px;
-    padding: 7px 10px;
+    gap: 8px;
+    padding: 8px 2px;
     font-size: 12px;
-    border-top: 1px solid rgba(21, 105, 222, 0.08);
   }
 
+  /* 只在同组相邻行之间画线：t-dim 打断相邻选择器，组首行自然无线 */
+  .t-row + .t-row {
+    border-top: 1px solid var(--dm2-line-faint);
+  }
+
+  /* 表头随正文滚动区吸顶，17 行表格滚到底也知道哪列是哪列。
+     背景必须完全不透明：--dm2-veil-strong 有 3% 透明度，滚到表头下面的行会透出来 */
   .t-head {
-    border-top: none;
-    background: rgba(21, 105, 222, 0.06);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding-top: 6px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid var(--dm2-line);
+    background: #fcfdff;
+    color: var(--dm2-muted);
+    font-size: 11px;
     font-weight: 700;
-    color: var(--app-blue);
   }
 
   .t-dim {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    background: rgba(21, 105, 222, 0.035);
-    border-top: 1px solid rgba(21, 105, 222, 0.08);
+    gap: 7px;
+    margin-top: 4px;
+    padding: 9px 2px 7px;
+    border-top: 1px solid var(--dm2-line);
+    color: var(--dm2-ink);
     font-size: 12px;
-    font-weight: 700;
-    color: var(--app-ink);
+    font-weight: 760;
 
     .dim-accent {
       width: 3px;
       height: 12px;
-      border-radius: 2px;
-      background: var(--app-blue);
+      border-radius: var(--dm2-radius-pill);
+      background: var(--dm2-accent);
     }
   }
 
   .col-name {
-    color: var(--app-ink);
-    line-height: 17px;
+    min-width: 0;
+    color: var(--dm2-ink);
+    font-size: 12px;
+    line-height: 1.4;
 
+    /* 单位单独一行：内联时"车站300m人口覆盖率（%）"会在括号处折出孤字 */
     .unit {
+      display: block;
+      color: var(--dm2-muted-soft);
+      font-size: 10.5px;
       font-style: normal;
-      font-size: 11px;
-      color: var(--app-muted-soft);
-      margin-left: 2px;
+      font-weight: 550;
     }
   }
 
   .col-value {
-    font-family: var(--app-font-number);
-    font-weight: bold;
+    color: var(--dm2-ink);
+    font-family: var(--dm2-font-num);
+    font-size: 12px;
+    font-weight: 780;
     text-align: right;
+    font-variant-numeric: tabular-nums;
 
     &.is-better {
-      color: var(--app-emerald-strong);
+      color: var(--dm2-add);
     }
 
     &.is-worse {
-      color: var(--app-coral);
-    }
-
-    &.is-neutral {
-      color: var(--app-ink);
+      color: var(--dm2-delete);
     }
 
     &.is-none {
-      color: var(--app-muted-soft);
-      font-weight: 500;
+      color: var(--dm2-muted-soft);
       font-size: 11px;
+      font-weight: 550;
     }
   }
 
   .col-standard {
-    color: var(--app-muted);
+    color: var(--dm2-muted);
+    font-family: var(--dm2-font-num);
+    font-size: 12px;
+    font-weight: 650;
     text-align: right;
-    font-family: var(--app-font-number);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 表头复用了 col-value / col-standard 做列对齐，字型要跟着表头走而不是跟着数据走 */
+  .t-head .col-value,
+  .t-head .col-standard {
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
   }
 }
 
 .footnote {
-  margin-top: var(--space-xs);
+  margin: 14px 0 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--dm2-line-faint);
+  color: var(--dm2-muted-soft);
   font-size: 11px;
-  line-height: 17px;
-  color: var(--app-muted-soft);
+  line-height: 1.65;
+}
+
+/* 状态：失败 / 生成中 / 加载中 —— 整块替换正文 */
+.eval-state {
+  margin-top: 14px;
+}
+
+.eval-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 260px;
+  padding: 32px 22px;
+  text-align: center;
+}
+
+.eval-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--dm2-surface-sunken);
+  color: var(--dm2-muted-soft);
+  font-size: 20px;
+
+  &.is-error {
+    background: var(--dm2-delete-weak);
+    color: var(--dm2-delete);
+  }
+}
+
+.eval-status-title {
+  margin: 0;
+  color: var(--dm2-ink);
+  font-size: 14px;
+  font-weight: 720;
+}
+
+.eval-status-desc {
+  margin: 0;
+  max-width: 280px;
+  color: var(--dm2-muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.eval-retry {
+  margin-top: 4px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: var(--dm2-radius-pill);
+  background: var(--dm2-accent);
+  color: #ffffff;
+  font: 650 12px var(--dm2-font);
+  cursor: pointer;
+  transition: background-color var(--dm2-dur-fast) var(--dm2-ease), transform var(--dm2-dur-fast) var(--dm2-ease);
+
+  &:hover {
+    background: var(--dm2-accent-strong);
+  }
+
+  &:active {
+    transform: translateY(1px);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--dm2-accent-ring);
+    outline-offset: 2px;
+  }
+}
+
+/* 骨架按最终版式排布，读者一眼知道等的是什么，而不是一个转圈 */
+.eval-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.eval-sk {
+  border-radius: var(--dm2-radius);
+  background:
+    linear-gradient(90deg, var(--dm2-surface-sunken) 25%, rgba(255, 255, 255, 0.7) 37%, var(--dm2-surface-sunken) 63%)
+    0 0 / 400% 100%;
+  animation: eval-sk-shimmer 1.4s ease-in-out infinite;
+}
+
+.eval-sk-hero {
+  height: 78px;
+}
+
+.eval-sk-radar {
+  height: 262px;
+}
+
+.eval-sk-row {
+  height: 34px;
+  border-radius: var(--dm2-radius-sm);
+}
+
+@keyframes eval-sk-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eval-sk {
+    animation: none;
+    background: var(--dm2-surface-sunken);
+  }
+
+  .eval-retry {
+    transition: none;
+  }
 }
 </style>

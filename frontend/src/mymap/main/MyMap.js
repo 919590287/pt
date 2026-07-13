@@ -19,6 +19,7 @@ export const MAP_EVENT = {
   UPDATE_CAMERA_HEIGHT: "update:camera:height",
   UPDATE_CAMERA_ROTATE: "update:camera:rotate",
   UPDATE_CAMERA_POSITION: "update:camera:position",
+  UPDATE_VIEW_MODE: "update:view:mode",
   UPDATE_RENDERER_SIZE: "update:renderer:size",
   LAYER_BEFORE_RENDER: "layer:before:render",
   LAYER_AFTER_RENDER: "layer:after:render",
@@ -226,8 +227,11 @@ export class MyMap extends EventListener {
   }
 
   set enableRotate(enableRotate) {
-    this._enableRotate = !!enableRotate;
+    const next = !!enableRotate;
+    if (next === this._enableRotate) return;
+    this._enableRotate = next;
     this.applyInteractionFlags();
+    this.emit(MAP_EVENT.UPDATE_VIEW_MODE, { is3D: next });
   }
 
   get enableRotate() {
@@ -510,14 +514,20 @@ export class MyMap extends EventListener {
     this.pitch = mapPitchToLegacy(this.map.getPitch());
     this.rotation = this.map.getBearing();
 
-    if (!oldCenter || Math.hypot(oldCenter[0] - this.center[0], oldCenter[1] - this.center[1]) > 0.01) {
+    const centerChanged = !oldCenter
+      || Math.hypot(oldCenter[0] - this.center[0], oldCenter[1] - this.center[1]) > 0.01;
+    const zoomChanged = Math.abs(oldZoom - this.zoom) > 0.0001;
+    const rotationChanged = Math.abs(oldPitch - this.pitch) > 0.01
+      || Math.abs(oldRotation - this.rotation) > 0.01;
+
+    if (centerChanged) {
       this.emit(MAP_EVENT.UPDATE_CENTER, this.center);
     }
-    if (Math.abs(oldZoom - this.zoom) > 0.0001) {
+    if (zoomChanged) {
       this.emit(MAP_EVENT.UPDATE_ZOOM, this.zoom);
       this.emit(MAP_EVENT.UPDATE_CAMERA_HEIGHT, this.cameraHeight);
     }
-    if (Math.abs(oldPitch - this.pitch) > 0.01 || Math.abs(oldRotation - this.rotation) > 0.01) {
+    if (rotationChanged) {
       this.emit(MAP_EVENT.UPDATE_CAMERA_ROTATE, {
         oldPitch,
         newPitch: this.pitch,
@@ -525,10 +535,14 @@ export class MyMap extends EventListener {
         newRotation: this.rotation,
       });
     }
-    this.emit(MAP_EVENT.UPDATE_CAMERA_POSITION, {
-      position: [this.center[0], this.center[1], this.cameraHeight],
-      webMercator: this.center,
-    });
+    // MapLibre 可能对一次 jumpTo 同步派发多次 move。没有可观察状态变化时不再
+    // 扫描全部自定义图层，避免缩放热路径中的空事件风暴。
+    if (centerChanged || zoomChanged || rotationChanged) {
+      this.emit(MAP_EVENT.UPDATE_CAMERA_POSITION, {
+        position: [this.center[0], this.center[1], this.cameraHeight],
+        webMercator: this.center,
+      });
+    }
   }
 
   eventPayload(event) {
@@ -586,43 +600,69 @@ export class MyMap extends EventListener {
 
   setZoom(zoom) {
     const nextZoom = Math.max(MAP_ZOOM_RANGE.MIN, Math.min(MAP_ZOOM_RANGE.MAX, Number(zoom) || this.zoom));
-    this.zoom = nextZoom;
-    this.map?.jumpTo({ zoom: nextZoom });
+    if (!this.map) {
+      this.zoom = nextZoom;
+      return;
+    }
+    // 不提前写 this.zoom。否则 jumpTo 的 move 回调会把新值当旧值，吞掉
+    // UPDATE_ZOOM，建筑/路网等自定义图层无法响应工具栏缩放。
+    this.map.jumpTo({ zoom: nextZoom });
+    this.syncStateFromMap();
   }
 
   setCenter(center) {
     if (!center || center.length < 2) return;
-    this.center = [Number(center[0]), Number(center[1])];
-    this.map?.jumpTo({ center: webMercatorToLngLat(this.center[0], this.center[1]) });
+    const nextCenter = [Number(center[0]), Number(center[1])];
+    if (!nextCenter.every(Number.isFinite)) return;
+    if (!this.map) {
+      this.center = nextCenter;
+      return;
+    }
+    this.map.jumpTo({ center: webMercatorToLngLat(nextCenter[0], nextCenter[1]) });
+    this.syncStateFromMap();
   }
 
   // 一次 jumpTo 同时更新中心与缩放：分开调用 setCenter+setZoom 会触发两次相机变更与重绘
   setCenterAndZoom(center, zoom) {
     if (!center || center.length < 2) return;
-    this.center = [Number(center[0]), Number(center[1])];
+    const nextCenter = [Number(center[0]), Number(center[1])];
+    if (!nextCenter.every(Number.isFinite)) return;
     const nextZoom = Math.max(MAP_ZOOM_RANGE.MIN, Math.min(MAP_ZOOM_RANGE.MAX, Number(zoom) || this.zoom));
-    this.zoom = nextZoom;
-    this.map?.jumpTo({
-      center: webMercatorToLngLat(this.center[0], this.center[1]),
+    if (!this.map) {
+      this.center = nextCenter;
+      this.zoom = nextZoom;
+      return;
+    }
+    this.map.jumpTo({
+      center: webMercatorToLngLat(nextCenter[0], nextCenter[1]),
       zoom: nextZoom,
     });
+    this.syncStateFromMap();
   }
 
   setPitchAndRotation(pitch = this.pitch, rotation = this.rotation) {
     const oldPitch = this.pitch;
     const oldRotation = this.rotation;
-    this.pitch = Math.max(LEGACY_MIN_PITCH, Math.min(90, Number(pitch) || 90));
-    this.rotation = normalizeBearing(Number(rotation) || 0);
-    this.map?.jumpTo({
-      pitch: legacyPitchToMap(this.pitch),
-      bearing: this.rotation,
+    const nextPitch = Math.max(LEGACY_MIN_PITCH, Math.min(90, Number(pitch) || 90));
+    const nextRotation = normalizeBearing(Number(rotation) || 0);
+    if (!this.map) {
+      this.pitch = nextPitch;
+      this.rotation = nextRotation;
+      if (Math.abs(oldPitch - nextPitch) > 0.01 || Math.abs(oldRotation - nextRotation) > 0.01) {
+        this.emit(MAP_EVENT.UPDATE_CAMERA_ROTATE, {
+          oldPitch,
+          newPitch: nextPitch,
+          oldRotation,
+          newRotation: nextRotation,
+        });
+      }
+      return;
+    }
+    this.map.jumpTo({
+      pitch: legacyPitchToMap(nextPitch),
+      bearing: nextRotation,
     });
-    this.emit(MAP_EVENT.UPDATE_CAMERA_ROTATE, {
-      oldPitch,
-      newPitch: this.pitch,
-      oldRotation,
-      newRotation: this.rotation,
-    });
+    this.syncStateFromMap();
   }
 
   getFitZoomAndCenter(list) {
@@ -657,8 +697,7 @@ export class MyMap extends EventListener {
 
   setFitZoomAndCenterByPoints(list) {
     const result = this.getFitZoomAndCenter(list);
-    this.setCenter(result.center);
-    this.setZoom(result.zoom);
+    this.setCenterAndZoom(result.center, result.zoom);
     return result;
   }
 
@@ -677,6 +716,42 @@ export class MyMap extends EventListener {
       maxY: Math.max(min[1], max[1]),
       width: Math.abs(max[0] - min[0]),
       height: Math.abs(max[1] - min[1]),
+    };
+  }
+
+  // 俯仰视角下 getBounds 会一直延伸到地平线附近，范围可达数百公里，直接拿去做数据
+  // 请求/裁剪会拖垮请求方。这里以屏幕底边中点（俯仰下离相机最近的地面点）为锚，把
+  // 范围裁到 maxDistance 半径内；anchor 一并返回，供调用方作为"就近优先"的焦点。
+  getViewGroundRangeWebMercator(maxDistance = Infinity) {
+    const range = this.getWindowRangeAndWebMercator();
+    const canvas = this.map.getCanvas();
+    const width = canvas.clientWidth || canvas.width || 1;
+    const height = canvas.clientHeight || canvas.height || 1;
+    const nearPoint = this.WindowXYToWebMercator(width / 2, height);
+    if (!Number.isFinite(nearPoint[0]) || !Number.isFinite(nearPoint[1])) {
+      return { ...range, anchor: [(range.minX + range.maxX) / 2, (range.minY + range.maxY) / 2] };
+    }
+    const anchorX = Math.max(range.minX, Math.min(range.maxX, nearPoint[0]));
+    const anchorY = Math.max(range.minY, Math.min(range.maxY, nearPoint[1]));
+    if (!Number.isFinite(maxDistance) || maxDistance <= 0) {
+      return { ...range, anchor: [anchorX, anchorY] };
+    }
+    const minX = Math.max(range.minX, anchorX - maxDistance);
+    const maxX = Math.min(range.maxX, anchorX + maxDistance);
+    const minY = Math.max(range.minY, anchorY - maxDistance);
+    const maxY = Math.min(range.maxY, anchorY + maxDistance);
+    return {
+      topLeft: [minX, maxY],
+      bottomLeft: [minX, minY],
+      bottomRight: [maxX, minY],
+      topRight: [maxX, maxY],
+      minX,
+      minY,
+      maxX,
+      maxY,
+      width: maxX - minX,
+      height: maxY - minY,
+      anchor: [anchorX, anchorY],
     };
   }
 

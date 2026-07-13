@@ -3,6 +3,7 @@ package com.jts.gjcxfzksh.data.cache;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.ModelProcessingPool;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.utils.DistanceUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -126,7 +127,6 @@ public final class MatsimRoutePanelCache {
 
     public static void prepareOnModelLoad(MatsimData data) {
         ensureRoutePanelCache(data);
-        loadPanel(data);
     }
 
     /** Load an existing panel into memory while the model starts, without generating an incomplete cache. */
@@ -500,7 +500,7 @@ public final class MatsimRoutePanelCache {
         }
         Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
 
-        byPerson.values().parallelStream().forEach(personTracks -> {
+        ModelProcessingPool.forEach(byPerson.values(), personTracks -> {
             personTracks.sort(TRACK_TIME_ORDER);
             for (int i = 0; i + 1 < personTracks.size(); i++) {
                 PTPersonTrack leave = personTracks.get(i);
@@ -547,7 +547,7 @@ public final class MatsimRoutePanelCache {
             return;
         }
         Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
-        byPerson.values().parallelStream().forEach(personTracks -> {
+        ModelProcessingPool.forEach(byPerson.values(), personTracks -> {
             personTracks.sort(TRACK_TIME_ORDER);
             PTPersonTrack boarding = null;
             for (PTPersonTrack track : personTracks) {

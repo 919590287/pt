@@ -37,7 +37,10 @@ public class AuthController {
     @Operation(summary = "重置密码")
     @PostMapping("/resetPassword")
     public AjaxResult resetPassword(@RequestBody AuthParam param) {
-        return AjaxResult.ok(authService.resetPassword(param.getUsername(), param.getNewPassword()));
+        return AjaxResult.ok(authService.resetPassword(
+                param.getUsername(),
+                param.getPassword(),
+                param.getNewPassword()));
     }
 
     @Operation(summary = "当前用户")

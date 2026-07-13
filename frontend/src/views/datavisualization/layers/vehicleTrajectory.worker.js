@@ -8,7 +8,7 @@ const MIN_FRAME_CAPACITY = 1024;
 // 96MB 按 byteLength 分桶最坏可长期滞留，收敛到 32MB 足够覆盖峰值车数
 const MAX_POOLED_FRAME_BYTES = 32 * 1024 * 1024;
 const COMPACT_SECOND_INDEX_MAX_REFS = 8_000_000;
-const CHUNK_STORE_MEMORY_GB = Math.max(4, Math.min(8, Number(self.navigator?.deviceMemory) || 6));
+const CHUNK_STORE_MEMORY_GB = Math.max(4, Math.min(8, Number(globalThis.navigator?.deviceMemory) || 6));
 const MAX_CHUNK_STORE_BYTES = Math.round(CHUNK_STORE_MEMORY_GB * 48 * 1024 * 1024);
 const MAX_CHUNK_STORE_COUNT = 6;
 const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
@@ -28,6 +28,35 @@ const chunkStore = new Map(); // key -> { kind, ..., index, bytes, lastUsedAt }
 let activeKey = null;
 let chunkStoreBytes = 0;
 let chunkUseCounter = 0;
+let visibleOffsetScratch = new Int32Array(0);
+
+function ensureVisibleOffsetScratch(count) {
+  const required = Math.max(0, Number(count) || 0);
+  if (visibleOffsetScratch.length >= required) return visibleOffsetScratch;
+  visibleOffsetScratch = new Int32Array(nextFrameCapacity(required));
+  return visibleOffsetScratch;
+}
+
+function normalizeBounds(bounds) {
+  if (!bounds) return null;
+  const minX = Number(bounds.minX);
+  const minY = Number(bounds.minY);
+  const maxX = Number(bounds.maxX);
+  const maxY = Number(bounds.maxY);
+  if (![minX, minY, maxX, maxY].every(Number.isFinite) || maxX <= minX || maxY <= minY) {
+    return null;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+function segmentIntersectsBounds(sx, sy, ex, ey, originX, originY, bounds) {
+  if (!bounds) return true;
+  const minX = Math.min(sx, ex) + originX;
+  const maxX = Math.max(sx, ex) + originX;
+  const minY = Math.min(sy, ey) + originY;
+  const maxY = Math.max(sy, ey) + originY;
+  return maxX >= bounds.minX && minX <= bounds.maxX && maxY >= bounds.minY && minY <= bounds.maxY;
+}
 
 function nextFrameCapacity(count) {
   let capacity = MIN_FRAME_CAPACITY;
@@ -555,7 +584,7 @@ function createSegmentFrame({ bucketSecond, origin, count, startXs, startYs, end
   };
 }
 
-function segmentFrameFromBinary(time, data, windowSeconds = 1) {
+function segmentFrameFromBinary(time, data, windowSeconds = 1, requestedBounds = null) {
   const values = data?.segments;
   if (!values?.length) {
     const windowSize = Math.max(1, Math.min(8, Math.floor(Number(windowSeconds) || 1)));
@@ -580,20 +609,15 @@ function segmentFrameFromBinary(time, data, windowSeconds = 1) {
   const windowSize = Math.max(1, Math.min(8, Math.floor(Number(windowSeconds) || 1)));
   const bucketSecond = Math.floor(seconds / windowSize) * windowSize;
   const offsets = binaryOffsetsForSecondWindow(bucketSecond, values, data.index, windowSize);
-  const capacity = offsets.length;
-  const startXs = new Float32Array(capacity);
-  const startYs = new Float32Array(capacity);
-  const endXs = new Float32Array(capacity);
-  const endYs = new Float32Array(capacity);
-  const startTimes = new Float32Array(capacity);
-  const endTimes = new Float32Array(capacity);
-  const modes = new Uint8Array(capacity);
-  const ids = new Int32Array(capacity);
+  const bounds = normalizeBounds(requestedBounds);
+  const [originX = 0, originY = 0] = data.origin || [];
+  // 全市候选只留在 Worker：右侧统计仍按全市计算，但只把视口附近的段传回主线程/GPU。
+  const visibleOffsets = ensureVisibleOffsetScratch(offsets.length);
   const activeByMode = emptyModeCount();
   let speedTotal = 0;
   let speedCount = 0;
   let activeTotal = 0;
-  let count = 0;
+  let visibleCount = 0;
 
   for (const offset of offsets) {
     const startTime = values[offset];
@@ -611,16 +635,6 @@ function segmentFrameFromBinary(time, data, windowSeconds = 1) {
     const duration = Math.max(endTime - startTime, 0.001);
     const speed = (Math.sqrt(dx * dx + dy * dy) / duration) * 3.6;
 
-    startXs[count] = sx;
-    startYs[count] = sy;
-    endXs[count] = ex;
-    endYs[count] = ey;
-    startTimes[count] = startTime;
-    endTimes[count] = endTime;
-    modes[count] = MODE_KEY_TO_CODE[mode] ?? 2;
-    ids[count] = Math.round(Number(values[offset + 7]) || 0);
-    count += 1;
-
     if (seconds >= startTime && seconds < endTime) {
       activeTotal += 1;
       activeByMode[mode] += 1;
@@ -629,12 +643,35 @@ function segmentFrameFromBinary(time, data, windowSeconds = 1) {
         speedCount += 1;
       }
     }
+    if (segmentIntersectsBounds(sx, sy, ex, ey, originX, originY, bounds)) {
+      visibleOffsets[visibleCount++] = offset;
+    }
+  }
+
+  const startXs = new Float32Array(visibleCount);
+  const startYs = new Float32Array(visibleCount);
+  const endXs = new Float32Array(visibleCount);
+  const endYs = new Float32Array(visibleCount);
+  const startTimes = new Float32Array(visibleCount);
+  const endTimes = new Float32Array(visibleCount);
+  const modes = new Uint8Array(visibleCount);
+  const ids = new Int32Array(visibleCount);
+  for (let index = 0; index < visibleCount; index++) {
+    const offset = visibleOffsets[index];
+    startTimes[index] = values[offset];
+    endTimes[index] = values[offset + 1];
+    startXs[index] = values[offset + 2];
+    startYs[index] = values[offset + 3];
+    endXs[index] = values[offset + 4];
+    endYs[index] = values[offset + 5];
+    modes[index] = Math.max(0, Math.min(2, Math.round(Number(values[offset + 6]) || 0)));
+    ids[index] = Math.round(Number(values[offset + 7]) || 0);
   }
 
   const frame = createSegmentFrame({
     bucketSecond,
     origin: data.origin || [0, 0],
-    count,
+    count: visibleCount,
     startXs,
     startYs,
     endXs,
@@ -836,7 +873,7 @@ function activeAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode)
     : activeFromJson(seconds, indexed);
 }
 
-function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode, bucketSeconds = 1) {
+function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode, bucketSeconds = 1, bounds = null) {
   currentVisibilityMode = normalizeVisibilityMode(visibilityMode);
   if (!indexed) {
     const frame = createSegmentFrame({
@@ -855,7 +892,7 @@ function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilit
     return { segmentFrame: frame, stats: emptyStats(), transfer: segmentFrameTransfer(frame) };
   }
   if (indexed.kind === "binary") {
-    return segmentFrameFromBinary(seconds, indexed, bucketSeconds);
+    return segmentFrameFromBinary(seconds, indexed, bucketSeconds, bounds);
   }
   return activeFromJson(seconds, indexed);
 }
@@ -872,7 +909,7 @@ function reject(id, error) {
   });
 }
 
-self.onmessage = (event) => {
+if (typeof self !== "undefined") self.onmessage = (event) => {
   const message = event.data || {};
   const { id, type } = message;
   try {
@@ -890,7 +927,7 @@ self.onmessage = (event) => {
       const seconds = Number(message.seconds);
       if (Number.isFinite(seconds)) {
         const result = message.gpuSegments
-          ? segmentFrameAtChunk(indexed, Math.max(0, seconds), message.visibilityMode, message.bucketSeconds)
+          ? segmentFrameAtChunk(indexed, Math.max(0, seconds), message.visibilityMode, message.bucketSeconds, message.bounds)
           : activeAtChunk(indexed, Math.max(0, seconds), message.visibilityMode);
         const transfer = result.transfer || [];
         delete result.transfer;
@@ -928,7 +965,7 @@ self.onmessage = (event) => {
       activeKey = key;
       const seconds = Math.max(0, Number(message.seconds) || 0);
       const result = message.gpuSegments
-        ? segmentFrameAtChunk(indexed, seconds, message.visibilityMode, message.bucketSeconds)
+        ? segmentFrameAtChunk(indexed, seconds, message.visibilityMode, message.bucketSeconds, message.bounds)
         : activeAtChunk(indexed, seconds, message.visibilityMode);
       const transfer = result.transfer || [];
       delete result.transfer;
@@ -951,7 +988,7 @@ self.onmessage = (event) => {
     if (type === "setSegmentTime") {
       const indexed = activeKey != null ? chunkStore.get(activeKey) : null;
       const seconds = Math.max(0, Number(message.seconds) || 0);
-      const result = segmentFrameAtChunk(indexed, seconds, message.visibilityMode, message.bucketSeconds);
+      const result = segmentFrameAtChunk(indexed, seconds, message.visibilityMode, message.bucketSeconds, message.bounds);
       const transfer = result.transfer || [];
       delete result.transfer;
       respond(id, {
@@ -981,3 +1018,6 @@ self.onmessage = (event) => {
     reject(id, error);
   }
 };
+
+// 纯函数导出用于千万级合成数据回归测试；Worker 运行时仍走上面的消息协议。
+export { buildBinarySecondIndex, segmentFrameFromBinary };

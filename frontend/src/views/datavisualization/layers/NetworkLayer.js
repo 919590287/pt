@@ -3,7 +3,11 @@ import { LineLayer, PathLayer } from "@deck.gl/layers";
 import { Layer, MAP_EVENT, webMercatorToLngLat } from "@/mymap/index.js";
 import { getTileNetwork, getTileNetworkBinary, getFullNetworkBinary } from "@/api/network.js";
 import { colorToCss, lineWidthToPixels } from "./maplibreLayerUtils.js";
-import { setSharedDeckLayer, removeSharedDeckLayer } from "./deckOverlayRegistry.js";
+import {
+  batchSharedDeckLayerUpdates,
+  setSharedDeckLayer,
+  removeSharedDeckLayer,
+} from "./deckOverlayRegistry.js";
 import { buildDistrictClipIndex, clipRenderableBinaryData } from "./districtClipIndex.js";
 
 const TILE_ZOOM = 12;
@@ -56,6 +60,34 @@ const COARSE_DETAIL_COMBINE_OPTS = {
   city: { precision: "f32", cullLengthMeters: 90 },
   overview: { precision: "f32", cullLengthMeters: 240 },
 };
+
+// 同一地图通常同时存在底网、选中线路、反向线路、换乘高亮等多个 NetworkLayer。
+// 缩放时它们会在同一帧更新；用一个共享 rAF 刷新，并让注册表最终只提交一次 setProps。
+const pendingDeckUpdates = new Set();
+let pendingDeckFrame = null;
+
+function flushDeckUpdates() {
+  pendingDeckFrame = null;
+  const layers = [...pendingDeckUpdates];
+  pendingDeckUpdates.clear();
+  batchSharedDeckLayerUpdates(() => {
+    for (const layer of layers) {
+      layer.renderFrame = null;
+      if (!layer.isDisposed) {
+        layer.renderDeckLayer();
+      }
+    }
+  });
+}
+
+function cancelQueuedDeckUpdate(layer) {
+  pendingDeckUpdates.delete(layer);
+  layer.renderFrame = null;
+  if (!pendingDeckUpdates.size && pendingDeckFrame != null && typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(pendingDeckFrame);
+    pendingDeckFrame = null;
+  }
+}
 
 function runtimeNumber(name, fallback) {
   const value = Number(typeof window !== "undefined" ? window.APP_CONFIG?.[name] : undefined);
@@ -1220,16 +1252,16 @@ export class NetworkLayer extends Layer {
   }
 
   queueDeckUpdate() {
-    if (this.renderFrame || typeof requestAnimationFrame !== "function") {
-      if (typeof requestAnimationFrame !== "function") {
-        this.renderDeckLayer();
-      }
+    if (typeof requestAnimationFrame !== "function") {
+      this.renderDeckLayer();
       return;
     }
-    this.renderFrame = requestAnimationFrame(() => {
-      this.renderFrame = null;
-      this.renderDeckLayer();
-    });
+    if (pendingDeckUpdates.has(this)) return;
+    pendingDeckUpdates.add(this);
+    this.renderFrame = true;
+    if (pendingDeckFrame == null) {
+      pendingDeckFrame = requestAnimationFrame(flushDeckUpdates);
+    }
   }
 
   updateSource() {
@@ -1614,10 +1646,7 @@ export class NetworkLayer extends Layer {
       clearTimeout(this.tileUpdateTimer);
       this.tileUpdateTimer = null;
     }
-    if (this.renderFrame) {
-      cancelAnimationFrame(this.renderFrame);
-      this.renderFrame = null;
-    }
+    cancelQueuedDeckUpdate(this);
     if (this.refreshFrame) {
       cancelAnimationFrame(this.refreshFrame);
       this.refreshFrame = null;

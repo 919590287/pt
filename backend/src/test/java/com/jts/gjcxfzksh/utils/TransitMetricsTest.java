@@ -162,6 +162,27 @@ class TransitMetricsTest {
     }
 
     @Test
+    void fullLoadRateExpandsSampledBoardings() {
+        Vehicles vehicles = VehicleUtils.createVehiclesContainer();
+        VehicleType type = VehicleUtils.createVehicleType(Id.create("bus-type", VehicleType.class));
+        type.getCapacity().setSeats(100);
+        vehicles.addVehicleType(type);
+        vehicles.addVehicle(VehicleUtils.createVehicle(Id.create("v1", Vehicle.class), type));
+        Map<Id<Vehicle>, Vehicle> vehicleMap = (Map<Id<Vehicle>, Vehicle>) vehicles.getVehicles();
+
+        VehicleId v1 = VehicleId.create("v1");
+        Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = Map.of(v1, List.of(
+                track(v1, true), track(v1, true), track(v1, true)
+        ));
+
+        assertEquals(30.0 / 100.0,
+                TransitMetrics.fullLoadRate(tracksByVehicle, vehicleMap, 0.1), 1e-9);
+        assertEquals(3.0 / 100.0,
+                TransitMetrics.fullLoadRate(tracksByVehicle, vehicleMap, 10.0), 1e-9,
+                "非法百分数写法不应把乘客量意外缩小");
+    }
+
+    @Test
     void fullLoadRateIsZeroWithoutVehicles() {
         assertTrue(TransitMetrics.fullLoadRate(new LinkedHashMap<>(), Map.of()) == 0.0);
     }

@@ -29,8 +29,6 @@ import org.matsim.pt.transitSchedule.api.TransitRouteStop;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
@@ -47,7 +45,6 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
 
     private static final String TRAJECTORY_CACHE_VERSION = MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION;
 
-    final BigDecimal _100 = new BigDecimal("100");
     private final ConcurrentMap<String, TrajectoryBuildState> trajectoryStates = new ConcurrentHashMap<>();
 
     /**
@@ -57,6 +54,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
     private int trajectoryBuildThreads;
 
     private ExecutorService trajectoryExecutor;
+    private final java.util.function.Consumer<MatsimData> cacheWarmupHook = this::prepareEvaluationOnModelLoad;
 
     @jakarta.annotation.PostConstruct
     void initTrajectoryExecutor() {
@@ -67,7 +65,15 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             return thread;
         });
         // 模型缓存预热完成后立刻在后台算好体检评估指标，前端进页面即可直接命中缓存
-        com.jts.gjcxfzksh.data.Datasource.registerCacheWarmupHook(this::prepareEvaluationOnModelLoad);
+        com.jts.gjcxfzksh.data.Datasource.registerCacheWarmupHook(cacheWarmupHook);
+    }
+
+    @jakarta.annotation.PreDestroy
+    void destroyTrajectoryExecutor() {
+        com.jts.gjcxfzksh.data.Datasource.unregisterCacheWarmupHook(cacheWarmupHook);
+        if (trajectoryExecutor != null) {
+            trajectoryExecutor.shutdownNow();
+        }
     }
 
     /**
@@ -115,10 +121,12 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         // 面积在 desc.json 未提供时用站点凸包估算，原实现退化为除以 1）
         Set<Coord> coords = schedule(param).getFacilities().values().stream().map(Facility::getCoord).collect(Collectors.toSet());
         Double areaKm2 = effectiveAreaKm2(matsim_data, coords);
-        int personCount = matsim_data.getPopulation() == null ? 0 : matsim_data.getPopulation().getPersons().size();
+        // 抽样人口扩样到全样本（desc.json scale），与 buildEvaluation 同口径
+        double personCount = (matsim_data.getPopulation() == null ? 0 : matsim_data.getPopulation().getPersons().size())
+                / effectiveSampleRate(matsim_data);
         result.put("czrkmd", areaKm2 == null ? null : (int) Math.round(personCount / areaKm2));
-        // 公交线网密度 km/km2
-        double length = ptNetworkLength(matsim_data.getSchedule(), matsim_data.getNetwork());
+        // 公交线网密度 km/km2：双向 link 去重、剔除轨道线路
+        double length = TransitMetrics.networkLengthMeters(matsim_data.getSchedule(), matsim_data.getNetwork(), true);
         result.put("gjxwmd", areaKm2 == null ? null
                 : NumberUtil.round((length / 1000) / areaKm2, 2).doubleValue());
         // 车站300m覆盖率    %
@@ -126,10 +134,10 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                 TransitMetrics.coverage300Percent(coords, matsim_data.getPopulation())));
         // 万人保有量    标台/万人 = 高峰同时在营车辆数(车队规模估算) / (常住人口/10000)
         long fleetSize = TransitMetrics.peakConcurrentVehicles(matsim_data.getSchedule());
-        result.put("wrbyl", personCount == 0 || fleetSize == 0 ? null
+        result.put("wrbyl", personCount <= 0 || fleetSize == 0 ? null
                 : NumberUtil.round(fleetSize / (personCount / 10000.0), 2).doubleValue());
-        // 出行分担率    % // pt出行方式占比
-        Map<String, Double> fxfdl = legTypeRant(matsim_data.getPopulation());
+        // 公交分担率    % —— 按出行(trip)主方式统计
+        Map<String, Double> fxfdl = TransitMetrics.tripModeSharePercent(matsim_data.getPopulation());
         result.put("fxfdl", fxfdl);
         // 车均日载客量   人次/d = 日客运总量(上车) / 保有量(车队峰值估算)
         long boardings = matsim_data.getPersonTracks().stream()
@@ -156,7 +164,9 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = matsim_data.getPersonTracks().stream()
                 .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
         double xlmzl = NumberUtil.round(
-                TransitMetrics.fullLoadRate(tracksByVehicle, matsim_data.getTv().getVehicles()) * 100.0, 2).doubleValue();
+                TransitMetrics.fullLoadRate(
+                        tracksByVehicle, matsim_data.getTv().getVehicles(), effectiveSampleRate(matsim_data)) * 100.0,
+                2).doubleValue();
         result.put("xlmzl", xlmzl);
         // 线路客流强度   人次*km
         Map<String, Double> xlklqd = routePersonStrength(matsim_data);
@@ -204,66 +214,79 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         if (cached != null) {
             return cached;
         }
-        if (data.isLargeModel()) {
-            return Map.of(
-                    "status", "generating",
-                    "message", "体检指标正在随模型缓存后台生成"
-            );
-        }
-        // 模型加载中（events/personTracks 尚未解析完）时不计算也不缓存，
-        // 否则客流类指标会以 0 值被记忆化直到下次重载
+        // 后续模型加载不再主动把大体积 personTracks 解压进堆；只有进入体检页时按需装载。
+        // 这是磁盘缓存读取，不会重新扫描 events。
+        boolean loadedOnDemand = false;
         if (data.getPersonTracks() == null || data.getPersonTracks().isEmpty()) {
-            return Map.of(
-                    "status", "generating",
-                    "message", "模型客流数据仍在加载，请稍后重试"
-            );
+            loadedOnDemand = MatsimAnalysisCache.preloadPersonTracksIfReady(data);
         }
-        evictStaleEvaluationEntries(data.getName(), cacheKey);
-        return evaluationCache.computeIfAbsent(cacheKey, ignored -> buildEvaluation(data));
+        if (data.getPersonTracks() == null || data.getPersonTracks().isEmpty()) {
+            return Map.of("status", "generating", "message", "模型客流缓存正在后台生成");
+        }
+        try {
+            evictStaleEvaluationEntries(data.getName(), cacheKey);
+            return evaluationCache.computeIfAbsent(cacheKey, ignored -> buildEvaluation(data));
+        } finally {
+            if (loadedOnDemand) {
+                MatsimAnalysisCache.releaseOnDemandPersonTracks(data);
+            }
+        }
     }
 
     private Map<String, Object> buildEvaluation(MatsimData data) {
         Map<String, Object> values = new LinkedHashMap<>();
         // 常住人口取全体 agent 数（而非仅公交乘客数），符合"常住人口密度"定义
-        int populationCount = data.getPopulation() == null ? 0 : data.getPopulation().getPersons().size();
-        long boardings = data.getPersonTracks().stream().filter(PTPersonTrack::getEnter).count();
+        int sampledPersons = data.getPopulation() == null ? 0 : data.getPopulation().getPersons().size();
+        long sampledBoardings = data.getPersonTracks().stream().filter(PTPersonTrack::getEnter).count();
+        // 抽样模型（10% 人口 → desc.json scale=0.1）里 agent 数与上车人次都是抽样量，
+        // 而面积/车队/班次是全量。凡是"抽样量 ÷ 全量"的指标都要先扩样，否则整体偏 1/scale 倍。
+        double sampleRate = effectiveSampleRate(data);
+        double populationCount = sampledPersons / sampleRate;
+        double boardings = sampledBoardings / sampleRate;
         Set<Coord> stopCoords = data.getSchedule().getFacilities().values().stream()
                 .map(Facility::getCoord).collect(Collectors.toSet());
         // desc.json 未提供面积（占位 1.0）时用站点凸包估算，否则密度类指标失真几个数量级
         Double areaKm2 = effectiveAreaKm2(data, stopCoords);
 
         // ===== 总体水平 =====
-        double netKm = ptNetworkLength(data.getSchedule(), data.getNetwork()) / 1000.0;
+        // 公交线网密度只算公共汽电车线路经过的道路里程：双向 link 去重、剔除轨道线路
+        double busNetKm = TransitMetrics.networkLengthMeters(data.getSchedule(), data.getNetwork(), true) / 1000.0;
+        // 线网运营里程含轨道（"总量"块是全制式口径），同样按道路去重
+        double allModeNetKm = TransitMetrics.networkLengthMeters(data.getSchedule(), data.getNetwork(), false) / 1000.0;
         values.put("czrkmd", areaKm2 == null ? null : (int) Math.round(populationCount / areaKm2));
-        values.put("gjxwmd", areaKm2 == null ? null : round2(netKm / areaKm2));
+        values.put("gjxwmd", areaKm2 == null ? null : round2(busNetKm / areaKm2));
         Double coverage = TransitMetrics.coverage300Percent(stopCoords, data.getPopulation());
         values.put("fgl300", coverage == null ? null : round2(coverage));
         // 标台数用"高峰同时在营车辆数"估算（GTFS 转换模型每班次一辆车，直接数车辆会放大一个数量级）
         long fleet = TransitMetrics.peakConcurrentVehicles(data.getSchedule());
-        values.put("wrbyl", populationCount == 0 || fleet == 0 ? null : round2(fleet / (populationCount / 10000.0)));
+        values.put("wrbyl", populationCount <= 0 || fleet == 0 ? null : round2(fleet / (populationCount / 10000.0)));
         // ===== 总量（优化评估双模型对比：客流量 / 配车数 / 线网运营规模；均不依赖 plans，稳健）=====
-        values.put("khl", boardings);                                    // 客流量：日客运总量（上车人次）
+        values.put("khl", Math.round(boardings));                        // 客流量：日客运总量（上车人次，已扩样）
         values.put("pcs", fleet == 0 ? null : fleet);                    // 配车数：高峰同时在营车辆（标台）
-        values.put("yylc", round2(netKm));                               // 线网运营里程（km）
+        values.put("yylc", round2(allModeNetKm));                        // 线网运营里程（km）
         values.put("xlls", data.getSchedule().getTransitLines().size()); // 线路条数
         // 大模型不加载 plans，population 为 null 时基于出行计划的指标输出 null（前端显示"暂无数据"）
-        Map<String, Double> legShare = data.getPopulation() == null ? Map.of() : legTypeRant(data.getPopulation());
-        values.put("cxfdl", legShare.get(Constant.ROUTE_MODE_PT));
+        // 公交分担率：按出行(trip)主方式统计，不是 leg 数占比（详见 TransitMetrics.tripModeSharePercent）
+        Map<String, Double> modeShare = data.getPopulation() == null
+                ? Map.of() : TransitMetrics.tripModeSharePercent(data.getPopulation());
+        values.put("cxfdl", modeShare.get(Constant.ROUTE_MODE_PT));
         Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = data.getPersonTracks().stream()
                 .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
         // 平均日载客量 = 日客运总量 / 保有量（分母同上用车队峰值估算）
-        values.put("cjrzkl", fleet == 0 ? null : round2((double) boardings / fleet));
+        values.put("cjrzkl", fleet == 0 ? null : round2(boardings / fleet));
         long departureCount = countDepartures(data.getSchedule());
-        values.put("dbczkl", departureCount == 0 ? null : round2((double) boardings / departureCount));
+        values.put("dbczkl", departureCount == 0 ? null : round2(boardings / departureCount));
 
         // ===== 需求强度 =====
-        values.put("rcxcs", populationCount == 0 ? null
-                : NumberUtil.round((double) boardings / populationCount, 3).doubleValue());
+        // 分子分母同为抽样量，扩样系数在此处自然抵消，与 scale 无关
+        values.put("rcxcs", sampledPersons == 0 ? null
+                : NumberUtil.round((double) sampledBoardings / sampledPersons, 3).doubleValue());
 
         // ===== 线路效益（线路级指标取全线路平均/全网口径）=====
         values.put("xlfzxxs", routeNoLC(data));
         values.put("xlcfxs", routeRC(data));
-        values.put("xlmzl", round2(TransitMetrics.fullLoadRate(tracksByVehicle, data.getTv().getVehicles()) * 100.0));
+        values.put("xlmzl", round2(TransitMetrics.fullLoadRate(
+                tracksByVehicle, data.getTv().getVehicles(), effectiveSampleRate(data)) * 100.0));
         double totalRouteKm = totalRouteLengthKm(data);
         values.put("xlklqd", totalRouteKm <= 0 ? null : round2(boardings / totalRouteKm));
 
@@ -299,6 +322,16 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             return configured;
         }
         return TransitMetrics.serviceAreaKm2(stopCoords);
+    }
+
+    /**
+     * 人口抽样比例，来自 desc.json 的 scale（10% 模型写 0.1）。
+     * 只接受 (0, 1] 的比例；缺省 1.0 或写成 10 / 100 这类"百分数"时一律按全样本处理，
+     * 宁可不扩样，也不要凭一个语义不明的数把指标放大 10 倍。
+     */
+    static double effectiveSampleRate(MatsimData data) {
+        double scale = data.getScale();
+        return scale > 0 && scale <= 1.0 ? scale : 1.0;
     }
 
     private static long countDepartures(TransitSchedule schedule) {
@@ -406,6 +439,34 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             trajectory(param);
         }
         return chunk;
+    }
+
+    @Override
+    public byte[] trajectoryFrameBinary(
+            DatasourceParam param,
+            int time,
+            int bucketSeconds,
+            String visibilityMode,
+            Double minX,
+            Double minY,
+            Double maxX,
+            Double maxY
+    ) {
+        MatsimData data = matsim_data(param);
+        byte[] frame = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data,
+                time,
+                bucketSeconds,
+                visibilityMode,
+                minX,
+                minY,
+                maxX,
+                maxY
+        );
+        if (frame == null) {
+            trajectory(param);
+        }
+        return frame;
     }
 
     @Override
@@ -543,23 +604,6 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                 return 0L;
             }
         }
-    }
-
-    public double ptNetworkLength(TransitSchedule schedule, Network network) {
-        double length = 0;
-        Set<Id<Link>> links = new HashSet<>();
-        schedule.getTransitLines().forEach((transitLineId, transitLine) -> {
-            transitLine.getRoutes().forEach((transitRouteId, transitRoute) -> {
-                NetworkRoute route = transitRoute.getRoute();
-                links.add(route.getStartLinkId());
-                links.addAll(route.getLinkIds());
-                links.add(route.getEndLinkId());
-            });
-        });
-        for (Id<Link> linkId : links) {
-            length += network.getLinks().get(linkId).getLength();
-        }
-        return length;
     }
 
     public Map<String, Double> runSpeed(Population population) {
@@ -715,38 +759,8 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         return result;
     }
 
-    private Map<String, Integer> legType(Population population) {
-        Map<String, Integer> types = new HashMap<>();
-        population.getPersons().values().forEach(person -> {
-            person.getSelectedPlan().getPlanElements().forEach(element -> {
-                if (element instanceof Leg leg) {
-                    types.merge(leg.getMode(), 1, Integer::sum);
-                }
-            });
-        });
-        return types;
-    }
-
-    private Map<String, Double> legTypeRant(Population population) {
-        Map<String, Integer> types = legType(population);
-        int count = 0;
-        for (Map.Entry<String, Integer> entry : types.entrySet()) {
-            count += entry.getValue();
-        }
-        Map<String, Double> typesRant = new LinkedHashMap<>();
-        if (count == 0) {
-            return typesRant;
-        }
-        BigDecimal c = BigDecimal.valueOf(count);
-        for (Map.Entry<String, Integer> entry : types.entrySet()) {
-            BigDecimal b = new BigDecimal(entry.getValue());
-            // 比例保留 4 位小数再转百分数 → 百分比精确到 0.01%；
-            // 原实现只保留 2 位（1% 步进），0.4% 的分担率会被抹成 0%。
-            BigDecimal v = b.divide(c, 4, RoundingMode.HALF_UP);
-            double d = v.multiply(_100).doubleValue(); // %
-            typesRant.put(entry.getKey(), d);
-        }
-        return typesRant;
-    }
+    // legType / legTypeRant（按 leg 数统计方式占比）已移除：一次公交出行在 output_plans 里会展开成多条 leg，
+    // 接驳步行 leg 进分母、换乘的 pt leg 重复进分子，得到的不是分担率。
+    // 替代实现见 TransitMetrics.tripModeSharePercent（按 trip 主方式统计）。
 
 }

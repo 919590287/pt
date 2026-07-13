@@ -85,6 +85,48 @@ describe("realDataCache", () => {
     expect(cache.readCachedRealData("深圳市", "history-1")).toBeNull();
   });
 
+  it("does not let an older request clear or overwrite a forced refresh", async () => {
+    let resolveOld;
+    let resolveFresh;
+    api.getBusLineStation
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFresh = resolve; }));
+
+    const oldRequest = cache.getCachedRealData("广州市");
+    const freshRequest = cache.getCachedRealData("广州市", { force: true });
+    resolveOld({ data: { version: "old" } });
+    await oldRequest;
+
+    // 旧请求结束后仍应复用新请求，不能被旧 finally 误删。
+    const sharedFreshRequest = cache.getCachedRealData("广州市");
+    expect(api.getBusLineStation).toHaveBeenCalledTimes(2);
+    resolveFresh({ data: { version: "fresh" } });
+
+    await expect(freshRequest).resolves.toEqual({ version: "fresh" });
+    await expect(sharedFreshRequest).resolves.toEqual({ version: "fresh" });
+    expect(cache.readCachedRealData("广州市")).toEqual({ version: "fresh" });
+  });
+
+  it("globally invalidates in-flight responses and bounds historical data memory", async () => {
+    let resolveStale;
+    api.getBusLineStation
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStale = resolve; }))
+      .mockResolvedValue({ data: { version: "current" } });
+
+    const staleRequest = cache.getCachedRealData("广州市");
+    cache.invalidateCachedRealData();
+    await cache.getCachedRealData("广州市");
+    resolveStale({ data: { version: "stale" } });
+    await staleRequest;
+    expect(cache.readCachedRealData("广州市")).toEqual({ version: "current" });
+
+    for (let i = 0; i < 9; i += 1) {
+      await cache.getCachedRealData("广州市", { versionId: `history-${i}` });
+    }
+    expect(cache.readCachedRealData("广州市", "history-0")).toBeNull();
+    expect(cache.readCachedRealData("广州市", "history-8")).toEqual({ version: "current" });
+  });
+
   it("falls back to the default area list when the API returns an empty payload", async () => {
     api.getRealDataAreaList.mockResolvedValue({ data: [] });
 

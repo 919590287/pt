@@ -124,6 +124,33 @@
       </div>
     </div>
 
+    <div v-if="store.activeTool" class="map-edit-status" role="status" aria-live="polite">
+      <div class="map-edit-copy">
+        <strong>{{ activeToolTitle }}</strong>
+        <span>{{ activeToolHint }}</span>
+      </div>
+      <div v-if="buildLineActive" class="map-edit-modes" role="group" aria-label="建线点选类型">
+        <button type="button" :class="{ active: store.lineAnchorMode === 'stop' }" @click="store.setLineAnchorMode('stop')">选站</button>
+        <button type="button" :class="{ active: store.lineAnchorMode === 'road' }" @click="store.setLineAnchorMode('road')">路径点</button>
+      </div>
+      <div class="map-edit-actions">
+        <button v-if="canUndoActiveTool" type="button" @click="undoActiveTool">撤销上一步</button>
+        <button v-if="canFinishActiveTool" class="primary" type="button" @click="finishActiveTool">完成</button>
+        <button type="button" @click="cancelActiveTool">{{ activeToolCancelLabel }}</button>
+      </div>
+    </div>
+    <div v-else-if="store.selectedRoute && !store.activeFormKind" class="map-edit-status map-selection-status" role="status">
+      <div class="map-edit-copy">
+        <strong>{{ store.selectedRoute.lineName }}</strong>
+        <span>当前方向：{{ store.selectedRoute.routeId }}，已在地图高亮</span>
+      </div>
+      <div class="map-edit-actions">
+        <button class="primary" type="button" @click="store.requestForm('route.edit')">修改线路</button>
+        <button type="button" @click="promptDeleteSelectedRoute">删除当前方向</button>
+        <button type="button" @click="store.clearSelection()">取消选中</button>
+      </div>
+    </div>
+
     <!-- 左侧操作面板（复用 tokens.css 全局 .dm-sidebar，与数据管理/客流分析一致） -->
     <div :class="['dm-sidebar', leftCollapsed ? 'is-collapsed' : '']">
       <div class="sidebar-brand">
@@ -142,7 +169,23 @@
 
         <EditToolbox v-else />
       </div>
-      <div class="sidebar-footer"></div>
+
+      <!-- 底部：草稿管理（切换已保存草稿 / 另起一个方案）。方案命名在「开始仿真」时才输入 -->
+      <div v-if="store.parentReady" class="netopt-draft-foot">
+        <div v-if="draftOptions.length > 1" class="draft-switch">
+          <span class="ds-label">草稿</span>
+          <el-select :model-value="store.draft.draftId" size="small" placeholder="当前草稿" @change="handleDraftChange">
+            <el-option v-for="draftItem in draftOptions" :key="draftItem.draftId" :label="draftItem.name || '未命名方案'" :value="draftItem.draftId" />
+          </el-select>
+        </div>
+        <button type="button" class="draft-new-btn" @click="createNewDraft">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span>新建方案</span>
+        </button>
+      </div>
     </div>
     <button
       type="button"
@@ -162,14 +205,33 @@
       <div v-show="!isRouteFormOpen" class="rp-view">
         <div class="overview-title-row">
           <h2>修改清单</h2>
-          <span class="edit-pending-count" :class="{ 'has-pending': store.editCount }">{{ store.editCount }} 条修改</span>
+          <span class="edit-pending-count" :class="{ 'has-pending': store.editCount }">
+            {{ store.editCount ? `${store.editCount} 项修改` : "尚无修改" }}
+          </span>
         </div>
-        <ModList class="right-modlist" @hover-edit="handleHoverEdit" />
+        <ModList class="right-modlist" @hover-edit="handleHoverEdit" @revise-edit="handleReviseEdit" />
         <RunTaskList v-if="store.jobs.length" class="right-runtasks" />
         <div class="right-footer">
+          <div v-if="hasArea && store.areaStats" class="area-summary">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+              <circle cx="12" cy="10" r="3"></circle>
+            </svg>
+            <span>研究区域 <b>{{ store.areaStats.areaKm2 }}</b> km² · 触达 <b>{{ store.areaStats.lineTouchCount }}</b> 条线路</span>
+          </div>
+          <button v-if="draftValidationErrors.length" class="draft-validation-alert" type="button" @click="wizardVisible = true">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+              <line x1="12" y1="9" x2="12" y2="13"></line>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+            <span>{{ draftValidationErrors.length }} 项修改需要处理，点击查看</span>
+          </button>
           <button class="generate-btn" :disabled="!canGenerate" @click="wizardVisible = true">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polygon points="6 4 20 12 6 20 6 4"></polygon>
+            </svg>
             <span>开始仿真</span>
-            <span v-if="store.editCount" class="count">{{ store.editCount }} 项修改</span>
           </button>
           <p v-if="!canGenerate" class="gen-block-tip">{{ generateBlockReason }}</p>
         </div>
@@ -214,6 +276,14 @@
       <button class="picker-cancel" @click="routePicker.visible = false">取消</button>
     </div>
 
+    <div v-if="stopPicker.visible" class="route-picker" :style="{ left: stopPicker.x + 'px', top: stopPicker.y + 'px' }">
+      <div class="picker-title">该位置有多个站点，请选择</div>
+      <button v-for="candidate in stopPicker.candidates" :key="candidate.stopId" class="picker-item" @click="pickStopCandidate(candidate)">
+        {{ candidate.name }} <span class="dir">{{ candidate.stopId }}</span>
+      </button>
+      <button class="picker-cancel" @click="stopPicker.visible = false">取消</button>
+    </div>
+
     <GenerateWizard v-model="wizardVisible" />
 
     <!-- 圈定研究区域后：居中弹窗设置缓冲距离 -->
@@ -252,7 +322,7 @@ import { computed, inject, onMounted, onUnmounted, reactive, ref, watch } from "
 import { onBeforeRouteLeave } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
-import { optRoadNetwork } from "@/api/optimization";
+import { optRoadNetwork, optValidate } from "@/api/optimization";
 import { useScenarioEditStore } from "./store";
 import { useMapTools } from "./composables/useMapTools";
 import ModelPickerBar from "./components/ModelPickerBar.vue";
@@ -265,7 +335,7 @@ import {
   updateHighlight, updateEditPreview, updateRoadNetwork, clearRoadNetwork,
   updateLinePicked, clearLinePicked, removeAllEditorLayers,
 } from "./layers/editorLayers";
-import { projectMeasureOnPath } from "./utils";
+import { projectMeasureOnPath, validateAreaPolygon } from "./utils";
 // 复用数据管理/客流分析的设计令牌与地图控件样式（--dm2-*、.map-controls-toolbar 等）
 import "../datamanagement/tokens.css";
 
@@ -275,6 +345,8 @@ const store = useScenarioEditStore();
 const leftCollapsed = ref(false);
 const rightCollapsed = ref(false);
 const wizardVisible = ref(false);
+const draftValidationErrors = ref([]);
+let draftValidationTimer = null;
 
 const hasArea = computed(() => Boolean(store.draft.area?.polygon?.length >= 3));
 // 新增/修改线路表单是否占用右侧面板（此时右面板显示表单而非修改清单）
@@ -285,12 +357,41 @@ const isRouteFormOpen = computed(() =>
 watch(isRouteFormOpen, (open) => { if (open) rightCollapsed.value = false; });
 
 const canGenerate = computed(() => store.parentReady && hasArea.value && store.editCount > 0);
+const draftOptions = computed(() => {
+  const list = [...store.draftList];
+  if (store.draft.draftId && !list.some((item) => item.draftId === store.draft.draftId)) {
+    list.unshift({ ...store.draft });
+  }
+  return list;
+});
 const generateBlockReason = computed(() => {
   if (!store.parentReady) return "请先选择并加载母本模型";
   if (!hasArea.value) return "请先圈定研究区域";
   if (!store.editCount) return "请至少添加一项线网修改";
   return "";
 });
+
+async function handleDraftChange(draftId) {
+  if (!draftId || draftId === store.draft.draftId) return;
+  const saved = await store.saveDraftNow();
+  if (!saved) {
+    ElMessage.error("当前草稿保存失败，已取消切换");
+    return;
+  }
+  const next = store.draftList.find((item) => item.draftId === draftId);
+  if (next) store.openDraft(next);
+}
+
+async function createNewDraft() {
+  const saved = await store.saveDraftNow();
+  if (!saved) {
+    ElMessage.error("当前草稿保存失败，已取消新建");
+    return;
+  }
+  await store.refreshDraftList();
+  await store.newDraft();
+  store.setTool("area.draw");
+}
 
 
 // ---------------- 线路候选弹层 ----------------
@@ -324,7 +425,51 @@ function pickCandidate(c) {
   routePicker.visible = false;
 }
 
-useMapTools({ MapRef, store, onPickRouteCandidates });
+const stopPicker = reactive({ visible: false, candidates: [], purpose: "", x: 0, y: 0 });
+
+function onPickStopCandidates(candidates, purpose, point) {
+  stopPicker.candidates = candidates;
+  stopPicker.purpose = purpose || "";
+  const menuPos = clampFloatingMenuPosition(point.x, point.y + 18, 260, 240);
+  stopPicker.x = menuPos.x;
+  stopPicker.y = menuPos.y;
+  stopPicker.visible = true;
+}
+
+function pickStopCandidate(candidate) {
+  if (stopPicker.purpose === "buildLine") store.appendLineStop(candidate.stopId);
+  else if (stopPicker.purpose === "insert") store.toolDraft.pickedStopId = candidate.stopId;
+  else store.selectStop(candidate.stopId);
+  stopPicker.visible = false;
+}
+
+const mapTools = useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCandidates });
+
+function handleDefaultMapRoutePick(event) {
+  if (store.activeTool || store.activeFormKind || wizardVisible.value) return;
+  const m = map();
+  const point = event?.data?.point;
+  if (!m?.getLayer(LAYER_IDS.baseLinesHit) || !Array.isArray(point)) return;
+  let features = [];
+  try {
+    features = m.queryRenderedFeatures(
+      [[point[0] - 8, point[1] - 8], [point[0] + 8, point[1] + 8]],
+      { layers: [LAYER_IDS.baseLinesHit] },
+    );
+  } catch { return; }
+  const candidates = [];
+  const seen = new Set();
+  for (const feature of features) {
+    const lineId = feature.properties?.lineId;
+    const routeId = feature.properties?.routeId;
+    const key = `${lineId}||${routeId}`;
+    if (!lineId || !routeId || seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({ lineId, routeId, lineName: feature.properties?.lineName || lineId });
+  }
+  if (candidates.length === 1) store.selectRoute(candidates[0].lineId, candidates[0].routeId);
+  else if (candidates.length > 1) onPickRouteCandidates(candidates, { x: point[0], y: point[1] });
+}
 
 // ---------------- 浮动搜索：仅定位线路/站点 ----------------
 const searchKeyword = ref("");
@@ -401,6 +546,7 @@ function selectFirstSearchResult() {
 // ---------------- 地图控件：缩放 / 3D / 指北针 ----------------
 const is3DActive = ref(false);
 let rotateListenerId = null;
+let defaultMapPickListenerId = null;
 
 function handleZoomIn() {
   const m = MapRef.value;
@@ -455,7 +601,26 @@ function applyBufferFromDialog() {
   if (store.draft.area) {
     store.draft.area.bufferM = bufferDialogM.value;
     store.refreshAreaStats();
+    scheduleDraftValidation();
   }
+}
+
+function scheduleDraftValidation() {
+  if (draftValidationTimer) clearTimeout(draftValidationTimer);
+  if (!store.draft.edits.length) {
+    draftValidationErrors.value = [];
+    return;
+  }
+  draftValidationTimer = setTimeout(async () => {
+    const saved = await store.saveDraftNow();
+    if (!saved || !store.draft.draftId) return;
+    try {
+      const res = await optValidate({ parentModel: store.parentModel, draftId: store.draft.draftId }, { silentError: true });
+      draftValidationErrors.value = (Array.isArray(res?.data) ? res.data : []).filter((item) => item.level === "error");
+    } catch {
+      draftValidationErrors.value = [];
+    }
+  }, 500);
 }
 
 async function redrawAreaFromDialog() {
@@ -476,8 +641,14 @@ async function handleDrawAreaBtn() {
       ElMessage.warning("请至少点击 3 个点圈出区域");
       return;
     }
+    const areaErrors = validateAreaPolygon(pts);
+    if (areaErrors.length) {
+      ElMessage.warning(areaErrors[0]);
+      return;
+    }
     store.setTool("");
     store.setArea(pts, "draw", store.draft.area?.bufferM ?? 500);
+    scheduleDraftValidation();
     bufferDialogM.value = store.draft.area?.bufferM ?? 500;
     bufferDialogVisible.value = true; // 圈定后弹窗设置缓冲距离
     return;
@@ -496,6 +667,10 @@ async function handleClearAreaBtn() {
     return;
   }
   if (!hasArea.value) return;
+  if (store.draft.edits.length) {
+    ElMessage.warning("请先清空修改清单，或使用「重新手绘研究区域」保留并重新校验修改项");
+    return;
+  }
   try {
     await guardEditedArea();
   } catch {
@@ -508,26 +683,55 @@ async function handleClearAreaBtn() {
 // ---------------- 地图渲染联动 ----------------
 const map = () => MapRef.value?.map || null;
 
-// 地图任何时候都不铺公交线网（线路一律通过搜索选中，避免视觉混乱）；
-// 仅“点选站点”类工具激活时临时渲染站点圆点供命中。
 const NEEDS_BASE_STOPS = new Set(["pick.stop"]);
+
+function editingBounds() {
+  const polygon = store.draft.area?.polygon;
+  if (!Array.isArray(polygon) || polygon.length < 3) return null;
+  const ring = approxBufferRing(polygon, store.draft.area?.bufferM || 0) || polygon;
+  const lngs = ring.map((point) => Number(point?.[0])).filter(Number.isFinite);
+  const lats = ring.map((point) => Number(point?.[1])).filter(Number.isFinite);
+  if (!lngs.length || !lats.length) return null;
+  return { minLng: Math.min(...lngs), maxLng: Math.max(...lngs), minLat: Math.min(...lats), maxLat: Math.max(...lats) };
+}
+
+function geometryTouchesBounds(geometry, bounds) {
+  if (!bounds || !Array.isArray(geometry)) return false;
+  return geometry.some(([lng, lat]) => lng >= bounds.minLng && lng <= bounds.maxLng && lat >= bounds.minLat && lat <= bounds.maxLat);
+}
 
 function renderBaseNetwork() {
   const m = map();
   if (!m) return;
-  if (!NEEDS_BASE_STOPS.has(store.activeTool) || !store.lines.length) {
-    updateBaseNetwork(m, [], []); // 清空，保持地图干净
-    return;
+  const bounds = editingBounds();
+  const routeFeatures = [];
+  if (bounds) {
+    for (const route of store.routeIndex.values()) {
+      if (!geometryTouchesBounds(route.geometry, bounds)) continue;
+      routeFeatures.push({
+        type: "Feature",
+        geometry: { type: "LineString", coordinates: route.geometry },
+        properties: {
+          lineId: route.lineId,
+          routeId: route.routeId,
+          lineName: route.lineName,
+          mode: route.mode || "bus",
+        },
+      });
+    }
   }
   const stopFeatures = [];
-  for (const s of store.stopIndex.values()) {
-    stopFeatures.push({
-      type: "Feature",
-      geometry: { type: "Point", coordinates: [s.lng, s.lat] },
-      properties: { stopId: s.id, name: s.name },
-    });
+  if (NEEDS_BASE_STOPS.has(store.activeTool) && bounds) {
+    for (const s of store.stopIndex.values()) {
+      if (s.lng < bounds.minLng || s.lng > bounds.maxLng || s.lat < bounds.minLat || s.lat > bounds.maxLat) continue;
+      stopFeatures.push({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [s.lng, s.lat] },
+        properties: { stopId: s.id, name: s.name },
+      });
+    }
   }
-  updateBaseNetwork(m, [], stopFeatures);
+  updateBaseNetwork(m, routeFeatures, stopFeatures);
 }
 
 function renderArea() {
@@ -574,6 +778,79 @@ const buildLineActive = computed(
 const lineEditVisible = computed(
   () => buildLineActive.value || store.activeFormKind === "route.add" || store.activeFormKind === "route.edit"
 );
+
+const activeToolTitle = computed(() => ({
+  "area.draw": "圈定研究区域",
+  "pick.stop": buildLineActive.value ? "编辑线路站序与走向" : "选择站点",
+  "pick.link": "选择路段",
+  "draw.link": "绘制新路段",
+  "place.stop": "选择站点位置",
+  "draw.route": "绘制线路走向",
+  "draw.gapfill": "连接断开路径",
+}[store.activeTool] || "地图编辑"));
+
+const activeToolHint = computed(() => {
+  if (store.activeTool === "area.draw") return `已选 ${store.toolDraft.anchors.length} 个顶点，点击地图继续圈定`;
+  if (buildLineActive.value) {
+    const stopCount = store.lineBuilder.anchors.filter((item) => item.type === "stop").length;
+    const roadCount = store.lineBuilder.anchors.filter((item) => item.type === "road").length;
+    return store.lineAnchorMode === "stop"
+      ? `选站模式，已选 ${stopCount} 站、${roadCount} 个路径点`
+      : `路径点模式，点击道路约束走向`;
+  }
+  if (store.activeTool === "pick.link") return `已选 ${store.toolDraft.pickedLinks.length} 条路段，再次点击可取消选择`;
+  if (store.activeTool === "draw.link") return `已选 ${store.toolDraft.anchors.length} 个顶点，首尾端需吸附现有节点`;
+  if (store.activeTool === "place.stop") return store.toolDraft.placedPoint ? "新位置已吸附，可在右侧确认" : "点击地图选择位置";
+  return "点击地图继续操作";
+});
+
+const canUndoActiveTool = computed(() => buildLineActive.value
+  ? store.lineBuilder.anchors.length > 0
+  : store.toolDraft.anchors.length > 0);
+const canFinishActiveTool = computed(() => store.activeTool === "area.draw"
+  ? store.toolDraft.anchors.length >= 3
+  : buildLineActive.value
+    && !store.lineBuilder.session
+    && store.lineBuilder.anchors.filter((item) => item.type === "stop").length >= 2
+    && !store.toolDraft.snapBusy);
+const activeToolCancelLabel = computed(() => {
+  if (!buildLineActive.value) return "取消";
+  return store.lineBuilder.session ? "取消本次段编辑" : "结束点选";
+});
+
+function undoActiveTool() {
+  if (buildLineActive.value) store.popLineAnchor();
+  else store.toolDraft.anchors.pop();
+  mapTools.refreshPreview();
+}
+
+function finishActiveTool() {
+  if (store.activeTool === "area.draw") {
+    handleDrawAreaBtn();
+    return;
+  }
+  if (buildLineActive.value) {
+    store.endLineSession();
+    store.setTool("");
+  }
+}
+
+async function cancelActiveTool() {
+  if (buildLineActive.value) {
+    if (store.lineBuilder.session) store.cancelLineSession();
+    store.setTool("");
+    return;
+  }
+  const hasWork = canUndoActiveTool.value || store.toolDraft.pickedLinks.length > 0 || store.toolDraft.placedPoint;
+  if (hasWork) {
+    try {
+      await ElMessageBox.confirm("当前未加入清单的地图操作将被放弃。", "取消地图编辑", {
+        confirmButtonText: "放弃本次操作", cancelButtonText: "继续编辑", type: "warning",
+      });
+    } catch { return; }
+  }
+  store.setTool("");
+}
 
 function renderLinePicked() {
   const m = map();
@@ -678,8 +955,12 @@ function closeLineCtxMenu() {
 
 function resetTransientInteractionState() {
   routePicker.visible = false;
+  stopPicker.visible = false;
   lineCtxMenu.visible = false;
+  store.cancelLineSession();
   store.setTool("");
+  store.clearLineBuilder();
+  store.clearSelection();
 }
 
 // ---------------- 视野控制 ----------------
@@ -693,7 +974,8 @@ function fitToLngLatCoords(coords) {
 // ---------------- 编辑期路网底图 ----------------
 let roadNetKey = "";
 let roadNetSegments = null;
-let roadNetLoading = false;
+let roadNetRequestSeq = 0;
+let roadNetController = null;
 
 const wantRoadNet = computed(
   () => store.roadNetWanted
@@ -705,6 +987,9 @@ const wantRoadNet = computed(
 async function syncRoadNetwork() {
   const m = map();
   if (!m) return;
+  const seq = ++roadNetRequestSeq;
+  roadNetController?.abort?.();
+  roadNetController = null;
   if (!wantRoadNet.value || !store.draft.area?.polygon) {
     clearRoadNetwork(m);
     return;
@@ -714,21 +999,23 @@ async function syncRoadNetwork() {
     updateRoadNetwork(m, roadNetSegments);
     return;
   }
-  if (roadNetLoading) return;
-  roadNetLoading = true;
+  roadNetController = new AbortController();
   try {
     const res = await optRoadNetwork({
       parentModel: store.parentModel,
       draftId: store.draft.draftId || "",
       area: store.draft.area,
-    });
+    }, { signal: roadNetController.signal });
+    if (seq !== roadNetRequestSeq) return;
     roadNetSegments = res?.data?.segments || [];
     roadNetKey = key;
     if (wantRoadNet.value && map()) updateRoadNetwork(map(), roadNetSegments);
   } catch (e) {
-    /* 路网底图加载失败不阻断绘制（寻径仍由后端完成） */
+    if (seq === roadNetRequestSeq && e?.code !== "ERR_CANCELED") {
+      ElMessage.warning("编辑路网加载失败，可继续点选，但请根据寻径结果确认走向");
+    }
   } finally {
-    roadNetLoading = false;
+    if (seq === roadNetRequestSeq) roadNetController = null;
   }
 }
 
@@ -736,26 +1023,18 @@ async function syncRoadNetwork() {
 async function promptDeleteSelectedRoute() {
   const r = store.selectedRoute;
   if (!r) return;
-  let scope = null;
   try {
     await ElMessageBox.confirm(
-      `将把「${r.lineName}」加入删除清单：生成方案时该线路会被移除，加入后可随时在右侧撤销。也可只删除当前方向（${r.routeId}）。按 ESC 或右上角 × 放弃。`,
-      "删除线路",
+      `确定删除「${r.lineName}」的当前方向（${r.routeId}）？如需删除整线，请在「修改线路」面板中操作。`,
+      "删除当前方向",
       {
-        confirmButtonText: "删除整条线路",
-        cancelButtonText: "仅删当前方向",
-        distinguishCancelAndClose: true,
+        confirmButtonText: "确认删除",
+        cancelButtonText: "取消",
         type: "warning",
       }
     );
-    scope = "line";
-  } catch (action) {
-    if (action === "cancel") scope = "route";
-    else return; // 关闭 = 放弃
-  }
-  const payload = scope === "line"
-    ? { kind: "route.delete", name: r.lineName, target: { lineId: r.lineId } }
-    : { kind: "route.delete", name: `${r.lineName}（${r.routeId}）`, target: { lineId: r.lineId, routeIds: [r.routeId] } };
+  } catch { return; }
+  const payload = { kind: "route.delete", name: `${r.lineName}（${r.routeId}）`, target: { lineId: r.lineId, routeIds: [r.routeId] } };
   const res = store.addEditChecked(payload);
   if (!res.ok) {
     ElMessageBox.alert(res.reason, "无法删除", { type: "warning", confirmButtonText: "知道了" });
@@ -790,12 +1069,23 @@ function handleHoverEdit(edit) {
   updateHighlight(m, line?.geometry.coordinates || null, point?.geometry.coordinates || null);
 }
 
+function handleReviseEdit(edit) {
+  store.requestForm("revise", edit.id);
+}
+
 let stopWatchers = [];
 
 function setupWatchers() {
-  stopWatchers.push(watch([() => store.lines, () => store.activeTool], renderBaseNetwork, { deep: false }));
+  stopWatchers.push(watch(
+    [() => store.lines, () => store.activeTool, () => store.draft.area?.polygon, () => store.draft.area?.bufferM],
+    renderBaseNetwork,
+    { deep: true },
+  ));
   stopWatchers.push(watch(() => [store.draft.area?.polygon, store.draft.area?.bufferM], renderArea, { deep: true }));
-  stopWatchers.push(watch(() => store.draft.edits, renderOverlay, { deep: true }));
+  stopWatchers.push(watch(() => store.draft.edits, () => {
+    renderOverlay();
+    scheduleDraftValidation();
+  }, { deep: true }));
   stopWatchers.push(watch(() => [store.selection.lineId, store.selection.routeId, store.selection.stopId], renderHighlight));
   // 调整站点面板的编辑预览
   stopWatchers.push(watch(() => store.editPreview, renderEditPreview));
@@ -808,7 +1098,14 @@ function setupWatchers() {
   // 表单关闭/进入点选时收起右键菜单
   stopWatchers.push(watch([lineEditVisible, () => store.lineBuilder.session], closeLineCtxMenu));
   // 需要时加载/清除路网底图
-  stopWatchers.push(watch([wantRoadNet, () => store.draft.area?.polygon], syncRoadNetwork));
+  stopWatchers.push(watch([wantRoadNet, () => store.draft.area?.polygon, () => store.draft.area?.bufferM], syncRoadNetwork, { deep: true }));
+  // 精确点选与绘制统一使用 2D，避免建筑/高架遮挡导致坐标误判。
+  stopWatchers.push(watch(() => store.activeTool, (tool) => {
+    if (!tool || !MapRef.value) return;
+    MapRef.value.setPitchAndRotation?.(90, 0);
+    MapRef.value.enableRotate = false;
+    is3DActive.value = false;
+  }));
   // 研究区域圈定/切换草稿后：地图居中到区域
   stopWatchers.push(watch(() => store.draft.area?.polygon, (poly) => {
     if (Array.isArray(poly) && poly.length >= 3) fitToLngLatCoords(poly);
@@ -854,6 +1151,7 @@ onMounted(() => {
       rotateListenerId = MapRef.value.addEventListener("update:camera:rotate", (event) => {
         is3DActive.value = event.data.newPitch !== 90 || event.data.newRotation !== 0;
       });
+      defaultMapPickListenerId = MapRef.value.addEventListener("handle:click", handleDefaultMapRoutePick);
     }
     // 建线右键菜单（maplibre contextmenu）
     const mm = map();
@@ -864,12 +1162,19 @@ onMounted(() => {
   store.startJobPolling();
 });
 
-onBeforeRouteLeave(() => {
+onBeforeRouteLeave(async () => {
+  const saved = await store.saveDraftNow();
+  if (!saved) {
+    ElMessage.error("草稿保存失败，已留在当前页面。请重试后再离开");
+    return false;
+  }
   resetTransientInteractionState();
   return true;
 });
 
 onUnmounted(() => {
+  if (draftValidationTimer) clearTimeout(draftValidationTimer);
+  roadNetController?.abort?.();
   stopWatchers.forEach((s) => (typeof s === "function" ? s() : s?.stop?.()));
   stopWatchers = [];
   window.removeEventListener("keydown", handleGlobalKeydown);
@@ -877,6 +1182,7 @@ onUnmounted(() => {
   store.stopJobPolling();
   resetTransientInteractionState();
   if (rotateListenerId) MapRef.value?.removeEventListener?.("update:camera:rotate", rotateListenerId);
+  if (defaultMapPickListenerId) MapRef.value?.removeEventListener?.("handle:click", defaultMapPickListenerId);
   const m = map();
   if (m) {
     m.off?.("contextmenu", onMapContextMenu);
@@ -897,6 +1203,69 @@ onUnmounted(() => {
   }
 }
 
+.map-edit-status {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  z-index: calc(var(--z-panel, 40) + 8);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(760px, calc(100vw - 620px));
+  min-height: 46px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--dm2-line-strong, rgba(17, 32, 58, 0.16));
+  border-radius: 12px;
+  background: var(--dm2-surface, #fbfdff);
+  box-shadow: 0 12px 34px rgba(18, 48, 79, 0.16);
+  transform: translateX(-50%);
+
+  .map-edit-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+
+    strong { color: var(--dm2-ink, #1c2024); font-size: 13px; }
+    span {
+      overflow: hidden;
+      color: var(--dm2-muted, #667085);
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
+  .map-edit-modes,
+  .map-edit-actions {
+    display: inline-flex;
+    flex-shrink: 0;
+    gap: 4px;
+  }
+
+  button {
+    min-height: 30px;
+    padding: 0 9px;
+    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+    border-radius: 7px;
+    background: var(--dm2-surface, #fbfdff);
+    color: var(--dm2-ink-soft, #3b4452);
+    cursor: pointer;
+    font-size: 12px;
+
+    &:hover { background: rgba(0, 113, 227, 0.06); }
+    &.active,
+    &.primary { border-color: rgba(0, 113, 227, 0.3); background: rgba(0, 113, 227, 0.1); color: var(--dm2-accent, #0071e3); }
+  }
+}
+
+@media (max-width: 1180px) {
+  .map-edit-status {
+    max-width: calc(100vw - 80px);
+    bottom: 14px;
+    flex-wrap: wrap;
+  }
+}
+
 /* 面板骨架（.dm-sidebar / .dm-overview-panel / .dm-panel-collapse-tab / .map-controls-toolbar）
    全部来自 tokens.css 全局样式，与数据管理、客流分析共用；这里只写本模块的内容排版。 */
 
@@ -904,7 +1273,64 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 6px 8px 16px;
+  padding: 8px 8px 16px;
+}
+
+/* 底部草稿条：贴合侧栏底部，克制不喧宾夺主。方案命名在「开始仿真」时才输入 */
+.netopt-draft-foot {
+  flex: 0 0 auto;
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-2);
+  padding: var(--dm2-space-3) var(--dm2-space-2) var(--dm2-space-1);
+  border-top: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+}
+
+.draft-switch {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--dm2-space-2);
+
+  .ds-label {
+    color: var(--dm2-muted-soft, #98a2b3);
+    font-size: var(--dm2-text-xs);
+    font-weight: var(--dm2-fw-semibold);
+    letter-spacing: 0.04em;
+  }
+}
+
+.draft-new-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: var(--dm2-radius-sm, 10px);
+  background: var(--dm2-surface, #fbfdff);
+  color: var(--dm2-ink-soft, #3b4452);
+  cursor: pointer;
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-semibold);
+  transition:
+    border-color var(--dm2-dur) var(--dm2-ease),
+    color var(--dm2-dur) var(--dm2-ease),
+    background-color var(--dm2-dur) var(--dm2-ease),
+    transform var(--dm2-dur-fast) var(--dm2-ease);
+
+  svg { flex-shrink: 0; }
+
+  &:hover {
+    border-color: rgba(0, 113, 227, 0.3);
+    color: var(--dm2-accent, #0071e3);
+    background: var(--dm2-accent-weak, rgba(0, 113, 227, 0.1));
+  }
+
+  &:active { transform: translateY(1px); }
 }
 
 /* 右侧面板内容排版（骨架由全局 .dm-overview-panel 提供） */
@@ -975,6 +1401,45 @@ onUnmounted(() => {
     margin-top: var(--dm2-space-3);
     padding-top: var(--dm2-space-3);
     border-top: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+  }
+}
+
+.area-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dm2-muted, #667085);
+  font-size: var(--dm2-text-sm);
+  line-height: 1.4;
+
+  svg { flex-shrink: 0; color: var(--dm2-accent, #0071e3); opacity: 0.85; }
+  b { color: var(--dm2-ink-soft, #3b4452); font-weight: var(--dm2-fw-bold); font-variant-numeric: tabular-nums; }
+}
+
+.draft-validation-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--dm2-space-2);
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--dm2-delete-line, rgba(196, 41, 28, 0.22));
+  border-radius: var(--dm2-radius-sm, 10px);
+  background: var(--dm2-delete-weak, rgba(196, 41, 28, 0.07));
+  color: var(--dm2-delete, #c4291c);
+  cursor: pointer;
+  font-size: var(--dm2-text-sm);
+  font-weight: var(--dm2-fw-semibold);
+  text-align: left;
+  transition:
+    border-color var(--dm2-dur) var(--dm2-ease),
+    background-color var(--dm2-dur) var(--dm2-ease);
+
+  svg { flex-shrink: 0; }
+  span { flex: 1; min-width: 0; line-height: 1.4; }
+
+  &:hover {
+    border-color: rgba(196, 41, 28, 0.34);
+    background: rgba(196, 41, 28, 0.1);
   }
 }
 
@@ -1119,13 +1584,7 @@ onUnmounted(() => {
     cursor: not-allowed;
   }
 
-  .count {
-    font-size: var(--dm2-text-xs);
-    font-weight: var(--dm2-fw-semibold);
-    background: rgba(255, 255, 255, 0.22);
-    border-radius: var(--dm2-radius-pill);
-    padding: 2px var(--dm2-space-2);
-  }
+  svg { flex-shrink: 0; }
 }
 
 .gen-block-tip {

@@ -8,7 +8,7 @@ public interface AuthService {
 
     AuthVO login(String username, String password);
 
-    AuthVO resetPassword(String username, String newPassword);
+    AuthVO resetPassword(String username, String currentPassword, String newPassword);
 
     AuthVO profile(String token);
 

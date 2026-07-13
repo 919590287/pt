@@ -5,22 +5,7 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 
 import App from "./App.vue";
-import router, { preloadRouteComponents } from "./router";
-
-// echarts
-import VChart from "vue-echarts";
-import { graphic, use } from "echarts/core";
-import { BarChart, GaugeChart, HeatmapChart, LineChart, PieChart, RadarChart } from "echarts/charts";
-import {
-  DataZoomComponent,
-  GridComponent,
-  LegendComponent,
-  TitleComponent,
-  TooltipComponent,
-  VisualMapComponent,
-} from "echarts/components";
-import { LabelLayout } from "echarts/features";
-import { CanvasRenderer } from "echarts/renderers";
+import router from "./router";
 
 // import "element-plus/dist/index.css";
 // ✅ 引入自定义的 SCSS 主题文件
@@ -55,44 +40,12 @@ window.addEventListener("unhandledrejection", (event) => {
 
 installErrorLogExport();
 
-use([
-  BarChart,
-  GaugeChart,
-  HeatmapChart,
-  LineChart,
-  PieChart,
-  RadarChart,
-  DataZoomComponent,
-  GridComponent,
-  LegendComponent,
-  TitleComponent,
-  TooltipComponent,
-  VisualMapComponent,
-  LabelLayout,
-  CanvasRenderer,
-]);
-
-// 全局方法挂载
-app.config.globalProperties.$echarts = { graphic };
 app.config.globalProperties.$message = ElMessage
 app.config.globalProperties.$alert = ElMessageBox.alert
 app.config.globalProperties.$confirm = ElMessageBox.confirm
 app.config.globalProperties.$prompt = ElMessageBox.prompt
 // app.config.globalProperties.$moment = moment
-// 全局组件挂载
-app.component("VChart", VChart);
-
 app.use(createPinia());
 app.use(router);
 installElementPlus(app);
 app.mount("#app");
-
-function scheduleRoutePreload() {
-  if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
-    window.requestIdleCallback(() => preloadRouteComponents(), { timeout: 4000 });
-    return;
-  }
-  setTimeout(() => preloadRouteComponents(), 1200);
-}
-
-router.isReady?.().then(scheduleRoutePreload).catch(scheduleRoutePreload);

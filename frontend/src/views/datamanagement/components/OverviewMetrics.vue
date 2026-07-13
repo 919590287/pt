@@ -29,27 +29,44 @@
     <div class="metric-card coverage-card">
       <div class="card-title-row coverage-title-row">
         <span class="card-title">常规公交站点覆盖率</span>
+        <button
+          type="button"
+          class="coverage-config-btn"
+          :class="{ 'is-active': coverage.usingOverride }"
+          :aria-label="coverage.usingOverride ? '已按建成区面积计算，点击调整' : '设置建成区面积'"
+          :title="coverage.usingOverride
+            ? `按建成区面积 ${fmtUnit(coverage.builtUpAreaKm2, 'km²')} 计算，点击调整`
+            : '覆盖率默认按行政区面积计算，点击设为建成区面积'"
+          @click="emit('configure-coverage')"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9.2"></circle>
+            <path d="M9.6 9.4a2.4 2.4 0 1 1 3.3 2.2c-.7.3-1 .8-1 1.6v.3"></path>
+            <line x1="11.9" y1="16.6" x2="11.91" y2="16.6"></line>
+          </svg>
+        </button>
       </div>
       <div class="coverage-metrics">
         <div class="coverage-item">
           <div class="coverage-label-row">
             <span>300 米</span>
-            <strong>{{ fmtPct(stats.stationCoverage300Rate) }}</strong>
+            <strong>{{ fmtPct(coverage.rate300) }}</strong>
           </div>
           <div class="coverage-track" aria-hidden="true">
-            <span class="coverage-fill fill-300" :style="{ width: coverageWidth(stats.stationCoverage300Rate) }"></span>
+            <span class="coverage-fill fill-300" :style="{ width: coverageWidth(coverage.rate300) }"></span>
           </div>
         </div>
         <div class="coverage-item">
           <div class="coverage-label-row">
             <span>500 米</span>
-            <strong>{{ fmtPct(stats.stationCoverage500Rate) }}</strong>
+            <strong>{{ fmtPct(coverage.rate500) }}</strong>
           </div>
           <div class="coverage-track" aria-hidden="true">
-            <span class="coverage-fill fill-500" :style="{ width: coverageWidth(stats.stationCoverage500Rate) }"></span>
+            <span class="coverage-fill fill-500" :style="{ width: coverageWidth(coverage.rate500) }"></span>
           </div>
         </div>
       </div>
+      <p v-if="coverage.isCapped" class="coverage-capped">服务面积已超建成区，按 100% 封顶显示</p>
     </div>
 
     <!-- 详情：企业线路统计 -->
@@ -57,13 +74,13 @@
       <div class="card-title-row">
         <span class="card-title">企业线路统计</span>
       </div>
-      <div class="operator-table">
+      <div class="operator-table" :class="{ 'cols-3': !showVehicleColumns }">
         <div class="operator-table-row operator-table-head">
           <span class="operator-company">企业</span>
           <span class="operator-number">线路数量</span>
           <span class="operator-number">线路占比</span>
-          <span class="operator-number">车辆数</span>
-          <span class="operator-number">配车占比</span>
+          <span v-if="showVehicleColumns" class="operator-number">车辆数</span>
+          <span v-if="showVehicleColumns" class="operator-number">配车占比</span>
         </div>
         <div
           v-for="row in operatorRows"
@@ -74,8 +91,8 @@
           <span class="operator-company" :title="row.company">{{ row.company }}</span>
           <strong class="operator-number">{{ row.lineCount }}</strong>
           <strong class="operator-number operator-share">{{ fmtPct(row.lineShare) }}</strong>
-          <strong class="operator-number">{{ row.vehicleCount }}</strong>
-          <strong class="operator-number operator-share">{{ row.vehicleShare }}</strong>
+          <strong v-if="showVehicleColumns" class="operator-number">{{ row.vehicleCount }}</strong>
+          <strong v-if="showVehicleColumns" class="operator-number operator-share">{{ row.vehicleShare }}</strong>
         </div>
       </div>
     </div>
@@ -86,11 +103,16 @@
 defineProps({
   stats: { type: Object, required: true }, // overviewStats
   operatorRows: { type: Array, default: () => [] },
+  // 车辆数/配车占比两列仅在存在真实配车数据时展示；无数据时收敛为三列，避免整列占位横杠
+  showVehicleColumns: { type: Boolean, default: false },
+  // 覆盖率视图（当前范围的速率/分母/是否建成区覆写等），由父级计算注入
+  coverage: { type: Object, required: true },
   // 纯格式化函数，由父级注入以保持单一来源
   fmtInt: { type: Function, required: true },
   fmtUnit: { type: Function, required: true },
   fmtPct: { type: Function, required: true },
 });
+const emit = defineEmits(["configure-coverage"]);
 
 function coverageWidth(value) {
   const number = Number(value);
@@ -130,10 +152,6 @@ function coverageWidth(value) {
   border-radius: var(--dm2-radius);
   background: var(--dm2-surface);
   box-shadow: var(--dm2-shadow-card);
-  transition:
-    border-color var(--dm2-dur) var(--dm2-ease),
-    box-shadow var(--dm2-dur) var(--dm2-ease),
-    transform var(--dm2-dur-fast) var(--dm2-ease);
 }
 
 /* ① 主指标 —— 唯一视觉焦点：沉底磨砂 + 极淡蓝色数据辉光 */
@@ -144,22 +162,11 @@ function coverageWidth(value) {
   gap: 9px;
   padding: 18px 20px;
   overflow: hidden;
+  /* 柔光锚在数字左侧后方、随内容延展，取代此前浮在右上角、与内容脱节的色块 */
   background:
-    radial-gradient(120% 140% at 100% 0%, rgba(0, 113, 227, 0.09), transparent 58%),
+    radial-gradient(90% 140% at 2% 50%, rgba(0, 113, 227, 0.07), transparent 60%),
     var(--dm2-surface-sunken);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
-}
-
-.hero-card::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 16px;
-  bottom: 16px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--dm2-accent-grad);
-  opacity: 0.9;
 }
 
 .hero-label {
@@ -270,10 +277,76 @@ function coverageWidth(value) {
 
 .coverage-title-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 0;
+}
+
+/* 建成区面积设置入口：极简圆形图标按钮，覆写生效时点亮为强调蓝 */
+.coverage-config-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dm2-muted-soft);
+  cursor: pointer;
+  transition:
+    color var(--dm2-dur) var(--dm2-ease),
+    background-color var(--dm2-dur) var(--dm2-ease);
+}
+
+.coverage-config-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.coverage-config-btn:hover {
+  color: var(--dm2-accent);
+  background: var(--dm2-accent-weak);
+}
+
+.coverage-config-btn:focus-visible {
+  outline: 2px solid var(--dm2-accent-ring);
+  outline-offset: 1px;
+}
+
+.coverage-config-btn.is-active {
+  color: var(--dm2-accent);
+  background: var(--dm2-accent-weak);
+}
+
+.coverage-basis {
+  margin: -2px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dm2-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.coverage-basis-label {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--dm2-field);
+  color: var(--dm2-muted);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.coverage-capped {
+  margin: 8px 0 0;
+  color: var(--dm2-modify);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .coverage-metrics {
@@ -321,12 +394,14 @@ function coverageWidth(value) {
   border-radius: inherit;
 }
 
+/* 300/500 是同一指标的两个半径，用单一蓝的深浅区分（而非换色相），
+   既守住「克制·单一蓝」体系，也对色觉障碍更友好 */
 .fill-300 {
-  background: linear-gradient(90deg, rgba(0, 113, 227, 0.82), rgba(45, 140, 255, 0.92));
+  background: linear-gradient(90deg, rgba(0, 113, 227, 0.9), rgba(45, 140, 255, 0.98));
 }
 
 .fill-500 {
-  background: linear-gradient(90deg, rgba(13, 148, 136, 0.78), rgba(20, 184, 166, 0.9));
+  background: linear-gradient(90deg, rgba(0, 113, 227, 0.42), rgba(45, 140, 255, 0.52));
 }
 
 /* 企业线路统计表 */
@@ -365,6 +440,11 @@ function coverageWidth(value) {
   border-bottom: 1px solid var(--dm2-line-faint);
   border-radius: 7px;
   transition: background-color var(--dm2-dur) var(--dm2-ease);
+}
+
+/* 无配车数据时收敛为三列，企业列吃掉多余宽度 */
+.operator-table.cols-3 .operator-table-row {
+  grid-template-columns: minmax(120px, 1.9fr) repeat(2, minmax(60px, 1fr));
 }
 
 .operator-table-row:not(.operator-table-head):hover {
@@ -422,12 +502,16 @@ function coverageWidth(value) {
   font-feature-settings: "tnum" 1;
 }
 
-.operator-company {
-  text-align: center;
+/* 企业名左对齐便于扫读，数值右对齐让 tabular-nums 按位对齐利于比较。
+   选择器带 .operator-table-row 提高特异性，压过基础规则的 justify-content: center */
+.operator-table-row .operator-company {
+  justify-content: flex-start;
+  text-align: left;
 }
 
-.operator-number {
-  text-align: center;
+.operator-table-row .operator-number {
+  justify-content: flex-end;
+  text-align: right;
 }
 
 .operator-share {
@@ -446,9 +530,5 @@ function coverageWidth(value) {
   color: var(--dm2-muted);
   font-size: 11.5px;
   font-weight: 600;
-}
-
-.operator-table-head span:last-child {
-  text-align: center;
 }
 </style>

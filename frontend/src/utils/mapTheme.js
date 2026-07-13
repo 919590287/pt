@@ -21,6 +21,8 @@ export const MAP_THEME = {
     lineOpacity: 0.72,
     dimmed: "#b3c2d6", // 选中场景下其余线路的淡化色（蓝灰）
     dimmedOpacity: 0.38,
+    outside: "#8a929e", // 区域外要素的灰色：比 dimmed 更实，作可见的上下文而非隐没
+    outsideOpacity: 0.7,
     casing: "#ffffff", // 白描边，让线在浅色底图上更利落
     casingOpacity: 0.6,
   },
@@ -67,7 +69,7 @@ export const MAP_THEME = {
 
   /** 默认色带（colorSchemes.js 的 schemeKey） */
   schemes: {
-    stationHeat: "Mako", // 站点热力：深蓝→青的科技感色带
+    stationHeat: "GnYlRd", // 站点热力：绿→黄→红连续密度色带
     segmentFlow: "gnylrd", // 断面客流：绿-黄-红（沿用业务口径）
   },
 };

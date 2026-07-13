@@ -1,4 +1,4 @@
-import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
+import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/main/MyMap.js";
 
 /** 车型预设（用户友好，无需了解 MATSim 车型细节） */
 export const VEHICLE_PRESETS = [
@@ -38,6 +38,71 @@ export function slotsFromDepartures(departures) {
     headway = Math.max(1, Math.round(gaps[Math.floor(gaps.length / 2)] / 60));
   }
   return [{ from: secondsToHHMM(times[0]), to: secondsToHHMM(times[times.length - 1]), headwayMin: headway }];
+}
+
+function hhmmToMinutes(value) {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || ""));
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 0 || hour > 26 || minute < 0 || minute > 59) return null;
+  return hour * 60 + minute;
+}
+
+/** 发车时段前端即时校验，避免到生成阶段才发现错误。 */
+export function validateSlots(slots) {
+  if (!Array.isArray(slots) || slots.length === 0) return ["请至少添加一个发车时段"];
+  const errors = [];
+  const ranges = [];
+  slots.forEach((slot, index) => {
+    const from = hhmmToMinutes(slot?.from);
+    const to = hhmmToMinutes(slot?.to);
+    const label = `第 ${index + 1} 个时段`;
+    if (from == null || to == null) {
+      errors.push(`${label}的起止时间不完整`);
+      return;
+    }
+    if (to <= from) errors.push(`${label}的结束时间必须晚于开始时间`);
+    if (!Number.isFinite(Number(slot?.headwayMin)) || Number(slot.headwayMin) <= 0) {
+      errors.push(`${label}的发车间隔必须大于 0`);
+    }
+    ranges.push({ from, to, index });
+  });
+  ranges.sort((a, b) => a.from - b.from);
+  for (let i = 1; i < ranges.length; i += 1) {
+    if (ranges[i].from < ranges[i - 1].to) {
+      errors.push(`第 ${ranges[i - 1].index + 1} 与第 ${ranges[i].index + 1} 个时段存在重叠`);
+    }
+  }
+  return [...new Set(errors)];
+}
+
+function segmentsIntersect(a, b, c, d) {
+  const cross = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+  const abC = cross(a, b, c);
+  const abD = cross(a, b, d);
+  const cdA = cross(c, d, a);
+  const cdB = cross(c, d, b);
+  return abC * abD < 0 && cdA * cdB < 0;
+}
+
+/** 研究区域的轻量前端拓扑校验。 */
+export function validateAreaPolygon(points) {
+  if (!Array.isArray(points) || points.length < 3) return ["请至少选择 3 个不同顶点"];
+  const unique = new Set(points.map((p) => `${Number(p?.[0]).toFixed(7)},${Number(p?.[1]).toFixed(7)}`));
+  if (unique.size < 3) return ["研究区域至少需要 3 个不同顶点"];
+  const n = points.length;
+  for (let i = 0; i < n; i += 1) {
+    const a = points[i];
+    const b = points[(i + 1) % n];
+    for (let j = i + 1; j < n; j += 1) {
+      if (Math.abs(i - j) <= 1 || (i === 0 && j === n - 1)) continue;
+      const c = points[j];
+      const d = points[(j + 1) % n];
+      if (segmentsIntersect(a, b, c, d)) return ["研究区域边界存在交叉，请撤销后重新圈定"];
+    }
+  }
+  return [];
 }
 
 /**

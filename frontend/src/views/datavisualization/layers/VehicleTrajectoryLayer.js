@@ -36,6 +36,8 @@ const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
 const DEFAULT_VEHICLE_MODEL_SIZE = 36;
 const MIN_FRAME_CAPACITY = 1024;
 const VEHICLE_VISIBILITY_MODES = ["all", "public", "private"];
+const WORKER_VIEWPORT_MIN_PADDING_METERS = 1600;
+const WORKER_VIEWPORT_PADDING_RATIO = 0.55;
 
 function nextFrameCapacity(count) {
   let capacity = MIN_FRAME_CAPACITY;
@@ -266,6 +268,8 @@ export class VehicleTrajectoryLayer extends Layer {
     this.workerTimeSeq = 0;
     this.workerTimeInFlight = false;
     this.pendingWorkerTime = null;
+    this.workerSamplingBounds = null;
+    this.workerSamplingSeq = 0;
     this.modelLayer = null;
     this.statsCallback = null;
     this.followCallback = null;
@@ -306,7 +310,11 @@ export class VehicleTrajectoryLayer extends Layer {
     });
     this.modelLayer.setMapWrapper(this.map);
     if (!this.map.map.getLayer(this.modelLayer.id)) {
-      this.map.map.addLayer(this.modelLayer);
+      const beforeId = this.map.buildingLayerId;
+      this.map.map.addLayer(
+        this.modelLayer,
+        beforeId && this.map.map.getLayer(beforeId) ? beforeId : undefined,
+      );
     }
     this.modelLayer.setVehicleScale(this.vehicleSize / DEFAULT_VEHICLE_MODEL_SIZE);
   }
@@ -360,6 +368,59 @@ export class VehicleTrajectoryLayer extends Layer {
     } else if (this.ensureWorker()) {
       this.requestWorkerTime(this.currentTime);
     }
+  }
+
+  visibleWebBounds() {
+    const bounds = this.map?.getWindowRangeAndWebMercator?.();
+    if (!bounds) return null;
+    const minX = Number(bounds.minX);
+    const minY = Number(bounds.minY);
+    const maxX = Number(bounds.maxX);
+    const maxY = Number(bounds.maxY);
+    if (![minX, minY, maxX, maxY].every(Number.isFinite) || maxX <= minX || maxY <= minY) return null;
+    return { minX, minY, maxX, maxY };
+  }
+
+  viewportInsideSamplingBounds(viewport, sampling = this.workerSamplingBounds) {
+    if (!viewport || !sampling) return false;
+    return viewport.minX >= sampling.minX
+      && viewport.minY >= sampling.minY
+      && viewport.maxX <= sampling.maxX
+      && viewport.maxY <= sampling.maxY;
+  }
+
+  ensureWorkerSamplingBounds(force = false) {
+    const viewport = this.visibleWebBounds();
+    if (!viewport) return this.workerSamplingBounds;
+    if (!force && this.viewportInsideSamplingBounds(viewport)) return this.workerSamplingBounds;
+    const width = Math.max(1, viewport.maxX - viewport.minX);
+    const height = Math.max(1, viewport.maxY - viewport.minY);
+    const padX = Math.max(WORKER_VIEWPORT_MIN_PADDING_METERS, width * WORKER_VIEWPORT_PADDING_RATIO);
+    const padY = Math.max(WORKER_VIEWPORT_MIN_PADDING_METERS, height * WORKER_VIEWPORT_PADDING_RATIO);
+    this.workerSamplingBounds = {
+      minX: viewport.minX - padX,
+      minY: viewport.minY - padY,
+      maxX: viewport.maxX + padX,
+      maxY: viewport.maxY + padY,
+    };
+    this.workerSamplingSeq += 1;
+    this.segmentFrameCache.clear();
+    this.segmentFrameRequests.clear();
+    return this.workerSamplingBounds;
+  }
+
+  workerSamplingPayload() {
+    const bounds = this.ensureWorkerSamplingBounds();
+    return bounds ? { ...bounds } : null;
+  }
+
+  refreshWorkerSamplingAfterCameraMove() {
+    const viewport = this.visibleWebBounds();
+    if (!viewport || this.viewportInsideSamplingBounds(viewport)) return false;
+    this.ensureWorkerSamplingBounds(true);
+    this.workerTimeSeq += 1;
+    this.requestWorkerTime(this.currentTime);
+    return true;
   }
 
   setVehicleSize(size) {
@@ -484,8 +545,13 @@ export class VehicleTrajectoryLayer extends Layer {
     return Math.floor(Math.max(0, Number(seconds) || 0) / bucketSeconds) * bucketSeconds;
   }
 
-  segmentFrameKey(seconds, visibilityMode = this.vehicleVisibilityMode, activeSeq = this.workerActiveSeq) {
-    return `${activeSeq}:${normalizeVisibilityMode(visibilityMode)}:${this.segmentBucketSeconds}:${this.segmentBucketStart(seconds)}`;
+  segmentFrameKey(
+    seconds,
+    visibilityMode = this.vehicleVisibilityMode,
+    activeSeq = this.workerActiveSeq,
+    samplingSeq = this.workerSamplingSeq,
+  ) {
+    return `${activeSeq}:${samplingSeq}:${normalizeVisibilityMode(visibilityMode)}:${this.segmentBucketSeconds}:${this.segmentBucketStart(seconds)}`;
   }
 
   cacheSegmentFrame(frame, visibilityMode = this.vehicleVisibilityMode) {
@@ -493,6 +559,7 @@ export class VehicleTrajectoryLayer extends Layer {
     const key = this.segmentFrameKey(frame.bucketSecond, visibilityMode);
     frame.__visibilityMode = normalizeVisibilityMode(visibilityMode);
     frame.__activeSeq = this.workerActiveSeq;
+    frame.__samplingSeq = frame.__samplingSeq ?? this.workerSamplingSeq;
     this.segmentFrameCache.set(key, frame);
     while (this.segmentFrameCache.size > 4) {
       const firstKey = this.segmentFrameCache.keys().next().value;
@@ -514,18 +581,19 @@ export class VehicleTrajectoryLayer extends Layer {
     return true;
   }
 
-  applyWorkerSegmentFrame(frame, visibilityMode = this.vehicleVisibilityMode) {
+  applyWorkerSegmentFrame(frame, visibilityMode = this.vehicleVisibilityMode, samplingSeq = this.workerSamplingSeq) {
     if (frame?.kind !== "vehicle-segment-frame") {
       this.activeSegmentFrame = null;
       return false;
     }
+    frame.__samplingSeq = samplingSeq;
     this.cacheSegmentFrame(frame, visibilityMode);
     return this.activateSegmentFrame(frame);
   }
 
-  applyWorkerResult(result) {
+  applyWorkerResult(result, samplingSeq = this.workerSamplingSeq) {
     if (result?.segmentFrame?.kind === "vehicle-segment-frame") {
-      this.applyWorkerSegmentFrame(result.segmentFrame);
+      this.applyWorkerSegmentFrame(result.segmentFrame, this.vehicleVisibilityMode, samplingSeq);
     } else {
       this.activeSegmentFrame = null;
       this.applyWorkerFrame(result?.frame || null);
@@ -553,6 +621,8 @@ export class VehicleTrajectoryLayer extends Layer {
       this.workerActiveSeq++;
       this.workerTimeSeq++;
       this.workerChunkKeys.clear();
+      this.workerSamplingBounds = null;
+      this.workerSamplingSeq += 1;
       this.segmentFrameCache.clear();
       this.segmentFrameRequests.clear();
       this.activeVehicles = [];
@@ -586,6 +656,7 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   chunkKeyOf(data) {
+    if (data?.snapshotKey) return `snapshot:${data.snapshotKey}`;
     const start = Number(data?.chunk?.start);
     if (!Number.isFinite(start)) return null;
     return data?.binary ? `bin:${start}` : `json:${start}`;
@@ -606,15 +677,23 @@ export class VehicleTrajectoryLayer extends Layer {
     }
     if (key != null && this.workerChunkKeys.has(key)) {
       if (!activate) return; // 已常驻，无需重复预建
+      const bounds = this.workerSamplingPayload();
+      const samplingSeq = this.workerSamplingSeq;
       this.postWorker("activateChunk", {
         key,
         seconds: this.currentTime,
         visibilityMode: this.vehicleVisibilityMode,
         gpuSegments: true,
         bucketSeconds: this.segmentBucketSeconds,
+        bounds,
       })
         .then((result) => {
-          if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) {
+          if (
+            this.isDisposed
+            || version !== this.workerDataVersion
+            || activeSeq !== this.workerActiveSeq
+            || samplingSeq !== this.workerSamplingSeq
+          ) {
             this.releaseWorkerFrame(result?.frame, true);
             return;
           }
@@ -625,7 +704,7 @@ export class VehicleTrajectoryLayer extends Layer {
             return;
           }
           if (result?.frame || result?.segmentFrame) {
-            this.applyWorkerResult(result);
+            this.applyWorkerResult(result, samplingSeq);
           } else {
             this.requestWorkerTime(this.currentTime);
           }
@@ -645,23 +724,31 @@ export class VehicleTrajectoryLayer extends Layer {
     // 乐观登记，避免并发预取重复下发；失败时回滚。
     if (key != null) this.workerChunkKeys.add(key);
     const { payload, transfer } = trajectoryWorkerPayload(data);
+    const bounds = this.workerSamplingPayload();
+    const samplingSeq = this.workerSamplingSeq;
     const message = {
       data: payload,
       key,
       visibilityMode: this.vehicleVisibilityMode,
       gpuSegments: true,
       bucketSeconds: this.segmentBucketSeconds,
+      bounds,
     };
     if (activate) message.seconds = this.currentTime;
     this.postWorker(activate ? "setData" : "addChunk", message, transfer)
       .then((result) => {
-        if (this.isDisposed || version !== this.workerDataVersion || (activate && activeSeq !== this.workerActiveSeq)) {
+        if (
+          this.isDisposed
+          || version !== this.workerDataVersion
+          || (activate && activeSeq !== this.workerActiveSeq)
+          || (activate && samplingSeq !== this.workerSamplingSeq)
+        ) {
           this.releaseWorkerFrame(result?.frame, true);
           return;
         }
         if (!activate) return;
         if (result?.frame || result?.segmentFrame) {
-          this.applyWorkerResult(result);
+          this.applyWorkerResult(result, samplingSeq);
         } else {
           this.requestWorkerTime(this.currentTime);
         }
@@ -742,6 +829,7 @@ export class VehicleTrajectoryLayer extends Layer {
             this.activeSegmentFrame.bucketSecond,
             this.activeSegmentFrame.__visibilityMode,
             this.activeSegmentFrame.__activeSeq ?? this.workerActiveSeq,
+            this.activeSegmentFrame.__samplingSeq ?? this.workerSamplingSeq,
           )
         : "";
       if (activeKey === key) {
@@ -779,6 +867,8 @@ export class VehicleTrajectoryLayer extends Layer {
 
   prefetchWorkerSegmentFrame(seconds) {
     if (!this.ensureWorker()) return;
+    const bounds = this.workerSamplingPayload();
+    const samplingSeq = this.workerSamplingSeq;
     const key = this.segmentFrameKey(seconds);
     if (this.segmentFrameCache.has(key) || this.segmentFrameRequests.has(key)) return;
     this.segmentFrameRequests.add(key);
@@ -788,11 +878,18 @@ export class VehicleTrajectoryLayer extends Layer {
       seconds: Math.max(0, Number(seconds) || 0),
       visibilityMode: this.vehicleVisibilityMode,
       bucketSeconds: this.segmentBucketSeconds,
+      bounds,
     })
       .then((result) => {
         // activeSeq 变化说明响应期间发生了换块，worker 采样的是不确定的块状态，丢弃不落缓存
-        if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) return;
+        if (
+          this.isDisposed
+          || version !== this.workerDataVersion
+          || activeSeq !== this.workerActiveSeq
+          || samplingSeq !== this.workerSamplingSeq
+        ) return;
         if (result?.segmentFrame?.kind === "vehicle-segment-frame") {
+          result.segmentFrame.__samplingSeq = samplingSeq;
           this.cacheSegmentFrame(result.segmentFrame);
         }
       })
@@ -809,17 +906,25 @@ export class VehicleTrajectoryLayer extends Layer {
     this.workerTimeInFlight = true;
     const seq = ++this.workerTimeSeq;
     const version = this.workerDataVersion;
+    const bounds = this.workerSamplingPayload();
+    const samplingSeq = this.workerSamplingSeq;
     this.postWorker("setSegmentTime", {
       seconds,
       visibilityMode: this.vehicleVisibilityMode,
       bucketSeconds: this.segmentBucketSeconds,
+      bounds,
     })
       .then((result) => {
-        if (this.isDisposed || seq !== this.workerTimeSeq || version !== this.workerDataVersion) {
+        if (
+          this.isDisposed
+          || seq !== this.workerTimeSeq
+          || version !== this.workerDataVersion
+          || samplingSeq !== this.workerSamplingSeq
+        ) {
           this.releaseWorkerFrame(result?.frame, true);
           return;
         }
-        this.applyWorkerResult(result);
+        this.applyWorkerResult(result, samplingSeq);
       })
       .catch((error) => {
         if (!this.isDisposed) {
@@ -836,19 +941,21 @@ export class VehicleTrajectoryLayer extends Layer {
 
   on(type, data) {
     super.on(type, data);
-    if (
-      (
-        type === MAP_EVENT.UPDATE_CENTER ||
-        type === MAP_EVENT.UPDATE_ZOOM ||
-        type === MAP_EVENT.UPDATE_RENDERER_SIZE ||
-        type === MAP_EVENT.UPDATE_CAMERA_ROTATE
-      ) &&
-      this.activeCount() > 0
-    ) {
-      if (type === MAP_EVENT.UPDATE_CAMERA_ROTATE) {
+    const cameraChanged = type === MAP_EVENT.UPDATE_CENTER
+      || type === MAP_EVENT.UPDATE_ZOOM
+      || type === MAP_EVENT.UPDATE_RENDERER_SIZE
+      || type === MAP_EVENT.UPDATE_CAMERA_ROTATE;
+    if (cameraChanged) {
+      if (type === MAP_EVENT.UPDATE_CAMERA_ROTATE && this.activeCount() > 0) {
         this.syncFollowOrbitFromMap();
       }
-      this.scheduleCameraRender();
+      // 当前采样范围恰好 0 辆时也必须允许平移后重新采样，否则会永久停在空帧。
+      if (this.workerChunkKeys.size > 0) {
+        this.refreshWorkerSamplingAfterCameraMove();
+      }
+      if (this.activeCount() > 0) {
+        this.scheduleCameraRender();
+      }
     }
     if (type === MAP_EVENT.HANDLE_CLICK_LEFT && this.activeCount() > 0) {
       this.tryFollowVehicleAtPoint(data);

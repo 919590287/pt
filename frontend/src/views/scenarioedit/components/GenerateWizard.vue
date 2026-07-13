@@ -7,9 +7,16 @@
 
       <!-- 校验 -->
       <div v-if="validating" class="validate-box">校验草稿中…</div>
+      <div v-else-if="validationUnavailable" class="validate-box error">
+        <b>校验服务暂不可用，为避免提交无效任务，已暂停开始仿真。</b>
+        <el-button link type="primary" size="small" @click="validateDraft">重试校验</el-button>
+      </div>
       <div v-else-if="validationErrors.length" class="validate-box error">
         <b>存在 {{ validationErrors.length }} 个错误，请先处理：</b>
-        <div v-for="(issue, i) in validationErrors.slice(0, 6)" :key="i" class="issue">· {{ issue.message }}</div>
+        <div v-for="(issue, i) in visibleErrors" :key="i" class="issue">· {{ issue.message }}</div>
+        <el-button v-if="validationErrors.length > 6" link size="small" @click="showAllIssues = !showAllIssues">
+          {{ showAllIssues ? "收起" : `查看全部 ${validationErrors.length} 个错误` }}
+        </el-button>
       </div>
       <div v-else-if="validationWarnings.length" class="validate-box warn">
         <b>{{ validationWarnings.length }} 个提示（可继续）：</b>
@@ -44,7 +51,7 @@
 
     <template #footer>
       <el-button @click="visible = false">取消</el-button>
-      <el-button type="primary" :loading="submitting" :disabled="validating || validationErrors.length > 0 || !form.schemeName.trim()" @click="submit">
+      <el-button type="primary" :loading="submitting" :disabled="validating || validationUnavailable || validationErrors.length > 0 || !form.schemeName.trim()" @click="submit">
         开始仿真
       </el-button>
     </template>
@@ -53,7 +60,7 @@
 
 <script setup>
 import { computed, reactive, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { optGenerate, optValidate } from "@/api/optimization";
 import { useScenarioEditStore } from "../store";
 
@@ -63,9 +70,12 @@ const store = useScenarioEditStore();
 const submitting = ref(false);
 const validating = ref(false);
 const validationIssues = ref([]);
+const validationUnavailable = ref(false);
+const showAllIssues = ref(false);
 
 const validationErrors = computed(() => validationIssues.value.filter((i) => i.level === "error"));
 const validationWarnings = computed(() => validationIssues.value.filter((i) => i.level === "warning"));
+const visibleErrors = computed(() => showAllIssues.value ? validationErrors.value : validationErrors.value.slice(0, 6));
 
 const form = reactive({
   schemeName: "",
@@ -83,31 +93,47 @@ const cleanName = computed(() => form.schemeName.trim().replace(/[/\\.]/g, "") |
 const baselineName = computed(() => `${cleanName.value}-基线-${dateSuffix()}`);
 const variantName = computed(() => `${cleanName.value}-方案-${dateSuffix()}`);
 
-watch(visible, async (v) => {
-  if (!v) return;
-  // 命名只在此处进行：默认草稿名（未命名方案）不回填，其它保留供二次生成沿用
-  form.schemeName = store.draft.name && store.draft.name !== "未命名方案" ? store.draft.name : "";
-  // 确保草稿已落库再校验
-  await store.saveDraftNow();
+async function validateDraft() {
   validating.value = true;
+  validationUnavailable.value = false;
   validationIssues.value = [];
   try {
+    const saved = await store.saveDraftNow();
+    if (!saved) throw new Error("草稿保存失败");
     const res = await optValidate({ parentModel: store.parentModel, draftId: store.draft.draftId });
     validationIssues.value = Array.isArray(res?.data) ? res.data : [];
   } catch (e) {
-    validationIssues.value = [{ level: "warning", message: "校验服务暂不可用，可继续提交（生成阶段仍会全量校验）" }];
+    validationUnavailable.value = true;
   } finally {
     validating.value = false;
   }
+}
+
+watch(visible, async (v) => {
+  if (!v) return;
+  form.schemeName = store.draft.name && store.draft.name !== "未命名方案" ? store.draft.name : "";
+  showAllIssues.value = false;
+  await validateDraft();
 });
 
 async function submit() {
-  if (!form.schemeName.trim()) return;
+  if (!form.schemeName.trim() || validationUnavailable.value || validationErrors.value.length) return;
+  if (form.scope === "public") {
+    try {
+      await ElMessageBox.confirm("公开模型对所有平台用户可见。确定继续？", "确认公开范围", {
+        confirmButtonText: "确认公开并开始", cancelButtonText: "取消", type: "warning",
+      });
+    } catch { return; }
+  }
   submitting.value = true;
   try {
     // 命名落到草稿：左侧标识与后续二次生成沿用
     store.draft.name = form.schemeName.trim();
-    await store.saveDraftNow();
+    const saved = await store.saveDraftNow();
+    if (!saved) {
+      ElMessage.error("草稿保存失败，已取消提交");
+      return;
+    }
     const res = await optGenerate({
       draftId: store.draft.draftId,
       parentModel: store.parentModel,

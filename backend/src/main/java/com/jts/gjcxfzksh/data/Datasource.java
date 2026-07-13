@@ -55,11 +55,19 @@ public class Datasource {
     });
     // 缓存预热完成后的追加预计算钩子（如体检评估指标），由业务服务在启动时注册，
     // 避免 data 包反向依赖 api.service 实现类
-    private static final List<java.util.function.Consumer<MatsimData>> cacheWarmupHooks =
+    private static final java.util.concurrent.CopyOnWriteArrayList<java.util.function.Consumer<MatsimData>> cacheWarmupHooks =
             new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public static void registerCacheWarmupHook(java.util.function.Consumer<MatsimData> hook) {
-        cacheWarmupHooks.add(hook);
+        if (hook != null) {
+            cacheWarmupHooks.addIfAbsent(hook);
+        }
+    }
+
+    public static void unregisterCacheWarmupHook(java.util.function.Consumer<MatsimData> hook) {
+        if (hook != null) {
+            cacheWarmupHooks.remove(hook);
+        }
     }
 
     private static void runCacheWarmupHooks(MatsimData data) {
@@ -79,7 +87,8 @@ public class Datasource {
             throw new RuntimeException("数据[" + name + "]未加载");
         }
         data.matsim_data().setLastRequestTime(System.currentTimeMillis());
-        return dataMap.get(name);
+        // 返回已校验的同一引用；若此刻并发卸载，二次 get 会变成 null，导致请求偶发 NPE。
+        return data;
     }
 
     /**
@@ -200,11 +209,14 @@ public class Datasource {
         try {
             MatsimData data = new MatsimData(scheme.getName(), scheme.getOutput(), scheme.getCache(), scheme.isLargeModel());
             data.setArea(scheme.getDesc().getArea());
+            // desc.json 的 scale 是人口抽样比例（10% 模型写 0.1）。此前只解析不落到 MatsimData，
+            // 导致所有"抽样量 ÷ 全量"的指标整体偏 1/scale 倍
+            data.setScale(scheme.getDesc().getScale());
             // 加载
             loadConfig(data);
-            // 基础模型就绪时即建立真实公交路网命中索引，并预热已存在的线路面板缓存。
+            // 基础模型就绪时只建立轻量空间索引。大型面板/乘客明细按需读取，
+            // 避免“后续加载”仍主动解压数十 MB JSON/TSV 并长期占用堆。
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);
-            MatsimRoutePanelCache.preloadIfReady(data);
             if (cancelable && isStaleLoad(name, expectedVersion)) {
                 log.info("模型加载完成但请求已取消，不写入内存: model={}", name);
                 return;
@@ -216,11 +228,6 @@ public class Datasource {
             status = setStatus(scheme.getName(), "ready", "模型基础数据已加载，缓存将在后台生成", true, false);
             status.setStartedAt(startTime);
             status.setFinishedAt(endTime);
-            // 磁盘缓存齐全时 ModelCacheManager 不再执行 buildCaches，
-            // personTracks 等内存态数据与体检评估预计算要在加载路径补齐（轻量缓存读取，不解析 events）
-            if (MatsimAnalysisCache.preloadPersonTracksIfReady(data)) {
-                runCacheWarmupHooks(data);
-            }
         } catch (RuntimeException e) {
             if (!cancelable || !isStaleLoad(name, expectedVersion)) {
                 loadStatusMap.put(scheme.getName(), false);
@@ -261,20 +268,11 @@ public class Datasource {
 
     private static void loadEvent(MatsimData data, MatsimAnalysisCache.BuildProgress progress) {
         try {
-            MatsimAnalysisCache.prepareOnModelLoad(data);
-            if (data.isLargeModel()) {
-                MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
-                if (data.getPersonTracks() == null || data.getPersonTracks().isEmpty()) {
-                    MatsimAnalysisCache.prepareOnModelLoad(data);
-                }
-            }
+            MatsimAnalysisCache.prepareAllOnModelLoad(data, progress);
             MatsimRoutePanelCache.prepareOnModelLoad(data);
             MatsimStationPanelCache.prepareOnModelLoad(data);
             MatsimPrecomputedCache.prepareOnModelLoad(data);
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);
-            if (!data.isLargeModel()) {
-                MatsimAnalysisCache.ensureTrajectoryCache(data, progress);
-            }
             // personTracks 此时已就绪（小模型来自 events 解析，大模型来自轨迹缓存），
             // 在同一后台线程里完成体检评估等追加预计算，前端进页面即可直接命中
             runCacheWarmupHooks(data);
@@ -351,7 +349,7 @@ public class Datasource {
         String networkCRS = (String) data.getNetwork().getAttributes().getAttribute("coordinateReferenceSystem");
         ctf = ctf(globalCRS, inputCRS, networkCRS);
         CoordinateTransformation nodectf = ctf;
-        data.getNetwork().getNodes().values().parallelStream().forEach(node -> {
+        ModelProcessingPool.forEach(data.getNetwork().getNodes().values(), node -> {
             Coord nodeCoord = node.getCoord();
             try {
                 var transformedCoord = new Coord(nodeCoord.getX(), nodeCoord.getY(), nodeCoord.hasZ() ? nodeCoord.getZ() : 0);
@@ -391,7 +389,7 @@ public class Datasource {
         ctf = ctf(globalCRS, inputCRS, tfCRS);
         if (ctf != null) {
             CoordinateTransformation finalCtf = ctf;
-            data.getSchedule().getFacilities().values().parallelStream().forEach(facility -> {
+            ModelProcessingPool.forEach(data.getSchedule().getFacilities().values(), facility -> {
                 Coord coord = facility.getCoord();
                 try {
                     var transformedCoord = finalCtf.transform(coord);
@@ -409,7 +407,7 @@ public class Datasource {
             ctf = ctf(globalCRS, inputCRS, planCRS);
             if (ctf != null) {
                 CoordinateTransformation finalCtf = ctf;
-                data.getPopulation().getPersons().values().parallelStream().forEach(person -> {
+                ModelProcessingPool.forEach(data.getPopulation().getPersons().values(), person -> {
                     person.getSelectedPlan().getPlanElements().forEach(element -> {
                         if (element instanceof Activity act) {
                             if (act.getCoord() != null) {
@@ -433,7 +431,7 @@ public class Datasource {
         ctf = ctf(globalCRS, inputCRS, fasCRS);
         if (ctf != null && data.getAfs() != null) {
             CoordinateTransformation finalCtf = ctf;
-            data.getAfs().getFacilities().values().parallelStream().forEach(af -> {
+            ModelProcessingPool.forEach(data.getAfs().getFacilities().values(), af -> {
                 try {
                     Coord coord = finalCtf.transform(af.getCoord());
                     af.setCoord(coord);
@@ -481,7 +479,7 @@ public class Datasource {
 
     private static void removeNoSelectPlan(Population pop, String outputPlans) {
         int[] removeCount = {0};
-        pop.getPersons().values().parallelStream().forEach((person) -> {
+        ModelProcessingPool.forEach(pop.getPersons().values(), person -> {
             Plan selected = person.getSelectedPlan();
             List<? extends Plan> plans = person.getPlans();
             for (int i = 0; i < plans.size(); i++) {

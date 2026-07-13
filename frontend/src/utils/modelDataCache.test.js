@@ -17,6 +17,7 @@ import {
   getModelScopedMap,
   setScopedWithLimit,
   clearModelDataCache,
+  abortOtherModelDataRequests,
   __modelCacheKeys,
 } from "./modelDataCache.js";
 import { getLineAll } from "@/api/route.js";
@@ -94,5 +95,28 @@ describe("modelDataCache 请求缓存 markRaw", () => {
     expect(reactive(a)).toBe(a); // markRaw 生效：reactive() 原样返回
     const holder = ref(a);
     expect(isReactive(holder.value)).toBe(false);
+  });
+
+  it("旧请求结束不会移除清缓存后启动的新请求控制器", async () => {
+    let resolveOld;
+    let resolveFresh;
+    let freshSignal;
+    getLineAll
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockImplementationOnce((data, config) => {
+        freshSignal = config.signal;
+        return new Promise((resolve) => { resolveFresh = resolve; });
+      });
+
+    const oldRequest = getCachedLineAll("m1");
+    clearModelDataCache("m1");
+    const freshRequest = getCachedLineAll("m1");
+    resolveOld({ data: [{ lineName: "旧数据" }] });
+    await oldRequest;
+
+    abortOtherModelDataRequests("another-model");
+    expect(freshSignal.aborted).toBe(true);
+    resolveFresh({ data: [{ lineName: "新数据" }] });
+    await freshRequest;
   });
 });

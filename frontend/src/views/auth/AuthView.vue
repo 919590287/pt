@@ -30,7 +30,10 @@
           <el-input v-model.trim="form.username" autocomplete="username" maxlength="32" placeholder="请输入用户名" />
         </el-form-item>
         <el-form-item :label="passwordLabel" prop="password">
-          <el-input v-model="form.password" type="password" :autocomplete="passwordAutocomplete" maxlength="64" placeholder="请输入密码" show-password />
+          <el-input v-model="form.password" type="password" autocomplete="current-password" maxlength="64" :placeholder="passwordPlaceholder" show-password />
+        </el-form-item>
+        <el-form-item v-if="mode === 'resetPassword'" label="新密码" prop="newPassword">
+          <el-input v-model="form.newPassword" type="password" autocomplete="new-password" maxlength="64" placeholder="请输入新密码" show-password />
         </el-form-item>
         <el-form-item v-if="needsConfirm" label="确认密码" prop="confirmPassword">
           <el-input v-model="form.confirmPassword" type="password" autocomplete="new-password" maxlength="64" placeholder="请再次输入密码" show-password />
@@ -45,7 +48,7 @@
         <RouterLink v-if="mode !== 'login'" :to="{ name: 'login' }">返回登录</RouterLink>
         <template v-else>
           <RouterLink :to="{ name: 'register' }">注册账户</RouterLink>
-          <RouterLink :to="{ name: 'resetPassword' }">重置密码</RouterLink>
+          <RouterLink :to="{ name: 'resetPassword' }">修改密码</RouterLink>
         </template>
       </div>
     </section>
@@ -68,6 +71,7 @@ const submitting = ref(false);
 const form = reactive({
   username: "",
   password: "",
+  newPassword: "",
   confirmPassword: "",
 });
 
@@ -79,14 +83,14 @@ const mode = computed(() => {
 const needsConfirm = computed(() => mode.value !== "login");
 const pageTitle = computed(() => {
   if (mode.value === "register") return "注册账户";
-  if (mode.value === "resetPassword") return "重置密码";
+  if (mode.value === "resetPassword") return "修改密码";
   return "登录后进入系统";
 });
-const passwordLabel = computed(() => (mode.value === "resetPassword" ? "新密码" : "密码"));
-const passwordAutocomplete = computed(() => (mode.value === "login" ? "current-password" : "new-password"));
+const passwordLabel = computed(() => (mode.value === "resetPassword" ? "原密码" : "密码"));
+const passwordPlaceholder = computed(() => (mode.value === "resetPassword" ? "请输入原密码" : "请输入密码"));
 const submitText = computed(() => {
   if (mode.value === "register") return "注册并进入系统";
-  if (mode.value === "resetPassword") return "重置并进入系统";
+  if (mode.value === "resetPassword") return "修改并进入系统";
   return "登录";
 });
 
@@ -99,7 +103,8 @@ const validateConfirm = (rule, value, callback) => {
     callback(new Error("请确认密码"));
     return;
   }
-  if (value !== form.password) {
+  const expected = mode.value === "resetPassword" ? form.newPassword : form.password;
+  if (value !== expected) {
     callback(new Error("两次输入的密码不一致"));
     return;
   }
@@ -112,14 +117,21 @@ const rules = computed(() => ({
     { pattern: /^[\p{L}\p{N}_.-]{2,32}$/u, message: "用户名需为2-32位中文、字母、数字、点、短横线或下划线", trigger: "blur" },
   ],
   password: [
-    { required: true, message: mode.value === "resetPassword" ? "请输入新密码" : "请输入密码", trigger: "blur" },
+    { required: true, message: mode.value === "resetPassword" ? "请输入原密码" : "请输入密码", trigger: "blur" },
     { min: 6, max: 64, message: "密码长度需为6-64位", trigger: "blur" },
   ],
+  newPassword: mode.value === "resetPassword"
+    ? [
+        { required: true, message: "请输入新密码", trigger: "blur" },
+        { min: 6, max: 64, message: "密码长度需为6-64位", trigger: "blur" },
+      ]
+    : [],
   confirmPassword: [{ validator: validateConfirm, trigger: "blur" }],
 }));
 
 watch(mode, () => {
   form.password = "";
+  form.newPassword = "";
   form.confirmPassword = "";
   nextTick(() => formRef.value?.clearValidate?.());
 });
@@ -136,7 +148,7 @@ async function handleSubmit() {
     const payload = {
       username: form.username,
       password: form.password,
-      newPassword: form.password,
+      newPassword: mode.value === "resetPassword" ? form.newPassword : form.password,
     };
     const request = mode.value === "register" ? register : mode.value === "resetPassword" ? resetPassword : login;
     const res = await request(payload);

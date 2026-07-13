@@ -18,12 +18,13 @@ import { LAYER_IDS, updateToolPreview, clearToolPreview } from "../layers/editor
  *  draw.link   画新路段折线（端点吸附既有节点）
  *  place.stop  放置新站点（吸附最近可停靠 link）
  */
-export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
+export function useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCandidates }) {
   let clickHandle = null;
   let moveHandle = null;
   let dblHandle = null;
   let keyHandler = null;
   let snapSeq = 0;
+  let pointSeq = 0;
 
   const map = () => MapRef.value?.map || null;
 
@@ -33,6 +34,7 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
   }
 
   function teardown() {
+    pointSeq += 1;
     if (MapRef.value) {
       if (clickHandle) MapRef.value.removeEventListener("handle:click", clickHandle);
       if (moveHandle) MapRef.value.removeEventListener("handle:mousemove", moveHandle);
@@ -103,6 +105,7 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
   }
 
   async function requestSnapPoint(lng, lat, purpose) {
+    const seq = ++pointSeq;
     store.toolDraft.snapBusy = true;
     store.toolDraft.snapError = "";
     try {
@@ -111,12 +114,14 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
         draftId: store.draft.draftId || "",
         lng, lat, purpose,
       });
+      if (seq !== pointSeq) return null;
       return res?.data || null;
     } catch (e) {
+      if (seq !== pointSeq) return null;
       store.toolDraft.snapError = e?.message || "附近没有可吸附的路段";
       return null;
     } finally {
-      store.toolDraft.snapBusy = false;
+      if (seq === pointSeq) store.toolDraft.snapBusy = false;
     }
   }
 
@@ -147,6 +152,10 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
       return;
     }
     if (tool === "draw.link") {
+      if (store.toolDraft.snapBusy) {
+        ElMessage.info("上一个端点仍在吸附，请稍候再点选");
+        return;
+      }
       // 端点吸附提示：首尾点尝试吸附既有节点
       const snap = await requestSnapPoint(lng, lat, "node");
       const pt = { lng, lat, nodeId: null };
@@ -178,6 +187,10 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
       return;
     }
     if (tool === "pick.link") {
+      if (store.toolDraft.snapBusy) {
+        ElMessage.info("上一条路段仍在识别，请稍候再点选");
+        return;
+      }
       const snap = await requestSnapPoint(lng, lat, "link");
       if (snap && snap.linkId) {
         if (store.toolDraft.pickedLinks.some((l) => l.linkId === snap.linkId)) {
@@ -197,12 +210,31 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
     }
     if (tool === "pick.stop") {
       const feats = queryFeatures([lng, lat], LAYER_IDS.baseStops);
-      const stopId = feats.length > 0 ? feats[0].properties.stopId : null;
       const purpose = store.toolContext?.purpose;
+      const candidates = [];
+      const seen = new Set();
+      for (const feature of feats) {
+        const stopId = feature.properties?.stopId;
+        if (stopId && !seen.has(stopId)) {
+          seen.add(stopId);
+          candidates.push({ stopId, name: feature.properties?.name || stopId });
+        }
+      }
+      if (candidates.length > 1 && onPickStopCandidates) {
+        const m = map();
+        const p = m.project([lng, lat]);
+        onPickStopCandidates(candidates, purpose, { x: p.x, y: p.y });
+        return;
+      }
+      const stopId = candidates[0]?.stopId || null;
       if (purpose === "buildLine") {
-        // 新增线路建线（参考交评多点选路）：点到站点=加停靠站；点到空白/路网=加路径途经点
-        if (stopId) store.appendLineStop(stopId);
-        else store.appendLineRoadPoint(lng, lat);
+        if (store.lineAnchorMode === "road") {
+          store.appendLineRoadPoint(lng, lat);
+        } else if (stopId) {
+          store.appendLineStop(stopId);
+        } else {
+          ElMessage.warning("未点中站点。如需约束走向，请先切换到「路径点」模式");
+        }
         return;
       }
       if (!stopId) return;
@@ -247,6 +279,9 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
 
   function handleKeydown(ev) {
     if (ev.key === "Escape") {
+      if (store.activeTool === "pick.stop" && store.toolContext?.purpose === "buildLine") {
+        store.cancelLineSession();
+      }
       store.setTool("");
       return;
     }
@@ -278,6 +313,9 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates }) {
     keyHandler = handleKeydown;
     window.addEventListener("keydown", keyHandler);
     const m = map();
+    if (tool === "pick.stop" && Number(MapRef.value?.zoom) < 13) {
+      MapRef.value?.setZoom?.(13);
+    }
     if (m && tool === "area.draw") {
       dblHandle = () => {
         // 双击闭合交由地图控件 ✏️ 的完成动作统一处理，这里只阻止误加点

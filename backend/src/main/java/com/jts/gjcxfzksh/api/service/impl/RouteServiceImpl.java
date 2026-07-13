@@ -434,7 +434,8 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         List<VehicleId> vehicleIds = new ArrayList<>();
         transitRoute.getDepartures().forEach((departureId, departure) ->
                 vehicleIds.add(VehicleId.create(departure.getVehicleId())));
-        return TransitMetrics.fullLoadRate(vehicleIds, tracksByVehicle, matsim_data.getTv().getVehicles());
+        return TransitMetrics.fullLoadRate(
+                vehicleIds, tracksByVehicle, matsim_data.getTv().getVehicles(), matsim_data.getScale());
     }
 
     /**

@@ -23,6 +23,7 @@ const MAX_LAYOUT_SCALE = 3;
 const BASE_HEADER_HEIGHT = 58;
 const BASE_EDGE = 24;
 const SCALED_LENGTHS = [2, 12, 16, 18, 20, 24, 26, 70, 76, 108, 260, 282, 320, 414];
+let layoutFrameId = 0;
 
 function updateLayoutScale() {
   const viewport = window.visualViewport;
@@ -48,17 +49,29 @@ function updateLayoutScale() {
   });
 }
 
+function scheduleLayoutScale() {
+  if (layoutFrameId) return;
+  layoutFrameId = window.requestAnimationFrame(() => {
+    layoutFrameId = 0;
+    updateLayoutScale();
+  });
+}
+
 onMounted(() => {
   updateLayoutScale();
-  window.addEventListener("resize", updateLayoutScale, { passive: true });
-  window.visualViewport?.addEventListener("resize", updateLayoutScale, { passive: true });
-  // 全局屏蔽浏览器手势（右键拖动手势/横扫前进后退/捏合缩放页面），避免与地图右键拖动冲突
+  window.addEventListener("resize", scheduleLayoutScale, { passive: true });
+  window.visualViewport?.addEventListener("resize", scheduleLayoutScale, { passive: true });
+  // 仅在地图内屏蔽右键拖动冲突，并关闭横向回弹；保留页面捏合缩放与非地图区域右键菜单。
   bindBrowserGestureGuard();
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("resize", updateLayoutScale);
-  window.visualViewport?.removeEventListener("resize", updateLayoutScale);
+  window.removeEventListener("resize", scheduleLayoutScale);
+  window.visualViewport?.removeEventListener("resize", scheduleLayoutScale);
+  if (layoutFrameId) {
+    window.cancelAnimationFrame(layoutFrameId);
+    layoutFrameId = 0;
+  }
   unbindBrowserGestureGuard();
 });
 </script>

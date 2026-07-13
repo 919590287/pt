@@ -93,6 +93,36 @@ export function checkEditConflict(candidate, edits, ctx = {}) {
 
   const stopName = (id) => stopIndex?.get?.(id)?.name || id;
 
+  // ---------- 新增站点 ----------
+  if (kind === "stop.add") {
+    const name = String(candidate.params?.name || candidate.name || "").trim();
+    const duplicateName = name && edits.find((e) => e.kind === "stop.add"
+      && String(e.params?.name || e.name || "").trim() === name);
+    if (duplicateName) return fail(`修改清单里已有同名新增站点「${name}」，请换一个名称或撤销原记录。`);
+    const coord = candidate.geometry?.coord;
+    if (Array.isArray(coord)) {
+      const duplicatePosition = edits.find((e) => {
+        const other = e.kind === "stop.add" ? e.geometry?.coord : null;
+        return Array.isArray(other) && Math.hypot(Number(other[0]) - Number(coord[0]), Number(other[1]) - Number(coord[1])) < 0.00005;
+      });
+      if (duplicatePosition) return fail("该位置附近已有一个待新增站点，请调整位置或撤销原记录。");
+    }
+    return OK;
+  }
+
+  // ---------- 新增路段 ----------
+  if (kind === "link.add") {
+    const coords = candidate.geometry?.coords || [];
+    if (!candidate.geometry?.fromNodeId || !candidate.geometry?.toNodeId) {
+      return fail("新路段的首尾端尚未接入现有路网，请重新点选端点并确认出现吸附提示。");
+    }
+    const signature = JSON.stringify(coords);
+    if (edits.some((e) => e.kind === "link.add" && JSON.stringify(e.geometry?.coords || []) === signature)) {
+      return fail("这条新路段已在修改清单中，不需要重复添加。");
+    }
+    return OK;
+  }
+
   // ---------- 删除线路 ----------
   if (kind === "route.delete") {
     const dup = edits.find((e) => e.kind === "route.delete" && routeScopeOverlap(e.target, t));
@@ -271,6 +301,6 @@ export function checkEditConflict(candidate, edits, ctx = {}) {
     return OK;
   }
 
-  // stop.add / link.add 等：无阻断性冲突
+  // 其它类型：无阻断性冲突
   return OK;
 }

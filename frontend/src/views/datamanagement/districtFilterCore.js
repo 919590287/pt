@@ -2,17 +2,6 @@
 // 同时被 index.vue（同步回退路径与各类派生计算）和 districtFilter.worker.js（后台裁剪）引用，
 // 必须保持纯函数、零 DOM/Vue/地图引擎依赖，否则 worker 打包会拖入整个渲染栈。
 
-const EARTH_RADIUS = 6378137.0;
-
-// 与 mymap/main/MyMap.js 的 lngLatToWebMercator 同公式：裁剪只用相对距离，
-// 本地实现避免 worker 依赖地图引擎入口。
-export function lngLatToWebMercator(lng, lat) {
-  const limitedLat = Math.max(-85.05112878, Math.min(85.05112878, Number(lat) || 0));
-  const x = (EARTH_RADIUS * (Number(lng) || 0) * Math.PI) / 180;
-  const y = EARTH_RADIUS * Math.log(Math.tan(Math.PI / 4 + (limitedLat * Math.PI) / 360));
-  return [x, y];
-}
-
 export function valueOrEmpty(value) {
   if (value === undefined || value === null) return "";
   const text = String(value).trim();
@@ -174,187 +163,195 @@ export function pointFeatureInRange(feature, context) {
 
 
 
-export function projectWebMercatorPointToSegment(point, start, end) {
-  const dx = end[0] - start[0];
-  const dy = end[1] - start[1];
-  const lengthSquared = dx * dx + dy * dy;
-  if (!lengthSquared) {
-    return {
-      point: start,
-      ratio: 0,
-      segmentLength: 0,
-    };
+// ---- 行政区边界裁剪 -------------------------------------------------------
+// 线路按行政区边界几何裁剪：区内段进正常图层（彩色/橙色高亮），区外段由灰色底图透出，
+// 因此配色切换点恰好落在分界线上（此前是切在"最后一个区内站点"上，颜色会提前变化）。
+// 朴素做法要拿每条线段去比对整圈边界（线路点数 × 边界点数），这里先把边界边按 bbox 打进
+// 均匀网格，线段只与同格候选边求交。
+
+const RATIO_EPSILON = 1e-12;
+const BOUNDARY_GRID_MAX_COLUMNS = 128;
+const EMPTY_RATIOS = [];
+
+function polygonBoundaryEdges(polygons = []) {
+  const edges = [];
+  for (const rings of polygons) {
+    for (const ring of rings || []) {
+      if (!Array.isArray(ring) || ring.length < 2) continue;
+      for (let index = 1; index < ring.length; index += 1) edges.push([ring[index - 1], ring[index]]);
+      if (!pointsAlmostEqual(ring[0], ring[ring.length - 1])) edges.push([ring[ring.length - 1], ring[0]]);
+    }
   }
-  const ratio = Math.max(0, Math.min(1, ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / lengthSquared));
-  return {
-    point: [start[0] + dx * ratio, start[1] + dy * ratio],
-    ratio,
-    segmentLength: Math.sqrt(lengthSquared),
-  };
+  return edges;
 }
 
-export function projectPointToLinePaths(paths, coordinate) {
-  const point = validLngLat(coordinate);
-  if (!point) return null;
-  const projectedPoint = lngLatToWebMercator(point[0], point[1]);
-  let nearest = null;
-  paths.forEach((path, pathIndex) => {
-    let cumulative = 0;
-    for (let segmentIndex = 1; segmentIndex < path.length; segmentIndex += 1) {
-      const startLngLat = path[segmentIndex - 1];
-      const endLngLat = path[segmentIndex];
-      const start = lngLatToWebMercator(startLngLat[0], startLngLat[1]);
-      const end = lngLatToWebMercator(endLngLat[0], endLngLat[1]);
-      const projection = projectWebMercatorPointToSegment(projectedPoint, start, end);
-      const distance = Math.hypot(projectedPoint[0] - projection.point[0], projectedPoint[1] - projection.point[1]);
-      const distanceAlong = cumulative + projection.segmentLength * projection.ratio;
-      if (!nearest || distance < nearest.distance) {
-        nearest = {
-          distance,
-          pathIndex,
-          segmentIndex,
-          ratio: projection.ratio,
-          distanceAlong,
-          coordinate: pointAlongSegment(startLngLat, endLngLat, projection.ratio),
-        };
+export function createBoundaryIndex(context) {
+  const edges = polygonBoundaryEdges(context?.polygons || []);
+  if (!edges.length) return null;
+  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const [start, end] of edges) {
+    bounds[0] = Math.min(bounds[0], start[0], end[0]);
+    bounds[1] = Math.min(bounds[1], start[1], end[1]);
+    bounds[2] = Math.max(bounds[2], start[0], end[0]);
+    bounds[3] = Math.max(bounds[3], start[1], end[1]);
+  }
+  const columns = Math.max(1, Math.min(BOUNDARY_GRID_MAX_COLUMNS, Math.round(Math.sqrt(edges.length / 4)) || 1));
+  const spanX = Math.max(bounds[2] - bounds[0], 1e-9);
+  const spanY = Math.max(bounds[3] - bounds[1], 1e-9);
+  const columnOf = (x) => Math.max(0, Math.min(columns - 1, Math.floor(((x - bounds[0]) / spanX) * columns)));
+  const rowOf = (y) => Math.max(0, Math.min(columns - 1, Math.floor(((y - bounds[1]) / spanY) * columns)));
+  const cells = new Array(columns * columns).fill(null);
+  edges.forEach(([start, end], edgeIndex) => {
+    const minRow = rowOf(Math.min(start[1], end[1]));
+    const maxRow = rowOf(Math.max(start[1], end[1]));
+    const minColumn = columnOf(Math.min(start[0], end[0]));
+    const maxColumn = columnOf(Math.max(start[0], end[0]));
+    for (let row = minRow; row <= maxRow; row += 1) {
+      for (let column = minColumn; column <= maxColumn; column += 1) {
+        const cell = row * columns + column;
+        if (!cells[cell]) cells[cell] = [];
+        cells[cell].push(edgeIndex);
       }
-      cumulative += projection.segmentLength;
     }
   });
-  return nearest;
+  // visited/stamp：每次查询换一个 stamp，免去候选边去重时反复新建 Set
+  return { edges, cells, columns, bounds, columnOf, rowOf, visited: new Int32Array(edges.length), stamp: 0 };
 }
 
-export function sliceLinePathBetweenProjections(path, firstProjection, secondProjection) {
-  const forward = firstProjection.distanceAlong <= secondProjection.distanceAlong;
-  const startProjection = forward ? firstProjection : secondProjection;
-  const endProjection = forward ? secondProjection : firstProjection;
-  const coordinates = [startProjection.coordinate];
-  const startVertexIndex = startProjection.ratio >= 1 - 1e-9 ? startProjection.segmentIndex + 1 : startProjection.segmentIndex;
-  const endVertexIndex = endProjection.ratio >= 1 - 1e-9 ? endProjection.segmentIndex : endProjection.segmentIndex - 1;
-  for (let index = startVertexIndex; index <= endVertexIndex; index += 1) {
-    const coordinate = path[index];
-    if (coordinate && !pointsAlmostEqual(coordinates[coordinates.length - 1], coordinate)) coordinates.push(coordinate);
+// 线段 start→end 与边界边的交点参数 t∈[0,1]；平行或共线时返回 -1，交由子段中点判定兜底
+function boundaryCrossRatio(start, end, edgeStart, edgeEnd) {
+  const rx = end[0] - start[0];
+  const ry = end[1] - start[1];
+  const sx = edgeEnd[0] - edgeStart[0];
+  const sy = edgeEnd[1] - edgeStart[1];
+  const denominator = rx * sy - ry * sx;
+  if (Math.abs(denominator) < 1e-18) return -1;
+  const dx = edgeStart[0] - start[0];
+  const dy = edgeStart[1] - start[1];
+  const t = (dx * sy - dy * sx) / denominator;
+  const u = (dx * ry - dy * rx) / denominator;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return -1;
+  return t;
+}
+
+function boundaryCrossingRatios(start, end, index) {
+  const minX = Math.min(start[0], end[0]);
+  const maxX = Math.max(start[0], end[0]);
+  const minY = Math.min(start[1], end[1]);
+  const maxY = Math.max(start[1], end[1]);
+  const bounds = index.bounds;
+  if (maxX < bounds[0] || minX > bounds[2] || maxY < bounds[1] || minY > bounds[3]) return EMPTY_RATIOS;
+  index.stamp += 1;
+  const stamp = index.stamp;
+  const ratios = [];
+  const maxRow = index.rowOf(maxY);
+  const maxColumn = index.columnOf(maxX);
+  for (let row = index.rowOf(minY); row <= maxRow; row += 1) {
+    for (let column = index.columnOf(minX); column <= maxColumn; column += 1) {
+      const cell = index.cells[row * index.columns + column];
+      if (!cell) continue;
+      for (const edgeIndex of cell) {
+        if (index.visited[edgeIndex] === stamp) continue;
+        index.visited[edgeIndex] = stamp;
+        const ratio = boundaryCrossRatio(start, end, index.edges[edgeIndex][0], index.edges[edgeIndex][1]);
+        if (ratio >= 0) ratios.push(ratio);
+      }
+    }
   }
-  if (!pointsAlmostEqual(coordinates[coordinates.length - 1], endProjection.coordinate)) {
-    coordinates.push(endProjection.coordinate);
+  return ratios.sort((left, right) => left - right);
+}
+
+function pushCoordinate(coordinates, coordinate) {
+  if (!coordinates.length || !pointsAlmostEqual(coordinates[coordinates.length - 1], coordinate)) coordinates.push(coordinate);
+}
+
+// 逐段在交点处切开，每个子段用中点做点在多边形内判定 —— 不靠"进出计数"累积状态，
+// 相切、顶点穿越等退化情形不会让后续整条线的内外判定翻转。
+export function clipPathToDistrict(path, context, index) {
+  const spans = [];
+  let current = pointInRangeContext(path[0], context) ? [path[0]] : null;
+  for (let vertex = 1; vertex < path.length; vertex += 1) {
+    const start = path[vertex - 1];
+    const end = path[vertex];
+    const ratios = boundaryCrossingRatios(start, end, index);
+    if (!ratios.length) {
+      if (current) pushCoordinate(current, end);
+      continue;
+    }
+    let cursor = start;
+    let cursorRatio = 0;
+    for (let step = 0; step <= ratios.length; step += 1) {
+      const ratio = step < ratios.length ? ratios[step] : 1;
+      if (ratio - cursorRatio <= RATIO_EPSILON) continue;
+      const stop = ratio >= 1 ? end : pointAlongSegment(start, end, ratio);
+      const middle = pointAlongSegment(start, end, (cursorRatio + ratio) / 2);
+      if (pointInRangeContext(middle, context)) {
+        if (!current) current = [cursor];
+        else pushCoordinate(current, cursor);
+        pushCoordinate(current, stop);
+      } else if (current) {
+        if (current.length >= 2) spans.push(current);
+        current = null;
+      }
+      cursor = stop;
+      cursorRatio = ratio;
+    }
   }
-  return forward ? coordinates : coordinates.reverse();
+  if (current && current.length >= 2) spans.push(current);
+  return spans;
 }
 
-export function lineCoordinatesBetweenStops(paths, start, end) {
-  const startProjection = projectPointToLinePaths(paths, start);
-  const endProjection = projectPointToLinePaths(paths, end);
-  if (!startProjection || !endProjection || startProjection.pathIndex !== endProjection.pathIndex) return [];
-  return sliceLinePathBetweenProjections(paths[startProjection.pathIndex], startProjection, endProjection);
-}
-
-export function trimLineFeatureToStationRuns(feature, runs = []) {
+export function clipLineFeatureToDistrict(feature, context, index) {
   const paths = lineCoordinatePaths(feature?.geometry)
     .map((path) => (Array.isArray(path) ? path.map(validLngLat).filter(Boolean) : []))
     .filter((path) => path.length >= 2);
-  if (!paths.length) return [];
   const features = [];
-  runs.forEach((run, runIndex) => {
-    const coordinates = lineCoordinatesBetweenStops(paths, run.start, run.end);
-    if (coordinates.length < 2) return;
-    features.push({
-      type: "Feature",
-      id: runIndex ? `${feature?.id || feature?.properties?._lineKey || "line"}-${runIndex}` : feature?.id,
-      geometry: {
-        type: "LineString",
-        coordinates,
-      },
-      properties: {
-        ...(feature?.properties || {}),
-      },
-    });
-  });
+  for (const path of paths) {
+    for (const coordinates of clipPathToDistrict(path, context, index)) {
+      features.push({
+        type: "Feature",
+        id: features.length ? `${feature?.id || feature?.properties?._lineKey || "line"}-${features.length}` : feature?.id,
+        geometry: {
+          type: "LineString",
+          coordinates,
+        },
+        properties: {
+          ...(feature?.properties || {}),
+        },
+      });
+    }
+  }
   return features;
 }
 
-export function inRangeArrivalLineRuns(stops = []) {
-  // District view keeps only the first contiguous in-range span for each route.
-  // Once the sequence leaves the current district, later re-entry spans are not
-  // drawn, otherwise the map visually bridges across the missing out-of-range stop.
-  const sortedStops = [...stops].sort((left, right) => left.sequence - right.sequence || left.sourceIndex - right.sourceIndex);
-  const runs = [];
-  let hasVisibleSpan = false;
-  for (let index = 1; index < sortedStops.length; index += 1) {
-    const previous = sortedStops[index - 1];
-    const current = sortedStops[index];
-    if (previous.inRange && current.inRange && !pointsAlmostEqual(previous.coordinate, current.coordinate)) {
-      runs.push({
-        start: previous.coordinate,
-        end: current.coordinate,
-      });
-      hasVisibleSpan = true;
-      continue;
-    }
-    if (previous.inRange || current.inRange) {
-      hasVisibleSpan = true;
-    }
-    if (hasVisibleSpan && !current.inRange) {
-      break;
-    }
+function routeKeysOfCollection(collection) {
+  const keys = new Set();
+  for (const feature of collectionFeatures(collection)) {
+    for (const key of routeMatchKeys(feature?.properties || {})) keys.add(key);
   }
-  return runs;
+  return keys;
 }
 
-export function stationRunsByRouteKey(routeStops, context) {
-  const groups = new Map();
-  collectionFeatures(routeStops).forEach((feature, sourceIndex) => {
-    const coordinate = pointCoordinates(feature?.geometry);
-    if (!coordinate) return;
-    const properties = feature?.properties || {};
-    const keys = routeMatchKeys(properties);
-    if (!keys.length) return;
-    const stop = {
-      coordinate,
-      inRange: pointInRangeContext(coordinate, context),
-      sequence: routeStopSequence(properties),
-      sourceIndex,
-    };
-    keys.forEach((key) => {
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(stop);
-    });
-  });
-
-  const runsByRouteKey = new Map();
-  groups.forEach((stops, key) => {
-    const runs = inRangeArrivalLineRuns(stops);
-    if (runs.length) runsByRouteKey.set(key, runs);
-  });
-  return runsByRouteKey;
-}
-
-export function stationRunsForLineFeature(feature, runsByRouteKey) {
-  const properties = feature?.properties || {};
-  for (const key of routeMatchKeys(properties)) {
-    const runs = runsByRouteKey.get(key);
-    if (runs?.length) return runs;
-  }
-  return [];
-}
-
-export function stationScopedLineFeatureCollection(collection, routeStops, context) {
-  const runsByRouteKey = stationRunsByRouteKey(routeStops, context);
+// 线网归属仍按"在本区有停靠站"判定（只过境不停靠的线路不计入本区），几何则按边界裁剪。
+export function districtClippedLineFeatureCollection(collection, routeStopsInRange, context) {
+  const index = createBoundaryIndex(context);
+  if (!index) return featureCollectionFromFeatures([]);
+  const servedKeys = routeKeysOfCollection(routeStopsInRange);
   const features = [];
   for (const feature of collectionFeatures(collection)) {
-    const routeRuns = stationRunsForLineFeature(feature, runsByRouteKey);
-    if (!routeRuns.length) continue;
-    features.push(...trimLineFeatureToStationRuns(feature, routeRuns));
+    if (!routeMatchKeys(feature?.properties || {}).some((key) => servedKeys.has(key))) continue;
+    features.push(...clipLineFeatureToDistrict(feature, context, index));
   }
   return featureCollectionFromFeatures(features);
 }
 
-// worker 侧一次性完成四个数据集的区划过滤（bounds/polygons 由主线程传入，boundarySegments 本地重建）
+// worker 侧一次性完成四个数据集的区划过滤（bounds/polygons 由主线程传入，边界网格索引本地重建）
 export function filterCollectionsByDistrict(collections, context) {
   const routeStopsInRange = featureCollectionFromFeatures(
     collectionFeatures(collections.routeStops).filter((feature) => pointFeatureInRange(feature, context)),
   );
   return {
-    lines: stationScopedLineFeatureCollection(collections.lines, collections.routeStops, context),
+    lines: districtClippedLineFeatureCollection(collections.lines, routeStopsInRange, context),
     stations: featureCollectionFromFeatures(
       collectionFeatures(collections.stations).filter((feature) => pointFeatureInRange(feature, context)),
     ),

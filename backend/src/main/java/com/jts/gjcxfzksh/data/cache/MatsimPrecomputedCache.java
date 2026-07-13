@@ -75,7 +75,7 @@ public final class MatsimPrecomputedCache {
     //      ③指纹补充 transitVehicles 与 desc.json 面积，容量/面积变更后旧值不再静默下发；
     //      ④linkstats 流量列剔除 HRS0-24avg 全跨度汇总列（原与逐时列一起累加，flow≈真值×2）；
     //      ⑤线路客流强度(xlklqd)分组与键改用 lineId+routeId 复合键，跨线路同名 routeId 不再混计；
-    //      ⑥出行分担率(fxfdl)精度提升到 0.01%（原 1% 步进）。
+    //      ⑥公交分担率(fxfdl)精度提升到 0.01%（原 1% 步进）。
     public static final String VISUAL_CACHE_VERSION = "visual-v13";
     private static final int VISUAL_TILE_ZOOM = 12;
     private static final int MIN_VISUAL_TILE_ZOOM = 8;
@@ -345,7 +345,8 @@ public final class MatsimPrecomputedCache {
         result.put("rcxcs", boardings);
         result.put("xlfzxxs", routeNoLC(data));
         result.put("xlcfxs", routeRC(data));
-        result.put("xlmzl", round2(TransitMetrics.fullLoadRate(tracksByVehicle, data.getTv().getVehicles()) * 100.0));
+        result.put("xlmzl", round2(TransitMetrics.fullLoadRate(
+                tracksByVehicle, data.getTv().getVehicles(), data.getScale()) * 100.0));
 
         Map<String, Double> xlklqd = routePersonStrength(data);
         result.put("xlklqd", xlklqd.entrySet().stream()
@@ -425,7 +426,7 @@ public final class MatsimPrecomputedCache {
             }
         });
         detail.getInfo().setTakeRate(TransitMetrics.fullLoadRate(
-                vehicleIds, tracksByVehicle, data.getTv().getVehicles()));
+                vehicleIds, tracksByVehicle, data.getTv().getVehicles(), data.getScale()));
         detail.getInfo().setPassenger(boardingsByLineRoute.getOrDefault(lineId + "::" + route.getId(), 0L));
     }
 
@@ -659,6 +660,13 @@ public final class MatsimPrecomputedCache {
         }
     }
 
+    /**
+     * @deprecated 未修正口径的旧实现：双向 link 各算一次（里程翻倍）、未剔除轨道线路。
+     * 只服务于 info.json（/pt/data/info），该接口前端未调用；体检评估走的是
+     * PTDataServiceImpl.buildEvaluation → TransitMetrics.networkLengthMeters。
+     * 若将来要下发 info.json 的 gjxwmd，请改用 TransitMetrics 并 bump VISUAL_CACHE_VERSION。
+     */
+    @Deprecated
     private static double ptNetworkLength(TransitSchedule schedule, Network network) {
         double length = 0;
         Set<Id<Link>> links = new HashSet<>();

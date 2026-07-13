@@ -108,4 +108,38 @@ class PTDataControllerCacheContractTest {
                 .andExpect(status().isAccepted())
                 .andExpect(header().string(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_OCTET_STREAM_VALUE));
     }
+
+    @Test
+    void getTrajectoryFrameBinaryReturnsNoStoreViewportSnapshot() throws Exception {
+        byte[] payload = new byte[]{'G', 'J', 'T', 'B', 1, 0, 64, 0};
+        when(service.trajectoryFrameBinary(
+                any(DatasourceParam.class),
+                eq(28_800),
+                eq(300),
+                eq("public"),
+                eq(1000.0),
+                eq(2000.0),
+                eq(3000.0),
+                eq(4000.0)
+        )).thenReturn(payload);
+
+        byte[] response = mockMvc.perform(get("/pt/data/trajectory/frame.bin")
+                        .param("datasource", "area/public/model")
+                        .param("time", "28800")
+                        .param("bucketSeconds", "300")
+                        .param("visibilityMode", "public")
+                        .param("minX", "1000")
+                        .param("minY", "2000")
+                        .param("maxX", "3000")
+                        .param("maxY", "4000"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_OCTET_STREAM_VALUE))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andExpect(header().longValue(HttpHeaders.CONTENT_LENGTH, payload.length))
+                .andReturn()
+                .getResponse()
+                .getContentAsByteArray();
+
+        assertArrayEquals(payload, response);
+    }
 }

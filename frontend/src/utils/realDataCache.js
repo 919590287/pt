@@ -1,9 +1,11 @@
 import { getAdminDistricts, getBusLineStation, getRealDataAreaList, getRealDataHistory } from "@/api/realData.js";
 
 const DEFAULT_AREA = "广州市";
+const MAX_REAL_DATA_CACHE_ENTRIES = 8;
 
 let areaListCache = null;
 let areaListPromise = null;
+let areaListGeneration = 0;
 const realDataCache = new Map();
 const realDataPromises = new Map();
 const routeStopsPromises = new Map();
@@ -14,6 +16,9 @@ const adminDistrictPromises = new Map();
 const realDataGenerations = new Map();
 const historyGenerations = new Map();
 const adminDistrictGenerations = new Map();
+let realDataGlobalGeneration = 0;
+let historyGlobalGeneration = 0;
+let adminDistrictGlobalGeneration = 0;
 
 function normalizeArea(areaName) {
   return areaName || DEFAULT_AREA;
@@ -28,7 +33,13 @@ function versionKey(areaName, versionId = "") {
 }
 
 export function readCachedRealData(areaName = DEFAULT_AREA, versionId = "") {
-  return realDataCache.get(versionKey(areaName, versionId)) || null;
+  const key = versionKey(areaName, versionId);
+  if (!realDataCache.has(key)) return null;
+  const data = realDataCache.get(key);
+  // Map 的插入顺序充当轻量 LRU；读取即提升为最近使用。
+  realDataCache.delete(key);
+  realDataCache.set(key, data);
+  return data;
 }
 
 export function readCachedHistory(areaName = DEFAULT_AREA) {
@@ -39,26 +50,49 @@ export async function getCachedAreaList(options = {}) {
   const { force = false } = options;
   if (!force && areaListCache) return areaListCache;
   if (!force && areaListPromise) return areaListPromise;
+  const generation = force ? ++areaListGeneration : areaListGeneration;
 
-  areaListPromise = getRealDataAreaList({ silentError: true })
+  const request = getRealDataAreaList({ silentError: true })
     .then((res) => {
       const list = Array.isArray(res?.data) && res.data.length ? res.data : [DEFAULT_AREA];
-      areaListCache = list;
+      if (generation === areaListGeneration) areaListCache = list;
       return list;
     })
     .finally(() => {
-      areaListPromise = null;
+      if (areaListPromise === request) areaListPromise = null;
     });
 
-  return areaListPromise;
+  areaListPromise = request;
+  return request;
+}
+
+function realDataGeneration(area) {
+  return `${realDataGlobalGeneration}:${realDataGenerations.get(area) || 0}`;
+}
+
+function historyGeneration(area) {
+  return `${historyGlobalGeneration}:${historyGenerations.get(area) || 0}`;
+}
+
+function adminDistrictGeneration(area) {
+  return `${adminDistrictGlobalGeneration}:${adminDistrictGenerations.get(area) || 0}`;
+}
+
+function setRealDataCache(key, data) {
+  realDataCache.delete(key);
+  realDataCache.set(key, data);
+  while (realDataCache.size > MAX_REAL_DATA_CACHE_ENTRIES) {
+    realDataCache.delete(realDataCache.keys().next().value);
+  }
 }
 
 export async function getCachedRealData(areaName = DEFAULT_AREA, options = {}) {
   const { force = false, versionId = "" } = options;
   const area = normalizeArea(areaName);
   const key = versionKey(area, versionId);
-  const generation = realDataGenerations.get(area) || 0;
-  if (!force && realDataCache.has(key)) return realDataCache.get(key);
+  if (force) realDataGenerations.set(area, (realDataGenerations.get(area) || 0) + 1);
+  const generation = realDataGeneration(area);
+  if (!force && realDataCache.has(key)) return readCachedRealData(area, versionId);
   if (!force && realDataPromises.has(key)) return realDataPromises.get(key);
 
   const request = getBusLineStation(
@@ -72,16 +106,16 @@ export async function getCachedRealData(areaName = DEFAULT_AREA, options = {}) {
   )
     .then((res) => {
       const data = res?.data || {};
-      if ((realDataGenerations.get(area) || 0) === generation) {
-        realDataCache.set(key, data);
+      if (realDataGeneration(area) === generation) {
+        setRealDataCache(key, data);
         if (!versionId) {
-          realDataCache.set(latestKey(area), data);
+          setRealDataCache(latestKey(area), data);
         }
       }
       return data;
     })
     .finally(() => {
-      realDataPromises.delete(key);
+      if (realDataPromises.get(key) === request) realDataPromises.delete(key);
     });
 
   realDataPromises.set(key, request);
@@ -98,12 +132,12 @@ export function ensureCachedRouteStops(areaName = DEFAULT_AREA) {
   const area = normalizeArea(areaName);
   const existing = routeStopsPromises.get(area);
   if (existing) return existing;
-  const generation = realDataGenerations.get(area) || 0;
+  const generation = realDataGeneration(area);
   const promise = getCachedRealData(area)
     .then(async (data) => {
       if (!isRouteStopsDeferred(data)) return data;
       const res = await getBusLineStation({ areaName: area, include: "routeStops" }, { silentError: true });
-      if ((realDataGenerations.get(area) || 0) !== generation) return data;
+      if (realDataGeneration(area) !== generation) return data;
       const payload = res?.data || {};
       const sameVersion = String(payload.versionId || "") === String(data.versionId || "");
       if (payload.routeStops && sameVersion) {
@@ -112,7 +146,7 @@ export function ensureCachedRouteStops(areaName = DEFAULT_AREA) {
       return data;
     })
     .finally(() => {
-      routeStopsPromises.delete(area);
+      if (routeStopsPromises.get(area) === promise) routeStopsPromises.delete(area);
     });
   routeStopsPromises.set(area, promise);
   return promise;
@@ -121,20 +155,21 @@ export function ensureCachedRouteStops(areaName = DEFAULT_AREA) {
 export async function getCachedAdminDistricts(areaName = DEFAULT_AREA, options = {}) {
   const { force = false } = options;
   const area = normalizeArea(areaName);
-  const generation = adminDistrictGenerations.get(area) || 0;
+  if (force) adminDistrictGenerations.set(area, (adminDistrictGenerations.get(area) || 0) + 1);
+  const generation = adminDistrictGeneration(area);
   if (!force && adminDistrictCache.has(area)) return adminDistrictCache.get(area);
   if (!force && adminDistrictPromises.has(area)) return adminDistrictPromises.get(area);
 
   const request = getAdminDistricts({ areaName: area }, { silentError: true })
     .then((res) => {
       const data = res?.data || {};
-      if ((adminDistrictGenerations.get(area) || 0) === generation) {
+      if (adminDistrictGeneration(area) === generation) {
         adminDistrictCache.set(area, data);
       }
       return data;
     })
     .finally(() => {
-      adminDistrictPromises.delete(area);
+      if (adminDistrictPromises.get(area) === request) adminDistrictPromises.delete(area);
     });
 
   adminDistrictPromises.set(area, request);
@@ -144,20 +179,21 @@ export async function getCachedAdminDistricts(areaName = DEFAULT_AREA, options =
 export async function getCachedRealDataHistory(areaName = DEFAULT_AREA, options = {}) {
   const { force = false } = options;
   const area = normalizeArea(areaName);
-  const generation = historyGenerations.get(area) || 0;
+  if (force) historyGenerations.set(area, (historyGenerations.get(area) || 0) + 1);
+  const generation = historyGeneration(area);
   if (!force && historyCache.has(area)) return historyCache.get(area);
   if (!force && historyPromises.has(area)) return historyPromises.get(area);
 
   const request = getRealDataHistory({ areaName: area }, { silentError: true })
     .then((res) => {
       const data = res?.data || {};
-      if ((historyGenerations.get(area) || 0) === generation) {
+      if (historyGeneration(area) === generation) {
         historyCache.set(area, data);
       }
       return data;
     })
     .finally(() => {
-      historyPromises.delete(area);
+      if (historyPromises.get(area) === request) historyPromises.delete(area);
     });
 
   historyPromises.set(area, request);
@@ -166,6 +202,7 @@ export async function getCachedRealDataHistory(areaName = DEFAULT_AREA, options 
 
 export function invalidateCachedRealData(areaName = "") {
   if (!areaName) {
+    realDataGlobalGeneration += 1;
     realDataCache.clear();
     realDataPromises.clear();
     routeStopsPromises.clear();
@@ -185,6 +222,7 @@ export function invalidateCachedRealData(areaName = "") {
 
 export function invalidateCachedHistory(areaName = "") {
   if (!areaName) {
+    historyGlobalGeneration += 1;
     historyCache.clear();
     historyPromises.clear();
     return;
@@ -197,6 +235,7 @@ export function invalidateCachedHistory(areaName = "") {
 
 export function invalidateCachedAdminDistricts(areaName = "") {
   if (!areaName) {
+    adminDistrictGlobalGeneration += 1;
     adminDistrictCache.clear();
     adminDistrictPromises.clear();
     return;

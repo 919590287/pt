@@ -1,5 +1,6 @@
 package com.jts.gjcxfzksh.data.read;
 
+import com.jts.gjcxfzksh.data.ModelProcessingPool;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.core.utils.io.IOUtils;
 
@@ -135,8 +136,7 @@ public final class FastEventReader {
     }
 
     private static int pigzThreads() {
-        int cpus = Math.max(1, Runtime.getRuntime().availableProcessors());
-        int fallback = Math.max(1, Math.min(16, cpus - 1));
+        int fallback = Math.max(1, Math.min(16, ModelProcessingPool.parallelism()));
         return positiveIntSetting(PIGZ_THREADS_PROPERTY, PIGZ_THREADS_ENV, fallback);
     }
 

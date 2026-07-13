@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 行政区外站点：与高亮站点同构的空心环 + 靶心，但换成区外灰（#8a929e，
+     mapTheme network.outside，与灰色底图线路同色），表示"属于本线但不在本区"。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <circle cx="48" cy="48" r="43" fill="none" stroke="#8a929e" stroke-opacity="0.18" stroke-width="7"/>
+  <circle cx="48" cy="48" r="40" fill="#ffffff" fill-opacity="0.55"/>
+  <circle cx="48" cy="48" r="34" fill="#ffffff"/>
+  <circle cx="48" cy="48" r="34" fill="none" stroke="#6f7885" stroke-opacity="0.3" stroke-width="1.5"/>
+  <circle cx="48" cy="48" r="25.5" fill="#ffffff" stroke="#8a929e" stroke-width="10"/>
+  <circle cx="48" cy="48" r="10" fill="#8a929e"/>
+</svg>

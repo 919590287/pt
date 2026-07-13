@@ -12,11 +12,16 @@
       <span class="unit">分/班</span>
       <el-button v-if="model.length > 1" link type="danger" size="small" @click="removeRow(i)">删</el-button>
     </div>
+    <p v-for="error in errors" :key="error" class="slot-error">{{ error }}</p>
   </div>
 </template>
 
 <script setup>
+import { computed } from "vue";
+import { validateSlots } from "../utils";
+
 const model = defineModel({ type: Array, default: () => [] });
+const errors = computed(() => validateSlots(model.value));
 
 function addRow() {
   const last = model.value[model.value.length - 1];
@@ -51,6 +56,13 @@ function removeRow(i) {
     .sep { color: #94a3b8; }
     .headway { width: 96px; }
     .unit { font-size: 11px; color: #6b7789; white-space: nowrap; }
+  }
+
+  .slot-error {
+    margin: 0;
+    color: var(--dm2-delete, #c4291c);
+    font-size: 11px;
+    line-height: 1.45;
   }
 }
 </style>

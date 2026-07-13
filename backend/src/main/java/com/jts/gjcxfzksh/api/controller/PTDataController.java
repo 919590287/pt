@@ -129,6 +129,42 @@ public class PTDataController {
         return builder.body(chunk);
     }
 
+    @Operation(summary = "轨迹任意时刻视口快照(GET，供时间轴秒级跳转)")
+    @GetMapping(value = "/trajectory/frame.bin", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> trajectoryFrameBinaryGet(
+            @RequestParam("datasource") String datasource,
+            @RequestParam("time") int time,
+            @RequestParam(value = "bucketSeconds", defaultValue = "1") int bucketSeconds,
+            @RequestParam(value = "visibilityMode", defaultValue = "all") String visibilityMode,
+            @RequestParam(value = "minX", required = false) Double minX,
+            @RequestParam(value = "minY", required = false) Double minY,
+            @RequestParam(value = "maxX", required = false) Double maxX,
+            @RequestParam(value = "maxY", required = false) Double maxY) {
+        DatasourceParam param = new DatasourceParam();
+        param.setDatasource(datasource);
+        byte[] frame = service.trajectoryFrameBinary(
+                param,
+                Math.max(0, time),
+                Math.max(1, Math.min(300, bucketSeconds)),
+                visibilityMode,
+                minX,
+                minY,
+                maxX,
+                maxY
+        );
+        if (frame == null) {
+            return ResponseEntity.status(HttpStatus.ACCEPTED)
+                    .cacheControl(CacheControl.noStore())
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(new byte[0]);
+        }
+        return ResponseEntity.ok()
+                .cacheControl(CacheControl.noStore())
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .contentLength(frame.length)
+                .body(frame);
+    }
+
     private static boolean etagMatches(String etag, String ifNoneMatch) {
         if (etag == null || ifNoneMatch == null || ifNoneMatch.isBlank()) {
             return false;

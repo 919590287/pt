@@ -657,7 +657,8 @@ export class VehicleModelLayer {
     this.renderer.autoClearDepth = false;
     this.renderer.autoClearStencil = false;
     this.renderer.resetState();
-    gl.clear(gl.DEPTH_BUFFER_BIT);
+    // 保留 MapLibre 已建立的深度缓冲。建筑层即便因外部代码调整了图层顺序，
+    // 也能正确遮挡位于其后的道路、点和车辆；清空 depth 会让车辆永远浮在建筑前方。
     this.renderer.render(this.scene, this.camera);
     if (DEBUG_CHANNEL_ENABLED && renderStartedAt && typeof document !== "undefined") {
       const now = performance.now();

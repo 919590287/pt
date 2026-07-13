@@ -65,10 +65,12 @@
           <line x1="18" y1="6" x2="6" y2="18"></line>
         </svg>
       </button>
-      <template v-else-if="!selectedStation && !selectedRoute && !selectedDepot">
-        <el-tag type="warning" v-if="loadError">加载失败</el-tag>
-        <el-tag v-else-if="!overviewStats.lineCount && !overviewStats.stationCount">等待数据</el-tag>
-      </template>
+      <!-- 加载/空/错误态已下沉到面板体的状态机，标题栏不再重复浮标 -->
+      <el-tag
+        v-else-if="!selectedStation && !selectedRoute && !selectedDepot && isLoadingLayer && !isOverviewEmpty"
+        type="info"
+        size="small"
+      >更新中…</el-tag>
     </div>
 
     <div v-if="selectedStation" class="station-detail-panel">
@@ -201,15 +203,57 @@
       <p v-else class="station-route-empty">暂无场站属性明细</p>
     </div>
 
-    <OverviewMetrics
-      v-else
-      :stats="overviewStats"
-      :operator-rows="operatorLineRows"
-      :fmt-int="formatInteger"
-      :fmt-unit="formatUnit"
-      :fmt-pct="formatPercent"
-    />
-    <p v-if="loadError && !hasActiveDetail" class="load-error">{{ loadError }}</p>
+    <template v-else>
+      <!-- 加载态：首次拉取且暂无数据时用骨架屏占位，避免直接弹出 0 值；有旧数据的后台刷新则静默保留旧数据 -->
+      <div v-if="isLoadingLayer && isOverviewEmpty" class="overview-state overview-skeleton" aria-hidden="true">
+        <div class="sk-block sk-hero sk-shimmer"></div>
+        <div class="sk-strip">
+          <div class="sk-block sk-shimmer"></div>
+          <div class="sk-block sk-shimmer"></div>
+          <div class="sk-block sk-shimmer"></div>
+        </div>
+        <div class="sk-block sk-card sk-shimmer"></div>
+        <div class="sk-table">
+          <div v-for="n in 5" :key="n" class="sk-block sk-row sk-shimmer"></div>
+        </div>
+      </div>
+      <!-- 错误态：整块替换面板体（不再让告警浮在 0 值之上），并给出重试 -->
+      <div v-else-if="loadError" class="overview-state overview-status" role="alert">
+        <span class="overview-status-icon is-error" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+            <line x1="12" y1="9" x2="12" y2="13"></line>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+        </span>
+        <p class="overview-status-title">数据加载失败</p>
+        <p class="overview-status-desc">{{ loadError }}</p>
+        <button type="button" class="overview-status-retry" @click="loadOverviewLayers({ force: true })">重新加载</button>
+      </div>
+      <!-- 空态：已加载但无线网数据 -->
+      <div v-else-if="isOverviewEmpty" class="overview-state overview-status">
+        <span class="overview-status-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7l9-4 9 4-9 4-9-4z"></path>
+            <path d="M3 12l9 4 9-4"></path>
+            <path d="M3 17l9 4 9-4"></path>
+          </svg>
+        </span>
+        <p class="overview-status-title">暂无线网数据</p>
+        <p class="overview-status-desc">当前区域还没有可展示的线路与站点数据。</p>
+      </div>
+      <OverviewMetrics
+        v-else
+        :stats="overviewStats"
+        :operator-rows="operatorLineRows"
+        :show-vehicle-columns="overviewHasVehicleData"
+        :coverage="coverageView"
+        :fmt-int="formatInteger"
+        :fmt-unit="formatUnit"
+        :fmt-pct="formatPercent"
+        @configure-coverage="openBuiltUpDialog"
+      />
+    </template>
   </div>
 
   <div v-if="activeEditDataset" :class="['dm-edit-panel', isRightPanelCollapsed ? 'is-collapsed' : '']">
@@ -576,6 +620,68 @@
     @touch-row="markAttributeRowTouched"
     @apply="applyAttributeTableChanges"
   />
+
+  <teleport to="body">
+    <div v-if="builtUpDialog.visible" class="built-up-backdrop" @click.self="closeBuiltUpDialog">
+      <div class="built-up-modal" role="dialog" aria-modal="true" aria-labelledby="built-up-title">
+        <div class="built-up-head">
+          <div class="built-up-head-text">
+            <p class="built-up-kicker">常规公交站点覆盖率 · 分母设置</p>
+            <h3 id="built-up-title">建成区面积</h3>
+          </div>
+          <button type="button" class="built-up-close" aria-label="关闭" @click="closeBuiltUpDialog">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>
+          </button>
+        </div>
+        <p class="built-up-desc">
+          覆盖率 = 站点 300/500m 被服务面积 ÷ 建成区面积。留空则按{{ builtUpDialog.scopeLabel }}行政区面积
+          <strong>{{ formatUnit(builtUpDialog.defaultAreaKm2, "km²") }}</strong> 计算。
+        </p>
+        <div class="built-up-scope">
+          <span class="built-up-scope-tag">当前范围</span>
+          <span class="built-up-scope-name">{{ builtUpDialog.scopeLabel }}</span>
+        </div>
+        <label class="built-up-field">
+          <span class="built-up-field-label">建成区面积（km²）</span>
+          <input
+            ref="builtUpInputRef"
+            v-model="builtUpDialog.input"
+            class="built-up-input"
+            type="number"
+            inputmode="decimal"
+            min="0"
+            step="0.01"
+            :placeholder="builtUpDialog.defaultAreaKm2 != null ? `留空＝行政区面积 ${formatUnit(builtUpDialog.defaultAreaKm2, 'km²')}` : '输入建成区面积'"
+            @keyup.enter="saveBuiltUpDialog"
+            @keydown.esc="closeBuiltUpDialog"
+          />
+        </label>
+        <div class="built-up-preview" :class="{ 'is-missing': !builtUpPreview.available }">
+          <div class="built-up-preview-item">
+            <span>300 米</span>
+            <strong>{{ formatPercent(builtUpPreview.rate300) }}</strong>
+          </div>
+          <div class="built-up-preview-divider"></div>
+          <div class="built-up-preview-item">
+            <span>500 米</span>
+            <strong>{{ formatPercent(builtUpPreview.rate500) }}</strong>
+          </div>
+        </div>
+        <p v-if="!builtUpPreview.available" class="built-up-warn">该范围暂无被服务面积数据，无法按建成区面积重算（请确认后端已下发分区覆盖）。</p>
+        <template v-else>
+          <p v-if="builtUpPreview.isCapped" class="built-up-warn">输入面积小于站点服务面积，覆盖率按 100% 封顶显示。</p>
+          <p v-if="builtUpDialog.scope !== DISPLAY_RANGE_ALL" class="built-up-note">分区模式：此面积仅用于「{{ builtUpDialog.scopeLabel }}」，与其他分区分开保存。</p>
+        </template>
+        <div class="built-up-actions">
+          <button type="button" class="built-up-btn ghost" @click="resetBuiltUpDialog">恢复默认</button>
+          <span class="built-up-actions-right">
+            <button type="button" class="built-up-btn" @click="closeBuiltUpDialog">取消</button>
+            <button type="button" class="built-up-btn primary" @click="saveBuiltUpDialog">保存</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </teleport>
 </template>
 
 <script setup>
@@ -605,6 +711,7 @@ import {
   lineCoordinatePaths,
   pointCoordinates,
   routeDataId,
+  routeMatchKeys,
   routeStopSequence,
   validLngLat,
   valueOrEmpty,
@@ -618,6 +725,7 @@ import MapControlsToolbar from "./components/MapControlsToolbar.vue";
 import { MAP_THEME } from "@/utils/mapTheme.js";
 import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
 import busStationHighlightIconUrl from "@/assets/images/datamanagement/bus-station_highlight.svg?url";
+import busStationHighlightOutsideIconUrl from "@/assets/images/datamanagement/bus-station_highlight_outside.svg?url";
 import busDepotIconUrl from "@/assets/images/datamanagement/bus-depot.svg?url";
 import { lngLatToWebMercator } from "@/mymap/index.js";
 
@@ -674,8 +782,13 @@ const overviewStats = reactive({
   stationCount: 0,
   stationCoverage300Rate: null,
   stationCoverage500Rate: null,
+  // 全市被服务面积（分子）——供按"建成区面积"重算覆盖率
+  stationCoverage300Km2: null,
+  stationCoverage500Km2: null,
   adminAreaKm2: null,
 });
+// 各行政区覆盖面积映射：{ 区名: { coverage300Km2, coverage500Km2, areaKm2, coverage300Rate, coverage500Rate } }
+const overviewDistrictCoverage = ref({});
 let overviewStatsBaseline = {
   lineCount: 0,
   networkScaleKm: null,
@@ -806,7 +919,6 @@ let lastNormalizedCollections = null;
 // 规范化时的 data.routeStops 引用：懒加载合并会替换该引用；若合并发生在集合容器被
 // clearRealDataLayers 换代之后（如停留历史页时），命中校验因引用不一致自动降级为全量重建
 let lastNormalizedRouteStopsRaw = null;
-let isSuppressingRightMouseGesture = false;
 let suppressNextPanelToggleClick = false;
 let realDataCollections = {
   lines: emptyFeatureCollection(),
@@ -828,6 +940,11 @@ const SOURCE_SELECTED_STATION = "dm-real-bus-selected-station-source";
 const SOURCE_SELECTED_LINE = "dm-real-bus-selected-line-source";
 const SOURCE_SELECTED_ROUTE_STATIONS = "dm-real-bus-selected-route-stations-source";
 const SOURCE_SELECTED_DEPOT = "dm-real-bus-selected-depot-source";
+const SOURCE_DISTRICT_OUTLINE = "dm-admin-district-outline-source";
+// 区域外灰色底图：仅承载"触及本区的线路的完整几何"及其区外站点，铺在正常图层之下，
+// 使跨区线路的区内段正常高亮、区外段灰显；与本区无关的线路/站点/场站一律不显示
+const SOURCE_BASE_LINES = "dm-real-bus-base-lines-source";
+const SOURCE_BASE_STATIONS = "dm-real-bus-base-stations-source";
 const SOURCE_BY_DATASET = { line: SOURCE_LINES, station: SOURCE_STATIONS, depot: SOURCE_DEPOTS };
 const LAYER_LINES = "dm-real-bus-lines";
 const LAYER_LINE_SELECTED = "dm-real-bus-line-selected";
@@ -835,24 +952,30 @@ const LAYER_STATIONS = "dm-real-bus-stations";
 const LAYER_STATION_LABELS = "dm-real-bus-station-labels";
 const LAYER_STATION_SELECTED = "dm-real-bus-station-selected";
 const LAYER_ROUTE_STATION_SELECTED = "dm-real-bus-route-station-selected";
+const LAYER_ROUTE_STATION_OUTSIDE = "dm-real-bus-route-station-outside";
 const LAYER_ROUTE_STATION_LABELS = "dm-real-bus-route-station-labels";
 const LAYER_DEPOTS = "dm-real-bus-depots";
 const LAYER_DEPOT_LABELS = "dm-real-bus-depot-labels";
 const LAYER_DEPOT_SELECTED = "dm-real-bus-depot-selected";
+const LAYER_DISTRICT_OUTLINE = "dm-admin-district-outline";
+const LAYER_BASE_LINES = "dm-real-bus-base-lines";
+const LAYER_BASE_STATIONS = "dm-real-bus-base-stations";
+const BASE_NETWORK_COLOR = MAP_THEME.network.outside;
+const BASE_NETWORK_OPACITY = MAP_THEME.network.outsideOpacity;
+// 选中线路的站点按 _outside 标记分流到灰/橙两个图标图层（同源同尺寸，只差配色）
+const OUTSIDE_STATION_FILTER = ["==", ["get", "_outside"], true];
+const INSIDE_STATION_FILTER = ["!=", ["get", "_outside"], true];
 const SELECTED_LINE_COLOR = MAP_THEME.route.up;
 const SELECTED_LINE_GLOW_COLOR = MAP_THEME.route.upHalo;
 const NETWORK_LINE_COLOR = MAP_THEME.network.line;
 const NETWORK_LINE_DIMMED_COLOR = MAP_THEME.network.dimmed;
 const STATION_ICON_ID = "dm-real-bus-station-icon";
 const STATION_HIGHLIGHT_ICON_ID = "dm-real-bus-station-highlight-icon";
+const STATION_OUTSIDE_ICON_ID = "dm-real-bus-station-outside-icon";
 const DEPOT_ICON_ID = "dm-real-bus-depot-icon";
 const STATION_ICON_BASE_SIZE = 96;
 const DEPOT_ICON_BASE_SIZE = 128;
 const EARTH_RADIUS_METERS = 6378137;
-const RIGHT_MOUSE_BUTTON = 2;
-const RIGHT_MOUSE_BUTTON_MASK = 2;
-const BROWSER_GESTURE_LOCK_CLASS = "dm-browser-gesture-lock";
-const BROWSER_GESTURE_EVENT_OPTIONS = { capture: true, passive: false };
 const LINE_ATTRIBUTE_FIELD_ORDER = [
   "line_id",
   "dir",
@@ -1045,6 +1168,144 @@ const operatorLineRows = computed(() => {
   });
   return rows;
 });
+// 车辆数/配车占比目前无真实数据源；仅当出现真实数值时才展示这两列，否则收敛为三列表格
+const overviewHasVehicleData = computed(() =>
+  operatorLineRows.value.some((row) => !row.isTotal && Number.isFinite(Number(row.vehicleCount))),
+);
+// 数据总览是否为空：无线路且无站点即视为空态（错误态复位后也会落到这里，故渲染顺序为 加载→错误→空→数据）
+const isOverviewEmpty = computed(() => !overviewStats.lineCount && !overviewStats.stationCount);
+
+// ── 建成区面积覆写：覆盖率默认按行政区/分区面积为分母，用户可改用实际建成区面积；按「区域 + 分区」分开持久化 ──
+const BUILT_UP_STORAGE_KEY = "dm.builtUpArea.v1";
+function loadBuiltUpOverrides() {
+  if (typeof window === "undefined") return {};
+  try {
+    const parsed = JSON.parse(window.localStorage?.getItem(BUILT_UP_STORAGE_KEY) || "null");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+const builtUpOverrides = ref(loadBuiltUpOverrides());
+function builtUpOverrideFor(area, scope) {
+  const number = Number(builtUpOverrides.value?.[area]?.[scope]);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+function setBuiltUpOverride(area, scope, value) {
+  const next = { ...builtUpOverrides.value };
+  const scoped = { ...(next[area] || {}) };
+  const number = Number(value);
+  if (Number.isFinite(number) && number > 0) {
+    scoped[scope] = Number(number.toFixed(4));
+  } else {
+    delete scoped[scope];
+  }
+  if (Object.keys(scoped).length) next[area] = scoped;
+  else delete next[area];
+  builtUpOverrides.value = next;
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage?.setItem(BUILT_UP_STORAGE_KEY, JSON.stringify(builtUpOverrides.value));
+    } catch {
+      /* 隐私模式/配额不足时静默失败 */
+    }
+  }
+}
+
+// 当前范围（全市 / 某行政区）的覆盖率视图：分子取被服务面积，分母优先用建成区覆写，否则用行政区/分区面积；
+// 分子缺失（如后端未下发分区覆盖）时回退后端速率，避免直接"暂无"
+const coverageView = computed(() => {
+  const scope = selectedDisplayRange.value || DISPLAY_RANGE_ALL;
+  const isCity = scope === DISPLAY_RANGE_ALL;
+  const district = isCity ? null : overviewDistrictCoverage.value?.[scope] || null;
+  const covered300 = isCity ? nullableNumber(overviewStats.stationCoverage300Km2) : nullableNumber(district?.coverage300Km2);
+  const covered500 = isCity ? nullableNumber(overviewStats.stationCoverage500Km2) : nullableNumber(district?.coverage500Km2);
+  const defaultAreaKm2 = isCity ? nullableNumber(overviewStats.adminAreaKm2) : nullableNumber(district?.areaKm2);
+  const backend300 = isCity ? nullableNumber(overviewStats.stationCoverage300Rate) : nullableNumber(district?.coverage300Rate);
+  const backend500 = isCity ? nullableNumber(overviewStats.stationCoverage500Rate) : nullableNumber(district?.coverage500Rate);
+  const override = builtUpOverrideFor(selectedArea.value, scope);
+  const denom = override != null ? override : defaultAreaKm2;
+  const rateOf = (covered) => (covered != null && denom != null && denom > 0 ? (covered / denom) * 100 : null);
+  const rawRate = (covered, backend) => {
+    const value = rateOf(covered);
+    if (value != null) return value;
+    // 有覆写却拿不到分子 → 无法计算；无覆写 → 回退后端速率
+    return override != null ? null : backend;
+  };
+  const raw300 = rawRate(covered300, backend300);
+  const raw500 = rawRate(covered500, backend500);
+  // 建成区面积 < 服务footprint 时原始值可能 >100%，显示封顶到 100% 并标注
+  const cap = (rate) => (rate != null && rate > 100 ? 100 : rate);
+  return {
+    scope,
+    scopeLabel: isCity ? DISPLAY_RANGE_ALL : scope,
+    isCity,
+    covered300,
+    covered500,
+    defaultAreaKm2,
+    builtUpAreaKm2: override,
+    usingOverride: override != null,
+    denominatorKm2: denom,
+    hasCoveredArea: covered300 != null || covered500 != null,
+    rate300: cap(raw300),
+    rate500: cap(raw500),
+    isCapped: (raw300 != null && raw300 > 100) || (raw500 != null && raw500 > 100),
+  };
+});
+
+// 建成区面积设置弹窗
+const builtUpInputRef = ref(null);
+const builtUpDialog = reactive({
+  visible: false,
+  scope: DISPLAY_RANGE_ALL,
+  scopeLabel: DISPLAY_RANGE_ALL,
+  input: "",
+  defaultAreaKm2: null,
+  covered300: null,
+  covered500: null,
+});
+// 弹窗内按当前输入实时预览覆盖率（输入非法/空则回落默认面积）
+const builtUpPreview = computed(() => {
+  const value = Number(builtUpDialog.input);
+  const denom = Number.isFinite(value) && value > 0 ? value : builtUpDialog.defaultAreaKm2;
+  const available = builtUpDialog.covered300 != null || builtUpDialog.covered500 != null;
+  const rate = (covered) => (covered != null && denom != null && denom > 0 ? (covered / denom) * 100 : null);
+  const raw300 = rate(builtUpDialog.covered300);
+  const raw500 = rate(builtUpDialog.covered500);
+  const cap = (r) => (r != null && r > 100 ? 100 : r);
+  return {
+    denom,
+    available,
+    rate300: cap(raw300),
+    rate500: cap(raw500),
+    isCapped: (raw300 != null && raw300 > 100) || (raw500 != null && raw500 > 100),
+  };
+});
+function openBuiltUpDialog() {
+  const view = coverageView.value;
+  builtUpDialog.scope = view.scope;
+  builtUpDialog.scopeLabel = view.scopeLabel;
+  builtUpDialog.defaultAreaKm2 = view.defaultAreaKm2;
+  builtUpDialog.covered300 = view.covered300;
+  builtUpDialog.covered500 = view.covered500;
+  builtUpDialog.input = view.builtUpAreaKm2 != null ? String(view.builtUpAreaKm2) : "";
+  builtUpDialog.visible = true;
+  nextTick(() => builtUpInputRef.value?.focus());
+}
+function closeBuiltUpDialog() {
+  builtUpDialog.visible = false;
+}
+function saveBuiltUpDialog() {
+  // 空或非正数等同恢复默认（清除覆写）
+  setBuiltUpOverride(selectedArea.value, builtUpDialog.scope, builtUpDialog.input);
+  builtUpDialog.visible = false;
+}
+function resetBuiltUpDialog() {
+  setBuiltUpOverride(selectedArea.value, builtUpDialog.scope, null);
+  builtUpDialog.input = "";
+  builtUpDialog.visible = false;
+}
+
 const lineRoutePickerTitle = computed(() => {
   if (lineRoutePicker.mode === "edit") return "选择经过该路段的线路";
   return "选择线路";
@@ -1363,7 +1624,11 @@ function setOverviewStats(data) {
   overviewStats.stationCount = overviewStatsBaseline.stationCount;
   overviewStats.stationCoverage300Rate = nullableNumber(overview.stationCoverage300Rate);
   overviewStats.stationCoverage500Rate = nullableNumber(overview.stationCoverage500Rate);
+  overviewStats.stationCoverage300Km2 = nullableNumber(overview.stationCoverage300Km2);
+  overviewStats.stationCoverage500Km2 = nullableNumber(overview.stationCoverage500Km2);
   overviewStats.adminAreaKm2 = overviewStatsBaseline.adminAreaKm2;
+  overviewDistrictCoverage.value =
+    overview.districtCoverage && typeof overview.districtCoverage === "object" ? overview.districtCoverage : {};
 }
 
 function syncHistorySummary(history = {}) {
@@ -1468,7 +1733,10 @@ function resetOverviewStats() {
   overviewStats.stationCount = 0;
   overviewStats.stationCoverage300Rate = null;
   overviewStats.stationCoverage500Rate = null;
+  overviewStats.stationCoverage300Km2 = null;
+  overviewStats.stationCoverage500Km2 = null;
   overviewStats.adminAreaKm2 = null;
+  overviewDistrictCoverage.value = {};
   overviewStatsBaseline = {
     lineCount: 0,
     networkScaleKm: null,
@@ -1544,6 +1812,9 @@ function renderRealDataLayers(data, mode = "overview") {
     ensureSourceData(map, SOURCE_SELECTED_ROUTE_STATIONS, emptyFeatureCollection());
     ensureSourceData(map, SOURCE_DEPOTS, realDataCollections.depots);
     ensureSourceData(map, SOURCE_SELECTED_DEPOT, emptyFeatureCollection());
+    // 灰色底图：初值置空，由 updateBaseNetworkLayers 按当前区域/选中线路填充触及本区线路的几何
+    ensureSourceData(map, SOURCE_BASE_LINES, emptyFeatureCollection());
+    ensureSourceData(map, SOURCE_BASE_STATIONS, emptyFeatureCollection());
     await ensureStationIcon(map);
     ensureRealDataLayerSet(map);
     setRealDataLayerVisibility(map, {
@@ -1601,6 +1872,9 @@ function invalidateRenderedRealDataSources(options = {}) {
     const sourceId = SOURCE_BY_DATASET[datasetType];
     if (sourceId) realDataSourceDataRefs.delete(sourceId);
   });
+  // 灰色底图集合按裁剪版本记忆化：全量集合原地突变后强制下轮重算（版本号已在 applyDisplayRangeFilter 递增）
+  districtBaseSignature = "";
+  baseNetworkSelSignature = "";
   // 集合内容被原地修改而引用不变，派生索引必须强制重建
   searchIndexesDirty = true;
   if (datasets.includes("line")) {
@@ -1655,6 +1929,34 @@ function featureUpdateDiff(feature) {
 }
 
 function ensureRealDataLayerSet(map) {
+  // 灰色底图三层（默认隐藏，仅选中行政区时显示）：铺在对应正常图层之下，
+  // 正常图层绘制的是区域内裁剪后的集合，恰好盖住区域内部分 → 区域内彩色、区域外灰色
+  if (!map.getLayer(LAYER_BASE_LINES)) {
+    addLayerBelowBuildings(map, {
+      id: LAYER_BASE_LINES,
+      type: "line",
+      source: SOURCE_BASE_LINES,
+      layout: { visibility: "none", "line-join": "round", "line-cap": "round" },
+      paint: {
+        "line-color": BASE_NETWORK_COLOR,
+        "line-opacity": BASE_NETWORK_OPACITY,
+        "line-width": baseNetworkLineWidth(),
+      },
+    });
+  }
+  if (!map.getLayer(LAYER_BASE_STATIONS)) {
+    map.addLayer({
+      id: LAYER_BASE_STATIONS,
+      type: "circle",
+      source: SOURCE_BASE_STATIONS,
+      layout: { visibility: "none" },
+      paint: {
+        "circle-color": BASE_NETWORK_COLOR,
+        "circle-opacity": ["interpolate", ["linear"], ["zoom"], 9, 0.5, 13, 0.68, 15, 0.8],
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, 1.6, 13, 2.8, 16, 4],
+      },
+    });
+  }
   if (!map.getLayer(LAYER_LINES)) {
     addLayerBelowBuildings(map, {
       id: LAYER_LINES,
@@ -1732,11 +2034,25 @@ function ensureRealDataLayerSet(map) {
       },
     });
   }
+  // 选中线路的区外站点：与区内站点同尺寸、同形状，只换成区外灰（与灰色底图线路同色）
+  if (!map.getLayer(LAYER_ROUTE_STATION_OUTSIDE)) {
+    map.addLayer({
+      id: LAYER_ROUTE_STATION_OUTSIDE,
+      type: "symbol",
+      source: SOURCE_SELECTED_ROUTE_STATIONS,
+      filter: OUTSIDE_STATION_FILTER,
+      layout: stationIconLayout(STATION_OUTSIDE_ICON_ID, selectedRouteStationIconScale()),
+      paint: {
+        "icon-opacity": 0.96,
+      },
+    });
+  }
   if (!map.getLayer(LAYER_ROUTE_STATION_SELECTED)) {
     map.addLayer({
       id: LAYER_ROUTE_STATION_SELECTED,
       type: "symbol",
       source: SOURCE_SELECTED_ROUTE_STATIONS,
+      filter: INSIDE_STATION_FILTER,
       layout: stationIconLayout(STATION_HIGHLIGHT_ICON_ID, selectedRouteStationIconScale()),
       paint: {
         "icon-opacity": 0.96,
@@ -1750,7 +2066,7 @@ function ensureRealDataLayerSet(map) {
       source: SOURCE_SELECTED_ROUTE_STATIONS,
       minzoom: 14,
       layout: stationLabelLayout(),
-      paint: stationLabelPaint(),
+      paint: routeStationLabelPaint(),
     });
   }
   if (!map.getLayer(LAYER_DEPOTS)) {
@@ -1785,6 +2101,186 @@ function ensureRealDataLayerSet(map) {
       },
     });
   }
+  ensureDistrictOutlineLayer(map);
+  updateBaseNetworkLayers(map);
+}
+
+// 区域外灰色底图：数据 = 触及本区的线路全量几何（含区外段）及其区外站点；
+// 可见性 = 选中了行政区 且 对应正常图层此刻可见
+function updateBaseNetworkLayers(map = MapRef.value?.map) {
+  if (!map?.getLayer?.(LAYER_BASE_LINES)) return;
+  const base = currentBaseNetworkCollections();
+  setGeoJsonSourceData(SOURCE_BASE_LINES, base.lines, map);
+  setGeoJsonSourceData(SOURCE_BASE_STATIONS, base.stations, map);
+  map.setPaintProperty(LAYER_BASE_LINES, "line-width", baseNetworkLineWidth());
+  const districtActive = selectedDisplayRange.value !== DISPLAY_RANGE_ALL;
+  const mirror = (baseId, coloredId) => {
+    const visible = districtActive && isLayerVisible(map, coloredId);
+    setLayerVisibility(map, baseId, visible ? "visible" : "none");
+  };
+  mirror(LAYER_BASE_LINES, LAYER_LINES);
+  // 灰色站点跟随线网可见性；选中线路时该线的区外站点改由灰色站点图标绘制，小圆点隐去避免重叠
+  const baseStationsVisible = districtActive
+    && isLayerVisible(map, LAYER_LINES)
+    && !selectedRouteStationsActive();
+  setLayerVisibility(map, LAYER_BASE_STATIONS, baseStationsVisible ? "visible" : "none");
+}
+
+function isLayerVisible(map, layerId) {
+  return Boolean(map.getLayer(layerId)) && map.getLayoutProperty(layerId, "visibility") !== "none";
+}
+
+const EMPTY_BASE_COLLECTIONS = { lines: emptyFeatureCollection(), stations: emptyFeatureCollection() };
+
+function selectedRouteMatchKeys() {
+  const properties = selectedRoute.value?.feature?.properties || selectedRoute.value?.properties || null;
+  return properties ? routeMatchKeys(properties) : null;
+}
+
+// 两级记忆化：
+//  ① 区级全量底图（触及本区所有线路的完整几何 + 其区外站点）—— 遍历全量线路/站序，按区划裁剪版本缓存，每区只算一次；
+//  ② 选中线路时在①之上再做一次廉价过滤（只留该线路），按选中线路键缓存。
+let districtBaseSignature = "";
+let districtBaseFull = EMPTY_BASE_COLLECTIONS;
+let baseNetworkSelSignature = "";
+let baseNetworkCollections = EMPTY_BASE_COLLECTIONS;
+
+function currentBaseNetworkCollections() {
+  if (selectedDisplayRange.value === DISPLAY_RANGE_ALL) return EMPTY_BASE_COLLECTIONS;
+  const full = districtBaseFullCollections();
+  const selectedKeys = selectedRoute.value ? (selectedRouteMatchKeys() || []) : null;
+  const selSignature = `${districtBaseSignature}|${selectedKeys ? selectedKeys.join("~") : ""}`;
+  if (selSignature === baseNetworkSelSignature) return baseNetworkCollections;
+  baseNetworkSelSignature = selSignature;
+  if (!selectedKeys) {
+    baseNetworkCollections = full;
+  } else {
+    const selSet = new Set(selectedKeys);
+    const isSelected = (properties) => routeMatchKeys(properties || {}).some((key) => selSet.has(key));
+    baseNetworkCollections = {
+      lines: featureCollectionFromFeatures(collectionFeatures(full.lines).filter((f) => isSelected(f?.properties))),
+      stations: featureCollectionFromFeatures(collectionFeatures(full.stations).filter((f) => isSelected(f?.properties))),
+    };
+  }
+  return baseNetworkCollections;
+}
+
+function districtBaseFullCollections() {
+  const signature = `${realDataCollectionsRevision.value}|${selectedDisplayRange.value}`;
+  if (signature === districtBaseSignature) return districtBaseFull;
+  districtBaseSignature = signature;
+  districtBaseFull = computeDistrictBaseFull();
+  return districtBaseFull;
+}
+
+// 计算触及本区的所有线路的完整几何 + 其区外站点。全为集合级运算（无逐点多边形测试）：
+// 区内/区外判定复用 worker 已产出的区内裁剪结果（realDataCollections）。
+function computeDistrictBaseFull() {
+  // 触及本区的线路键集：来自区内裁剪后的线要素（有区内站序才会出现在这里）
+  const touchingKeys = new Set();
+  for (const feature of collectionFeatures(realDataCollections.lines)) {
+    for (const key of routeMatchKeys(feature?.properties || {})) touchingKeys.add(key);
+  }
+  const isTouching = (properties) => routeMatchKeys(properties || {}).some((key) => touchingKeys.has(key));
+  const lines = featureCollectionFromFeatures(
+    collectionFeatures(realDataAllCollections.lines).filter((feature) => isTouching(feature?.properties)),
+  );
+  // 区内实体站点键集（正常图层已绘制，灰点里排除，避免区内站点被灰点盖住）
+  const inRegionStopKeys = new Set();
+  for (const feature of collectionFeatures(realDataCollections.routeStops)) {
+    inRegionStopKeys.add(routeStopPhysicalKey(feature));
+  }
+  const seenStops = new Set();
+  const stopFeatures = [];
+  for (const feature of collectionFeatures(realDataAllCollections.routeStops)) {
+    if (!isTouching(feature?.properties)) continue;
+    const key = routeStopPhysicalKey(feature);
+    if (inRegionStopKeys.has(key) || seenStops.has(key)) continue; // 区内站点 / 已收录去重
+    seenStops.add(key);
+    stopFeatures.push(feature);
+  }
+  return { lines, stations: featureCollectionFromFeatures(stopFeatures) };
+}
+
+// 实体站点唯一键（同一物理站被多条线经停时只画一个灰点）
+function routeStopPhysicalKey(feature) {
+  const properties = feature?.properties || {};
+  const coordinate = pointCoordinates(feature?.geometry);
+  return String(
+    properties.stop_id ||
+      properties.stopId ||
+      properties.stop_name ||
+      properties.name ||
+      `${coordinate?.[0] ?? "x"}-${coordinate?.[1] ?? "y"}`,
+  );
+}
+
+// 行政区边界虚线：与运行监测等模块统一的显示范围描边（选中某行政区时高亮其边界）
+function ensureDistrictOutlineLayer(map) {
+  if (!map.getSource(SOURCE_DISTRICT_OUTLINE)) {
+    map.addSource(SOURCE_DISTRICT_OUTLINE, { type: "geojson", data: districtOutlineCollection() });
+  }
+  if (!map.getLayer(LAYER_DISTRICT_OUTLINE)) {
+    map.addLayer({
+      id: LAYER_DISTRICT_OUTLINE,
+      type: "line",
+      source: SOURCE_DISTRICT_OUTLINE,
+      layout: {
+        "line-join": "round",
+        "line-cap": "round",
+      },
+      paint: {
+        "line-color": "#1569de",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.4, 12, 2.1, 15, 2.8],
+        "line-opacity": 0.86,
+        "line-dasharray": [3.2, 2.4],
+      },
+    });
+  }
+  updateDistrictOutlineLayer(map);
+}
+
+function districtOutlineCollection(context = activeDisplayRangeContext()) {
+  const geometry = districtOutlineGeometry(context?.feature?.geometry);
+  return geometry
+    ? {
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          id: context?.feature?.id || "active-display-range",
+          geometry,
+          properties: { ...(context?.feature?.properties || {}) },
+        }],
+      }
+    : emptyFeatureCollection();
+}
+
+function districtOutlineGeometry(geometry) {
+  if (!geometry) return null;
+  if (geometry.type === "LineString" || geometry.type === "MultiLineString") return geometry;
+  const rings = [];
+  if (geometry.type === "Polygon") {
+    (geometry.coordinates || []).forEach((ring) => {
+      if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
+    });
+  } else if (geometry.type === "MultiPolygon") {
+    (geometry.coordinates || []).forEach((polygon) => {
+      (Array.isArray(polygon) ? polygon : []).forEach((ring) => {
+        if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
+      });
+    });
+  }
+  if (!rings.length) return null;
+  return rings.length === 1
+    ? { type: "LineString", coordinates: rings[0] }
+    : { type: "MultiLineString", coordinates: rings };
+}
+
+function updateDistrictOutlineLayer(map = MapRef.value?.map) {
+  if (!map?.getLayer?.(LAYER_DISTRICT_OUTLINE)) return;
+  const context = activeDisplayRangeContext();
+  setGeoJsonSourceData(SOURCE_DISTRICT_OUTLINE, districtOutlineCollection(context), map);
+  setLayerVisibility(map, LAYER_DISTRICT_OUTLINE, context ? "visible" : "none");
 }
 
 function setRealDataLayerVisibility(map, visibility) {
@@ -1797,10 +2293,13 @@ function setRealDataLayerVisibility(map, visibility) {
   setLayerVisibility(map, LAYER_STATION_LABELS, visibility.stationLabels ? visible : hidden);
   setLayerVisibility(map, LAYER_STATION_SELECTED, visibility.stations ? visible : hidden);
   setLayerVisibility(map, LAYER_ROUTE_STATION_SELECTED, visibility.stations ? visible : hidden);
+  setLayerVisibility(map, LAYER_ROUTE_STATION_OUTSIDE, visibility.stations ? visible : hidden);
   setLayerVisibility(map, LAYER_ROUTE_STATION_LABELS, visibility.lines ? visible : hidden);
   setLayerVisibility(map, LAYER_DEPOTS, visibility.depots ? visible : hidden);
   setLayerVisibility(map, LAYER_DEPOT_LABELS, visibility.depotLabels ? visible : hidden);
   setLayerVisibility(map, LAYER_DEPOT_SELECTED, visibility.depots ? visible : hidden);
+  // 灰色底图可见性跟随对应正常图层，并叠加"已选行政区"门控
+  updateBaseNetworkLayers(map);
 }
 
 function setLayerVisibility(map, layerId, visibility) {
@@ -1852,6 +2351,14 @@ function stationLabelPaint() {
   };
 }
 
+// 选中线路的站名：区外站点的站名也走区外灰，与其图标/线路保持同一套配色
+function routeStationLabelPaint() {
+  return {
+    ...stationLabelPaint(),
+    "text-color": ["case", OUTSIDE_STATION_FILTER, BASE_NETWORK_COLOR, MAP_THEME.station.label],
+  };
+}
+
 function depotLabelLayout() {
   return {
     "text-field": ["coalesce", ["get", "depot_name"], ["get", "name"], ["get", "场站名称"], ["get", "F002"], ""],
@@ -1888,6 +2395,7 @@ async function ensureStationIcon(map) {
   await Promise.all([
     addMapImageOnce(map, STATION_ICON_ID, busStationIconUrl, STATION_ICON_BASE_SIZE),
     addMapImageOnce(map, STATION_HIGHLIGHT_ICON_ID, busStationHighlightIconUrl, STATION_ICON_BASE_SIZE),
+    addMapImageOnce(map, STATION_OUTSIDE_ICON_ID, busStationHighlightOutsideIconUrl, STATION_ICON_BASE_SIZE),
     addMapImageOnce(map, DEPOT_ICON_ID, busDepotIconUrl, DEPOT_ICON_BASE_SIZE),
   ]);
 }
@@ -2028,6 +2536,12 @@ function lineOpacityPaint(paintKeys = selectedLinePaintKeys()) {
     return 0;
   }
   return MAP_THEME.network.lineOpacity;
+}
+
+// 灰色底图宽度：选中线路时灰底只剩该线路的区外溢出，必须与橙色高亮同宽，
+// 否则跨区线路在分界处会突然变细
+function baseNetworkLineWidth() {
+  return selectedRoute.value ? selectedLineWidth() : networkLineWidth();
 }
 
 // 线网宽度随 zoom 增长：远景收细成"电路板"底纹，近景加粗便于点选与阅读
@@ -2250,6 +2764,8 @@ function districtFeatureName(feature) {
 function applyDisplayRangeFilter(options = {}) {
   const { updateSources = true, clearSelection: shouldClearSelection = false } = options;
   const context = activeDisplayRangeContext();
+  // 行政区边界只依赖选中范围本身，立即更新描边——不必等后台裁剪 worker 返回
+  updateDistrictOutlineLayer();
   const cacheKey = context ? context.name : DISPLAY_RANGE_ALL;
   // 缓存条目携带来源集合引用做有效性校验，避免 clearRealDataLayers 后残留的过期条目被复用
   const cachedEntry = displayRangeFilterCache.get(cacheKey);
@@ -2474,6 +2990,8 @@ function syncRealDataSourceData() {
     clearSelectedLineLayer();
   }
   updateSelectedDepotLayer(selectedDepot.value?.feature || null);
+  updateDistrictOutlineLayer(map);
+  updateBaseNetworkLayers(map);
   applyLayerPaint();
 }
 
@@ -2729,10 +3247,14 @@ function emptyFeatureCollection() {
 function clearRealDataLayers() {
   const map = MapRef.value?.map;
   if (!map) return;
+  if (map.getLayer(LAYER_DISTRICT_OUTLINE)) map.removeLayer(LAYER_DISTRICT_OUTLINE);
+  if (map.getLayer(LAYER_BASE_STATIONS)) map.removeLayer(LAYER_BASE_STATIONS);
+  if (map.getLayer(LAYER_BASE_LINES)) map.removeLayer(LAYER_BASE_LINES);
   if (map.getLayer(LAYER_DEPOT_SELECTED)) map.removeLayer(LAYER_DEPOT_SELECTED);
   if (map.getLayer(LAYER_DEPOT_LABELS)) map.removeLayer(LAYER_DEPOT_LABELS);
   if (map.getLayer(LAYER_DEPOTS)) map.removeLayer(LAYER_DEPOTS);
   if (map.getLayer(LAYER_ROUTE_STATION_SELECTED)) map.removeLayer(LAYER_ROUTE_STATION_SELECTED);
+  if (map.getLayer(LAYER_ROUTE_STATION_OUTSIDE)) map.removeLayer(LAYER_ROUTE_STATION_OUTSIDE);
   if (map.getLayer(LAYER_STATION_SELECTED)) map.removeLayer(LAYER_STATION_SELECTED);
   if (map.getLayer(LAYER_STATION_LABELS)) map.removeLayer(LAYER_STATION_LABELS);
   if (map.getLayer(LAYER_STATIONS)) map.removeLayer(LAYER_STATIONS);
@@ -2740,6 +3262,9 @@ function clearRealDataLayers() {
   if (map.getLayer(LAYER_LINE_SELECTED + "-glow")) map.removeLayer(LAYER_LINE_SELECTED + "-glow");
   if (map.getLayer(LAYER_LINES)) map.removeLayer(LAYER_LINES);
   if (map.getLayer(LAYER_ROUTE_STATION_LABELS)) map.removeLayer(LAYER_ROUTE_STATION_LABELS);
+  if (map.getSource(SOURCE_DISTRICT_OUTLINE)) map.removeSource(SOURCE_DISTRICT_OUTLINE);
+  if (map.getSource(SOURCE_BASE_STATIONS)) map.removeSource(SOURCE_BASE_STATIONS);
+  if (map.getSource(SOURCE_BASE_LINES)) map.removeSource(SOURCE_BASE_LINES);
   if (map.getSource(SOURCE_SELECTED_DEPOT)) map.removeSource(SOURCE_SELECTED_DEPOT);
   if (map.getSource(SOURCE_DEPOTS)) map.removeSource(SOURCE_DEPOTS);
   if (map.getSource(SOURCE_SELECTED_ROUTE_STATIONS)) map.removeSource(SOURCE_SELECTED_ROUTE_STATIONS);
@@ -2781,6 +3306,9 @@ function applyLayerPaint() {
     map.setPaintProperty(LAYER_LINES, "line-width", networkLineWidth());
     map.setPaintProperty(LAYER_LINES, "line-opacity", lineOpacityPaint(paintKeys));
   }
+  if (map.getLayer(LAYER_BASE_LINES)) {
+    map.setPaintProperty(LAYER_BASE_LINES, "line-width", baseNetworkLineWidth());
+  }
   if (map.getLayer(LAYER_LINE_SELECTED)) {
     map.setPaintProperty(LAYER_LINE_SELECTED, "line-color", SELECTED_LINE_COLOR);
     map.setPaintProperty(LAYER_LINE_SELECTED, "line-width", selectedLineWidth());
@@ -2799,6 +3327,9 @@ function applyLayerPaint() {
   }
   if (map.getLayer(LAYER_ROUTE_STATION_SELECTED)) {
     map.setLayoutProperty(LAYER_ROUTE_STATION_SELECTED, "icon-size", selectedRouteStationIconScale());
+  }
+  if (map.getLayer(LAYER_ROUTE_STATION_OUTSIDE)) {
+    map.setLayoutProperty(LAYER_ROUTE_STATION_OUTSIDE, "icon-size", selectedRouteStationIconScale());
   }
 }
 
@@ -5406,6 +5937,8 @@ function clearSelectionState() {
   // 选中线路时底图线网/站点/站名整体隐藏，取消选中必须同步恢复
   updateStationSelectionLayers();
   updateBaseLineOpacity();
+  // 灰底的内容/宽度/站点可见性都随选中态变化，清空选中同样要重算
+  updateBaseNetworkLayers();
 }
 
 function updateStationSelectionLayers() {
@@ -5431,21 +5964,44 @@ function updateStationSelectionLayers() {
   }
 }
 
+function selectedRouteStationsActive() {
+  return Boolean(selectedRoute.value) && activeKey.value !== "update_line";
+}
+
 function updateSelectedRouteStationsLayer() {
   const map = MapRef.value?.map;
   const source = map?.getSource(SOURCE_SELECTED_ROUTE_STATIONS);
   if (!source?.setData) return;
-  if (!selectedRoute.value || activeKey.value === "update_line") {
+  if (!selectedRouteStationsActive()) {
     source.setData(emptyFeatureCollection());
     return;
   }
   source.setData({ type: "FeatureCollection", features: selectedRouteStationFeatures() });
 }
 
+// 选中行政区时，选中线路自身的站点按物理站键分成区内（橙色高亮）与区外（灰色），
+// 区内集合复用 worker 已裁剪好的 realDataCollections.routeStops，无需逐点多边形测试
+let inRegionStopKeyCache = { revision: -1, keys: new Set() };
+
+function inRegionRouteStopKeys() {
+  const revision = realDataCollectionsRevision.value;
+  if (inRegionStopKeyCache.revision === revision) return inRegionStopKeyCache.keys;
+  const keys = new Set();
+  if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
+    for (const feature of collectionFeatures(realDataCollections.routeStops)) {
+      keys.add(routeStopPhysicalKey(feature));
+    }
+  }
+  inRegionStopKeyCache = { revision, keys };
+  return keys;
+}
+
 function selectedRouteStationFeatures() {
-  if (!selectedRoute.value || activeKey.value === "update_line") return [];
+  if (!selectedRouteStationsActive()) return [];
+  const districtActive = selectedDisplayRange.value !== DISPLAY_RANGE_ALL;
+  const inRegionKeys = districtActive ? inRegionRouteStopKeys() : null;
   const routeStops = routeStopFeaturesForRoute(selectedRoute.value.properties, selectedRoute.value)
-    .map(({ feature }, index) => normalizeRouteStationHighlightFeature(feature, index));
+    .map(({ feature }, index) => normalizeRouteStationHighlightFeature(feature, index, inRegionKeys));
   const sourceFeatures = routeStops.length ? routeStops : routeStationSourceFallbackFeatures(selectedRoute.value);
   const seen = new Set();
   const result = [];
@@ -5458,7 +6014,7 @@ function selectedRouteStationFeatures() {
   return result;
 }
 
-function normalizeRouteStationHighlightFeature(feature, index = 0) {
+function normalizeRouteStationHighlightFeature(feature, index = 0, inRegionKeys = null) {
   const properties = feature?.properties || {};
   const stationKey = properties.stop_id || properties._stationKey || `${stationName(properties)}-${index}`;
   return {
@@ -5468,6 +6024,7 @@ function normalizeRouteStationHighlightFeature(feature, index = 0) {
     properties: {
       ...properties,
       _stationKey: String(stationKey),
+      _outside: Boolean(inRegionKeys) && !inRegionKeys.has(routeStopPhysicalKey(feature)),
     },
   };
 }
@@ -5543,6 +6100,8 @@ function updateSelectedLineLayer(feature, options = {}) {
     source.setData(features.length ? { type: "FeatureCollection", features: features.map(plainGeoJsonFeature) } : emptyFeatureCollection());
   }
   updateBaseLineOpacity();
+  // 选中线路变化会改变灰色底图内容（选中时只留该线路的区外溢出）
+  updateBaseNetworkLayers();
 }
 
 function clearSelectedLineLayer() {
@@ -6481,68 +7040,6 @@ function clearAllEditOperations() {
   lastNormalizedCollections = null;
 }
 
-function preventDefaultIfPossible(event) {
-  if (event?.cancelable) {
-    event.preventDefault();
-  }
-}
-
-function isRightMouseGestureEvent(event) {
-  return event?.button === RIGHT_MOUSE_BUTTON || (event?.buttons & RIGHT_MOUSE_BUTTON_MASK) === RIGHT_MOUSE_BUTTON_MASK;
-}
-
-function handleBrowserGestureMouseEvent(event) {
-  if (!isRightMouseGestureEvent(event)) return;
-  if (event.type === "mousedown") {
-    isSuppressingRightMouseGesture = true;
-  }
-  preventDefaultIfPossible(event);
-}
-
-function handleBrowserGestureContextMenu(event) {
-  if (!isSuppressingRightMouseGesture && !isRightMouseGestureEvent(event)) return;
-  preventDefaultIfPossible(event);
-  isSuppressingRightMouseGesture = false;
-}
-
-function handleBrowserGestureMouseUp(event) {
-  if (!isSuppressingRightMouseGesture && event?.button !== RIGHT_MOUSE_BUTTON) return;
-  preventDefaultIfPossible(event);
-  isSuppressingRightMouseGesture = false;
-}
-
-function handleBrowserGestureDragStart(event) {
-  if (!isSuppressingRightMouseGesture) return;
-  preventDefaultIfPossible(event);
-}
-
-function resetBrowserGestureState() {
-  isSuppressingRightMouseGesture = false;
-}
-
-function bindBrowserGestureGuards() {
-  document.documentElement.classList.add(BROWSER_GESTURE_LOCK_CLASS);
-  document.body?.classList.add(BROWSER_GESTURE_LOCK_CLASS);
-  window.addEventListener("mousedown", handleBrowserGestureMouseEvent, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.addEventListener("mousemove", handleBrowserGestureMouseEvent, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.addEventListener("mouseup", handleBrowserGestureMouseUp, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.addEventListener("contextmenu", handleBrowserGestureContextMenu, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.addEventListener("dragstart", handleBrowserGestureDragStart, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.addEventListener("blur", resetBrowserGestureState);
-}
-
-function unbindBrowserGestureGuards() {
-  document.documentElement.classList.remove(BROWSER_GESTURE_LOCK_CLASS);
-  document.body?.classList.remove(BROWSER_GESTURE_LOCK_CLASS);
-  window.removeEventListener("mousedown", handleBrowserGestureMouseEvent, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.removeEventListener("mousemove", handleBrowserGestureMouseEvent, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.removeEventListener("mouseup", handleBrowserGestureMouseUp, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.removeEventListener("contextmenu", handleBrowserGestureContextMenu, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.removeEventListener("dragstart", handleBrowserGestureDragStart, BROWSER_GESTURE_EVENT_OPTIONS);
-  window.removeEventListener("blur", resetBrowserGestureState);
-  resetBrowserGestureState();
-}
-
 function handleBeforeUnload(event) {
   if (!hasAnyUnsavedEdits.value) return;
   event.preventDefault();
@@ -6646,7 +7143,6 @@ function parsePickerRoute(fullName) {
 }
 
 onMounted(() => {
-  bindBrowserGestureGuards();
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleEscapeKey);
   // 三个请求互不依赖（默认区域已就位），并行发出省两个串行往返；
@@ -6657,7 +7153,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  unbindBrowserGestureGuards();
   window.removeEventListener("beforeunload", handleBeforeUnload);
   window.removeEventListener("keydown", handleEscapeKey);
   if (MapRef.value) {
@@ -6688,11 +7183,6 @@ onBeforeUnmount(() => {
 .edit-action-menu,
 .history-preview-panel {
   scale: var(--app-panel-scale);
-}
-
-:global(html.dm-browser-gesture-lock),
-:global(body.dm-browser-gesture-lock) {
-  overscroll-behavior-x: none;
 }
 
 .datebase_box {
@@ -7236,6 +7726,444 @@ onBeforeUnmount(() => {
   color: var(--app-coral);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* 数据总览 · 加载/空/错误状态机（下沉自标题栏浮标，整块替换面板体） */
+.overview-state {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 10px;
+}
+
+.overview-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.sk-block {
+  border-radius: var(--dm2-radius);
+  background: var(--dm2-surface-sunken);
+}
+
+.sk-hero {
+  height: 96px;
+}
+
+.sk-strip {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.sk-strip .sk-block {
+  height: 62px;
+}
+
+.sk-card {
+  height: 84px;
+}
+
+.sk-table {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.sk-row {
+  height: 34px;
+  border-radius: 8px;
+}
+
+.sk-shimmer {
+  background:
+    linear-gradient(100deg, rgba(17, 32, 58, 0.05) 8%, rgba(17, 32, 58, 0.1) 20%, rgba(17, 32, 58, 0.05) 33%),
+    var(--dm2-surface-sunken);
+  background-size: 220% 100%;
+  animation: overviewShimmer 1.35s var(--dm2-ease) infinite;
+}
+
+@keyframes overviewShimmer {
+  from {
+    background-position: 180% 0;
+  }
+  to {
+    background-position: -60% 0;
+  }
+}
+
+.overview-status {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 22px;
+  text-align: center;
+}
+
+.overview-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  color: var(--dm2-accent);
+  background: var(--dm2-accent-weak);
+}
+
+.overview-status-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.overview-status-icon.is-error {
+  color: var(--dm2-delete);
+  background: var(--dm2-delete-weak);
+}
+
+.overview-status-title {
+  margin: 2px 0 0;
+  color: var(--dm2-ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.overview-status-desc {
+  margin: 0;
+  max-width: 260px;
+  color: var(--dm2-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.overview-status-retry {
+  margin-top: 6px;
+  padding: 8px 20px;
+  border: 0;
+  border-radius: var(--dm2-radius-pill);
+  background: var(--dm2-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--dm2-accent-glow);
+  transition:
+    background-color var(--dm2-dur) var(--dm2-ease),
+    transform var(--dm2-dur-fast) var(--dm2-ease);
+}
+
+.overview-status-retry:hover {
+  background: var(--dm2-accent-strong);
+}
+
+.overview-status-retry:active {
+  transform: translateY(1px);
+}
+
+.overview-status-retry:focus-visible {
+  outline: 2px solid var(--dm2-accent-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk-shimmer {
+    animation: none;
+    background: var(--dm2-surface-sunken);
+  }
+}
+
+/* ── 建成区面积设置弹窗（teleport 到 body；组件 scope 属性仍随之下发，作用域样式生效） ── */
+.built-up-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(13, 27, 51, 0.42);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  animation: builtUpFade 160ms var(--dm2-ease);
+}
+
+.built-up-modal {
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  box-sizing: border-box;
+  padding: 20px;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-lg);
+  background: var(--dm2-surface);
+  box-shadow: var(--dm2-shadow-dialog);
+  color: var(--dm2-ink);
+  font-family: var(--dm2-font);
+  animation: builtUpPop 200ms var(--dm2-ease-out);
+}
+
+@keyframes builtUpFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes builtUpPop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.built-up-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.built-up-kicker {
+  margin: 0 0 3px;
+  color: var(--dm2-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.built-up-head-text h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--dm2-ink);
+}
+
+.built-up-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dm2-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--dm2-dur) var(--dm2-ease),
+    color var(--dm2-dur) var(--dm2-ease);
+}
+
+.built-up-close:hover {
+  background: var(--dm2-field);
+  color: var(--dm2-ink);
+}
+
+.built-up-desc {
+  margin: 14px 0 0;
+  color: var(--dm2-ink-soft);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.built-up-desc strong {
+  color: var(--dm2-accent);
+  font-family: var(--dm2-font-num);
+  font-weight: 700;
+}
+
+.built-up-scope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.built-up-scope-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--dm2-field);
+  color: var(--dm2-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.built-up-scope-name {
+  color: var(--dm2-ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.built-up-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.built-up-field-label {
+  color: var(--dm2-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.built-up-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--dm2-line-strong);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-field);
+  color: var(--dm2-ink);
+  font-family: var(--dm2-font-num);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition:
+    border-color var(--dm2-dur) var(--dm2-ease),
+    box-shadow var(--dm2-dur) var(--dm2-ease),
+    background-color var(--dm2-dur) var(--dm2-ease);
+}
+
+.built-up-input:focus {
+  outline: none;
+  border-color: var(--dm2-accent);
+  background: var(--dm2-surface);
+  box-shadow: 0 0 0 3px var(--dm2-accent-ring);
+}
+
+.built-up-preview {
+  display: flex;
+  align-items: stretch;
+  margin-top: 14px;
+  border: 1px solid var(--dm2-line);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface-sunken);
+  overflow: hidden;
+}
+
+.built-up-preview.is-missing {
+  opacity: 0.6;
+}
+
+.built-up-preview-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 10px 6px;
+}
+
+.built-up-preview-item span {
+  color: var(--dm2-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.built-up-preview-item strong {
+  color: var(--dm2-accent);
+  font-family: var(--dm2-font-num);
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.built-up-preview-divider {
+  width: 1px;
+  background: var(--dm2-line-faint);
+}
+
+.built-up-warn {
+  margin: 10px 0 0;
+  color: var(--dm2-modify);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.built-up-note {
+  margin: 10px 0 0;
+  color: var(--dm2-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.built-up-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.built-up-actions-right {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.built-up-btn {
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid var(--dm2-line-strong);
+  border-radius: var(--dm2-radius-sm);
+  background: var(--dm2-surface);
+  color: var(--dm2-ink-soft);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color var(--dm2-dur) var(--dm2-ease),
+    border-color var(--dm2-dur) var(--dm2-ease),
+    color var(--dm2-dur) var(--dm2-ease);
+}
+
+.built-up-btn:hover {
+  background: var(--dm2-field);
+}
+
+.built-up-btn.ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--dm2-muted);
+}
+
+.built-up-btn.ghost:hover {
+  color: var(--dm2-delete);
+  background: var(--dm2-delete-weak);
+}
+
+.built-up-btn.primary {
+  border-color: transparent;
+  background: var(--dm2-accent);
+  color: #fff;
+  box-shadow: var(--dm2-accent-glow);
+}
+
+.built-up-btn.primary:hover {
+  background: var(--dm2-accent-strong);
+}
+
+.built-up-btn:focus-visible {
+  outline: 2px solid var(--dm2-accent-ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .built-up-backdrop,
+  .built-up-modal {
+    animation: none;
+  }
 }
 
 .detail-close-btn {
@@ -10201,7 +11129,6 @@ onBeforeUnmount(() => {
 
 /* Visibility fallback: keep the data-management chrome above the map. */
 
-.datebase_box,
 .dm-overview-panel,
 .dm-edit-panel {
   position: fixed !important;
@@ -10211,9 +11138,14 @@ onBeforeUnmount(() => {
 }
 
 .datebase_box {
+  position: fixed !important;
+  visibility: visible !important;
+  opacity: 1 !important;
   display: flex !important;
   top: calc(var(--app-header-height, 58px) / 2) !important;
   right: calc(var(--app-edge, 24px) + 70px) !important;
+  z-index: calc(var(--z-header, 1500) + 20) !important;
+  pointer-events: auto !important;
 }
 
 .dm-overview-panel,

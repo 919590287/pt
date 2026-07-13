@@ -55,8 +55,9 @@
         <div class="ok-tip" v-if="store.toolDraft.anchors.length > 1">已画 {{ store.toolDraft.anchors.length }} 个顶点</div>
         <div class="confirm-row">
           <el-button size="small" @click="closeForm">取消</el-button>
-          <el-button type="primary" size="small" :disabled="store.toolDraft.anchors.length < 2" @click="confirmLinkAdd">✓ 加入修改清单</el-button>
+          <el-button type="primary" size="small" :disabled="!canConfirmLinkAdd" @click="confirmLinkAdd">✓ 加入修改清单</el-button>
         </div>
+        <p v-if="store.toolDraft.anchors.length >= 2 && !canConfirmLinkAdd" class="err">新路段的首尾端必须吸附到现有路网节点，请放大后重新点选端点。</p>
       </div>
 
       <!-- 修改路段属性 -->
@@ -107,7 +108,10 @@
         <div v-if="isRouteForm" class="route-form-panel">
         <div class="rfp-header">
           <span class="rfp-title">{{ isRouteEdit ? `修改线路：${routeEditBaseName}` : "新增线路" }}</span>
-          <button v-if="isRouteEdit && store.selectedRoute" class="rfp-del" type="button" @click="deleteSelectedRoute">删除此线路</button>
+          <span v-if="isRouteEdit && store.selectedRoute" class="rfp-delete-actions">
+            <button class="rfp-del" type="button" @click="deleteSelectedRoute('route')">仅删当前方向</button>
+            <button class="rfp-del" type="button" @click="deleteSelectedRoute('line')">删除整线</button>
+          </span>
         </div>
         <el-scrollbar class="rfp-body">
           <!-- 修改线路：尚未选中线路 → 提示先搜索 -->
@@ -117,6 +121,9 @@
             <p class="sub">选中后，这里会自动载入该线路的名称、发车时段与站序，可直接编辑。</p>
           </div>
           <div v-else class="rfp-body-inner">
+            <div v-if="isRouteEdit" class="affected warn">
+              修改将按当前站序重建整条线路。开启「双向运行」时，正反向都必须寻径成功才能提交。
+            </div>
             <el-input v-model="routeForm.name" placeholder="线路名称（必填），如：金洲环1线" size="small" />
             <p v-if="autoLineName && pickedStopList.length >= 2" class="auto-name">
               将命名为 <b>{{ autoLineName }}</b>
@@ -145,6 +152,10 @@
                 <template v-if="sessionLabel">{{ sessionLabel }}</template>
                 <template v-else><b>点站点</b>=设为停靠站，<b>点路网空白处</b>=加途经点约束走向（沿路网走）。</template>
               </p>
+              <div v-if="pickingStops" class="anchor-mode-switch" role="group" aria-label="地图点选类型">
+                <button type="button" :class="{ active: store.lineAnchorMode === 'stop' }" @click="store.setLineAnchorMode('stop')">选择停靠站</button>
+                <button type="button" :class="{ active: store.lineAnchorMode === 'road' }" @click="store.setLineAnchorMode('road')">添加路径点</button>
+              </div>
               <div v-if="pickingStops" class="pick-ops">
                 <el-button size="small" :disabled="!canPopAnchor" @click="store.popLineAnchor()">撤销上一步</el-button>
                 <el-button v-if="gapOpen" size="small" @click="store.sessionAutoConnect()">直接最短路连接</el-button>
@@ -153,7 +164,12 @@
                 <div v-for="(s, i) in pickedStopList" :key="s.anchorIdx" class="seq-row">
                   <span class="seq-no">{{ s.seq }}</span>
                   <span class="seq-name">{{ s.name }}<span v-if="i === 0" class="tag">首发站</span></span>
-                  <button class="seq-del" type="button" title="移除" @click="store.removeLineAnchorAt(s.anchorIdx)">✕</button>
+                  <span class="seq-actions">
+                    <button type="button" title="替换站点" @click="store.beginStopReplace(s.anchorIdx)">替换</button>
+                    <button type="button" title="在此站后插入新站" @click="store.beginInsertAfter(s.anchorIdx)">+后站</button>
+                    <button v-if="i < pickedStopList.length - 1" type="button" title="修改此站到下一站的路径" @click="store.beginSegmentEdit(s.anchorIdx, pickedStopList[i + 1].anchorIdx)">改后段</button>
+                    <button class="danger" type="button" title="移除站点" @click="store.beginStopDelete(s.anchorIdx)">移除</button>
+                  </span>
                 </div>
               </div>
               <div v-else class="seq-empty">尚未选择站点</div>
@@ -238,7 +254,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useScenarioEditStore } from "../store";
 import { optSnapRoute } from "@/api/optimization";
-import { VEHICLE_PRESETS, presetToVehicleType, slotsFromDepartures } from "../utils";
+import { VEHICLE_PRESETS, presetToVehicleType, slotsFromDepartures, validateSlots } from "../utils";
 import SlotsEditor from "./SlotsEditor.vue";
 
 const store = useScenarioEditStore();
@@ -280,6 +296,7 @@ const FORM_GROUP = {};
 for (const g of GROUPS) for (const t of g.children) FORM_GROUP[t.key] = g.key;
 
 const activeForm = ref("");
+const revisingEditId = ref("");
 const expanded = reactive({ route: true, stop: false, link: false });
 const teleportTargetReady = ref(false);
 
@@ -343,15 +360,30 @@ const affectedLinesOfPickedLinks = computed(() => {
 });
 
 const canConfirmRoute = computed(() =>
-  routeForm.name.trim() && pickedStopList.value.length >= 2 && routeForm.path && routeForm.slots.length > 0
+  routeForm.name.trim()
+  && pickedStopList.value.length >= 2
+  && routeForm.path
+  && (!routeForm.bidirectional || routeForm.reversePath)
+  && !lineSnapBusy.value
+  && validateSlots(routeForm.slots).length === 0
 );
+
+const canConfirmLinkAdd = computed(() => {
+  const anchors = store.toolDraft.anchors;
+  if (anchors.length < 2 || store.toolDraft.snapBusy) return false;
+  const snaps = store.toolDraft.pickedLinks || [];
+  return Boolean(snaps.find((item) => item.index === 0)?.nodeId)
+    && Boolean(snaps.find((item) => item.index === anchors.length - 1)?.nodeId);
+});
 
 // ---------------- 通用 ----------------
 /** 带冲突检测的加入清单：冲突时用通俗语言弹窗说明，不加入 */
-function guardAdd(payload) {
-  const res = store.addEditChecked(payload);
+async function guardAdd(payload) {
+  const res = revisingEditId.value
+    ? store.replaceEditChecked(revisingEditId.value, payload)
+    : store.addEditChecked(payload);
   if (!res.ok) {
-    ElMessageBox.alert(res.reason, "无法加入修改清单", { type: "warning", confirmButtonText: "知道了" });
+    await ElMessageBox.alert(res.reason, revisingEditId.value ? "无法更新修改项" : "无法加入修改清单", { type: "warning", confirmButtonText: "知道了" });
     return null;
   }
   return res.edit;
@@ -403,8 +435,64 @@ function openForm(kind) {
 
 function closeForm() {
   activeForm.value = "";
+  revisingEditId.value = "";
   store.setTool("");
   store.clearLineBuilder();
+}
+
+watch(() => store.formRequest.seq, async () => {
+  if (store.formRequest.kind === "revise") {
+    await openEditRecord(store.formRequest.editId);
+  } else if (store.formRequest.kind) {
+    revisingEditId.value = "";
+    openForm(store.formRequest.kind);
+  }
+});
+
+async function openEditRecord(editId) {
+  const edit = store.draft.edits.find((item) => item.id === editId);
+  if (!edit) return;
+  revisingEditId.value = editId;
+  if (edit.kind === "route.replace") {
+    const route = [...store.routeIndex.values()].find((item) => item.lineId === edit.target?.lineId);
+    if (!route) {
+      revisingEditId.value = "";
+      ElMessage.warning("原线路已不在当前母本中，无法重新编辑");
+      return;
+    }
+    store.selectRoute(route.lineId, route.routeId);
+    activeForm.value = "route.edit";
+    await nextTick();
+    routeForm.name = String(edit.params?.name || edit.name || "").replace(/（[^）]*）\s*$/, "").trim();
+    routeForm.bidirectional = edit.params?.bidirectional !== false;
+    routeForm.vehiclePreset = VEHICLE_PRESETS.find((preset) => preset.lengthM === Number(edit.params?.vehicleType?.lengthM))?.key || "std12";
+    routeForm.slots = JSON.parse(JSON.stringify(edit.params?.slots || []));
+    store.clearLineBuilder();
+    const directions = edit.geometry?.directions || [];
+    for (const stopId of directions[0]?.stops || []) store.appendLineStop(stopId);
+    routeForm.path = directions[0] ? { linkIds: directions[0].linkIds || [], geometry: directions[0].geometry || [] } : null;
+    routeForm.reversePath = directions[1] ? { linkIds: directions[1].linkIds || [], geometry: directions[1].geometry || [] } : null;
+    store.lineBuilderPath = routeForm.path;
+    return;
+  }
+  if (edit.kind === "stop.add") {
+    activeForm.value = "stop.add";
+    stopForm.name = edit.params?.name || edit.name || "";
+    store.setTool("place.stop");
+    const coord = edit.geometry?.coord;
+    if (Array.isArray(coord)) store.toolDraft.placedPoint = { lng: coord[0], lat: coord[1], linkId: edit.geometry?.linkId, distanceM: 0 };
+    return;
+  }
+  if (edit.kind === "stop.move") {
+    store.selectStop(edit.target?.stopId);
+    activeForm.value = "stop.move";
+    stopForm.name = edit.params?.name || "";
+    store.setTool("");
+    const coord = edit.geometry?.coord;
+    if (Array.isArray(coord) && edit.geometry?.linkId) {
+      store.toolDraft.placedPoint = { lng: coord[0], lat: coord[1], linkId: edit.geometry.linkId, distanceM: 0 };
+    }
+  }
 }
 
 // 把当前表单类型同步到 store，供 index.vue 判断（搜索仅定位 / 屏蔽删除键）
@@ -429,25 +517,22 @@ watch(
 );
 
 // 修改线路弹窗内：删除该线路
-async function deleteSelectedRoute() {
+async function deleteSelectedRoute(scope) {
   const r = store.selectedRoute;
   if (!r) return;
-  let scope = null;
   try {
     await ElMessageBox.confirm(
-      `将把「${r.lineName}」加入删除清单：生成方案时移除，加入后可随时在右侧撤销。也可只删当前方向（${r.routeId}）。`,
-      "删除线路",
-      { confirmButtonText: "删除整条线路", cancelButtonText: "仅删当前方向", distinguishCancelAndClose: true, type: "warning" }
+      scope === "line"
+        ? `确定删除「${r.lineName}」的全部运行方向？此操作加入清单后仍可撤销。`
+        : `确定仅删除「${r.lineName}」的当前方向（${r.routeId}）？`,
+      scope === "line" ? "删除整条线路" : "删除当前方向",
+      { confirmButtonText: "确认删除", cancelButtonText: "取消", type: "warning" },
     );
-    scope = "line";
-  } catch (action) {
-    if (action === "cancel") scope = "route";
-    else return;
-  }
+  } catch { return; }
   const payload = scope === "line"
     ? { kind: "route.delete", name: r.lineName, target: { lineId: r.lineId } }
     : { kind: "route.delete", name: `${r.lineName}（${r.routeId}）`, target: { lineId: r.lineId, routeIds: [r.routeId] } };
-  const edit = guardAdd(payload);
+  const edit = await guardAdd(payload);
   if (!edit) return;
   ElMessage.success(`已加入删除：${payload.name}（可在右侧撤销）`);
   store.clearSelection();
@@ -484,10 +569,15 @@ const canPopAnchor = computed(() =>
 
 function startStopPick() {
   store.endLineSession(); // 弹窗内按钮=追加模式
+  store.setLineAnchorMode("stop");
   store.setTool("pick.stop", { purpose: "buildLine", keepForm: true });
 }
 
 function finishStopPick() {
+  if (lineSnapBusy.value) {
+    ElMessage.warning("走向仍在计算，请稍候再完成点选");
+    return;
+  }
   // 断开处还没连接：不允许直接完成（否则结束会话会走整线最短路=自动），提示先连接
   if (gapOpen.value) {
     ElMessage.warning("断开处还没连接：请沿路网点选途经点/站点，或点“直接最短路连接”");
@@ -579,7 +669,10 @@ async function routeThroughPicked() {
         if (seq === lineSnapSeq) routeForm.reversePath = rev?.data || null;
       } catch {
         routeForm.reversePath = null;
+        lineSnapError.value = "反向走向寻径失败，已阻止提交。请调整途经点，或关闭「双向运行」。";
       }
+    } else {
+      routeForm.reversePath = null;
     }
   } catch (e) {
     if (seq !== lineSnapSeq) return;
@@ -596,6 +689,7 @@ watch(
   () => [store.lineBuilder.anchors.slice(), store.lineBuilder.session],
   () => {
     if (!isRouteForm.value) return;
+    lineSnapSeq += 1; // 立即作废上一次请求，避免 300ms 防抖窗口写回旧走向
     if (lineSnapTimer) clearTimeout(lineSnapTimer);
     lineSnapTimer = setTimeout(routeThroughPicked, 300);
   },
@@ -637,15 +731,15 @@ function routeParams(finalName) {
   };
 }
 
-function confirmRouteForm() {
-  if (isRouteEdit.value) confirmRouteEdit();
-  else confirmRouteAdd();
+async function confirmRouteForm() {
+  if (isRouteEdit.value) await confirmRouteEdit();
+  else await confirmRouteAdd();
 }
 
-function confirmRouteAdd() {
+async function confirmRouteAdd() {
   if (!routeForm.path) return;
   const finalName = autoLineName.value; // 名称自动带首发站-终点站后缀
-  const edit = guardAdd({
+  const edit = await guardAdd({
     kind: "route.add",
     name: finalName,
     params: routeParams(finalName),
@@ -658,12 +752,12 @@ function confirmRouteAdd() {
 }
 
 // 修改线路：删旧线 + 按新定义重建（route.replace）
-function confirmRouteEdit() {
+async function confirmRouteEdit() {
   if (!routeForm.path) return;
   const r = store.selectedRoute;
   if (!r) return;
   const finalName = autoLineName.value;
-  const edit = guardAdd({
+  const edit = await guardAdd({
     kind: "route.replace",
     name: finalName,
     target: { lineId: r.lineId },
@@ -701,9 +795,9 @@ function prefillRouteEdit(r) {
 }
 
 // ---------------- 站点工具 ----------------
-function confirmStopAdd() {
+async function confirmStopAdd() {
   const p = store.toolDraft.placedPoint;
-  const edit = guardAdd({
+  const edit = await guardAdd({
     kind: "stop.add",
     name: stopForm.name.trim() || "新站点",
     params: { name: stopForm.name.trim() || "新站点" },
@@ -714,10 +808,10 @@ function confirmStopAdd() {
   closeForm();
 }
 
-function confirmStopMove() {
+async function confirmStopMove() {
   const s = store.selectedStop;
   const p = store.toolDraft.placedPoint;
-  const edit = guardAdd({
+  const edit = await guardAdd({
     kind: "stop.move",
     name: s.name,
     target: { stopId: s.id },
@@ -729,9 +823,9 @@ function confirmStopMove() {
   closeForm();
 }
 
-function confirmStopDelete() {
+async function confirmStopDelete() {
   const s = store.selectedStop;
-  const edit = guardAdd({
+  const edit = await guardAdd({
     kind: "stop.delete",
     name: s.name,
     target: { stopId: s.id },
@@ -742,12 +836,12 @@ function confirmStopDelete() {
 }
 
 // ---------------- 路网工具 ----------------
-function confirmLinkAdd() {
+async function confirmLinkAdd() {
   const anchors = [...store.toolDraft.anchors];
   const nodeSnaps = store.toolDraft.pickedLinks || [];
   const first = nodeSnaps.find((n) => n.index === 0);
   const last = nodeSnaps.find((n) => n.index === anchors.length - 1);
-  const edit = guardAdd({
+  const edit = await guardAdd({
     kind: "link.add",
     name: `新路段（${anchors.length}顶点）`,
     params: {
@@ -773,14 +867,14 @@ function pickedLinkIds() {
   return [...new Set(ids)];
 }
 
-function confirmLinkModify() {
+async function confirmLinkModify() {
   const params = {};
   if (linkForm.setSpeed) params.freespeedKmh = linkForm.freespeedKmh;
   if (linkForm.setLanes) {
     params.lanes = linkForm.lanes;
     params.capacityPerLane = 1200;
   }
-  const edit = guardAdd({
+  const edit = await guardAdd({
     kind: "link.modify",
     name: `路段属性 ×${store.toolDraft.pickedLinks.length}`,
     target: { linkIds: pickedLinkIds() },
@@ -792,8 +886,8 @@ function confirmLinkModify() {
   closeForm();
 }
 
-function confirmLinkDelete() {
-  const edit = guardAdd({
+async function confirmLinkDelete() {
+  const edit = await guardAdd({
     kind: "link.delete",
     name: `删除路段 ×${store.toolDraft.pickedLinks.length}`,
     target: { linkIds: pickedLinkIds() },
@@ -873,6 +967,12 @@ function confirmLinkDelete() {
 
       &:hover { background: var(--dm2-delete-weak, rgba(255, 59, 48, 0.06)); }
     }
+
+    .rfp-delete-actions {
+      display: inline-flex;
+      flex-shrink: 0;
+      gap: 5px;
+    }
   }
 
   .rfp-body {
@@ -911,6 +1011,33 @@ function confirmLinkDelete() {
 .pick-ops {
   display: flex;
   gap: 6px;
+}
+
+.anchor-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: 8px;
+  background: var(--dm2-surface, #fbfdff);
+
+  button {
+    min-height: 30px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--dm2-muted, #667085);
+    cursor: pointer;
+    font-size: var(--dm2-text-sm);
+    transition: color 160ms ease, background-color 160ms ease;
+
+    &.active {
+      background: rgba(0, 113, 227, 0.1);
+      color: var(--dm2-accent, #0071e3);
+      font-weight: var(--dm2-fw-semibold);
+    }
+  }
 }
 
 .auto-name {
@@ -993,16 +1120,24 @@ function confirmLinkDelete() {
       }
     }
 
-    .seq-del {
-      border: 0;
-      background: transparent;
-      color: var(--dm2-muted-soft, #98a2b3);
-      cursor: pointer;
-      font-size: var(--dm2-text-sm);
-      padding: 2px 5px;
-      border-radius: 4px;
+    .seq-actions {
+      display: inline-flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 3px;
 
-      &:hover { color: var(--dm2-delete, #c4291c); background: var(--dm2-delete-weak, rgba(255, 59, 48, 0.08)); }
+      button {
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--dm2-muted, #667085);
+        cursor: pointer;
+        font-size: 10px;
+        padding: 2px 4px;
+
+        &:hover { color: var(--dm2-accent, #0071e3); background: rgba(0, 113, 227, 0.07); }
+        &.danger:hover { color: var(--dm2-delete, #c4291c); background: var(--dm2-delete-weak, rgba(255, 59, 48, 0.08)); }
+      }
     }
   }
 

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 行政区外的普通站点：与 bus-station.svg 同构的白盘 + 空心环，
+     环色换成区外灰（#8a929e，mapTheme network.outside，与灰色底图线路同色）。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96">
+  <circle cx="48" cy="48" r="44" fill="#ffffff" fill-opacity="0.35"/>
+  <circle cx="48" cy="48" r="39" fill="#ffffff" fill-opacity="0.75"/>
+  <circle cx="48" cy="48" r="33" fill="#ffffff"/>
+  <circle cx="48" cy="48" r="33" fill="none" stroke="#6f7885" stroke-opacity="0.28" stroke-width="1.5"/>
+  <circle cx="48" cy="48" r="25.5" fill="#ffffff" stroke="#8a929e" stroke-width="9"/>
+</svg>

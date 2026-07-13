@@ -2,12 +2,19 @@
   <div class="mod-list">
     <div v-if="store.editCount" class="mod-head">
       <span class="save-state" :class="store.saveState">{{ saveStateText }}</span>
+      <el-button v-if="store.saveState === 'error'" link type="primary" size="small" @click="retrySave">重试保存</el-button>
       <el-button link type="danger" size="small" @click="clearAll">清空</el-button>
     </div>
 
     <div v-if="!store.draft.edits.length" class="edit-empty">
-      <strong>暂无修改</strong>
-      <p>在左侧「线网编辑」中操作后，每一项修改都会逐条列在这里，可随时撤销。</p>
+      <span class="ee-icon">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 20h9"></path>
+          <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+        </svg>
+      </span>
+      <strong>还没有任何修改</strong>
+      <p>在左侧「线网编辑」中新增或修改线路、站点、路网，每一项都会逐条列在这里，可随时撤销。</p>
     </div>
 
     <div v-else class="edit-operation-list">
@@ -32,6 +39,7 @@
             </template>
             <span v-else>{{ summary(edit) }}</span>
           </div>
+          <button v-if="canRevise(edit)" class="op-edit" type="button" title="编辑该项" @click.stop="$emit('revise-edit', edit)">编辑</button>
           <button class="op-undo" type="button" title="撤销该项" @click.stop="undo(edit)">↺</button>
         </div>
       </TransitionGroup>
@@ -45,7 +53,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { useScenarioEditStore } from "../store";
 import { KIND_META, editSummary } from "../utils";
 
-defineEmits(["hover-edit"]);
+defineEmits(["hover-edit", "revise-edit"]);
 
 const store = useScenarioEditStore();
 
@@ -69,6 +77,16 @@ function kindClass(edit) {
 
 function summary(edit) {
   return editSummary(edit);
+}
+
+function canRevise(edit) {
+  return ["route.replace", "stop.add", "stop.move"].includes(edit.kind);
+}
+
+async function retrySave() {
+  const saved = await store.saveDraftNow();
+  if (saved) ElMessage.success("草稿已保存");
+  else ElMessage.error("保存仍失败，请检查网络后重试");
 }
 
 // 新增线路：逐方向的"首发站→终点站"（正/反向都显示）
@@ -144,21 +162,37 @@ async function clearAll() {
 
 .edit-empty {
   flex-shrink: 0;
-  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  border: 1px dashed var(--dm2-line-strong, rgba(17, 32, 58, 0.18));
   border-radius: var(--dm2-radius, 13px);
   background: rgba(15, 23, 42, 0.02);
-  padding: 18px 16px;
+  padding: 24px 18px;
   text-align: center;
+
+  .ee-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    margin-bottom: var(--dm2-space-3);
+    border-radius: var(--dm2-radius-pill);
+    color: var(--dm2-accent, #0071e3);
+    background: var(--dm2-accent-weak, rgba(0, 113, 227, 0.1));
+  }
 
   strong {
     display: block;
-    font-size: var(--dm2-text-base);
+    font-size: var(--dm2-text-md);
     color: var(--dm2-ink, #1c2024);
     margin-bottom: var(--dm2-space-1);
   }
 
   p {
     margin: 0;
+    max-width: 30ch;
     font-size: var(--dm2-text-sm);
     line-height: 1.6;
     color: var(--dm2-muted, #667085);
@@ -191,7 +225,7 @@ async function clearAll() {
     "type detail";
   align-items: start;
   gap: var(--dm2-space-1) var(--dm2-space-3);
-  padding: var(--dm2-space-3) 34px var(--dm2-space-3) var(--dm2-space-3);
+  padding: var(--dm2-space-3) 78px var(--dm2-space-3) var(--dm2-space-3);
   border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
   border-radius: var(--dm2-radius, 13px);
   background: var(--dm2-surface, #ffffff);
@@ -275,6 +309,22 @@ async function clearAll() {
       color: var(--dm2-delete, #c4291c);
       border-color: rgba(196, 41, 28, 0.4);
     }
+  }
+
+  .op-edit {
+    position: absolute;
+    top: 8px;
+    right: 34px;
+    height: 22px;
+    padding: 0 6px;
+    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+    border-radius: 6px;
+    background: var(--dm2-surface, #fbfdff);
+    color: var(--dm2-accent, #0071e3);
+    cursor: pointer;
+    font-size: 10px;
+
+    &:hover { border-color: rgba(0, 113, 227, 0.3); background: rgba(0, 113, 227, 0.06); }
   }
 }
 

@@ -33,6 +33,8 @@
         :to="item.to"
         active-class="active"
         class="item"
+        @mouseenter="preloadRouteComponent(item.to.name)"
+        @focus="preloadRouteComponent(item.to.name)"
         @click.capture="handleNavClick(item.to, $event)"
       >
         <span class="item-title">{{ item.title }}</span>
@@ -126,6 +128,7 @@
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
 import { logout, renameUser } from "@/api/auth";
+import { preloadRouteComponent } from "@/router";
 import { clearAuth, getUsername, saveAuth } from "@/utils/auth";
 
 const route = useRoute();

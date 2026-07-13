@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jts.gjcxfzksh.config.MatsimConfig;
 import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.ModelProcessingPool;
 import com.jts.gjcxfzksh.data.entry.Scheme;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -40,12 +41,16 @@ public class ModelCacheManager {
     @Value("${matsim.cache-build-threads:0}")
     private int cacheBuildThreads;
 
+    @Value("${matsim.processing-threads:0}")
+    private int processingThreads;
+
     private ExecutorService executor;
     private final Set<String> queued = ConcurrentHashMap.newKeySet();
     private final Map<String, ModelCacheStatus> statuses = new ConcurrentHashMap<>();
 
     @PostConstruct
     public void init() {
+        ModelProcessingPool.configure(processingThreads);
         int threads = resolveCacheBuildThreads();
         executor = Executors.newFixedThreadPool(threads, r -> {
             Thread thread = new Thread(r, "matsim-cache-builder");
@@ -121,7 +126,9 @@ public class ModelCacheManager {
             return cacheBuildThreads;
         }
         int cpus = Math.max(1, Runtime.getRuntime().availableProcessors());
-        return Math.max(1, Math.min(4, cpus / 16));
+        long maxHeap = Runtime.getRuntime().maxMemory();
+        int memoryBound = (int) Math.max(1, maxHeap / (3L * 1024 * 1024 * 1024));
+        return Math.max(1, Math.min(Math.min(4, Math.max(1, cpus / 8)), memoryBound));
     }
 
     private void build(Scheme scheme) {
@@ -256,6 +263,7 @@ public class ModelCacheManager {
             );
             if (scheme.getDesc() != null) {
                 data.setArea(scheme.getDesc().getArea());
+                data.setScale(scheme.getDesc().getScale());
             }
             return MatsimPrecomputedCache.isVisualCacheReady(data)
                     && MatsimRoutePanelCache.isReady(data)

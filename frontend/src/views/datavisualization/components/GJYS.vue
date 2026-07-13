@@ -97,49 +97,72 @@
     </MCard>
   </div>
 
-  <teleport to="#run-monitor-vehicle-controls" defer v-if="runMonitorPanels">
-    <div class="run-gjys-control-panel">
-      <div class="run-control-title">轨迹演示控制</div>
-      <div v-if="loading && !trajectoryData" class="loading-state">
-        <el-skeleton :rows="4" animated />
+  <teleport to="#run-monitor-playback-dock" defer v-if="runMonitorPanels">
+    <div class="rm-play-bar" role="group" aria-label="轨迹演示控制">
+      <!-- 加载 / 生成 / 失败：与就绪态同一条形，只换正文，不让控制条忽高忽低 -->
+      <div v-if="loading && !trajectoryData" class="rm-play-status">
+        <span class="rm-play-spinner" aria-hidden="true"></span>
+        <span class="rm-play-status-text">轨迹数据加载中…</span>
       </div>
-      <el-empty v-else-if="loadError && !trajectoryData" :description="loadError" />
-      <div v-else-if="isGenerating" class="build-state">
-        <div class="build-title">{{ cacheMessage }}</div>
-        <el-progress :percentage="buildProgressPercent" :stroke-width="8" :show-text="false" />
-        <div class="build-metrics">
-          <span>车辆 {{ formatNumber(progressInfo.vehicleCount) }}</span>
-          <span>轨迹点 {{ formatNumber(progressInfo.pointCount) }}</span>
-        </div>
+
+      <div v-else-if="loadError && !trajectoryData" class="rm-play-status is-error" role="alert">
+        <span class="rm-play-status-text">{{ loadError }}</span>
       </div>
+
+      <div v-else-if="isGenerating" class="rm-play-status is-build" role="status">
+        <span class="rm-play-spinner" aria-hidden="true"></span>
+        <span class="rm-play-status-text">{{ cacheMessage }}</span>
+        <span class="rm-play-build-track" aria-hidden="true">
+          <span class="rm-play-build-fill" :style="{ width: `${buildProgressPercent}%` }"></span>
+        </span>
+        <span class="rm-play-build-metrics">车辆 {{ formatNumber(progressInfo.vehicleCount) }} · 轨迹点 {{ formatNumber(progressInfo.pointCount) }}</span>
+      </div>
+
       <template v-else>
-        <div class="control-row flex-col">
-          <span class="label">播放状态</span>
-          <div class="btn-group">
-            <el-button-group>
-              <el-button type="primary" :disabled="!canControl" @click="togglePlay">
-                <span>{{ isPlaying ? "暂停" : "播放" }}</span>
-              </el-button>
-              <el-button type="info" :disabled="!canControl" @click="resetPlayback">重置</el-button>
-            </el-button-group>
-          </div>
+        <div class="rm-play-transport">
+          <button
+            type="button"
+            class="rm-play-btn"
+            :disabled="!canControl"
+            :aria-label="isPlaying ? '暂停' : '播放'"
+            @click="togglePlay"
+          >
+            <svg v-if="isPlaying" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+              <rect x="6" y="5" width="4" height="14" rx="1"></rect>
+              <rect x="14" y="5" width="4" height="14" rx="1"></rect>
+            </svg>
+            <svg v-else viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+              <path d="M8 5.5v13a1 1 0 0 0 1.53.85l10-6.5a1 1 0 0 0 0-1.7l-10-6.5A1 1 0 0 0 8 5.5Z"></path>
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="rm-play-reset"
+            :disabled="!canControl"
+            aria-label="重置到起点"
+            title="重置"
+            @click="resetPlayback"
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+              <path d="M3 4v4h4"></path>
+            </svg>
+          </button>
         </div>
 
-        <div class="control-row flex-col">
-          <span class="label">演示速度</span>
-          <el-radio-group v-model="playSpeed" size="small" :disabled="!canControl" @change="changeSpeed">
-            <el-radio-button :value="1">1x</el-radio-button>
-            <el-radio-button :value="5">5x</el-radio-button>
-            <el-radio-button :value="10">10x</el-radio-button>
-            <el-radio-button :value="50">50x</el-radio-button>
-          </el-radio-group>
+        <div class="rm-play-speed" role="group" aria-label="演示速度">
+          <button
+            v-for="speed in PLAY_SPEEDS"
+            :key="speed"
+            type="button"
+            :class="['rm-play-speed-btn', playSpeed === speed ? 'active' : '']"
+            :disabled="!canControl"
+            :aria-pressed="playSpeed === speed"
+            @click="selectSpeed(speed)"
+          >{{ speed }}x</button>
         </div>
 
-        <div class="control-row flex-col">
-          <div class="slider-header">
-            <span class="label">时间进度</span>
-            <span class="time-text">{{ formatTime(currentTime) }}</span>
-          </div>
+        <div class="rm-play-scrub">
           <el-slider
             v-model="currentTime"
             :min="timeRange.min"
@@ -150,60 +173,79 @@
             @change="handleSliderCommit"
           />
         </div>
+
+        <span class="rm-play-time" aria-label="当前时刻">{{ formatTime(currentTime) }}</span>
       </template>
     </div>
   </teleport>
 
+  <!-- 车辆运行监测右侧面板：外壳与线路/站点/客流/体检四块面板同构（无卡中卡、无蓝色标题条、无折叠钮）。
+       teleport 出去的节点带的是本组件 scope，样式在本文件内自持。 -->
   <teleport to="#datavisualization_index_box2" defer v-if="runMonitorPanels && !vehicleStaticInfo">
-    <MCard2 class="GJYS_right_card vehicle-status-right-card" title="车辆与状态监控" :open="true">
-      <template #body>
-        <div class="rm-veh-hero">
-          <div class="rm-veh-hero-head">
-            <span class="rm-veh-hero-label">实时运行车辆</span>
-            <span class="rm-veh-live"><span class="rm-veh-live-dot"></span>实时</span>
-          </div>
-          <div class="rm-veh-hero-value">{{ activeVehicles }}<span class="rm-veh-hero-unit">辆</span></div>
-          <div class="rm-veh-modes">
-            <div class="rm-veh-mode bus">
-              <span class="rm-veh-mode-name">公交车</span>
-              <span class="rm-veh-mode-val">{{ activeByMode.bus }}</span>
-            </div>
-            <div class="rm-veh-mode subway">
-              <span class="rm-veh-mode-name">地铁</span>
-              <span class="rm-veh-mode-val">{{ activeByMode.subway }}</span>
-            </div>
-            <div class="rm-veh-mode car">
-              <span class="rm-veh-mode-name">私家车</span>
-              <span class="rm-veh-mode-val">{{ activeByMode.car }}</span>
-            </div>
+    <section class="rm-veh-card">
+      <header class="rm-veh-card-title">
+        <h2>车辆运行监测</h2>
+        <span class="rm-veh-live"><span class="rm-veh-live-dot"></span>实时</span>
+      </header>
+
+      <div class="rm-veh-hero">
+        <span class="rm-veh-hero-label">在途车辆</span>
+        <p class="rm-veh-hero-value">
+          <strong>{{ formatVehCount(activeVehicles) }}</strong>
+          <em>辆</em>
+        </p>
+      </div>
+
+      <!-- 在途车辆构成：占比条即图例，色块与地图上车辆点同色（VEHICLE_MODE_CONFIG）。
+           私家车常年占大头，用占比条一眼看清公交/地铁的道路占有比例 -->
+      <div class="rm-veh-split">
+        <div class="rm-veh-split-bar" role="img" :aria-label="vehicleSplitAriaLabel">
+          <span
+            v-for="mode in vehicleModeBreakdown"
+            :key="mode.key"
+            class="rm-veh-split-seg"
+            :style="{ width: `${mode.percent}%`, background: mode.color }"
+          ></span>
+        </div>
+        <div class="rm-veh-split-legend">
+          <div v-for="mode in vehicleModeBreakdown" :key="mode.key" class="rm-veh-split-row">
+            <span class="rm-veh-swatch" :style="{ background: mode.color }" aria-hidden="true"></span>
+            <span class="rm-veh-split-name">{{ mode.label }}</span>
+            <strong class="rm-veh-split-val">{{ formatVehCount(mode.count) }}</strong>
+            <span class="rm-veh-split-pct">{{ mode.percentText }}</span>
           </div>
         </div>
-        <div class="rm-veh-stats">
-          <div class="rm-veh-stat">
-            <div class="rm-veh-stat-label">累计乘车人数</div>
-            <div class="rm-veh-stat-value success">{{ cumulativePassengers }}<span class="unit">人次</span></div>
-          </div>
-          <div class="rm-veh-stat">
-            <div class="rm-veh-stat-label">平均车速</div>
-            <div class="rm-veh-stat-value warning">{{ avgSpeed }}<span class="unit">km/h</span></div>
-          </div>
+      </div>
+
+      <div class="rm-veh-metrics">
+        <div class="rm-veh-metric">
+          <span class="rm-veh-metric-label">累计乘车人数</span>
+          <strong class="rm-veh-metric-value">
+            {{ formatVehCount(cumulativePassengers) }}<em>人次</em>
+          </strong>
         </div>
-      </template>
-    </MCard2>
+        <div class="rm-veh-metric">
+          <span class="rm-veh-metric-label">平均车速</span>
+          <strong class="rm-veh-metric-value">
+            {{ avgSpeed }}<em>km/h</em>
+          </strong>
+        </div>
+      </div>
+    </section>
   </teleport>
 
+  <!-- 跟随某车时替换上面的状态卡，用同一套扁平外壳，避免"跟随/取消跟随"在两种卡片外壳间跳变 -->
   <teleport to="#datavisualization_index_box2" defer v-if="vehicleStaticInfo">
-    <MCard2 class="GJYS_right_card" title="车辆信息" :open="true">
-      <template #body>
-        <div class="vehicle-panel">
-          <div class="vehicle-head">
-            <div>
-              <div class="vehicle-id">{{ vehicleStaticInfo.id }}</div>
-              <div class="vehicle-type">{{ vehicleStaticInfo.typeLabel }}</div>
-            </div>
-            <el-button type="primary" size="small" plain @click="clearVehicleFollow">解除跟随</el-button>
-          </div>
+    <section class="rm-veh-card rm-veh-info-card">
+      <header class="rm-veh-card-title">
+        <div class="rm-veh-info-head">
+          <h2>{{ vehicleStaticInfo.id }}</h2>
+          <p class="rm-veh-info-type">{{ vehicleStaticInfo.typeLabel }}</p>
+        </div>
+        <button type="button" class="rm-veh-unfollow" @click="clearVehicleFollow">解除跟随</button>
+      </header>
 
+      <div class="rm-veh-info-body">
           <div class="info-grid">
             <div class="info-item">
               <span class="label">当前速度</span>
@@ -269,17 +311,20 @@
               </div>
             </div>
           </div>
-        </div>
-      </template>
-    </MCard2>
+      </div>
+    </section>
   </teleport>
 </template>
 
 <script setup>
 import { computed, inject, markRaw, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import MCard from "./MCard.vue";
-import MCard2 from "./MCard2.vue";
-import { dataTrajectory, dataTrajectoryChunk, dataTrajectoryChunkBinary } from "@/api/trajectory.js";
+import {
+  dataTrajectory,
+  dataTrajectoryChunk,
+  dataTrajectoryChunkBinary,
+  dataTrajectoryFrameBinary,
+} from "@/api/trajectory.js";
 import { VehicleTrajectoryLayer, VEHICLE_MODE_CONFIG, parseVehicleTrajectoryBinaryChunk } from "../layers/VehicleTrajectoryLayer.js";
 import { getCachedChunk, putCachedChunk, pruneChunkCache } from "@/utils/trajectoryChunkCache.js";
 import { isCanceledRequest } from "../utils/panelShared.js";
@@ -293,6 +338,7 @@ const props = defineProps({
 });
 
 const MODE_KEYS = ["bus", "subway", "car"];
+const PLAY_SPEEDS = [1, 5, 10, 50];
 
 const MapRef = inject("MapRef");
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
@@ -309,6 +355,7 @@ const MAX_PERSISTENT_CACHE_BYTES = 64 * 1024 * 1024;
 // 播放时滑块/时间文本的刷新节流（图层仍按 rAF 每帧驱动，UI 不必每帧重渲染）。
 const UI_SYNC_INTERVAL_MS = 120;
 const SEEK_CHUNK_LOAD_DELAY_MS = 48;
+const SEEK_SNAPSHOT_DELAY_MS = 36;
 const loading = ref(false);
 const loadError = ref("");
 const cacheStatus = ref("idle");
@@ -341,6 +388,10 @@ let seekRenderFrame = null;
 let pendingSeekRenderTime = null;
 // 拖动进度条到未缓存分块时的防抖加载，避免每次 input 都发请求/清空车辆造成闪烁与长时间空白。
 let seekChunkTimer = null;
+let seekSnapshotTimer = null;
+let seekSnapshotController = null;
+let seekSnapshotSeq = 0;
+let activeSnapshotRange = null;
 let prefetchTimer = null;
 let pollTimer = null;
 let loadSeq = 0;
@@ -379,6 +430,35 @@ const buildProgressPercent = computed(() => {
 const activeVehicles = computed(() => liveStats.value.activeTotal || 0);
 const activeByMode = computed(() => liveStats.value.activeByMode || emptyModeCount());
 const avgSpeed = computed(() => (liveStats.value.avgSpeed || 0).toFixed(1));
+
+// 千分位，四位数以上的车辆数/人次一眼看出量级
+function formatVehCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number).toLocaleString("zh-CN") : "0";
+}
+
+// 在途车辆按制式拆分（占比条 + 图例）。颜色取自 VEHICLE_MODE_CONFIG，
+// 与地图上车辆点同源；占比按总量归一，0 车时不画色块也不除零
+const vehicleModeBreakdown = computed(() => {
+  const counts = activeByMode.value;
+  const total = MODE_KEYS.reduce((sum, key) => sum + (Number(counts[key]) || 0), 0);
+  return MODE_KEYS.map((key) => {
+    const count = Number(counts[key]) || 0;
+    const share = total > 0 ? (count / total) * 100 : 0;
+    return {
+      key,
+      label: VEHICLE_MODE_CONFIG[key]?.label || key,
+      color: VEHICLE_MODE_CONFIG[key]?.color || "#94a3b8",
+      count,
+      percent: share,
+      percentText: total > 0 ? `${Math.round(share)}%` : "--",
+    };
+  });
+});
+
+const vehicleSplitAriaLabel = computed(() =>
+  vehicleModeBreakdown.value.map((mode) => `${mode.label} ${mode.count} 辆 ${mode.percentText}`).join("，")
+);
 const segmentBucketSeconds = computed(() => {
   const speed = Number(playSpeed.value) || 1;
   if (speed >= 80) return 4;
@@ -620,12 +700,14 @@ async function loadTrajectory() {
   stopPlayback();
   stopPolling();
   cancelSeekChunkLoad();
+  cancelSeekSnapshot();
   cancelScheduledPrefetch();
   cancelSeekRender();
   cancelPrefetchRequests();
   trajectoryData.value = null;
   currentChunkData.value = null;
   currentChunkStart = null;
+  activeSnapshotRange = null;
   pendingChunkStart = null;
   chunkCache = new Map();
   prefetchingChunks = new Set();
@@ -777,6 +859,9 @@ async function loadChunkForTime(time, seq, force = false, options = {}) {
 }
 
 function applyChunkData(start, data) {
+  // 完整分块已就绪，立即接管此前的视口快照并取消同一跳转的在途快照请求。
+  cancelSeekSnapshot();
+  activeSnapshotRange = null;
   currentChunkStart = start;
   // markRaw：分块对象会原样透传图层→Worker（postMessage），保持裸对象避免结构化克隆走代理。
   currentChunkData.value = data ? markRaw(data) : null;
@@ -1017,8 +1102,13 @@ function driveLayerTime(time) {
       applyChunkData(start, chunkCache.get(start));
     } else {
       loadChunkForTime(time, loadSeq, false, { priority: true });
-      syncPassengerStatsAt(time);
-      return;
+      const snapshotReady = activeSnapshotRange
+        && time >= activeSnapshotRange.start
+        && time < activeSnapshotRange.end;
+      if (!snapshotReady) {
+        syncPassengerStatsAt(time);
+        return;
+      }
     }
   } else {
     prefetchAroundTime(time);
@@ -1027,7 +1117,7 @@ function driveLayerTime(time) {
 }
 
 // 暂停状态下的拖动/跳转：命中缓存即时切换；未缓存则先在当前分块采样（保留车辆），并防抖加载目标分块。
-function seekToTime(time) {
+function seekToTime(time, priority = false) {
   cancelPrefetchRequests();
   const start = chunkStartOf(time);
   if (start !== currentChunkStart) {
@@ -1036,7 +1126,11 @@ function seekToTime(time) {
       return;
     }
     syncPassengerStatsAt(time);
-    scheduleSeekChunkLoad(time, true);
+    scheduleSeekSnapshot(time, priority);
+    scheduleSeekChunkLoad(time, priority);
+    if (activeSnapshotRange && time >= activeSnapshotRange.start && time < activeSnapshotRange.end) {
+      syncStatsAt(time);
+    }
     return;
   }
   syncStatsAt(time);
@@ -1057,6 +1151,67 @@ function cancelSeekChunkLoad() {
   }
 }
 
+function cancelSeekSnapshot() {
+  seekSnapshotSeq += 1;
+  if (seekSnapshotTimer) {
+    window.clearTimeout(seekSnapshotTimer);
+    seekSnapshotTimer = null;
+  }
+  seekSnapshotController?.abort();
+  seekSnapshotController = null;
+}
+
+function scheduleSeekSnapshot(time, priority = false) {
+  if (!hasTrajectory.value || !props.model) return;
+  const start = chunkStartOf(time);
+  if (start === currentChunkStart || chunkCache.has(start)) return;
+  cancelSeekSnapshot();
+  const seq = seekSnapshotSeq;
+  seekSnapshotTimer = window.setTimeout(() => {
+    seekSnapshotTimer = null;
+    requestSeekSnapshot(time, seq);
+  }, priority ? 0 : SEEK_SNAPSHOT_DELAY_MS);
+}
+
+async function requestSeekSnapshot(time, seq) {
+  if (seq !== seekSnapshotSeq || !props.model) return;
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  seekSnapshotController = controller;
+  const targetStart = chunkStartOf(time);
+  try {
+    const bounds = trajectoryLayer?.workerSamplingPayload?.() || null;
+    const res = await dataTrajectoryFrameBinary(
+      { datasource: props.model },
+      time,
+      {
+        bucketSeconds: chunkSeconds.value,
+        visibilityMode: VehicleVisibilityModeRef.value,
+        bounds,
+      },
+      { signal: controller?.signal, silentError: true },
+    );
+    if (
+      seq !== seekSnapshotSeq
+      || targetStart === currentChunkStart
+      || !res?.data?.byteLength
+    ) return;
+    const snapshot = parseVehicleTrajectoryBinaryChunk(res.data, trajectoryData.value || {});
+    snapshot.snapshotKey = `${targetStart}:${seq}`;
+    snapshot.snapshot = true;
+    activeSnapshotRange = {
+      start: Number(snapshot.chunk?.start) || targetStart,
+      end: (Number(snapshot.chunk?.end) || targetStart) + 1,
+    };
+    trajectoryLayer?.setVehicleMeta(snapshot.meta || trajectoryData.value?.meta || {});
+    trajectoryLayer?.setData(markRaw(snapshot));
+    syncStatsAt(time, true);
+  } catch (error) {
+    // 快照是完整分块加载前的低延迟路径；取消/失败时由完整分块自然接管。
+  } finally {
+    if (seekSnapshotController === controller) seekSnapshotController = null;
+  }
+}
+
 function cancelSeekRender() {
   pendingSeekRenderTime = null;
   if (seekRenderFrame) {
@@ -1065,7 +1220,7 @@ function cancelSeekRender() {
   }
 }
 
-function scheduleSeekRender(time) {
+function scheduleSeekRender(time, priority = false) {
   pendingSeekRenderTime = clampTime(time);
   if (seekRenderFrame) return;
   seekRenderFrame = window.requestAnimationFrame(() => {
@@ -1073,7 +1228,7 @@ function scheduleSeekRender(time) {
     const nextTime = pendingSeekRenderTime;
     pendingSeekRenderTime = null;
     if (nextTime == null) return;
-    seekToTime(nextTime);
+    seekToTime(nextTime, priority);
   });
 }
 
@@ -1108,6 +1263,13 @@ function changeSpeed() {
   if (isPlaying.value) {
     anchorPlayback(playbackClock);
   }
+}
+
+// 分档倍速按钮（取代 el-radio-group）：设值后复用 changeSpeed 的重锚逻辑
+function selectSpeed(speed) {
+  if (!canControl.value || playSpeed.value === speed) return;
+  playSpeed.value = speed;
+  changeSpeed();
 }
 
 // 用当前真实时刻把仿真时钟重新锚定到 simTime，之后每帧由 (now-anchorReal)*speed 推算，不累加误差。
@@ -1159,7 +1321,7 @@ function handleSliderInput(value) {
   cancelPrefetchRequests();
   if (isPlaying.value) {
     anchorPlayback(time);
-    loadChunkForTime(time, loadSeq, false, { priority: true });
+    seekToTime(time, false);
   } else {
     playbackClock = time;
     scheduleSeekRender(time);
@@ -1177,8 +1339,7 @@ function handleSliderCommit(value) {
     playbackClock = time;
   }
   currentTime.value = time;
-  loadChunkForTime(time, loadSeq, false, { priority: true });
-  seekToTime(time);
+  seekToTime(time, true);
 }
 
 function formatTime(seconds) {
@@ -1293,6 +1454,7 @@ onUnmounted(() => {
   stopPlayback();
   stopPolling();
   cancelSeekChunkLoad();
+  cancelSeekSnapshot();
   cancelScheduledPrefetch();
   cancelSeekRender();
   cancelPrefetchRequests();
@@ -1430,67 +1592,592 @@ onUnmounted(() => {
   }
 }
 
-.GJYS_right_card {
-  width: 470px;
+/* ── 轨迹演示控制条：贴地图底部的横向"媒体播放器"（播放/重置 · 倍速 · 时间轴 · 时刻） ── */
+.rm-play-bar {
+  width: min(760px, 100%);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 56px;
+  padding: 9px 16px;
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: var(--dm2-radius-lg, 16px);
+  background: var(--dm2-glass-strong, rgba(255, 255, 255, 0.86));
+  box-shadow: var(--dm2-shadow-pop, 0 18px 44px -16px rgba(13, 38, 76, 0.26)),
+    var(--dm2-glass-highlight, inset 0 1px 0 rgba(255, 255, 255, 0.72));
+  -webkit-backdrop-filter: var(--dm2-glass-blur, blur(14px) saturate(180%));
+  backdrop-filter: var(--dm2-glass-blur, blur(14px) saturate(180%));
+  color: var(--dm2-ink, #1c2024);
+  font-family: var(--dm2-font);
+}
 
-  .vehicle-panel {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-sm);
-    padding: var(--space-xs) 2px var(--space-2xs);
+/* 播放 / 重置 */
+.rm-play-transport {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rm-play-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--dm2-accent-grad, linear-gradient(135deg, #0a84ff 0%, #0071e3 52%, #0a63cc 100%));
+  color: #ffffff;
+  cursor: pointer;
+  box-shadow: var(--dm2-accent-glow, 0 6px 18px -6px rgba(0, 113, 227, 0.45)), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  transition: transform var(--dm2-dur-fast, 140ms) var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1)),
+    box-shadow var(--dm2-dur-fast, 140ms) var(--dm2-ease);
+
+
+  &:hover:not(:disabled) {
+    box-shadow: 0 8px 22px -6px rgba(0, 113, 227, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.45);
   }
 
-  .vehicle-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-sm);
-    padding: var(--space-xs) 2px var(--space-sm);
-    border-bottom: 1px solid rgba(21, 105, 222, 0.12);
+  &:active:not(:disabled) {
+    transform: scale(0.94);
+  }
 
-    .vehicle-id {
-      color: var(--app-ink);
-      font-size: 15px;
-      font-weight: 800;
-      word-break: break-all;
-    }
+  &:focus-visible {
+    outline: 2px solid var(--dm2-accent-ring, rgba(0, 113, 227, 0.18));
+    outline-offset: 2px;
+  }
 
-    .vehicle-type {
-      margin-top: 2px;
-      color: #64748b;
-      font-size: 12px;
-      font-weight: 600;
-    }
+  &:disabled {
+    background: var(--dm2-muted-soft, #98a2b3);
+    box-shadow: none;
+    cursor: not-allowed;
+    opacity: 0.7;
+  }
+}
+
+.rm-play-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  border-radius: 50%;
+  background: var(--dm2-surface, #ffffff);
+  color: var(--dm2-ink-soft, #3b4452);
+  cursor: pointer;
+  transition: color var(--dm2-dur-fast, 140ms) var(--dm2-ease),
+    border-color var(--dm2-dur-fast, 140ms) var(--dm2-ease),
+    background-color var(--dm2-dur-fast, 140ms) var(--dm2-ease);
+
+  &:hover:not(:disabled) {
+    color: var(--dm2-accent, #0071e3);
+    border-color: rgba(0, 113, 227, 0.3);
+    background: var(--dm2-accent-weak, rgba(0, 113, 227, 0.1));
+  }
+
+  &:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--dm2-accent-ring, rgba(0, 113, 227, 0.18));
+    outline-offset: 2px;
+  }
+
+  &:disabled {
+    color: var(--dm2-muted-soft, #98a2b3);
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+}
+
+/* 倍速：分段控件 */
+.rm-play-speed {
+  flex: none;
+  display: flex;
+  padding: 3px;
+  border-radius: var(--dm2-radius-pill, 999px);
+  background: var(--dm2-surface-sunken, #f4f7fb);
+  border: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+}
+
+.rm-play-speed-btn {
+  min-width: 38px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: var(--dm2-radius-pill, 999px);
+  background: transparent;
+  color: var(--dm2-muted, #667085);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color var(--dm2-dur-fast, 140ms) var(--dm2-ease),
+    background-color var(--dm2-dur-fast, 140ms) var(--dm2-ease),
+    box-shadow var(--dm2-dur-fast, 140ms) var(--dm2-ease);
+
+  &:hover:not(.active):not(:disabled) {
+    color: var(--dm2-ink, #1c2024);
+  }
+
+  &.active {
+    background: var(--dm2-surface, #ffffff);
+    color: var(--dm2-accent-strong, #005bb5);
+    box-shadow: 0 1px 3px rgba(13, 38, 76, 0.14);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--dm2-accent-ring, rgba(0, 113, 227, 0.18));
+    outline-offset: 1px;
+  }
+
+  &:disabled {
+    color: var(--dm2-muted-soft, #98a2b3);
+    cursor: not-allowed;
+  }
+}
+
+/* 时间轴：吃掉中间全部剩余宽度 */
+.rm-play-scrub {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+
+  :deep(.el-slider) {
+    --el-slider-main-bg-color: var(--dm2-accent, #0071e3);
+    --el-slider-runway-bg-color: rgba(17, 32, 58, 0.12);
+    --el-slider-button-size: 15px;
+    --el-slider-button-wrapper-size: 32px;
+    --el-slider-height: 5px;
+    width: 100%;
+    height: 26px;
+  }
+
+  :deep(.el-slider__button) {
+    border: 2px solid var(--dm2-accent, #0071e3);
+    box-shadow: 0 1px 4px rgba(13, 38, 76, 0.22);
+  }
+}
+
+.rm-play-time {
+  flex: none;
+  min-width: 70px;
+  color: var(--dm2-ink, #1c2024);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 15px;
+  font-weight: 780;
+  letter-spacing: 0.01em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* 加载 / 生成 / 失败：占满同一条形高度的居中状态行 */
+.rm-play-status {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--dm2-muted, #667085);
+  font-size: 12.5px;
+  font-weight: 600;
+
+  &.is-error .rm-play-status-text {
+    color: var(--dm2-delete, #c4291c);
+  }
+}
+
+.rm-play-status-text {
+  flex: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rm-play-spinner {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid var(--dm2-accent-weak, rgba(0, 113, 227, 0.1));
+  border-top-color: var(--dm2-accent, #0071e3);
+  animation: rmPlaySpin 0.8s linear infinite;
+}
+
+/* 生成中：进度条吃掉中间空间，指标贴右 */
+.rm-play-build-track {
+  flex: 1 1 auto;
+  min-width: 80px;
+  height: 5px;
+  border-radius: var(--dm2-radius-pill, 999px);
+  background: var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+  overflow: hidden;
+}
+
+.rm-play-build-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--dm2-accent-grad, linear-gradient(135deg, #0a84ff, #0071e3));
+  transition: width var(--dm2-dur, 240ms) var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1));
+}
+
+.rm-play-build-metrics {
+  flex: none;
+  color: var(--dm2-muted-soft, #98a2b3);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 11.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes rmPlaySpin {
+  to { transform: rotate(360deg); }
+}
+
+/* 窄视口（左右面板都展开、可视地图带变窄）：时刻换行到时间轴上方，条形自适应 */
+@media (max-width: 1180px) {
+  .rm-play-bar {
+    gap: 12px;
+    padding: 8px 12px;
+  }
+
+  .rm-play-time {
+    min-width: 62px;
+    font-size: 14px;
+  }
+
+  .rm-play-speed-btn {
+    min-width: 32px;
+    padding: 5px 7px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rm-play-btn,
+  .rm-play-reset,
+  .rm-play-speed-btn,
+  .rm-play-build-fill {
+    transition: none;
+  }
+
+  .rm-play-spinner {
+    animation: none;
+  }
+}
+
+/* ── 车辆运行监测右侧面板：外壳与四块客流/体检面板同构（扁平、发丝线标题、无卡中卡） ── */
+.rm-veh-card {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--dm2-font);
+}
+
+.rm-veh-card-title {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dm2-space-3, 12px);
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+
+  h2 {
+    margin: 0;
+    color: var(--dm2-ink, #1c2024);
+    font-size: 20px;
+    line-height: 1.18;
+    font-weight: 780;
+    letter-spacing: -0.01em;
+  }
+}
+
+/* 播放推进时该徽标持续跳动，表示面板数值随当前时刻实时刷新（唯一一处受控动效） */
+.rm-veh-live {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: var(--dm2-radius-pill, 999px);
+  background: var(--dm2-add-weak, rgba(26, 138, 63, 0.1));
+  color: var(--dm2-add, #1a8a3f);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.rm-veh-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dm2-add, #1a8a3f);
+  animation: rmVehPulse 1.8s var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1)) infinite;
+}
+
+/* 主指标：在途车辆总数 */
+.rm-veh-hero {
+  margin-top: 14px;
+  padding: 13px 15px 14px;
+  border-radius: var(--dm2-radius, 13px);
+  background: var(--dm2-surface-sunken, #f4f7fb);
+}
+
+.rm-veh-hero-label {
+  color: var(--dm2-muted, #667085);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.rm-veh-hero-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 5px 0 0;
+
+  strong {
+    color: var(--dm2-ink, #1c2024);
+    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+    font-size: 34px;
+    font-weight: 800;
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  em {
+    color: var(--dm2-muted, #667085);
+    font-size: 13px;
+    font-style: normal;
+    font-weight: 650;
+  }
+}
+
+/* 在途车辆构成：占比条即图例 */
+.rm-veh-split {
+  margin-top: 14px;
+}
+
+.rm-veh-split-bar {
+  display: flex;
+  height: 10px;
+  border-radius: var(--dm2-radius-pill, 999px);
+  overflow: hidden;
+  background: var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+}
+
+.rm-veh-split-seg {
+  min-width: 0;
+  height: 100%;
+  transition: width var(--dm2-dur, 240ms) var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1));
+
+  & + & {
+    box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.85);
+  }
+}
+
+.rm-veh-split-legend {
+  margin-top: 10px;
+}
+
+.rm-veh-split-row {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto 44px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 2px;
+
+  & + & {
+    border-top: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+  }
+}
+
+.rm-veh-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 4px;
+}
+
+.rm-veh-split-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dm2-ink-soft, #3b4452);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rm-veh-split-val {
+  color: var(--dm2-ink, #1c2024);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 15px;
+  font-weight: 780;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.rm-veh-split-pct {
+  color: var(--dm2-muted, #667085);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 运行指标：累计乘车人数 / 平均车速，靠发丝线分隔的 2×1 */
+.rm-veh-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 14px;
+  border: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+  border-radius: var(--dm2-radius-sm, 10px);
+  background: var(--dm2-surface-sunken, #f4f7fb);
+  overflow: hidden;
+}
+
+.rm-veh-metric {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 13px;
+
+  &:first-child {
+    border-right: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+  }
+}
+
+.rm-veh-metric-label {
+  color: var(--dm2-muted, #667085);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.rm-veh-metric-value {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  color: var(--dm2-ink, #1c2024);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 20px;
+  font-weight: 780;
+  line-height: 1.1;
+  letter-spacing: -0.015em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+
+  em {
+    color: var(--dm2-muted, #667085);
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 650;
+  }
+}
+
+/* 跟随车辆时的详情卡：同一扁平外壳，令牌统一到 dm2 */
+.rm-veh-info-head {
+  min-width: 0;
+
+  h2 {
+    word-break: break-all;
+  }
+}
+
+.rm-veh-info-type {
+  margin: 3px 0 0;
+  color: var(--dm2-muted, #667085);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rm-veh-unfollow {
+  flex: none;
+  padding: 6px 13px;
+  border: 1px solid var(--dm2-accent, #0071e3);
+  border-radius: var(--dm2-radius-pill, 999px);
+  background: var(--dm2-accent-weak, rgba(0, 113, 227, 0.1));
+  color: var(--dm2-accent-strong, #005bb5);
+  font: 650 12px var(--dm2-font);
+  cursor: pointer;
+  transition: background-color var(--dm2-dur-fast, 140ms) var(--dm2-ease), transform var(--dm2-dur-fast, 140ms) var(--dm2-ease);
+
+  &:hover {
+    background: rgba(0, 113, 227, 0.16);
+  }
+
+  &:active {
+    transform: translateY(1px);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--dm2-accent-ring, rgba(0, 113, 227, 0.18));
+    outline-offset: 2px;
+  }
+}
+
+.rm-veh-info-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dm2-space-3, 12px);
+  padding-top: 14px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 32, 58, 0.18) transparent;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: var(--dm2-radius-pill, 999px);
+    background: rgba(17, 32, 58, 0.18);
   }
 
   .info-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-xs);
+    gap: 8px;
   }
 
   .info-item {
     min-width: 0;
-    border: 1px solid rgba(21, 105, 222, 0.12);
-    border-radius: var(--app-card-radius);
-    background: #f8fbff;
-    padding: var(--space-xs) var(--space-sm);
     display: flex;
     flex-direction: column;
     gap: 4px;
+    padding: 10px 12px;
+    border: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+    border-radius: var(--dm2-radius-sm, 10px);
+    background: var(--dm2-surface-sunken, #f4f7fb);
 
     &.wide {
       grid-column: 1 / -1;
     }
 
     .label {
-      color: var(--app-muted);
+      color: var(--dm2-muted, #667085);
       font-size: 11px;
       font-weight: 600;
     }
 
     .value {
-      color: var(--app-ink);
+      color: var(--dm2-ink, #1c2024);
       font-size: 13px;
       font-weight: 700;
       line-height: 1.35;
@@ -1499,37 +2186,35 @@ onUnmounted(() => {
   }
 
   .stations-section {
-    border-top: 1px solid rgba(21, 105, 222, 0.12);
-    padding-top: var(--space-sm);
+    border-top: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+    padding-top: 12px;
   }
 
   .section-title {
-    color: var(--app-ink);
+    margin-bottom: 8px;
+    color: var(--dm2-ink-soft, #3b4452);
     font-size: 13px;
-    font-weight: 800;
-    margin-bottom: var(--space-xs);
+    font-weight: 720;
   }
 
   .station-list {
-    max-height: 260px;
-    overflow: auto;
     display: flex;
     flex-direction: column;
-    gap: var(--space-xs);
-    padding-right: 4px;
+    gap: 6px;
+    padding-right: 2px;
   }
 
   .station-row {
     display: grid;
-    grid-template-columns: 34px minmax(0, 1fr);
+    grid-template-columns: 30px minmax(0, 1fr);
     align-items: center;
-    gap: var(--space-xs);
-    padding: var(--space-xs);
-    border-radius: var(--app-card-radius);
-    color: #40506a;
-    background: var(--app-card-bg);
-    border: 1px solid rgba(226, 232, 240, 0.9);
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+    border-radius: var(--dm2-radius-sm, 10px);
+    background: var(--dm2-surface, #ffffff);
 
+    /* 上一站 / 下一站高亮用与地图车辆点同源的绿/蓝，供跟随时与地图对照 */
     &.previous {
       border-color: rgba(22, 163, 74, 0.36);
       background: rgba(22, 163, 74, 0.08);
@@ -1541,390 +2226,21 @@ onUnmounted(() => {
     }
 
     .station-index {
-      color: var(--app-blue);
+      color: var(--dm2-accent, #0071e3);
+      font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
       font-size: 12px;
-      font-weight: 800;
+      font-weight: 780;
       text-align: right;
     }
 
     .station-name {
       min-width: 0;
-      color: var(--app-ink);
+      color: var(--dm2-ink, #1c2024);
       font-size: 12px;
       font-weight: 650;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-  }
-}
-
-.run-gjys-control-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-  margin: 6px 8px 10px;
-  padding: 14px 14px 16px;
-  border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
-  border-radius: var(--dm2-radius, 13px);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 254, 0.8)),
-    var(--dm2-surface, #ffffff);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85), 0 8px 22px -16px rgba(13, 38, 76, 0.28);
-  color: var(--dm2-ink, #1c2024);
-
-  // 标题作为小节标签，呼应左侧导航的层级感
-  .run-control-title {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    margin: 0 0 1px;
-    color: var(--dm2-accent-strong, #005bb5);
-    font-size: 11px;
-    font-weight: 760;
-    letter-spacing: 0.06em;
-
-    &::before {
-      content: "";
-      width: 4px;
-      height: 13px;
-      border-radius: 2px;
-      background: var(--dm2-accent-grad, linear-gradient(135deg, #0a84ff, #0071e3));
-    }
-  }
-
-  // mt-4 的额外外边距交给父级 gap 统一控制，避免双倍间距
-  .mt-4 {
-    margin-top: 0;
-  }
-
-  .build-state {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px;
-    border-radius: var(--dm2-radius-sm, 10px);
-    background: rgba(17, 32, 58, 0.03);
-  }
-
-  .build-title {
-    color: var(--dm2-ink, #1c2024);
-    font-size: 12px;
-    font-weight: 700;
-  }
-
-  .build-metrics {
-    display: flex;
-    justify-content: space-between;
-    color: var(--dm2-muted, #667085);
-    font-size: 11px;
-  }
-
-  .control-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-
-    &.flex-col {
-      align-items: stretch;
-      flex-direction: column;
-      gap: 9px;
-    }
-  }
-
-  .label {
-    color: var(--dm2-muted, #667085);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-  }
-
-  .slider-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .time-text {
-    color: var(--dm2-accent-strong, #005bb5);
-    font-family: var(--dm2-font-num, "SF Pro Display", monospace);
-    font-size: 15px;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .btn-group {
-    display: flex;
-    width: 100%;
-  }
-
-  // 播放 / 重置：填充式按钮组，主操作用强调渐变
-  :deep(.el-button-group) {
-    display: flex;
-    width: 100%;
-    border: 0;
-    border-radius: 10px;
-    overflow: hidden;
-    box-shadow: var(--dm2-shadow-card, 0 1px 2px rgba(13, 38, 76, 0.05), 0 4px 12px -4px rgba(13, 38, 76, 0.08));
-  }
-
-  :deep(.el-button) {
-    flex: 1;
-    height: 34px;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    font-size: 12.5px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    transition:
-      background-color var(--dm2-dur, 240ms) var(--dm2-ease, ease),
-      color var(--dm2-dur, 240ms) var(--dm2-ease, ease);
-  }
-
-  :deep(.el-button + .el-button) {
-    border-left: 1px solid rgba(255, 255, 255, 0.35);
-  }
-
-  :deep(.el-button--primary) {
-    background: var(--dm2-accent-grad, linear-gradient(135deg, #0a84ff 0%, #0071e3 52%, #0a63cc 100%)) !important;
-    color: #ffffff !important;
-
-    &:hover {
-      filter: brightness(1.05);
-    }
-  }
-
-  :deep(.el-button--info) {
-    background-color: var(--dm2-field, #f1f4f9) !important;
-    color: var(--dm2-ink-soft, #3b4452) !important;
-
-    &:hover {
-      background-color: rgba(17, 32, 58, 0.08) !important;
-      color: var(--dm2-ink, #1c2024) !important;
-    }
-  }
-
-  :deep(.el-button.is-disabled) {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  // 演示速度：分段控件，选中态清晰高亮（修复旧选择器类名错误导致的"不亮起"）
-  :deep(.el-radio-group) {
-    display: flex;
-    width: 100%;
-    gap: 3px;
-    padding: 3px;
-    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
-    border-radius: 10px;
-    background: var(--dm2-field, #f1f4f9);
-  }
-
-  :deep(.el-radio-button) {
-    flex: 1;
-    display: flex;
-  }
-
-  :deep(.el-radio-button__inner) {
-    width: 100%;
-    height: 28px;
-    line-height: 28px;
-    padding: 0;
-    border: 0 !important;
-    background: transparent !important;
-    color: var(--dm2-ink-soft, #3b4452) !important;
-    font-size: 12px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    border-radius: 7px !important;
-    box-shadow: none !important;
-    transition:
-      background-color var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease),
-      color var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease),
-      box-shadow var(--dm2-dur-fast, 140ms) var(--dm2-ease, ease);
-  }
-
-  :deep(.el-radio-button:not(.is-active):hover .el-radio-button__inner) {
-    background: rgba(255, 255, 255, 0.6) !important;
-    color: var(--dm2-accent, #0071e3) !important;
-  }
-
-  // 同时匹配 is-active（最稳）与正确的原生 input 类名，确保任意 Element Plus 版本都高亮
-  :deep(.el-radio-button.is-active .el-radio-button__inner),
-  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner),
-  :deep(.el-radio-button__orig-radio:checked + .el-radio-button__inner) {
-    background: #ffffff !important;
-    color: var(--dm2-accent-strong, #005bb5) !important;
-    box-shadow:
-      0 1px 4px rgba(13, 38, 76, 0.16),
-      inset 0 0 0 1px rgba(0, 113, 227, 0.22) !important;
-  }
-
-  :deep(.el-slider) {
-    --el-slider-main-bg-color: var(--dm2-accent, #0071e3);
-    --el-slider-runway-bg-color: rgba(17, 32, 58, 0.1);
-    --el-slider-stop-bg-color: #ffffff;
-    --el-slider-button-size: 14px;
-    --el-slider-button-wrapper-size: 30px;
-    --el-slider-height: 5px;
-    height: 26px;
-  }
-
-  :deep(.el-slider__button) {
-    border: 2px solid var(--dm2-accent, #0071e3);
-    box-shadow: 0 1px 4px rgba(13, 38, 76, 0.22);
-  }
-}
-
-.vehicle-status-right-card {
-  /* 主指标卡：实时运行车辆 */
-  .rm-veh-hero {
-    position: relative;
-    overflow: hidden;
-    padding: 16px 18px 14px;
-    border: 1px solid rgba(0, 113, 227, 0.16);
-    border-radius: var(--dm2-radius-lg, 16px);
-    background:
-      radial-gradient(120% 140% at 100% 0%, rgba(0, 113, 227, 0.12), transparent 60%),
-      linear-gradient(180deg, rgba(247, 250, 254, 0.9), rgba(240, 245, 251, 0.78));
-    box-shadow:
-      0 14px 30px -20px rgba(13, 38, 76, 0.34),
-      inset 0 1px 0 rgba(255, 255, 255, 0.7);
-  }
-
-  .rm-veh-hero-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .rm-veh-hero-label {
-    color: var(--dm2-muted, #667085);
-    font-size: 12px;
-    font-weight: 650;
-    letter-spacing: 0.01em;
-  }
-
-  .rm-veh-live {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: var(--dm2-accent-strong, #005bb5);
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .rm-veh-live-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #1a8a3f;
-    box-shadow: 0 0 0 0 rgba(26, 138, 63, 0.5);
-    animation: rmVehPulse 1.8s var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1)) infinite;
-  }
-
-  .rm-veh-hero-value {
-    margin-top: 2px;
-    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
-    font-size: 38px;
-    font-weight: 800;
-    line-height: 1.05;
-    letter-spacing: -0.02em;
-    color: var(--dm2-ink, #1c2024);
-  }
-
-  .rm-veh-hero-unit {
-    margin-left: 4px;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--dm2-muted, #667085);
-  }
-
-  .rm-veh-modes {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-    margin-top: 14px;
-  }
-
-  .rm-veh-mode {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    padding: 8px 10px;
-    border-radius: var(--dm2-radius-sm, 10px);
-    background: rgba(255, 255, 255, 0.66);
-    border: 1px solid rgba(17, 32, 58, 0.06);
-  }
-
-  .rm-veh-mode-name {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--dm2-muted, #667085);
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .rm-veh-mode-name::before {
-    content: "";
-    width: 7px;
-    height: 7px;
-    border-radius: 2px;
-    background: currentColor;
-  }
-
-  .rm-veh-mode-val {
-    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
-    font-size: 19px;
-    font-weight: 800;
-    color: var(--dm2-ink, #1c2024);
-  }
-
-  .rm-veh-mode.bus .rm-veh-mode-name { color: #1a8a3f; }
-  .rm-veh-mode.subway .rm-veh-mode-name { color: #c4291c; }
-  .rm-veh-mode.car .rm-veh-mode-name { color: var(--dm2-accent, #0071e3); }
-
-  /* 次级指标 */
-  .rm-veh-stats {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    margin-top: 12px;
-  }
-
-  .rm-veh-stat {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    padding: 12px 14px;
-    border: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
-    border-radius: var(--dm2-radius, 13px);
-    background: rgba(244, 247, 251, 0.7);
-  }
-
-  .rm-veh-stat-label {
-    color: var(--dm2-muted, #667085);
-    font-size: 11px;
-    font-weight: 650;
-  }
-
-  .rm-veh-stat-value {
-    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
-    font-size: 22px;
-    font-weight: 800;
-    color: var(--dm2-ink, #1c2024);
-
-    &.success { color: #1a8a3f; }
-    &.warning { color: #b06a00; }
-
-    .unit {
-      margin-left: 3px;
-      color: var(--dm2-muted, #667085);
-      font-size: 11px;
-      font-weight: 500;
     }
   }
 }
@@ -1936,8 +2252,13 @@ onUnmounted(() => {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .vehicle-status-right-card .rm-veh-live-dot {
+  .rm-veh-live-dot {
     animation: none;
+  }
+
+  .rm-veh-split-seg,
+  .rm-veh-unfollow {
+    transition: none;
   }
 }
 

@@ -48,7 +48,7 @@
 
 <script setup>
 import { onMounted, onUnmounted, ref, computed } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { getSchemeList, getModelList, loadModel } from "@/api/scheme";
 import { useModelSelectionStore } from "@/stores/modelSelection";
 import { useScenarioEditStore } from "../store";
@@ -66,6 +66,8 @@ const schemeList = ref([]);
 const modelList = ref([]);
 const loadingSchemes = ref(false);
 const loadingModels = ref(false);
+const confirmedScheme = ref("");
+const confirmedModelName = ref("");
 let pollTimer = null;
 let pollSeq = 0;
 let disposed = false;
@@ -120,6 +122,24 @@ function stopPolling() {
   pollTimer = null;
 }
 
+async function guardContextSwitch(targetLabel) {
+  if (!store.draft.area && store.draft.edits.length === 0) return true;
+  try {
+    await ElMessageBox.confirm(
+      `切换到${targetLabel}前会先保存当前草稿，切换后可从草稿列表继续编辑。`,
+      "保存并切换",
+      { confirmButtonText: "保存并切换", cancelButtonText: "留在当前模型", type: "warning" },
+    );
+  } catch {
+    return false;
+  }
+  const saved = await store.saveDraftNow();
+  if (!saved) {
+    ElMessage.error("草稿保存失败，已取消切换。请检查网络后重试");
+  }
+  return saved;
+}
+
 async function ensureLoadedAndActivate(name) {
   stopPolling();
   const seq = pollSeq;
@@ -155,7 +175,14 @@ async function ensureLoadedAndActivate(name) {
   pollTimer = setTimeout(poll, 3000);
 }
 
-async function handleSchemeChange() {
+async function handleSchemeChange(nextScheme) {
+  if ((nextScheme || "") === confirmedScheme.value) return;
+  if (!(await guardContextSwitch(`基础方案「${nextScheme || "未选择"}」`))) {
+    scheme.value = confirmedScheme.value;
+    return;
+  }
+  confirmedScheme.value = nextScheme || "";
+  confirmedModelName.value = "";
   modelName.value = "";
   stopPolling();
   await store.setParentModel("", false);
@@ -164,8 +191,15 @@ async function handleSchemeChange() {
 }
 
 async function handleModelChange(name) {
-  persistSelection();
+  if ((name || "") === confirmedModelName.value) return;
+  const label = modelList.value.find((m) => m.name === name)?.displayName || name || "未选择";
+  if (!(await guardContextSwitch(`母本模型「${label}」`))) {
+    modelName.value = confirmedModelName.value;
+    return;
+  }
   if (!name) {
+    confirmedModelName.value = "";
+    persistSelection();
     stopPolling();
     await store.setParentModel("", false);
     return;
@@ -173,9 +207,11 @@ async function handleModelChange(name) {
   const item = modelList.value.find((m) => m.name === name);
   if (item && !item.cuttable) {
     ElMessage.warning("该模型缺少 output_plans，不能作为线网优化母本");
-    modelName.value = "";
+    modelName.value = confirmedModelName.value;
     return;
   }
+  confirmedModelName.value = name;
+  persistSelection();
   await ensureLoadedAndActivate(name);
 }
 
@@ -207,11 +243,13 @@ onMounted(async () => {
   const desired = pickDesiredSelection();
   if (desired.scheme && schemeList.value.includes(desired.scheme)) {
     scheme.value = desired.scheme;
+    confirmedScheme.value = desired.scheme;
     await fetchModels();
     if (disposed) return;
     const item = desired.model ? modelList.value.find((m) => m.name === desired.model) : null;
     if (item && item.cuttable) {
       modelName.value = desired.model;
+      confirmedModelName.value = desired.model;
       await ensureLoadedAndActivate(desired.model);
       return;
     }
@@ -219,6 +257,7 @@ onMounted(async () => {
   }
   if (!scheme.value && schemeList.value.length === 1) {
     scheme.value = schemeList.value[0];
+    confirmedScheme.value = scheme.value;
     await fetchModels();
   }
 });
@@ -254,20 +293,19 @@ onUnmounted(() => {
   }
 
   .bar-status {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
+    max-width: 150px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(71, 85, 105, 0.08);
     font-size: 12px;
     font-weight: 600;
     color: var(--app-ink-weak, #6b7789);
     white-space: nowrap;
-    overflow: hidden;
     text-overflow: ellipsis;
 
     &.ok {
       color: #0f9f6e;
+      background: rgba(15, 159, 110, 0.1);
     }
   }
 

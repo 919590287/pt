@@ -145,29 +145,42 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    public AuthVO resetPassword(String username, String newPassword) {
+    public AuthVO resetPassword(String username, String currentPassword, String newPassword) {
         String normalizedUsername = normalizeUsername(username);
+        validatePassword(currentPassword);
         validatePassword(newPassword);
-        if (!users.containsKey(normalizedUsername)) {
-            throw new BusinessException("用户不存在");
-        }
-        // 同 login：哈希计算在锁外完成
-        String passwordHash = createPasswordHash(newPassword);
-        synchronized (writeLock) {
-            UserRecord user = users.get(normalizedUsername);
-            if (user == null) {
-                throw new BusinessException("用户不存在");
+        checkLoginRateLimit(normalizedUsername);
+
+        // 原密码校验与新密码 PBKDF2 均在锁外完成；入锁后再次核对哈希，避免与并发登录/改密竞争。
+        for (int attempt = 0; attempt < 3; attempt++) {
+            UserRecord observed = users.get(normalizedUsername);
+            String observedHash = observed == null ? null : observed.passwordHash;
+            if (observed == null || !verifyPassword(currentPassword, observedHash)) {
+                recordLoginFailure(normalizedUsername);
+                // 不区分用户不存在与密码错误，避免用户名枚举。
+                throw new BusinessException("用户名或原密码错误");
             }
-            long now = System.currentTimeMillis();
-            user.passwordHash = passwordHash;
-            user.lastLoginAt = now;
-            user.updatedAt = now;
-            ensureUserFolder(normalizedUsername);
-            matsimConfig.init();
-            AuthVO auth = createSession(normalizedUsername, now);
-            persist();
-            return auth;
+            String passwordHash = createPasswordHash(newPassword);
+            synchronized (writeLock) {
+                UserRecord user = users.get(normalizedUsername);
+                if (user == null || !observedHash.equals(user.passwordHash)) {
+                    continue;
+                }
+                loginFailures.remove(normalizedUsername);
+                long now = System.currentTimeMillis();
+                user.passwordHash = passwordHash;
+                user.lastLoginAt = now;
+                user.updatedAt = now;
+                // 改密后撤销该账户的全部旧会话，防止泄漏 token 继续有效。
+                sessions.values().removeIf(session -> normalizedUsername.equals(session.username));
+                ensureUserFolder(normalizedUsername);
+                matsimConfig.init();
+                AuthVO auth = createSession(normalizedUsername, now);
+                persist();
+                return auth;
+            }
         }
+        throw new BusinessException("密码修改冲突，请重试");
     }
 
     @Override

@@ -112,12 +112,22 @@ async function cancel(job) {
 }
 
 async function retry(job) {
+  try {
+    await ElMessageBox.confirm(`将重新提交「${job.draftName || job.jobId}」，并再次执行切分与两次仿真。`, "重试任务", {
+      confirmButtonText: "确认重试", cancelButtonText: "取消", type: "warning",
+    });
+  } catch { return; }
   await optJobRetry({ jobId: job.jobId });
   ElMessage.success("已重新提交");
   store.refreshJobs();
 }
 
 async function cleanup(job) {
+  try {
+    await ElMessageBox.confirm("将从任务列表移除该记录，已注册的模型不会被删除。", "移除任务记录", {
+      confirmButtonText: "移除记录", cancelButtonText: "取消", type: "warning",
+    });
+  } catch { return; }
   await optJobCleanup({ jobId: job.jobId });
   store.refreshJobs();
 }

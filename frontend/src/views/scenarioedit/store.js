@@ -98,33 +98,55 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
   const saveState = ref("idle"); // idle | saving | saved | error
   let saveTimer = null;
   let suppressAutosave = false;
+  let changeRevision = 0;
+  let savedRevision = 0;
+  let saveQueue = Promise.resolve(true);
+
+  const hasUnsavedChanges = computed(() => changeRevision > savedRevision || saveState.value === "error");
 
   function draftPayload() {
-    return {
+    return JSON.parse(JSON.stringify({
       draftId: draft.draftId || undefined,
       name: draft.name,
       parentModel: draft.parentModel,
       area: draft.area,
       edits: draft.edits,
-    };
+    }));
   }
 
-  async function saveDraftNow() {
-    if (!draft.parentModel || (!draft.area && draft.edits.length === 0)) return;
-    saveState.value = "saving";
-    try {
-      const res = await optDraftSave(draftPayload());
-      if (res?.data?.draftId) {
-        draft.draftId = res.data.draftId;
-      }
-      saveState.value = "saved";
-    } catch (e) {
-      saveState.value = "error";
+  function saveDraftNow() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    if (!draft.parentModel || (!draft.area && draft.edits.length === 0)) {
+      savedRevision = changeRevision;
+      saveState.value = "idle";
+      return Promise.resolve(true);
     }
+    const payload = draftPayload();
+    const revision = changeRevision;
+    const run = async () => {
+      saveState.value = "saving";
+      try {
+        const res = await optDraftSave(payload);
+        if (res?.data?.draftId && draft.parentModel === payload.parentModel) {
+          draft.draftId = res.data.draftId;
+        }
+        savedRevision = Math.max(savedRevision, revision);
+        saveState.value = changeRevision <= savedRevision ? "saved" : "idle";
+        if (changeRevision > savedRevision) scheduleSave(false);
+        return true;
+      } catch (e) {
+        saveState.value = "error";
+        return false;
+      }
+    };
+    saveQueue = saveQueue.catch(() => true).then(run);
+    return saveQueue;
   }
 
-  function scheduleSave() {
+  function scheduleSave(markChanged = true) {
     if (suppressAutosave) return;
+    if (markChanged) changeRevision += 1;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => saveDraftNow(), 1500);
   }
@@ -145,6 +167,8 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
   }
 
   function resetDraftLocal() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
     suppressAutosave = true;
     draft.draftId = "";
     draft.name = "未命名方案";
@@ -153,10 +177,17 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     draft.edits = [];
     areaStats.value = null;
     clearSelection();
+    setTool("");
+    clearLineBuilder();
+    changeRevision += 1;
+    savedRevision = changeRevision;
+    saveState.value = "idle";
     setTimeout(() => (suppressAutosave = false), 0);
   }
 
   function openDraft(d) {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
     suppressAutosave = true;
     draft.draftId = d.draftId;
     draft.name = d.name || "未命名方案";
@@ -165,6 +196,11 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     draft.edits = Array.isArray(d.edits) ? d.edits : [];
     areaStats.value = null;
     clearSelection();
+    setTool("");
+    clearLineBuilder();
+    changeRevision += 1;
+    savedRevision = changeRevision;
+    saveState.value = "saved";
     setTimeout(() => (suppressAutosave = false), 0);
     if (draft.area) refreshAreaStats();
   }
@@ -250,6 +286,26 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     return { ok: true, edit: addEdit(payload) };
   }
 
+  function replaceEditChecked(editId, payload) {
+    const index = draft.edits.findIndex((edit) => edit.id === editId);
+    if (index < 0) return { ok: false, reason: "原修改项已不存在，请刷新后重试。" };
+    const remaining = draft.edits.filter((edit) => edit.id !== editId);
+    const verdict = checkEditConflict(payload, remaining, {
+      routeIndex: routeIndex.value,
+      stopIndex: stopIndex.value,
+    });
+    if (!verdict.ok) return { ok: false, reason: verdict.reason };
+    const current = draft.edits[index];
+    draft.edits[index] = {
+      ...current,
+      ...payload,
+      id: current.id,
+      note: current.note || "",
+      createdAt: current.createdAt,
+    };
+    return { ok: true, edit: draft.edits[index] };
+  }
+
   function findDependents(editId) {
     return draft.edits.filter((e) => Array.isArray(e.deps) && e.deps.includes(editId));
   }
@@ -324,6 +380,7 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
    *          新点选插入到 insertPos，撤销只回退本会话新增的锚点；null=追加到末尾。
    */
   const lineBuilder = reactive({ anchors: [], session: null });
+  const lineAnchorMode = ref("stop"); // stop | road，建线时显式区分“选站”与“加路径点”
   /** 按锚点沿路网寻径得到的走向 {linkIds, geometry}（EditToolbox 写入，index.vue 画连线） */
   const lineBuilderPath = shallowRef(null);
 
@@ -384,6 +441,11 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     lineBuilder.anchors = [];
     lineBuilder.session = null;
     lineBuilderPath.value = null;
+    lineAnchorMode.value = "stop";
+  }
+
+  function setLineAnchorMode(mode) {
+    lineAnchorMode.value = mode === "road" ? "road" : "stop";
   }
 
   // ---- 区段编辑会话（地图右键触发；kind 供操作条提示文案） ----
@@ -397,9 +459,10 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     return lineBuilder.anchors.length;
   }
 
-  function openLineSession(kind, insertPos) {
+  function openLineSession(kind, insertPos, originalAnchors) {
     // leftIdx：断开处左边界锚点下标（固定，不随插入右移）；autoConnect：用户显式选择"直接最短路连接"
-    lineBuilder.session = { kind, insertPos, added: 0, leftIdx: insertPos - 1, autoConnect: false };
+    lineBuilder.session = { kind, insertPos, added: 0, leftIdx: insertPos - 1, autoConnect: false, originalAnchors };
+    lineAnchorMode.value = kind === "segment" || kind === "delete" ? "road" : "stop";
     setTool("pick.stop", { purpose: "buildLine", keepForm: true });
   }
 
@@ -412,45 +475,56 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     lineBuilder.session = null;
   }
 
+  function cancelLineSession() {
+    const original = lineBuilder.session?.originalAnchors;
+    if (Array.isArray(original)) lineBuilder.anchors = original.map((item) => ({ ...item }));
+    lineBuilder.session = null;
+  }
+
   /** 修改站点：移除该站及其两侧途经点，点选替换站（可加途经点） */
   function beginStopReplace(i) {
     if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const original = lineBuilder.anchors.map((item) => ({ ...item }));
     const p = prevStopIdxFrom(i);
     const n = nextStopIdxFrom(i);
     lineBuilder.anchors.splice(p + 1, n - (p + 1));
-    openLineSession("replace", p + 1);
+    openLineSession("replace", p + 1, original);
   }
 
   /** 删除站点：移除该站及其两侧途经点，进入补连接点选（可直接完成走最短路） */
   function beginStopDelete(i) {
     if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const original = lineBuilder.anchors.map((item) => ({ ...item }));
     const p = prevStopIdxFrom(i);
     const n = nextStopIdxFrom(i);
     lineBuilder.anchors.splice(p + 1, n - (p + 1));
-    openLineSession("delete", p + 1);
+    openLineSession("delete", p + 1, original);
   }
 
   /** 新增上一站：清掉与前一站之间的途经点，在该站前插入点选 */
   function beginInsertBefore(i) {
     if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const original = lineBuilder.anchors.map((item) => ({ ...item }));
     const p = prevStopIdxFrom(i);
     lineBuilder.anchors.splice(p + 1, i - (p + 1));
-    openLineSession("insertBefore", p + 1);
+    openLineSession("insertBefore", p + 1, original);
   }
 
   /** 新增下一站：清掉与后一站之间的途经点，在该站后插入点选 */
   function beginInsertAfter(i) {
     if (lineBuilder.anchors[i]?.type !== "stop") return;
+    const original = lineBuilder.anchors.map((item) => ({ ...item }));
     const n = nextStopIdxFrom(i);
     lineBuilder.anchors.splice(i + 1, n - (i + 1));
-    openLineSession("insertAfter", i + 1);
+    openLineSession("insertAfter", i + 1, original);
   }
 
   /** 修改断面路径：清掉两相邻停靠站之间的途经点，重新点选该断面路径 */
   function beginSegmentEdit(aIdx, bIdx) {
     if (lineBuilder.anchors[aIdx]?.type !== "stop" || lineBuilder.anchors[bIdx]?.type !== "stop") return;
+    const original = lineBuilder.anchors.map((item) => ({ ...item }));
     lineBuilder.anchors.splice(aIdx + 1, bIdx - (aIdx + 1));
-    openLineSession("segment", aIdx + 1);
+    openLineSession("segment", aIdx + 1, original);
   }
 
   function setTool(tool, context = null) {
@@ -461,6 +535,13 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
 
   // 当前打开的编辑表单类型（EditToolbox 同步；index.vue 据此判断搜索仅定位/屏蔽删除键）
   const activeFormKind = ref("");
+  const formRequest = reactive({ kind: "", editId: "", seq: 0 });
+
+  function requestForm(kind, editId = "") {
+    formRequest.kind = kind || "";
+    formRequest.editId = editId || "";
+    formRequest.seq += 1;
+  }
 
   const selection = reactive({ type: "", lineId: "", routeId: "", stopId: "" });
 
@@ -535,12 +616,8 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     }
     if (parentModel.value && parentReady.value) {
       await Promise.all([loadLines(), refreshDraftList()]);
-      // 默认打开最近草稿
-      if (!draft.draftId && draftList.value.length > 0) {
-        openDraft(draftList.value[0]);
-      } else {
-        draft.parentModel = parentModel.value;
-      }
+      // 不再默认打开列表第一个草稿，由用户在左侧明确选择。
+      draft.parentModel = parentModel.value;
     }
   }
 
@@ -551,14 +628,14 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
   return {
     parentModel, parentReady, setParentModel, markParentReady,
     lines, linesLoading, loadLines, stopIndex, routeIndex,
-    draft, draftList, saveState, refreshDraftList, saveDraftNow, newDraft, openDraft, deleteDraft, copyDraft, resetDraftLocal,
+    draft, draftList, saveState, hasUnsavedChanges, refreshDraftList, saveDraftNow, newDraft, openDraft, deleteDraft, copyDraft, resetDraftLocal,
     areaStats, areaStatsLoading, setArea, clearAreaOnly, refreshAreaStats,
-    addEdit, addEditChecked, removeEdits, updateEdit, findDependents, editCount, editedTargets,
+    addEdit, addEditChecked, replaceEditChecked, removeEdits, updateEdit, findDependents, editCount, editedTargets,
     activeTool, toolContext, toolDraft, setTool, resetToolDraft,
     roadNetWanted, editPreview,
-    lineBuilder, lineBuilderPath, appendLineStop, appendLineRoadPoint, removeLineAnchorAt, popLineAnchor, clearLineBuilder,
-    endLineSession, sessionAutoConnect, beginStopReplace, beginStopDelete, beginInsertBefore, beginInsertAfter, beginSegmentEdit,
-    activeFormKind,
+    lineBuilder, lineBuilderPath, lineAnchorMode, setLineAnchorMode, appendLineStop, appendLineRoadPoint, removeLineAnchorAt, popLineAnchor, clearLineBuilder,
+    endLineSession, cancelLineSession, sessionAutoConnect, beginStopReplace, beginStopDelete, beginInsertBefore, beginInsertAfter, beginSegmentEdit,
+    activeFormKind, formRequest, requestForm,
     selection, selectRoute, selectStop, clearSelection, selectedRoute, selectedStop,
     jobs, refreshJobs, startJobPolling, stopJobPolling,
   };
