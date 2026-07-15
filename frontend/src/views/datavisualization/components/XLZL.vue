@@ -604,6 +604,7 @@ function nextSelectionSignal() {
 // 注入来自 index.vue 的全局线宽配置与 MapRef
 const LineWidthRef = inject("LineWidthRef", ref(100));
 const MapRef = inject("MapRef", ref(null));
+const addPageMapLayer = inject("AddPageMapLayer", (layer) => MapRef.value?.addLayer(layer));
 const BaseMapLineModeRef = inject("BaseMapLineModeRef", ref("bus-network"));
 
 // 注入右侧面板显示控制
@@ -2370,8 +2371,8 @@ injectSync("MapRef").then((map) => {
   // 组件可能在 MapRef 就绪前被卸载（快速切 tab）：已 dispose 的图层再 addLayer 会残留在地图上无人清理
   if (isComponentUnmounted) return;
   if (!runMonitorSimplifiedRight) {
-    map.value?.addLayer(_BgRouteLayer);
-    map.value?.addLayer(_RouteLayer);
+    addPageMapLayer(_BgRouteLayer);
+    addPageMapLayer(_RouteLayer);
     _BgRouteLayer.setTileSource(props.model, { tileRequest: getRouteTileBinary });
     if (BaseMapLineModeRef.value === "bus-network") {
       _BgRouteLayer.hide();

@@ -1,12 +1,22 @@
 <template>
   <div class="overview-metric-list">
-    <!-- 主指标：线网总规模（唯一视觉焦点） -->
+    <!-- 主指标：线网总长度 + 线网总运营里程（双联视觉焦点，随行政区切换） -->
     <div class="metric-card hero-card">
-      <span class="hero-label">线网总规模</span>
-      <span class="hero-value">
-        <strong class="hero-num">{{ fmtUnit(stats.networkScaleKm, "") }}</strong>
-        <span class="hero-unit">km</span>
-      </span>
+      <div class="hero-metric">
+        <span class="hero-label">线网总长度</span>
+        <span class="hero-value">
+          <strong class="hero-num">{{ fmtUnit(stats.networkScaleKm, "") }}</strong>
+          <span v-if="hasNumber(stats.networkScaleKm)" class="hero-unit">km</span>
+        </span>
+      </div>
+      <div class="hero-metric" title="Σ 日班次 × 线路长度（方向级合计）；选定行政区时按区内段里程统计">
+        <span class="hero-label">线网总运营里程</span>
+        <span class="hero-value">
+          <!-- fmtUnit 对 null 会经 Number(null)=0 误显示 0，此处显式判空 -->
+          <strong class="hero-num">{{ hasNumber(stats.dailyMileageWanKm) ? fmtUnit(stats.dailyMileageWanKm, "", 1) : "暂无" }}</strong>
+          <span v-if="hasNumber(stats.dailyMileageWanKm)" class="hero-unit">万km/日</span>
+        </span>
+      </div>
     </div>
 
     <!-- 次级：三联规模指标 -->
@@ -74,13 +84,13 @@
       <div class="card-title-row">
         <span class="card-title">企业线路统计</span>
       </div>
-      <div class="operator-table" :class="{ 'cols-3': !showVehicleColumns }">
+      <div class="operator-table">
         <div class="operator-table-row operator-table-head">
           <span class="operator-company">企业</span>
           <span class="operator-number">线路数量</span>
           <span class="operator-number">线路占比</span>
-          <span v-if="showVehicleColumns" class="operator-number">车辆数</span>
-          <span v-if="showVehicleColumns" class="operator-number">配车占比</span>
+          <span class="operator-number" title="真实线网暂无配车数据源，待业务配车表接入">配车数</span>
+          <span class="operator-number operator-th-stack" title="Σ 日班次 × 线路长度；选定行政区时按区内段里程统计">运营里程<i class="operator-col-unit">万km/日</i></span>
         </div>
         <div
           v-for="row in operatorRows"
@@ -91,8 +101,8 @@
           <span class="operator-company" :title="row.company">{{ row.company }}</span>
           <strong class="operator-number">{{ row.lineCount }}</strong>
           <strong class="operator-number operator-share">{{ fmtPct(row.lineShare) }}</strong>
-          <strong v-if="showVehicleColumns" class="operator-number">{{ row.vehicleCount }}</strong>
-          <strong v-if="showVehicleColumns" class="operator-number operator-share">{{ row.vehicleShare }}</strong>
+          <strong class="operator-number">{{ row.vehicleCount }}</strong>
+          <strong class="operator-number">{{ row.mileageText }}</strong>
         </div>
       </div>
     </div>
@@ -101,10 +111,8 @@
 
 <script setup>
 defineProps({
-  stats: { type: Object, required: true }, // overviewStats
+  stats: { type: Object, required: true }, // overviewDisplayStats（含 dailyMileageWanKm，均已随行政区切换）
   operatorRows: { type: Array, default: () => [] },
-  // 车辆数/配车占比两列仅在存在真实配车数据时展示；无数据时收敛为三列，避免整列占位横杠
-  showVehicleColumns: { type: Boolean, default: false },
   // 覆盖率视图（当前范围的速率/分母/是否建成区覆写等），由父级计算注入
   coverage: { type: Object, required: true },
   // 纯格式化函数，由父级注入以保持单一来源
@@ -113,6 +121,10 @@ defineProps({
   fmtPct: { type: Function, required: true },
 });
 const emit = defineEmits(["configure-coverage"]);
+
+function hasNumber(value) {
+  return Number.isFinite(Number(value)) && value !== null && value !== "";
+}
 
 function coverageWidth(value) {
   const number = Number(value);
@@ -154,13 +166,12 @@ function coverageWidth(value) {
   box-shadow: var(--dm2-shadow-card);
 }
 
-/* ① 主指标 —— 唯一视觉焦点：沉底磨砂 + 极淡蓝色数据辉光 */
+/* ① 主指标 —— 双联视觉焦点（线网总长度 / 总运营里程）：沉底磨砂 + 极淡蓝色数据辉光 */
 .hero-card {
   position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 18px 20px;
+  align-items: stretch;
+  padding: 16px 18px;
   overflow: hidden;
   /* 柔光锚在数字左侧后方、随内容延展，取代此前浮在右上角、与内容脱节的色块 */
   background:
@@ -169,34 +180,52 @@ function coverageWidth(value) {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
+.hero-metric {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hero-metric + .hero-metric {
+  margin-left: 16px;
+  padding-left: 16px;
+  border-left: 1px solid var(--dm2-line-faint);
+}
+
 .hero-label {
   color: var(--dm2-muted);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .hero-value {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 5px;
+  min-width: 0;
 }
 
 .hero-num {
   font-family: var(--dm2-font-num);
-  font-size: 44px;
-  line-height: 0.98;
+  font-size: 27px;
+  line-height: 1;
   font-weight: 700;
-  letter-spacing: -0.035em;
+  letter-spacing: -0.03em;
   color: var(--dm2-ink);
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum" 1;
+  white-space: nowrap;
 }
 
 .hero-unit {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--dm2-muted);
+  white-space: nowrap;
 }
 
 /* ② 规模三联 */
@@ -434,7 +463,7 @@ function coverageWidth(value) {
 
 .operator-table-row {
   display: grid;
-  grid-template-columns: minmax(112px, 1.7fr) repeat(4, minmax(48px, 0.75fr));
+  grid-template-columns: minmax(88px, 1.5fr) repeat(4, minmax(52px, 0.8fr));
   min-height: 38px;
   align-items: center;
   border-bottom: 1px solid var(--dm2-line-faint);
@@ -442,9 +471,20 @@ function coverageWidth(value) {
   transition: background-color var(--dm2-dur) var(--dm2-ease);
 }
 
-/* 无配车数据时收敛为三列，企业列吃掉多余宽度 */
-.operator-table.cols-3 .operator-table-row {
-  grid-template-columns: minmax(120px, 1.9fr) repeat(2, minmax(60px, 1fr));
+/* 表头列内单位（运营里程 万km/日）：数值列不重复带单位；带 row 类提高特异性压过右对齐规则 */
+.operator-table-row .operator-th-stack {
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1px;
+}
+
+.operator-col-unit {
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--dm2-muted-soft);
+  line-height: 1.2;
 }
 
 .operator-table-row:not(.operator-table-head):hover {
@@ -528,7 +568,8 @@ function coverageWidth(value) {
 
 .operator-table-head span {
   color: var(--dm2-muted);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 600;
+  white-space: nowrap;
 }
 </style>

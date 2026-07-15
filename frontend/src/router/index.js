@@ -6,7 +6,10 @@ const routeComponentLoaders = {
   layout: () => import("@/components/Layout/MapLayout.vue"),
   datamanagement: () => import("@/views/datamanagement/index.vue"),
   datavisualization: () => import("@/views/datavisualization/index.vue"),
-  passengerflowanalysis: () => import("@/views/passengerflowanalysis/index.vue"),
+  // 客流分析直接复用运行监测组件（mode=pfa）：同一组件跨路由复用同一实例，
+  // 配合 MapLayout 的 KeepAlive 实现两页零重建切换，且共享 rm-* 图层不冲突
+  passengerflowanalysis: () => import("@/views/datavisualization/index.vue"),
+  transferanalysis: () => import("@/views/transferanalysis/index.vue"),
   scenariocomparison: () => import("@/views/scenariocomparison/index.vue"),
   scenarioedit: () => import("@/views/scenarioedit/index.vue"),
   vehiclecalculation: () => import("@/views/vehiclecalculation/index.vue"),
@@ -53,6 +56,12 @@ const router = createRouter({
           path: "/passengerflowanalysis",
           name: "passengerflowanalysis",
           component: routeComponentLoaders.passengerflowanalysis,
+          props: { mode: "pfa" },
+        },
+        {
+          path: "/transferanalysis",
+          name: "transferanalysis",
+          component: routeComponentLoaders.transferanalysis,
         },
         {
           path: "/scenariocomparison",

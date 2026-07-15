@@ -40,12 +40,41 @@
         <span class="item-title">{{ item.title }}</span>
       </RouterLink>
     </nav>
-    <el-dropdown class="user-menu" popper-class="user-dropdown-popper" transition="none" trigger="click" @command="handleUserCommand">
-      <button class="user-profile-btn" type="button" :title="`用户管理：${currentUsername}`" aria-label="用户管理">
-        <span class="user-initial">{{ userInitial }}</span>
-      </button>
-      <template #dropdown>
-        <el-dropdown-menu class="user-dropdown">
+    <div class="header-actions">
+      <el-dropdown
+        v-if="isRunMonitorRoute"
+        class="help-menu"
+        popper-class="user-dropdown-popper"
+        transition="none"
+        trigger="click"
+        @command="handleHelpCommand"
+      >
+        <button class="help-menu-btn" type="button" title="运行监测帮助" aria-label="打开运行监测帮助菜单">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M9.6 9a2.6 2.6 0 1 1 4.5 1.8c-1.1.8-2.1 1.3-2.1 2.7"></path>
+            <path d="M12 17h.01"></path>
+          </svg>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu aria-label="运行监测帮助">
+            <el-dropdown-item command="restart-onboarding" class="custom-dropdown-item">
+              <svg class="item-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+                <path d="M3 4v4h4"></path>
+              </svg>
+              <span>重新查看新手引导</span>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+
+      <el-dropdown class="user-menu" popper-class="user-dropdown-popper" transition="none" trigger="click" @command="handleUserCommand">
+        <button class="user-profile-btn" type="button" :title="`用户管理：${currentUsername}`" aria-label="用户管理">
+          <span class="user-initial">{{ userInitial }}</span>
+        </button>
+        <template #dropdown>
+          <el-dropdown-menu class="user-dropdown">
           <div class="user-menu-head">
             <div class="user-avatar-badge">
               <span class="user-initial-inner">{{ userInitial }}</span>
@@ -107,9 +136,10 @@
             </svg>
             <span>退出登录</span>
           </el-dropdown-item>
-        </el-dropdown-menu>
-      </template>
-    </el-dropdown>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+    </div>
 
     <el-dialog v-model="renameDialogVisible" title="修改用户名称" width="360px" append-to-body>
       <el-form ref="renameFormRef" :model="renameForm" :rules="renameRules" label-position="top">
@@ -134,7 +164,8 @@ import { clearAuth, getUsername, saveAuth } from "@/utils/auth";
 const route = useRoute();
 const router = useRouter();
 const MapRef = inject("MapRef", ref(null));
-const hasModelSelector = computed(() => ["datavisualization", "datamanagement", "scenarioedit"].includes(route.name));
+const hasModelSelector = computed(() => ["datavisualization", "datamanagement", "scenarioedit", "transferanalysis"].includes(route.name));
+const isRunMonitorRoute = computed(() => route.name === "datavisualization");
 const currentUsername = ref(getUsername() || "用户");
 const renameDialogVisible = ref(false);
 const renameFormRef = ref(null);
@@ -226,6 +257,12 @@ function handleUserCommand(command) {
   }
 }
 
+function handleHelpCommand(command) {
+  if (command === "restart-onboarding") {
+    window.dispatchEvent(new CustomEvent("run-monitor:onboarding:restart"));
+  }
+}
+
 async function handleRenameUser() {
   try {
     await renameFormRef.value?.validate?.();
@@ -295,6 +332,10 @@ const headerMenus = [
   {
     title: "客流分析",
     to: { name: "passengerflowanalysis" },
+  },
+  {
+    title: "换乘分析",
+    to: { name: "transferanalysis" },
   },
   {
     title: "线网优化",
@@ -563,8 +604,55 @@ const headerMenus = [
   }
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: 8px;
+}
+
 .user-menu {
   justify-self: end;
+}
+
+.help-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(32px, 2.2vw, 38px);
+  height: clamp(32px, 2.2vw, 38px);
+  padding: 0;
+  border: 1px solid oklch(84% 0.04 250);
+  border-radius: 50%;
+  color: oklch(49% 0.16 252);
+  background: oklch(98% 0.008 250);
+  cursor: pointer;
+  box-shadow: 0 7px 18px -14px rgba(13, 38, 76, 0.42);
+  transition: color 160ms var(--app-ease-out), background-color 160ms var(--app-ease-out), border-color 160ms var(--app-ease-out), transform 160ms var(--app-ease-out), box-shadow 160ms var(--app-ease-out);
+
+  &:hover,
+  &:focus-visible {
+    color: oklch(43% 0.18 252);
+    border-color: oklch(68% 0.12 252);
+    background: oklch(95% 0.028 250);
+    box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.08);
+    transform: translateY(-1px);
+  }
+
+  &:focus-visible {
+    outline: none;
+  }
+
+  &:active {
+    transform: translateY(1px);
+  }
+}
+
+@media (pointer: coarse) {
+  .help-menu-btn {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 .user-profile-btn {

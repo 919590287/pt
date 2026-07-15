@@ -20,11 +20,14 @@ class PanelDerivedReadTest {
         busRoute.put("mode", "bus");
         busRoute.put("lineName", "5路");
         busRoute.put("hourlyFlow", hourly(10));
+        busRoute.put("metrics", Map.of("vehicles", 12, "departures", 100, "routeDist", 10000.0));
 
         Map<String, Object> metroRoute = new LinkedHashMap<>();
         metroRoute.put("mode", "subway");
         metroRoute.put("lineName", "地铁1号线");
         metroRoute.put("hourlyFlow", hourly(7));
+        // 轨道的车辆/班次与公交不可比：busOperation 聚合必须跳过
+        metroRoute.put("metrics", Map.of("vehicles", 5, "departures", 50, "routeDist", 30000.0));
 
         // 名称含“地铁”但 mode 缺失：必须按前端 routeModeKey 口径归入 metro
         Map<String, Object> metroByName = new LinkedHashMap<>();
@@ -49,6 +52,13 @@ class PanelDerivedReadTest {
         assertEquals(10.0, hourlyByMode.get("bus").get(0));
         assertEquals(10.0, hourlyByMode.get("bus").get(23));
         assertEquals(7.0 + 3.0, hourlyByMode.get("metro").get(5));
+
+        // 公交运营效率分母：仅常规公交计入，日运营车公里 = Σ班次 × 线长(km)
+        @SuppressWarnings("unchecked")
+        Map<String, Object> busOperation = (Map<String, Object>) result.get("busOperation");
+        assertEquals(12L, busOperation.get("vehicles"));
+        assertEquals(100L, busOperation.get("departures"));
+        assertEquals(100 * 10.0, busOperation.get("operatedKm"));
     }
 
     @Test

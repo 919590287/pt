@@ -2,10 +2,14 @@ package com.jts.gjcxfzksh.data;
 
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
+import com.jts.gjcxfzksh.data.cache.MatsimCorridorCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPopulationCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRouteSpatialIndex;
 import com.jts.gjcxfzksh.data.cache.MatsimStationPanelCache;
+import com.jts.gjcxfzksh.data.cache.MatsimTransferCache;
+import com.jts.gjcxfzksh.data.cache.MatsimTripEndsCache;
 import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.MatsimOutFile;
 import com.jts.gjcxfzksh.data.entry.Scheme;
@@ -147,7 +151,8 @@ public class Datasource {
         dataMap.remove(name);
         loadStatusMap.remove(name);
         loadingStatusMap.remove(name);
-        setStatus(name, "unloaded", "模型已卸载", false, false);
+        ModelLoadStatus status = setStatus(name, "unloaded", "模型已卸载", false, false);
+        status.resetProgress("模型已卸载");
     }
 
     public static void loadAsync(Scheme scheme) {
@@ -162,7 +167,9 @@ public class Datasource {
             return;
         }
         long loadVersion = currentLoadVersion(name);
-        setStatus(name, "queued", "模型加载已进入后台队列", false, true);
+        ModelLoadStatus queued = setStatus(name, "queued", "模型加载已进入后台队列", false, true);
+        queued.resetProgress("等待后台加载队列");
+        queued.setProgressPercent(2);
         LOAD_EXECUTOR.submit(() -> {
             try {
                 load(scheme, loadVersion, true);
@@ -204,18 +211,24 @@ public class Datasource {
         }
         loadingStatusMap.put(scheme.getName(), true);
         long startTime = System.currentTimeMillis();
+        long estimatedTotalMs = expectedLoadMs(scheme);
         ModelLoadStatus status = setStatus(scheme.getName(), "loading_config", "正在加载基础路网和公交模型", false, true);
+        status.resetProgress("正在准备加载");
         status.setStartedAt(startTime);
+        status.setEstimatedTotalMs(estimatedTotalMs);
         try {
             MatsimData data = new MatsimData(scheme.getName(), scheme.getOutput(), scheme.getCache(), scheme.isLargeModel());
             data.setArea(scheme.getDesc().getArea());
             // desc.json 的 scale 是人口抽样比例（10% 模型写 0.1）。此前只解析不落到 MatsimData，
             // 导致所有"抽样量 ÷ 全量"的指标整体偏 1/scale 倍
             data.setScale(scheme.getDesc().getScale());
-            // 加载
+            // 加载。loadConfig 内部是一次性阻塞读取，进度按预计总时长在 3%→85% 区间做时间插值，
+            // 预计总时长优先取上次成功加载的真实耗时（load-stats.json），首次按 output 体量估算。
+            status.beginPhase(3, 82, Math.round(estimatedTotalMs * 0.85), "正在加载路网、公交与出行链数据");
             loadConfig(data);
             // 基础模型就绪时只建立轻量空间索引。大型面板/乘客明细按需读取，
             // 避免“后续加载”仍主动解压数十 MB JSON/TSV 并长期占用堆。
+            status.beginPhase(85, 12, Math.round(estimatedTotalMs * 0.15), "正在构建线路空间索引");
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);
             if (cancelable && isStaleLoad(name, expectedVersion)) {
                 log.info("模型加载完成但请求已取消，不写入内存: model={}", name);
@@ -228,16 +241,65 @@ public class Datasource {
             status = setStatus(scheme.getName(), "ready", "模型基础数据已加载，缓存将在后台生成", true, false);
             status.setStartedAt(startTime);
             status.setFinishedAt(endTime);
+            status.setProgressPercent(100);
+            status.setProgressMessage("模型基础数据已加载");
+            status.setEtaSeconds(0);
+            status.setElapsedSeconds(Math.max(0, (endTime - startTime) / 1000));
+            writeLoadStats(scheme, endTime - startTime);
         } catch (RuntimeException e) {
             if (!cancelable || !isStaleLoad(name, expectedVersion)) {
                 loadStatusMap.put(scheme.getName(), false);
                 status = setStatus(scheme.getName(), "failed", e.getMessage() == null ? "模型加载失败" : e.getMessage(), false, false);
                 status.setStartedAt(startTime);
                 status.setFinishedAt(System.currentTimeMillis());
+                status.setProgressMessage(status.getMessage());
+                status.setEtaSeconds(-1);
             }
             throw e;
         } finally {
             loadingStatusMap.remove(scheme.getName());
+        }
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper LOAD_STATS_JSON = new com.fasterxml.jackson.databind.ObjectMapper();
+
+    private static java.nio.file.Path loadStatsPath(Scheme scheme) {
+        return java.nio.file.Path.of(scheme.getCache(), "load-stats.json");
+    }
+
+    /**
+     * 预计加载总耗时：优先取上次成功加载的真实耗时；首次加载按 output 关键文件体量估算
+     * （经验吞吐约 15MB/s），并夹在 [20s, 2h]。
+     */
+    private static long expectedLoadMs(Scheme scheme) {
+        try {
+            java.nio.file.Path path = loadStatsPath(scheme);
+            if (java.nio.file.Files.exists(path)) {
+                Map<String, Object> stats = LOAD_STATS_JSON.readValue(path.toFile(),
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+                Object last = stats.get("lastLoadMs");
+                if (last instanceof Number number && number.longValue() > 1000) {
+                    return number.longValue();
+                }
+            }
+        } catch (Exception e) {
+            log.debug("读取 load-stats.json 失败: model={}, error={}", scheme.getName(), e.getMessage());
+        }
+        long bytes = Math.max(scheme.getOutputBytes(), 64L * 1024 * 1024);
+        long ms = bytes / (15L * 1024 * 1024) * 1000;
+        return Math.max(20_000L, Math.min(ms, 2L * 3600 * 1000));
+    }
+
+    private static void writeLoadStats(Scheme scheme, long loadMs) {
+        try {
+            java.nio.file.Path path = loadStatsPath(scheme);
+            java.nio.file.Files.createDirectories(path.getParent());
+            Map<String, Object> stats = new java.util.LinkedHashMap<>();
+            stats.put("lastLoadMs", loadMs);
+            stats.put("recordedAt", System.currentTimeMillis());
+            LOAD_STATS_JSON.writeValue(path.toFile(), stats);
+        } catch (Exception e) {
+            log.debug("写入 load-stats.json 失败: model={}, error={}", scheme.getName(), e.getMessage());
         }
     }
 
@@ -270,6 +332,17 @@ public class Datasource {
         try {
             MatsimAnalysisCache.prepareAllOnModelLoad(data, progress);
             MatsimRoutePanelCache.prepareOnModelLoad(data);
+            // 换乘分析缓存（transfer-v1）：只依赖 personTracks + schedule，排在 routePanel 之后（设计文档 §9.1）。
+            // 不带 progress 的 loadEvent 重载委托到本重载，两条调用链同样覆盖。
+            MatsimTransferCache.prepareOnModelLoad(data);
+            // 人口分布缓存（population-v1）：只依赖 plans/population + 内嵌街道资源，
+            // 与换乘缓存互不依赖（设计文档《公交出行监测人口分布模块设计方案》§2）。
+            MatsimPopulationCache.prepareOnModelLoad(data);
+            // 起终点分布缓存（tripends-v1）：依赖 personTracks + schedule + 内嵌街道资源，
+            // personTracks 在 prepareAllOnModelLoad 后已就绪（与换乘缓存同前提）。
+            MatsimTripEndsCache.prepareOnModelLoad(data);
+            // 走廊缓存（corridor-v1）：只依赖 schedule + network + 内嵌资源（街道面/路名边车表）。
+            MatsimCorridorCache.prepareOnModelLoad(data);
             MatsimStationPanelCache.prepareOnModelLoad(data);
             MatsimPrecomputedCache.prepareOnModelLoad(data);
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);

@@ -12,11 +12,12 @@
 <script setup>
 import { onBeforeUnmount, onMounted } from "vue";
 import { bindBrowserGestureGuard, unbindBrowserGestureGuard } from "@/utils/browserGestureGuard.js";
+import {
+  MAP_DISPLAY_BASE_WIDTH as DESIGN_VIEWPORT_WIDTH,
+  MAP_DISPLAY_BASE_HEIGHT as DESIGN_VIEWPORT_HEIGHT,
+} from "@/utils/mapDisplayScale.js";
 
 const isCached = ["MapLayout"];
-
-const DESIGN_VIEWPORT_WIDTH = 1430;
-const DESIGN_VIEWPORT_HEIGHT = 686;
 const COMPOSITION_SCALE = 0.92;
 const MIN_LAYOUT_SCALE = 0.5;
 const MAX_LAYOUT_SCALE = 3;

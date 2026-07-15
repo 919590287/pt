@@ -50,6 +50,10 @@ public class SchemeServiceImpl implements SchemeService {
                 vo.setLoadStatus(loadStatus.isLoaded());
                 vo.setLoadStage(loadStatus.getStage());
                 vo.setLoadMessage(loadStatus.getMessage());
+                vo.setLoadProgressPercent(loadStatus.getProgressPercent());
+                vo.setLoadProgressMessage(loadStatus.getProgressMessage());
+                vo.setLoadElapsedSeconds(loadStatus.getElapsedSeconds());
+                vo.setLoadEtaSeconds(loadStatus.getEtaSeconds());
                 vo.setCacheStatus(cacheStatus.getStatus());
                 vo.setCacheMessage(cacheStatus.getMessage());
                 vo.setCacheProgressPercent(cacheStatus.getProgressPercent());

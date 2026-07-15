@@ -176,15 +176,28 @@ public final class MatsimRoutePanelCache {
         }
         double[] bus = new double[HOURS];
         double[] metro = new double[HOURS];
+        // 常规公交运营效率分母（车辆/班次/日运营车公里=Σ班次×线长）：
+        // 供总体客流卡片算车均/单班次日载客量与客流强度。轨道车辆班次与公交不可比，不计入；
+        // 车辆/班次为 Σ各方向计数，须与前端行政区筛选时对整包面板的本地聚合保持同一口径。
+        double busVehicles = 0;
+        double busDepartures = 0;
+        double busOperatedKm = 0;
         for (Object value : routes.values()) {
             if (!(value instanceof Map<?, ?> route)) {
                 continue;
+            }
+            boolean isMetro = isMetroRouteText(route);
+            if (!isMetro && route.get("metrics") instanceof Map<?, ?> metrics) {
+                double departures = metricNumber(metrics, "departures");
+                busVehicles += metricNumber(metrics, "vehicles");
+                busDepartures += departures;
+                busOperatedKm += departures * metricNumber(metrics, "routeDist") / 1000.0;
             }
             Object hourly = route.get("hourlyFlow");
             if (!(hourly instanceof List<?> values)) {
                 continue;
             }
-            double[] target = isMetroRouteText(route) ? metro : bus;
+            double[] target = isMetro ? metro : bus;
             int limit = Math.min(HOURS, values.size());
             for (int i = 0; i < limit; i++) {
                 if (values.get(i) instanceof Number number) {
@@ -195,11 +208,20 @@ public final class MatsimRoutePanelCache {
         Map<String, Object> hourlyByMode = new LinkedHashMap<>();
         hourlyByMode.put("bus", toDoubleList(bus));
         hourlyByMode.put("metro", toDoubleList(metro));
+        Map<String, Object> busOperation = new LinkedHashMap<>();
+        busOperation.put("vehicles", Math.round(busVehicles));
+        busOperation.put("departures", Math.round(busDepartures));
+        busOperation.put("operatedKm", round2(busOperatedKm));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "ready");
         result.put("cacheVersion", ROUTE_PANEL_CACHE_VERSION);
         result.put("hourlyByMode", hourlyByMode);
+        result.put("busOperation", busOperation);
         return result;
+    }
+
+    private static double metricNumber(Map<?, ?> metrics, String key) {
+        return metrics.get(key) instanceof Number number ? number.doubleValue() : 0.0;
     }
 
     private static boolean isMetroRouteText(Map<?, ?> route) {

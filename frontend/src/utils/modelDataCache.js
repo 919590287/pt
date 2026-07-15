@@ -2,6 +2,16 @@ import { markRaw } from "vue";
 import { dataEvaluation } from "@/api/data.js";
 import { getFacilityAll, getStationPanel } from "@/api/facility.js";
 import { getLineAll, getRoutePanel } from "@/api/route.js";
+import { getTransferDict, getTransferEventsBinary, getTransferSummary } from "@/api/transfer.js";
+import { getPopulationGridBinary, getPopulationStreets, getPopulationSummary } from "@/api/population.js";
+import {
+  getTripEndsGridBinary,
+  getTripEndsOdGridBinary,
+  getTripEndsOdStreets,
+  getTripEndsStreets,
+  getTripEndsSummary,
+} from "@/api/tripEnds.js";
+import { getCorridorLinksBinary, getCorridorNames, getCorridorSummary } from "@/api/corridor.js";
 
 // 缓存的模型数上限（LRU）：监测页当前模型 + 方案编辑父模型 + 少量历史，超出淘汰最久未用的
 const MAX_CACHED_MODELS = 4;
@@ -174,6 +184,243 @@ export function getCachedStationPanel(model) {
 
 export function getCachedEvaluation(model) {
   return sharedModelPanelRequest(model, "evaluation", dataEvaluation);
+}
+
+export function getCachedTransferSummary(model) {
+  return sharedModelPanelRequest(model, "transferSummary", getTransferSummary);
+}
+
+export function getCachedTransferDict(model) {
+  return sharedModelPanelRequest(model, "transferDict", getTransferDict);
+}
+
+export function getCachedPopulationSummary(model) {
+  return sharedModelPanelRequest(model, "populationSummary", getPopulationSummary);
+}
+
+export function getCachedPopulationStreets(model) {
+  return sharedModelPanelRequest(model, "populationStreets", getPopulationStreets);
+}
+
+// 人口栅格二进制：按模型键控缓存 ArrayBuffer + 并发去重（与换乘事件表同构）。
+export function getCachedPopulationGrid(model, version = "") {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const entry = entryFor(key);
+  const dataKey = "populationGridData";
+  const promiseKey = "populationGridPromise";
+  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
+  if (entry[promiseKey]) return entry[promiseKey];
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (controller) pendingControllers.set(controllerKey(key, "populationGrid"), controller);
+
+  entry[promiseKey] = getPopulationGridBinary(
+    { datasource: key, v: version },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
+    .then((response) => {
+      const buffer = response instanceof ArrayBuffer ? response : response?.data;
+      if (!(buffer instanceof ArrayBuffer)) return null;
+      entry[dataKey] = buffer;
+      return buffer;
+    })
+    .catch((error) => {
+      delete entry[dataKey];
+      if (!isCanceled(error)) {
+        delete entry[promiseKey];
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (entry[promiseKey]) delete entry[promiseKey];
+      const pendingKey = controllerKey(key, "populationGrid");
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
+    });
+
+  return entry[promiseKey];
+}
+
+export function getCachedTripEndsSummary(model) {
+  return sharedModelPanelRequest(model, "tripEndsSummary", getTripEndsSummary);
+}
+
+export function getCachedTripEndsStreets(model) {
+  return sharedModelPanelRequest(model, "tripEndsStreets", getTripEndsStreets);
+}
+
+// 起终点栅格二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口栅格同构）。
+export function getCachedTripEndsGrid(model, version = "") {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const entry = entryFor(key);
+  const dataKey = "tripEndsGridData";
+  const promiseKey = "tripEndsGridPromise";
+  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
+  if (entry[promiseKey]) return entry[promiseKey];
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (controller) pendingControllers.set(controllerKey(key, "tripEndsGrid"), controller);
+
+  entry[promiseKey] = getTripEndsGridBinary(
+    { datasource: key, v: version },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
+    .then((response) => {
+      const buffer = response instanceof ArrayBuffer ? response : response?.data;
+      if (!(buffer instanceof ArrayBuffer)) return null;
+      entry[dataKey] = buffer;
+      return buffer;
+    })
+    .catch((error) => {
+      delete entry[dataKey];
+      if (!isCanceled(error)) {
+        delete entry[promiseKey];
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (entry[promiseKey]) delete entry[promiseKey];
+      const pendingKey = controllerKey(key, "tripEndsGrid");
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
+    });
+
+  return entry[promiseKey];
+}
+
+export function getCachedTripEndsOdStreets(model) {
+  return sharedModelPanelRequest(model, "tripEndsOdStreets", getTripEndsOdStreets);
+}
+
+// 公交OD栅格对二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口/起终点栅格同构）。
+export function getCachedTripEndsOdGrid(model, version = "") {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const entry = entryFor(key);
+  const dataKey = "tripEndsOdGridData";
+  const promiseKey = "tripEndsOdGridPromise";
+  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
+  if (entry[promiseKey]) return entry[promiseKey];
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (controller) pendingControllers.set(controllerKey(key, "tripEndsOdGrid"), controller);
+
+  entry[promiseKey] = getTripEndsOdGridBinary(
+    { datasource: key, v: version },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
+    .then((response) => {
+      const buffer = response instanceof ArrayBuffer ? response : response?.data;
+      if (!(buffer instanceof ArrayBuffer)) return null;
+      entry[dataKey] = buffer;
+      return buffer;
+    })
+    .catch((error) => {
+      delete entry[dataKey];
+      if (!isCanceled(error)) {
+        delete entry[promiseKey];
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (entry[promiseKey]) delete entry[promiseKey];
+      const pendingKey = controllerKey(key, "tripEndsOdGrid");
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
+    });
+
+  return entry[promiseKey];
+}
+
+export function getCachedCorridorSummary(model) {
+  return sharedModelPanelRequest(model, "corridorSummary", getCorridorSummary);
+}
+
+export function getCachedCorridorNames(model) {
+  return sharedModelPanelRequest(model, "corridorNames", getCorridorNames);
+}
+
+// 走廊路段二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口栅格同构）。
+export function getCachedCorridorLinks(model, version = "") {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const entry = entryFor(key);
+  const dataKey = "corridorLinksData";
+  const promiseKey = "corridorLinksPromise";
+  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
+  if (entry[promiseKey]) return entry[promiseKey];
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (controller) pendingControllers.set(controllerKey(key, "corridorLinks"), controller);
+
+  entry[promiseKey] = getCorridorLinksBinary(
+    { datasource: key, v: version },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
+    .then((response) => {
+      const buffer = response instanceof ArrayBuffer ? response : response?.data;
+      if (!(buffer instanceof ArrayBuffer)) return null;
+      entry[dataKey] = buffer;
+      return buffer;
+    })
+    .catch((error) => {
+      delete entry[dataKey];
+      if (!isCanceled(error)) {
+        delete entry[promiseKey];
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (entry[promiseKey]) delete entry[promiseKey];
+      const pendingKey = controllerKey(key, "corridorLinks");
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
+    });
+
+  return entry[promiseKey];
+}
+
+// 换乘事件表二进制：按模型键控缓存 ArrayBuffer + 并发去重。
+// HTTP 层 ETag/immutable 由后端下发，浏览器缓存自动 304；内存层沿用 LRU entry。
+export function getCachedTransferEvents(model, version = "") {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const entry = entryFor(key);
+  const dataKey = "transferEventsData";
+  const promiseKey = "transferEventsPromise";
+  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
+  if (entry[promiseKey]) return entry[promiseKey];
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (controller) pendingControllers.set(controllerKey(key, "transferEvents"), controller);
+
+  entry[promiseKey] = getTransferEventsBinary(
+    { datasource: key, v: version },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
+    .then((response) => {
+      const buffer = response instanceof ArrayBuffer ? response : response?.data;
+      if (!(buffer instanceof ArrayBuffer)) return null;
+      entry[dataKey] = buffer;
+      return buffer;
+    })
+    .catch((error) => {
+      delete entry[dataKey];
+      if (!isCanceled(error)) {
+        delete entry[promiseKey];
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (entry[promiseKey]) delete entry[promiseKey];
+      const pendingKey = controllerKey(key, "transferEvents");
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
+    });
+
+  return entry[promiseKey];
 }
 
 function runWhenIdle(fn) {

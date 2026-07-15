@@ -341,6 +341,7 @@ const MODE_KEYS = ["bus", "subway", "car"];
 const PLAY_SPEEDS = [1, 5, 10, 50];
 
 const MapRef = inject("MapRef");
+const addPageMapLayer = inject("AddPageMapLayer", (layer) => MapRef?.value?.addLayer(layer));
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
 const VehicleSizeRef = inject("VehicleSizeRef", ref(36));
@@ -688,7 +689,7 @@ function ensureTrajectoryLayer() {
     // markRaw 保持裸对象，面板 computed 读取时不产生深层代理开销。
     followedVehicle.value = vehicle ? markRaw(vehicle) : null;
   });
-  MapRef.value.addLayer(trajectoryLayer);
+  addPageMapLayer(trajectoryLayer);
   if (currentChunkData.value) {
     trajectoryLayer.setData(currentChunkData.value);
     syncStats();

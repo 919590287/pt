@@ -361,3 +361,37 @@ export function filterCollectionsByDistrict(collections, context) {
     ),
   };
 }
+
+// 线网运营指标单遍聚合：日运营里程 = Σ(方向级日班次 dep_count × 几何长度)。
+// dep_count 为线路 SHP 新 schema 字段（方向级日班次）；旧版本数据（如南沙筛选结果）
+// 缺失该字段——全部缺失时里程为 null（上层显示"暂无"），部分缺失时照常累计并回报缺失条数。
+// lengthMetersOf / splitCompanies 由调用方注入（索引页已有带缓存的哈弗辛积分与企业拆分），
+// 传入裁剪后的集合即得"区内里程"口径，与线网总长度同源。
+export function collectionOperationMetrics(collection, lengthMetersOf, splitCompanies) {
+  let mileageKm = 0;
+  let hasDepData = false;
+  let missingDepCount = 0;
+  const companyMileageKm = new Map();
+  for (const feature of collectionFeatures(collection)) {
+    const properties = feature?.properties || {};
+    const lengthKm = (Number(lengthMetersOf(feature)) || 0) / 1000;
+    if (!(lengthKm > 0)) continue;
+    const rawDep = valueOrEmpty(properties.dep_count);
+    const dep = Number(rawDep);
+    if (!rawDep || !Number.isFinite(dep) || dep < 0) {
+      missingDepCount += 1;
+      continue;
+    }
+    hasDepData = true;
+    const contribution = dep * lengthKm;
+    mileageKm += contribution;
+    for (const company of splitCompanies(properties.company)) {
+      companyMileageKm.set(company, (companyMileageKm.get(company) || 0) + contribution);
+    }
+  }
+  return {
+    mileageKmPerDay: hasDepData ? mileageKm : null,
+    companyMileageKm,
+    missingDepCount,
+  };
+}

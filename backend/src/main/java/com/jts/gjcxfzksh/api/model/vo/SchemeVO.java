@@ -36,6 +36,18 @@ public class SchemeVO {
     @Schema(description = "加载状态说明")
     private String loadMessage;
 
+    @Schema(description = "模型基础数据加载进度百分比")
+    private int loadProgressPercent;
+
+    @Schema(description = "模型基础数据加载进度说明")
+    private String loadProgressMessage;
+
+    @Schema(description = "模型基础数据加载已用秒数")
+    private long loadElapsedSeconds;
+
+    @Schema(description = "模型基础数据加载预计剩余秒数，-1 表示未知")
+    private long loadEtaSeconds = -1;
+
     @Schema(description = "缓存状态")
     private String cacheStatus;
 

@@ -267,7 +267,11 @@ public class ModelCacheManager {
             }
             return MatsimPrecomputedCache.isVisualCacheReady(data)
                     && MatsimRoutePanelCache.isReady(data)
-                    && MatsimStationPanelCache.isReady(data);
+                    && MatsimStationPanelCache.isReady(data)
+                    && MatsimTransferCache.isReady(data)
+                    && MatsimPopulationCache.isReady(data)
+                    && MatsimTripEndsCache.isReady(data)
+                    && MatsimCorridorCache.isReady(data);
         } catch (Exception e) {
             log.warn("模型组件缓存状态读取失败: model={}", scheme == null ? "" : scheme.getName(), e);
             return false;
@@ -321,6 +325,10 @@ public class ModelCacheManager {
         manifest.put("sources", sourceFingerprint(scheme));
         manifest.put("visualCacheVersion", MatsimPrecomputedCache.VISUAL_CACHE_VERSION);
         manifest.put("trajectoryCacheVersion", MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION);
+        manifest.put("transferCacheVersion", MatsimTransferCache.TRANSFER_CACHE_VERSION);
+        manifest.put("populationCacheVersion", MatsimPopulationCache.POPULATION_CACHE_VERSION);
+        manifest.put("tripEndsCacheVersion", MatsimTripEndsCache.TRIPENDS_CACHE_VERSION);
+        manifest.put("corridorCacheVersion", MatsimCorridorCache.CORRIDOR_CACHE_VERSION);
 
         Path path = MatsimCachePaths.manifestPath(scheme);
         Files.createDirectories(path.getParent());

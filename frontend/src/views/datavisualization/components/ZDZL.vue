@@ -646,12 +646,13 @@ const allMapStations = shallowRef([]);
 
 const StationSizeRef = inject("StationSizeRef", ref(40));
 const MapRef = inject("MapRef", ref(null));
+const addPageMapLayer = inject("AddPageMapLayer", (layer) => MapRef.value?.addLayer(layer));
 const BaseMapLineModeRef = inject("BaseMapLineModeRef", ref("bus-network"));
 
 // 注入右侧面板显示控制
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
-// 运行监测页改为由 index.vue 渲染「总体客流变化」样式的站点卡片，禁用本组件的右侧 teleport，避免重复。
+// 运行监测页改为由 index.vue 渲染「总体客流监测」样式的站点卡片，禁用本组件的右侧 teleport，避免重复。
 const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
 // 客流分析模式：即使简化（地图/选中复用运行监测），也渲染完整 MCard2 面板
 const pfaRightPanel = inject("pfaRightPanel", ref(false));
@@ -1050,7 +1051,7 @@ injectSync("MapRef").then((map) => {
   if (stationPanelDisposed) return;
   // 运行监测由 index.vue 统一绘制模型站点和数据管理同款选中图标。
   if (!runMonitorSimplifiedRight) {
-    map.value?.addLayer(_StationLayer);
+    addPageMapLayer(_StationLayer);
   }
   scheduleOverlayRefresh();
 });

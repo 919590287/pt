@@ -1,6 +1,12 @@
 import maplibregl from "maplibre-gl";
 import * as THREE from "three";
 import { EventListener } from "./EventListener";
+import {
+  createMapDisplayHost,
+  getMapDisplayScale,
+  mapCanvasPixelRatio,
+  onMapDisplayScaleChange,
+} from "@/utils/mapDisplayScale.js";
 
 export const MAP_EVENT = {
   HANDLE_NO_PICK: "handle:no:pick",
@@ -93,12 +99,6 @@ function urlTemplateFromConfig(config = {}) {
   return ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"];
 }
 
-function runtimeMapPixelRatio() {
-  const value = Number(window.APP_CONFIG?.mapPixelRatio);
-  if (!Number.isFinite(value) || value <= 0) return undefined;
-  return Math.max(1, Math.min(3, value));
-}
-
 function createMapStyle() {
   if (window.MAPLIBRE_STYLE) {
     return window.MAPLIBRE_STYLE;
@@ -167,6 +167,16 @@ export class MyMap extends EventListener {
     this.rootDoc.style.overflow = "hidden";
     this.rootDoc.classList.add("maplibre-root");
 
+    // 分辨率等比适配：地图挂在一层 CSS zoom 宿主上（布局尺寸 = 容器/S，zoom = S），
+    // 720p~4K 下底图与点线面要素随视口等比缩放；pixelRatio 反向乘 S 使画布后备缓冲
+    // 恒等于屏幕物理像素，渲染精度与性能都与不缩放时一致。
+    this.displayScale = getMapDisplayScale();
+    this._displayHost = createMapDisplayHost(this.rootDoc);
+    this._offDisplayScale = onMapDisplayScaleChange((scale) => {
+      this.displayScale = scale;
+      this.map?.setPixelRatio?.(mapCanvasPixelRatio(scale));
+    });
+
     this.layers = [];
     this.buildingLayerId = null;
     this.center = center;
@@ -186,7 +196,7 @@ export class MyMap extends EventListener {
     this.customInteractionHandlers = null;
 
     this.map = new maplibregl.Map({
-      container: this.rootDoc,
+      container: this._displayHost.host,
       style: createMapStyle(),
       center: webMercatorToLngLat(center[0], center[1]),
       zoom,
@@ -202,7 +212,7 @@ export class MyMap extends EventListener {
         failIfMajorPerformanceCaveat: false,
         desynchronized: true,
       },
-      pixelRatio: runtimeMapPixelRatio(),
+      pixelRatio: mapCanvasPixelRatio(this.displayScale),
       preserveDrawingBuffer: false,
       minZoom: MAP_ZOOM_RANGE.MIN,
       maxZoom: MAP_ZOOM_RANGE.MAX,
@@ -389,8 +399,11 @@ export class MyMap extends EventListener {
 
   handleCustomMouseMove(event) {
     if (!this.customDrag) return;
-    const dx = event.clientX - this.customDrag.lastX;
-    const dy = event.clientY - this.customDrag.lastY;
+    // clientX/Y 是视觉像素；地图坐标空间是宿主布局像素（视觉/displayScale），
+    // 不换算会导致高分屏下右键拖动的平移速度偏快/偏慢
+    const scale = this.displayScale || 1;
+    const dx = (event.clientX - this.customDrag.lastX) / scale;
+    const dy = (event.clientY - this.customDrag.lastY) / scale;
     if (Math.abs(dx) + Math.abs(dy) > 0) {
       this.customDrag.moved = true;
     }
@@ -547,9 +560,10 @@ export class MyMap extends EventListener {
 
   eventPayload(event) {
     const webMercatorXY = lngLatToWebMercator(event.lngLat.lng, event.lngLat.lat);
+    const size = this.size();
     return {
       event: event.originalEvent || event,
-      windowSize: [this.rootDoc.clientWidth, this.rootDoc.clientHeight],
+      windowSize: [size.width, size.height],
       windowXY: [event.point.x, event.point.y],
       canvasXY: this.WebMercatorToCanvasXY(webMercatorXY[0], webMercatorXY[1]),
       webMercatorXY,
@@ -559,9 +573,11 @@ export class MyMap extends EventListener {
   }
 
   size() {
+    // 地图坐标空间 = zoom 宿主的布局尺寸（与 maplibre event.point / project 同空间）
+    const host = this._displayHost?.host;
     return {
-      width: this.rootDoc.clientWidth,
-      height: this.rootDoc.clientHeight,
+      width: host?.clientWidth || this.rootDoc.clientWidth,
+      height: host?.clientHeight || this.rootDoc.clientHeight,
     };
   }
 
@@ -763,6 +779,15 @@ export class MyMap extends EventListener {
     return [Number(x) - cx, Number(y) - cy];
   }
 
+  // 地图布局坐标（event.point / map.project 所在空间）→ 视口 client 坐标。
+  // 显示缩放宿主使两者差一个 displayScale 倍率，定位悬浮 DOM（菜单/气泡）时必须经此换算
+  mapPointToClient(x, y) {
+    const host = this._displayHost?.host || this.rootDoc;
+    const rect = host.getBoundingClientRect();
+    const scale = this.displayScale || 1;
+    return [rect.left + Number(x) * scale, rect.top + Number(y) * scale];
+  }
+
   WindowXYToWebMercator(x, y) {
     const lngLat = this.map.unproject([x, y]);
     return lngLatToWebMercator(lngLat.lng, lngLat.lat);
@@ -782,6 +807,10 @@ export class MyMap extends EventListener {
     }
     this.layers = [];
     this.map?.remove();
+    this._offDisplayScale?.();
+    this._offDisplayScale = null;
+    this._displayHost?.dispose();
+    this._displayHost = null;
   }
 
   static zoomToHeight(zoom) {

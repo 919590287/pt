@@ -32,7 +32,7 @@
     </div>
   </div>
 
-  <!-- 右侧报告卡：与「总体客流变化 / 线路客流 / 站点客流」三块面板同一套外壳（无卡中卡、无蓝色标题条）。
+  <!-- 右侧报告卡：与「总体客流监测 / 线路客流 / 站点客流」三块面板同一套外壳（无卡中卡、无蓝色标题条）。
        teleport 出去的节点带的是本组件的 scope，套不到 index.vue 的 .rm-right-card，样式在本文件内自持。 -->
   <teleport to="#datavisualization_index_box2" defer>
     <section class="eval-report-card">

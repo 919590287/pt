@@ -244,9 +244,8 @@
       </div>
       <OverviewMetrics
         v-else
-        :stats="overviewStats"
+        :stats="overviewDisplayStats"
         :operator-rows="operatorLineRows"
-        :show-vehicle-columns="overviewHasVehicleData"
         :coverage="coverageView"
         :fmt-int="formatInteger"
         :fmt-unit="formatUnit"
@@ -686,6 +685,7 @@
 
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
+import { useDisplayRangeStore } from "@/stores/displayRange.js";
 import { commitRealDataEdits, compareRealDataShp, exportRealDataVersion } from "@/api/realData.js";
 import { saveAs } from "file-saver";
 import {
@@ -703,6 +703,7 @@ import {
 import "./tokens.css";
 import {
   collectionFeatures,
+  collectionOperationMetrics,
   expandGeometryBounds,
   featureCollectionBounds,
   featureCollectionFromFeatures,
@@ -740,7 +741,12 @@ const mapToolbarRef = ref(null);
 const areaList = ref(["广州市"]);
 const selectedArea = ref("广州市");
 const DISPLAY_RANGE_ALL = "全市";
-const selectedDisplayRange = ref(DISPLAY_RANGE_ALL);
+// 行政区选区跨模块联动（数据管理/运行监测/客流分析/换乘分析共用 displayRange store）
+const displayRangeStore = useDisplayRangeStore();
+const selectedDisplayRange = computed({
+  get: () => displayRangeStore.selected,
+  set: (value) => displayRangeStore.set(value),
+});
 const displayRangeList = ref([DISPLAY_RANGE_ALL]);
 const isLoadingDisplayRanges = ref(false);
 const displayRangeError = ref("");
@@ -891,6 +897,9 @@ const editOperations = reactive({
 let areaRequestSeq = 0;
 let displayRangeRequestSeq = 0;
 let layerRequestSeq = 0;
+const pageActive = ref(true);
+let pageLayerEpoch = 0;
+let hasBeenDeactivated = false;
 let historyRequestSeq = 0;
 let attributeHistoryRequestSeq = 0;
 let restoringAreaSelection = false;
@@ -1135,6 +1144,29 @@ const pendingEditDatasetSummary = computed(() =>
 );
 const hasAnyUnsavedEdits = computed(() => editOperations.station.length + editOperations.line.length + editOperations.depot.length > 0);
 const attributeTableChangedCount = computed(() => attributeTableOperationCount());
+// ── 线网运营里程（日）：方向级 dep_count×几何长度 单遍聚合 ──
+// 长度取当前（行政区裁剪后）集合的几何积分，与「线网总长度」同口径——选区时即为区内里程；
+// 要素对象在全市与已缓存行政区之间稳定，WeakMap 长度缓存令重切区零重算
+const lineFeatureLengthCache = new WeakMap();
+function cachedLineFeatureLengthMeters(feature) {
+  if (!feature || typeof feature !== "object") return 0;
+  const cached = lineFeatureLengthCache.get(feature);
+  if (cached !== undefined) return cached;
+  const length = lineGeometryLengthMeters(feature?.geometry);
+  lineFeatureLengthCache.set(feature, length);
+  return length;
+}
+const lineOperationMetrics = computed(() => {
+  const collectionsRevision = realDataCollectionsRevision.value;
+  void collectionsRevision;
+  return collectionOperationMetrics(realDataCollections.lines, cachedLineFeatureLengthMeters, splitOperatorCompanies);
+});
+// 数据总览展示态：overviewStats 已随行政区切换（updateOverviewCollectionCounts），叠加运营里程（万km/日）
+const overviewDisplayStats = computed(() => {
+  const mileage = lineOperationMetrics.value.mileageKmPerDay;
+  return { ...overviewStats, dailyMileageWanKm: mileage == null ? null : mileage / 10000 };
+});
+
 const operatorLineRows = computed(() => {
   const collectionsRevision = realDataCollectionsRevision.value;
   const counts = new Map();
@@ -1149,13 +1181,16 @@ const operatorLineRows = computed(() => {
       counts.set(company, (counts.get(company) || 0) + 1);
     });
   });
+  // 配车数暂无真实数据源（线路 SHP 仅有班次/间隔/线长），按产品决策显示 "-"，待业务配车表接入
+  const metrics = lineOperationMetrics.value;
+  const mileageText = (km) => (km == null ? "-" : formatUnit(km / 10000, "", 2).trim());
   const rows = [...counts.entries()]
     .map(([company, lineCount]) => ({
       company,
       lineCount,
       lineShare: totalLineCount ? (lineCount / totalLineCount) * 100 : null,
       vehicleCount: "-",
-      vehicleShare: "-",
+      mileageText: mileageText(metrics.companyMileageKm.get(company) ?? null),
     }))
     .sort((left, right) => right.lineCount - left.lineCount || left.company.localeCompare(right.company, "zh-Hans-CN"));
   rows.push({
@@ -1163,15 +1198,12 @@ const operatorLineRows = computed(() => {
     lineCount: totalLineCount,
     lineShare: totalLineCount ? 100 : 0,
     vehicleCount: "-",
-    vehicleShare: "-",
+    // 总计取全网合计（含未标注企业的线路），而非企业行求和——共营线路双计不会污染总计
+    mileageText: mileageText(metrics.mileageKmPerDay),
     isTotal: true,
   });
   return rows;
 });
-// 车辆数/配车占比目前无真实数据源；仅当出现真实数值时才展示这两列，否则收敛为三列表格
-const overviewHasVehicleData = computed(() =>
-  operatorLineRows.value.some((row) => !row.isTotal && Number.isFinite(Number(row.vehicleCount))),
-);
 // 数据总览是否为空：无线路且无站点即视为空态（错误态复位后也会落到这里，故渲染顺序为 加载→错误→空→数据）
 const isOverviewEmpty = computed(() => !overviewStats.lineCount && !overviewStats.stationCount);
 
@@ -1535,7 +1567,7 @@ async function loadOverviewLayers(options = {}) {
   const { force = false, fit = false } = options;
   const mode = mapDataMode();
   const areaName = selectedArea.value;
-  if (!areaName || !mode) return;
+  if (!pageActive.value || !areaName || !mode) return;
   const cachedData = readCachedRealData(areaName);
   if (!force && cachedData) {
     const data = cachedData;
@@ -1552,7 +1584,7 @@ async function loadOverviewLayers(options = {}) {
   try {
     const data = await getCachedRealData(areaName, { force });
     // 与 loadDisplayRanges 对称的双重守卫：seq 之外再校验区域未被切换（如首载并行时 areaList 纠正了 selectedArea）
-    if (seq !== layerRequestSeq || selectedArea.value !== areaName) return;
+    if (seq !== layerRequestSeq || selectedArea.value !== areaName || !pageActive.value) return;
     setOverviewStats(data);
     syncHistorySummary(data.history);
     renderRealDataLayers(data, mode);
@@ -1577,9 +1609,11 @@ let routeStopsHydrationToken = 0;
 function scheduleRouteStopsHydration(data) {
   if (!isRouteStopsDeferred(data)) return;
   const token = ++routeStopsHydrationToken;
+  const epoch = pageLayerEpoch;
   const areaName = selectedArea.value;
   ensureCachedRouteStops(areaName)
     .then((merged) => {
+      if (!pageActive.value || epoch !== pageLayerEpoch) return;
       if (token !== routeStopsHydrationToken || selectedArea.value !== areaName) return;
       if (merged !== lastNormalizedData) return;
       // 集合容器已被 clearRealDataLayers 换代（如停留历史页）：不写入废弃容器；
@@ -1780,7 +1814,9 @@ function ensureMapReady(callback) {
 }
 
 function renderRealDataLayers(data, mode = "overview") {
+  const epoch = pageLayerEpoch;
   ensureMapReady(async (map) => {
+    if (!pageActive.value || epoch !== pageLayerEpoch) return;
     clearSelectionState();
     const isOverview = mode === "overview";
     const isStationUpdate = mode === "station_update";
@@ -1816,6 +1852,9 @@ function renderRealDataLayers(data, mode = "overview") {
     ensureSourceData(map, SOURCE_BASE_LINES, emptyFeatureCollection());
     ensureSourceData(map, SOURCE_BASE_STATIONS, emptyFeatureCollection());
     await ensureStationIcon(map);
+    // SVG 图标解码是异步的；切页可能正好发生在 await 期间。晚到回调不得
+    // 再创建 dm-* 线网/站点层，否则会穿透到当前共享地图页面。
+    if (!pageActive.value || epoch !== pageLayerEpoch) return;
     ensureRealDataLayerSet(map);
     setRealDataLayerVisibility(map, {
       lines: isOverview || isLineUpdate,
@@ -1831,8 +1870,10 @@ function renderRealDataLayers(data, mode = "overview") {
 
 function applyMapDataMode(key = activeKey.value) {
   const mode = mapDataMode(key);
-  if (!mode) return;
+  if (!mode || !pageActive.value) return;
+  const epoch = pageLayerEpoch;
   ensureMapReady((map) => {
+    if (!pageActive.value || epoch !== pageLayerEpoch) return;
     const isOverview = mode === "overview";
     setRealDataLayerVisibility(map, {
       lines: isOverview || mode === "line_update",
@@ -2402,9 +2443,11 @@ async function ensureStationIcon(map) {
 
 async function addMapImageOnce(map, imageId, imageUrl, size) {
   if (map.hasImage?.(imageId)) return;
-  const image = await loadIconImageData(imageUrl, size);
+  // 2x 栅格化 + pixelRatio:2 注册：icon-size 语义下显示尺寸不变，
+  // 高分屏/显示缩放放大时图标纹理密度翻倍不发虚
+  const image = await loadIconImageData(imageUrl, size * 2);
   if (!map.hasImage?.(imageId)) {
-    map.addImage(imageId, image);
+    map.addImage(imageId, image, { pixelRatio: 2 });
   }
 }
 
@@ -3456,6 +3499,7 @@ let hoverCursorEvent = null;
 
 // mousemove 无节流（见 MyMap.js），这里用 rAF 把命中查询合并到每帧一次，避免每个鼠标事件都跑 queryRenderedFeatures
 function updateSelectableMapCursor(event) {
+  if (!pageActive.value) return;
   hoverCursorEvent = event;
   if (hoverCursorRaf) return;
   hoverCursorRaf = requestAnimationFrame(() => {
@@ -3510,6 +3554,7 @@ function unbindStationClickListener() {
 }
 
 function handleStationMapClick(event) {
+  if (!pageActive.value) return;
   if (!isMapDataPage(activeKey.value) && !historyPreview.visible) return;
   if (historyPreview.visible) {
     handleOverviewMapClick(event);
@@ -7047,6 +7092,7 @@ function handleBeforeUnload(event) {
 }
 
 function handleEscapeKey(event) {
+  if (!pageActive.value) return;
   if (event?.key !== "Escape") return;
   if (editDialog.visible) return;
   if (pendingAddDataset.value) {
@@ -7141,6 +7187,30 @@ function parsePickerRoute(fullName) {
   }
   return { mainName: fullName, desc: "" };
 }
+
+// KeepAlive 缓存本页：失活期间共享地图仍被其他页面使用，交互监听（点击/悬停/快捷键）
+// 必须按激活态短路，防止在别的页面点地图误触本页的选中逻辑
+onActivated(() => {
+  pageActive.value = true;
+  if (!hasBeenDeactivated) return;
+  if (isMapDataPage(activeKey.value)) {
+    // 若首次线网请求在失活期间完成，它已被生命周期门禁丢弃；缓存仍保留，
+    // 回来后从缓存补建即可，不会重复发重请求。
+    loadOverviewLayers({ fit: false });
+  }
+});
+onDeactivated(() => {
+  hasBeenDeactivated = true;
+  pageActive.value = false;
+  pageLayerEpoch += 1;
+  routeStopsHydrationToken += 1;
+  isLoadingLayer.value = false;
+  if (hoverCursorRaf) {
+    cancelAnimationFrame(hoverCursorRaf);
+    hoverCursorRaf = 0;
+  }
+  hoverCursorEvent = null;
+});
 
 onMounted(() => {
   window.addEventListener("beforeunload", handleBeforeUnload);

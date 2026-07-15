@@ -60,7 +60,7 @@ export function getRoutePanel(data, config = {}) {
   })
 }
 
-// 总体客流变化（按 bus/metro 聚合的 24 小时客流，轻量接口，替代整包 routePanel）
+// 总体客流监测（按 bus/metro 聚合的 24 小时客流，轻量接口，替代整包 routePanel）
 // POST /pt/route/overallFlow
 // data = { status: "ready"|"generating", hourlyByMode: { bus: number[24], metro: number[24] } }
 export function getOverallFlow(data, config = {}) {

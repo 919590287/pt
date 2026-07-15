@@ -412,9 +412,16 @@ function clampFloatingMenuPosition(x, y, width = 240, height = 200) {
   };
 }
 
+// point 是地图布局坐标（map.project/event.point 空间），定位视口菜单前先换算
+function mapPointToViewport(point) {
+  const converted = MapRef.value?.mapPointToClient?.(point.x, point.y);
+  return converted ? { x: converted[0], y: converted[1] } : point;
+}
+
 function onPickRouteCandidates(candidates, point) {
   routePicker.candidates = candidates;
-  const menuPos = clampFloatingMenuPosition(point.x, point.y + 60, 240, 200);
+  const viewportPoint = mapPointToViewport(point);
+  const menuPos = clampFloatingMenuPosition(viewportPoint.x, viewportPoint.y + 60, 240, 200);
   routePicker.x = menuPos.x;
   routePicker.y = menuPos.y;
   routePicker.visible = true;
@@ -430,7 +437,8 @@ const stopPicker = reactive({ visible: false, candidates: [], purpose: "", x: 0,
 function onPickStopCandidates(candidates, purpose, point) {
   stopPicker.candidates = candidates;
   stopPicker.purpose = purpose || "";
-  const menuPos = clampFloatingMenuPosition(point.x, point.y + 18, 260, 240);
+  const viewportPoint = mapPointToViewport(point);
+  const menuPos = clampFloatingMenuPosition(viewportPoint.x, viewportPoint.y + 18, 260, 240);
   stopPicker.x = menuPos.x;
   stopPicker.y = menuPos.y;
   stopPicker.visible = true;
