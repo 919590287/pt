@@ -4,13 +4,12 @@ import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
 import com.jts.gjcxfzksh.data.cache.MatsimCorridorCache;
 import com.jts.gjcxfzksh.data.cache.MatsimLinkSpeedCache;
-import com.jts.gjcxfzksh.data.cache.MatsimPopulationCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPlansDerivedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRouteSpatialIndex;
 import com.jts.gjcxfzksh.data.cache.MatsimStationPanelCache;
 import com.jts.gjcxfzksh.data.cache.MatsimTransferCache;
-import com.jts.gjcxfzksh.data.cache.MatsimTripEndsCache;
 import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.MatsimOutFile;
 import com.jts.gjcxfzksh.data.entry.Scheme;
@@ -336,12 +335,9 @@ public class Datasource {
             // 换乘分析缓存（transfer-v1）：只依赖 personTracks + schedule，排在 routePanel 之后（设计文档 §9.1）。
             // 不带 progress 的 loadEvent 重载委托到本重载，两条调用链同样覆盖。
             MatsimTransferCache.prepareOnModelLoad(data);
-            // 人口分布缓存（population-v1）：只依赖 plans/population + 内嵌街道资源，
-            // 与换乘缓存互不依赖（设计文档《公交出行监测人口分布模块设计方案》§2）。
-            MatsimPopulationCache.prepareOnModelLoad(data);
-            // 出行分布缓存（tripends 家族）：端点依赖 plans/population（活动出行口径），
-            // OD 依赖 personTracks + schedule（prepareAllOnModelLoad 后已就绪），另用内嵌街道资源。
-            MatsimTripEndsCache.prepareOnModelLoad(data);
+            // population + tripends 的活动端点同源于 plans：共享一次流式扫描，
+            // 按 MATSIM_PROCESSING_THREADS 有界并行聚合；tripends OD 仍在扫描后使用 personTracks + schedule。
+            MatsimPlansDerivedCache.prepareAllOnModelLoad(data);
             // 走廊缓存（corridor-v1）：只依赖 schedule + network + 内嵌资源（街道面/路名边车表）。
             MatsimCorridorCache.prepareOnModelLoad(data);
             // 链路车速缓存（link-speed-v1）：独立单遍流式扫 events（不依赖 personTracks），

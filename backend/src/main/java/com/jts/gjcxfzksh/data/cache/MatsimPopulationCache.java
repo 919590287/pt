@@ -17,16 +17,10 @@ import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.prep.PreparedGeometry;
 import org.locationtech.jts.index.strtree.STRtree;
 import org.matsim.api.core.v01.Coord;
-import org.matsim.api.core.v01.Scenario;
 import org.matsim.api.core.v01.population.Activity;
 import org.matsim.api.core.v01.population.Person;
 import org.matsim.api.core.v01.population.Plan;
 import org.matsim.api.core.v01.population.PlanElement;
-import org.matsim.api.core.v01.population.Population;
-import org.matsim.core.config.Config;
-import org.matsim.core.config.ConfigUtils;
-import org.matsim.core.population.io.StreamingPopulationReader;
-import org.matsim.core.scenario.ScenarioUtils;
 import org.matsim.core.utils.geometry.CoordinateTransformation;
 import org.matsim.core.utils.geometry.transformations.TransformationFactory;
 
@@ -136,10 +130,7 @@ public final class MatsimPopulationCache {
     // ===================================================================================
 
     public static void prepareOnModelLoad(MatsimData data) {
-        // per-model 锁：模型 A 构建期间不阻塞模型 B；同一模型串行保证幂等
-        synchronized (ModelBuildLocks.lockFor("population", data)) {
-            ensurePopulationCacheLocked(data);
-        }
+        MatsimPlansDerivedCache.preparePopulationOnModelLoad(data);
     }
 
     public static boolean isReady(MatsimData data) {
@@ -249,14 +240,15 @@ public final class MatsimPopulationCache {
     // 构建编排
     // ===================================================================================
 
-    private static void ensurePopulationCacheLocked(MatsimData data) {
-        if (isReady(data)) {
-            return; // 幂等：已就绪直接跳过
-        }
+    static void storeBuiltAggregation(MatsimData data, Aggregation aggregation,
+                                      StreetIndex streets, long startedAt) {
         try {
             Files.createDirectories(cacheDir(data));
-            long start = System.currentTimeMillis();
-            Artifacts artifacts = buildArtifacts(data);
+            if (aggregation.transformFailures > 0) {
+                log.warn("人口分布缓存坐标转换失败点已跳过: model={}, count={}",
+                        data.getName(), aggregation.transformFailures);
+            }
+            Artifacts artifacts = assemble(aggregation, streets, effectiveSampleRate(data));
             // 工件先落盘、manifest 最后写：manifest=ready 即三工件必然齐备
             writeBytesAtomic(gridPath(data), artifacts.gridBin);
             writeJsonAtomic(streetsPath(data), artifacts.streets);
@@ -269,80 +261,19 @@ public final class MatsimPopulationCache {
                     data.getName(), artifacts.summary.get("persons"), artifacts.summary.get("homePersons"),
                     artifacts.summary.get("workPersons"), artifacts.summary.get("unassignedHome"),
                     artifacts.summary.get("unassignedWork"), artifacts.summary.get("gridCells"),
-                    artifacts.gridBin.length, System.currentTimeMillis() - start);
+                    artifacts.gridBin.length, System.currentTimeMillis() - startedAt);
         } catch (Exception e) {
-            try {
-                Files.createDirectories(cacheDir(data));
-                writeJsonAtomic(manifestPath(data), manifest(data, false));
-            } catch (Exception ignored) {
-            }
+            writeFailedManifest(data);
             throw new RuntimeException("人口分布缓存生成失败: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * 从模型抽取居住/就业点并聚合。非大模型读内存 population（坐标已是 3857），
-     * 大模型流式读 plans 文件。空人口模型产出全零工件（176 街道仍全量下发）。
-     */
-    private static Artifacts buildArtifacts(MatsimData data) {
-        StreetIndex streets = streetIndex();
-        Aggregation aggregation = new Aggregation(mercCellSize(data.getCenter()), streets);
-        if (data.isLargeModel()) {
-            streamPlans(data, aggregation);
-        } else {
-            Population population = data.getScenario() == null ? null : data.getPopulation();
-            if (population != null) {
-                for (Person person : population.getPersons().values()) {
-                    // 非大模型坐标已被 Datasource.loadConfig 统一转换到 EPSG:3857，无需再转
-                    aggregation.acceptPerson(person, null);
-                }
-            }
+    static void writeFailedManifest(MatsimData data) {
+        try {
+            Files.createDirectories(cacheDir(data));
+            writeJsonAtomic(manifestPath(data), manifest(data, false));
+        } catch (Exception ignored) {
         }
-        if (aggregation.transformFailures > 0) {
-            log.warn("人口分布缓存坐标转换失败点已跳过: model={}, count={}", data.getName(), aggregation.transformFailures);
-        }
-        return assemble(aggregation, streets, effectiveSampleRate(data));
-    }
-
-    /**
-     * 大模型流式抽取（streamPlans 写法照 ScenarioCutService.streamPlans）：
-     * 读入端关闭坐标自动转换（global CRS 置 null，保持文件原始坐标），
-     * 在首个 person 回调时按 Datasource.ctf 同源语义懒解析转换器——
-     * population 级 coordinateReferenceSystem 属性位于 plans XML 头部，此时已可读。
-     */
-    private static void streamPlans(MatsimData data, Aggregation out) {
-        String plansFile = data.getOutfile() == null ? null : data.getOutfile().getPlans();
-        if (plansFile == null || plansFile.isBlank() || !Files.exists(Path.of(plansFile))) {
-            log.warn("人口分布缓存未找到 plans 文件，按空人口处理: model={}, plans={}", data.getName(), plansFile);
-            return;
-        }
-        Config readCfg = ConfigUtils.createConfig();
-        // 关闭读入时的坐标自动转换（保持原始坐标，照 ScenarioCutService.newScenario；
-        // 默认 config 的 global CRS 是 Atlantis，不清空会触发 MATSim 内部错误转换）
-        readCfg.global().setCoordinateSystem(null);
-        Scenario readScenario = ScenarioUtils.createScenario(readCfg);
-        // 大模型 data.getConfig() 可能为 null（ModelCacheManager.componentCachesReady 的裸 MatsimData），
-        // 此时退化为仅按 population 属性 CRS 判定——与 Datasource.ctf 的兜底链一致
-        String globalCRS = data.getConfig() == null ? null : data.getConfig().global().getCoordinateSystem();
-        String inputCRS = data.getConfig() == null ? null : data.getConfig().plans().getInputCRS();
-        CoordinateTransformation[] lazyCtf = new CoordinateTransformation[1];
-        boolean[] ctfResolved = new boolean[1];
-        StreamingPopulationReader reader = new StreamingPopulationReader(readScenario);
-        reader.addAlgorithm(person -> {
-            if (!ctfResolved[0]) {
-                String planCRS = (String) readScenario.getPopulation().getAttributes()
-                        .getAttribute("coordinateReferenceSystem");
-                lazyCtf[0] = ctf(globalCRS, inputCRS, planCRS);
-                ctfResolved[0] = true;
-                log.info("人口分布缓存流式读取 plans: model={}, planCRS={}, inputCRS={}, globalCRS={}, 转换={}",
-                        data.getName(), planCRS, inputCRS, globalCRS, lazyCtf[0] != null);
-            }
-            out.acceptPerson(person, lazyCtf[0]);
-            if (out.persons % 1_000_000 == 0) {
-                log.info("人口分布缓存流式读取进度: model={}, persons={}", data.getName(), out.persons);
-            }
-        });
-        reader.readFile(plansFile);
     }
 
     // ===================================================================================
@@ -425,8 +356,8 @@ public final class MatsimPopulationCache {
      */
     static final class Aggregation {
         final double mercCellSize;
-        /** 街道面索引；null 仅为纯栅格单测便利（所有点计入 unassigned）。 */
-        private final StreetIndex streets;
+        /** 实际点定位器；共享扫描时为有界坐标缓存，其他路径直连 StreetIndex。 */
+        private final StreetLocator streetLocator;
         final Long2IntOpenHashMap homeCells = new Long2IntOpenHashMap();
         final Long2IntOpenHashMap workCells = new Long2IntOpenHashMap();
         final int[] streetHome;
@@ -441,8 +372,12 @@ public final class MatsimPopulationCache {
         long transformFailures;
 
         Aggregation(double mercCellSize, StreetIndex streets) {
+            this(mercCellSize, streets, streets);
+        }
+
+        Aggregation(double mercCellSize, StreetIndex streets, StreetLocator streetLocator) {
             this.mercCellSize = mercCellSize;
-            this.streets = streets;
+            this.streetLocator = streetLocator;
             this.streetHome = new int[streets == null ? 0 : streets.size()];
             this.streetWork = new int[streets == null ? 0 : streets.size()];
         }
@@ -515,7 +450,7 @@ public final class MatsimPopulationCache {
 
         private void addPoint(Coord coord, boolean isHome) {
             (isHome ? homeCells : workCells).addTo(cellKey(coord.getX(), coord.getY(), mercCellSize), 1);
-            int streetIdx = streets == null ? -1 : streets.locate(coord.getX(), coord.getY());
+            int streetIdx = streetLocator == null ? -1 : streetLocator.locate(coord.getX(), coord.getY());
             if (streetIdx >= 0) {
                 (isHome ? streetHome : streetWork)[streetIdx]++;
             } else if (isHome) {
@@ -523,6 +458,31 @@ public final class MatsimPopulationCache {
             } else {
                 unassignedWork++;
             }
+        }
+
+        /** worker 私有聚合结果的确定性合并。 */
+        void mergeFrom(Aggregation other) {
+            if (other == null) {
+                return;
+            }
+            for (Long2IntOpenHashMap.Entry entry : other.homeCells.long2IntEntrySet()) {
+                homeCells.addTo(entry.getLongKey(), entry.getIntValue());
+            }
+            for (Long2IntOpenHashMap.Entry entry : other.workCells.long2IntEntrySet()) {
+                workCells.addTo(entry.getLongKey(), entry.getIntValue());
+            }
+            for (int i = 0; i < streetHome.length; i++) {
+                streetHome[i] += other.streetHome[i];
+                streetWork[i] += other.streetWork[i];
+            }
+            homeTypes.addAll(other.homeTypes);
+            workTypes.addAll(other.workTypes);
+            persons += other.persons;
+            homePersons += other.homePersons;
+            workPersons += other.workPersons;
+            unassignedHome += other.unassignedHome;
+            unassignedWork += other.unassignedWork;
+            transformFailures += other.transformFailures;
         }
     }
 
@@ -534,8 +494,91 @@ public final class MatsimPopulationCache {
     record StreetRef(String code, String name, String district, double areaKm2) {
     }
 
+    @FunctionalInterface
+    interface StreetLocator {
+        int locate(double x, double y);
+    }
+
+    /**
+     * 有界、原始类型、精确坐标键的街道归属缓存。
+     *
+     * <p>4 路组相联只用于提高命中率；每次命中都同时校验 x/y 的 IEEE-754 位模式。
+     * 哈希冲突或容量满只会淘汰旧槽并重算 JTS，不会返回错误街道。</p>
+     */
+    static final class CoordinateStreetCache implements StreetLocator {
+        private static final int WAYS = 4;
+        private static final int EMPTY = Integer.MIN_VALUE;
+
+        private final StreetLocator delegate;
+        private final long[] xBits;
+        private final long[] yBits;
+        private final int[] street;
+        private final int setMask;
+        private long hits;
+        private long misses;
+
+        CoordinateStreetCache(StreetLocator delegate, int requestedEntries) {
+            this.delegate = delegate;
+            int requestedSets = Math.max(1, requestedEntries / WAYS);
+            int sets = 1;
+            while (sets < requestedSets && sets < (1 << 28)) {
+                sets <<= 1;
+            }
+            int entries = sets * WAYS;
+            this.xBits = new long[entries];
+            this.yBits = new long[entries];
+            this.street = new int[entries];
+            Arrays.fill(this.street, EMPTY);
+            this.setMask = sets - 1;
+        }
+
+        @Override
+        public int locate(double x, double y) {
+            long xb = normalizedBits(x);
+            long yb = normalizedBits(y);
+            int base = ((int) mix64(xb ^ Long.rotateLeft(yb, 29)) & setMask) * WAYS;
+            int emptySlot = -1;
+            for (int way = 0; way < WAYS; way++) {
+                int slot = base + way;
+                if (street[slot] == EMPTY) {
+                    if (emptySlot < 0) {
+                        emptySlot = slot;
+                    }
+                } else if (xBits[slot] == xb && yBits[slot] == yb) {
+                    hits++;
+                    return street[slot];
+                }
+            }
+            int result = delegate.locate(x, y);
+            int slot = emptySlot >= 0 ? emptySlot : base + (int) (misses & (WAYS - 1));
+            xBits[slot] = xb;
+            yBits[slot] = yb;
+            street[slot] = result;
+            misses++;
+            return result;
+        }
+
+        long hits() {
+            return hits;
+        }
+
+        long misses() {
+            return misses;
+        }
+
+        private static long normalizedBits(double value) {
+            return value == 0.0d ? 0L : Double.doubleToLongBits(value);
+        }
+
+        private static long mix64(long value) {
+            value = (value ^ (value >>> 33)) * 0xff51afd7ed558ccdl;
+            value = (value ^ (value >>> 33)) * 0xc4ceb9fe1a85ec53l;
+            return value ^ (value >>> 33);
+        }
+    }
+
     /** 街道点面归属索引：STRtree 粗筛 + PreparedGeometry 精判；要素顺序 = 资源文件序。 */
-    static final class StreetIndex {
+    static final class StreetIndex implements StreetLocator {
         private final List<StreetRef> streets;
         private final Geometry[] geometries;
         private final PreparedGeometry[] prepared;
@@ -570,7 +613,8 @@ public final class MatsimPopulationCache {
          * 点面归属（EPSG:3857）：返回街道要素索引，未命中返回 -1。
          * 边界点按 intersects（含边界）判定；多候选（共享边界/资源面重叠）取最小要素索引，结果可复现。
          */
-        int locate(double x, double y) {
+        @Override
+        public int locate(double x, double y) {
             @SuppressWarnings("unchecked")
             List<Integer> candidates = tree.query(new Envelope(x, x, y, y));
             if (candidates.isEmpty()) {

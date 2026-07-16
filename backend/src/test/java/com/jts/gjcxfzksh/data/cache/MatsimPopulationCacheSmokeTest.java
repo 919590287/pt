@@ -103,7 +103,7 @@ class MatsimPopulationCacheSmokeTest {
         long homePersons = ((Number) memSummary.get("homePersons")).longValue();
         long workPersons = ((Number) memSummary.get("workPersons")).longValue();
         int gridCells = ((Number) memSummary.get("gridCells")).intValue();
-        assertEquals(18 + 16L * gridCells, memBin.length);
+        assertEquals(18 + 18L * gridCells, memBin.length);
         ByteBuffer buffer = ByteBuffer.wrap(memBin).order(ByteOrder.LITTLE_ENDIAN);
         buffer.position(6);
         assertEquals(gridCells, buffer.getInt());
@@ -115,6 +115,7 @@ class MatsimPopulationCacheSmokeTest {
             buffer.getInt();
             gridHome += Integer.toUnsignedLong(buffer.getInt());
             gridWork += Integer.toUnsignedLong(buffer.getInt());
+            buffer.getShort(); // population-v2 格中心街道索引
         }
         assertEquals(homePersons, gridHome, "grid home 总和必须等于 homePersons");
         assertEquals(workPersons, gridWork, "grid work 总和必须等于 workPersons");

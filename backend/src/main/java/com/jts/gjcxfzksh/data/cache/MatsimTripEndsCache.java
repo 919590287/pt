@@ -10,17 +10,11 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
-import org.matsim.api.core.v01.Scenario;
 import org.matsim.api.core.v01.population.Activity;
 import org.matsim.api.core.v01.population.Leg;
 import org.matsim.api.core.v01.population.Person;
 import org.matsim.api.core.v01.population.Plan;
 import org.matsim.api.core.v01.population.PlanElement;
-import org.matsim.api.core.v01.population.Population;
-import org.matsim.core.config.Config;
-import org.matsim.core.config.ConfigUtils;
-import org.matsim.core.population.io.StreamingPopulationReader;
-import org.matsim.core.scenario.ScenarioUtils;
 import org.matsim.core.utils.geometry.CoordinateTransformation;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
 import org.matsim.pt.transitSchedule.api.TransitStopFacility;
@@ -146,10 +140,7 @@ public final class MatsimTripEndsCache {
     // ===================================================================================
 
     public static void prepareOnModelLoad(MatsimData data) {
-        // per-model 锁：模型 A 构建期间不阻塞模型 B；同一模型串行保证幂等
-        synchronized (ModelBuildLocks.lockFor("tripends", data)) {
-            ensureTripEndsCacheLocked(data);
-        }
+        MatsimPlansDerivedCache.prepareTripEndsOnModelLoad(data);
     }
 
     public static boolean isReady(MatsimData data) {
@@ -270,14 +261,18 @@ public final class MatsimTripEndsCache {
     // 构建编排
     // ===================================================================================
 
-    private static void ensureTripEndsCacheLocked(MatsimData data) {
-        if (isReady(data)) {
-            return; // 幂等：已就绪直接跳过
-        }
+    static void storeBuiltAggregation(MatsimData data, Aggregation aggregation,
+                                      MatsimPopulationCache.StreetIndex streets, long startedAt) {
         try {
             Files.createDirectories(cacheDir(data));
-            long start = System.currentTimeMillis();
-            Artifacts artifacts = buildArtifacts(data);
+            if (aggregation.transformFailures > 0) {
+                log.warn("出行分布缓存坐标转换失败端点已跳过: model={}, count={}",
+                        data.getName(), aggregation.transformFailures);
+            }
+            Map<String, double[]> coordByFacility = facilityCoords(
+                    data.getScenario() == null ? null : data.getSchedule());
+            aggregateJourneys(data.getPersonTracks(), coordByFacility, aggregation);
+            Artifacts artifacts = assemble(aggregation, streets, MatsimPopulationCache.effectiveSampleRate(data));
             // 工件先落盘、manifest 最后写：manifest=ready 即五工件必然齐备
             writeBytesAtomic(gridPath(data), artifacts.gridBin);
             writeBytesAtomic(odGridPath(data), artifacts.odGridBin);
@@ -297,89 +292,19 @@ public final class MatsimTripEndsCache {
                     artifacts.summary.get("droppedTracks"), artifacts.summary.get("gridCells"),
                     artifacts.gridBin.length, artifacts.summary.get("odStreetPairs"),
                     artifacts.summary.get("odGridPairs"), artifacts.summary.get("odGridDroppedPairs"),
-                    artifacts.odGridBin.length, System.currentTimeMillis() - start);
+                    artifacts.odGridBin.length, System.currentTimeMillis() - startedAt);
         } catch (Exception e) {
-            try {
-                Files.createDirectories(cacheDir(data));
-                writeJsonAtomic(manifestPath(data), manifest(data, false));
-            } catch (Exception ignored) {
-            }
+            writeFailedManifest(data);
             throw new RuntimeException("出行分布缓存生成失败: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * 两遍独立扫描：①plans → 活动出行端点（journeys/riders/originPoints/destPoints/栅格/街道）；
-     * ②personTracks + schedule 坐标索引 → 整段出行 OD（od* 工件）。
-     * 零人口/零事件模型产出全零工件（176 街道仍全量下发）。
-     */
-    private static Artifacts buildArtifacts(MatsimData data) {
-        Map<String, double[]> coordByFacility = facilityCoords(data.getSchedule());
-        MatsimPopulationCache.StreetIndex streets = MatsimPopulationCache.streetIndex();
-        Aggregation aggregation = new Aggregation(
-                MatsimPopulationCache.mercCellSize(data.getCenter()), streets, coordByFacility);
-        aggregatePtTrips(data, aggregation);
-        if (aggregation.transformFailures > 0) {
-            log.warn("出行分布缓存坐标转换失败端点已跳过: model={}, count={}",
-                    data.getName(), aggregation.transformFailures);
+    static void writeFailedManifest(MatsimData data) {
+        try {
+            Files.createDirectories(cacheDir(data));
+            writeJsonAtomic(manifestPath(data), manifest(data, false));
+        } catch (Exception ignored) {
         }
-        aggregateJourneys(data.getPersonTracks(), coordByFacility, aggregation);
-        return assemble(aggregation, streets, MatsimPopulationCache.effectiveSampleRate(data));
-    }
-
-    /**
-     * 端点数据源（plans，模式照 MatsimPopulationCache.buildArtifacts）：非大模型直接读内存
-     * population（坐标已被 Datasource 统一转换到 EPSG:3857），大模型流式读 plans 文件。
-     */
-    private static void aggregatePtTrips(MatsimData data, Aggregation out) {
-        if (data.isLargeModel()) {
-            streamPlans(data, out);
-            return;
-        }
-        Population population = data.getScenario() == null ? null : data.getPopulation();
-        if (population == null) {
-            return;
-        }
-        for (Person person : population.getPersons().values()) {
-            out.acceptPerson(person, null);
-        }
-    }
-
-    /**
-     * 大模型流式抽取（写法照 MatsimPopulationCache.streamPlans，坐标转换器懒解析语义同源）：
-     * 读入端关闭坐标自动转换，在首个 person 回调时按 population 级 coordinateReferenceSystem
-     * 属性解析转换器（选择链复用 {@link MatsimPopulationCache#ctf}）。
-     */
-    private static void streamPlans(MatsimData data, Aggregation out) {
-        String plansFile = data.getOutfile() == null ? null : data.getOutfile().getPlans();
-        if (plansFile == null || plansFile.isBlank() || !Files.exists(Path.of(plansFile))) {
-            log.warn("出行分布缓存未找到 plans 文件，端点按空人口处理: model={}, plans={}", data.getName(), plansFile);
-            return;
-        }
-        Config readCfg = ConfigUtils.createConfig();
-        // 关闭读入时的坐标自动转换（默认 config 的 global CRS 是 Atlantis，不清空会触发错误转换）
-        readCfg.global().setCoordinateSystem(null);
-        Scenario readScenario = ScenarioUtils.createScenario(readCfg);
-        String globalCRS = data.getConfig() == null ? null : data.getConfig().global().getCoordinateSystem();
-        String inputCRS = data.getConfig() == null ? null : data.getConfig().plans().getInputCRS();
-        CoordinateTransformation[] lazyCtf = new CoordinateTransformation[1];
-        boolean[] ctfResolved = new boolean[1];
-        StreamingPopulationReader reader = new StreamingPopulationReader(readScenario);
-        reader.addAlgorithm(person -> {
-            if (!ctfResolved[0]) {
-                String planCRS = (String) readScenario.getPopulation().getAttributes()
-                        .getAttribute("coordinateReferenceSystem");
-                lazyCtf[0] = MatsimPopulationCache.ctf(globalCRS, inputCRS, planCRS);
-                ctfResolved[0] = true;
-                log.info("出行分布缓存流式读取 plans: model={}, planCRS={}, inputCRS={}, globalCRS={}, 转换={}",
-                        data.getName(), planCRS, inputCRS, globalCRS, lazyCtf[0] != null);
-            }
-            out.acceptPerson(person, lazyCtf[0]);
-            if (out.persons % 1_000_000 == 0) {
-                log.info("出行分布缓存流式读取进度: model={}, persons={}", data.getName(), out.persons);
-            }
-        });
-        reader.readFile(plansFile);
     }
 
     /** schedule 全部 stopFacility 坐标（EPSG:3857，Datasource 加载时已统一转换）。 */
@@ -442,6 +367,7 @@ public final class MatsimTripEndsCache {
         final double mercCellSize;
         private final MatsimPopulationCache.StreetIndex streets;
         private final Map<String, double[]> coordByFacility;
+        private final MatsimPopulationCache.StreetLocator streetLocator;
         // ===== 端点（plans 活动出行口径，v4）=====
         final Long2IntOpenHashMap originCells = new Long2IntOpenHashMap();
         final Long2IntOpenHashMap destCells = new Long2IntOpenHashMap();
@@ -474,9 +400,16 @@ public final class MatsimTripEndsCache {
 
         Aggregation(double mercCellSize, MatsimPopulationCache.StreetIndex streets,
                     Map<String, double[]> coordByFacility) {
+            this(mercCellSize, streets, coordByFacility, streets);
+        }
+
+        Aggregation(double mercCellSize, MatsimPopulationCache.StreetIndex streets,
+                    Map<String, double[]> coordByFacility,
+                    MatsimPopulationCache.StreetLocator streetLocator) {
             this.mercCellSize = mercCellSize;
             this.streets = streets;
             this.coordByFacility = coordByFacility;
+            this.streetLocator = streetLocator;
             int size = streets == null ? 0 : streets.size();
             this.streetOrigin = new int[size];
             this.streetDest = new int[size];
@@ -561,7 +494,7 @@ public final class MatsimTripEndsCache {
             }
             (isOrigin ? originCells : destCells)
                     .addTo(MatsimPopulationCache.cellKey(coord.getX(), coord.getY(), mercCellSize), 1);
-            int streetIdx = streets == null ? -1 : streets.locate(coord.getX(), coord.getY());
+            int streetIdx = streetLocator == null ? -1 : streetLocator.locate(coord.getX(), coord.getY());
             if (streetIdx >= 0) {
                 (isOrigin ? streetOrigin : streetDest)[streetIdx]++;
             } else if (isOrigin) {
@@ -583,8 +516,8 @@ public final class MatsimTripEndsCache {
             long oCell = MatsimPopulationCache.cellKey(oCoord[0], oCoord[1], mercCellSize);
             long dCell = MatsimPopulationCache.cellKey(dCoord[0], dCoord[1], mercCellSize);
             gridOd.computeIfAbsent(oCell, ignored -> new Long2IntOpenHashMap()).addTo(dCell, 1);
-            int oStreet = streets == null ? -1 : streets.locate(oCoord[0], oCoord[1]);
-            int dStreet = streets == null ? -1 : streets.locate(dCoord[0], dCoord[1]);
+            int oStreet = streetLocator == null ? -1 : streetLocator.locate(oCoord[0], oCoord[1]);
+            int dStreet = streetLocator == null ? -1 : streetLocator.locate(dCoord[0], dCoord[1]);
             if (oStreet >= 0 && dStreet >= 0) {
                 streetOd[oStreet * streets.size() + dStreet]++;
             } else {
@@ -594,6 +527,45 @@ public final class MatsimTripEndsCache {
 
         private double[] endpointCoord(String facilityId) {
             return facilityId == null ? null : coordByFacility.get(facilityId);
+        }
+
+        /** worker 私有聚合结果的确定性合并。 */
+        void mergeFrom(Aggregation other) {
+            if (other == null) {
+                return;
+            }
+            mergeCounts(originCells, other.originCells);
+            mergeCounts(destCells, other.destCells);
+            for (int i = 0; i < streetOrigin.length; i++) {
+                streetOrigin[i] += other.streetOrigin[i];
+                streetDest[i] += other.streetDest[i];
+            }
+            for (Long2ObjectOpenHashMap.Entry<Long2IntOpenHashMap> entry : other.gridOd.long2ObjectEntrySet()) {
+                Long2IntOpenHashMap target = gridOd.computeIfAbsent(
+                        entry.getLongKey(), ignored -> new Long2IntOpenHashMap());
+                mergeCounts(target, entry.getValue());
+            }
+            for (int i = 0; i < streetOd.length; i++) {
+                streetOd[i] += other.streetOd[i];
+            }
+            persons += other.persons;
+            journeys += other.journeys;
+            riders += other.riders;
+            originPoints += other.originPoints;
+            destPoints += other.destPoints;
+            unassignedOrigin += other.unassignedOrigin;
+            unassignedDest += other.unassignedDest;
+            transformFailures += other.transformFailures;
+            droppedTracks += other.droppedTracks;
+            odJourneys += other.odJourneys;
+            odSkipped += other.odSkipped;
+            odStreetUnassigned += other.odStreetUnassigned;
+        }
+
+        private static void mergeCounts(Long2IntOpenHashMap target, Long2IntOpenHashMap source) {
+            for (Long2IntOpenHashMap.Entry entry : source.long2IntEntrySet()) {
+                target.addTo(entry.getLongKey(), entry.getIntValue());
+            }
         }
     }
 
