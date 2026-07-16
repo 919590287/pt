@@ -147,36 +147,15 @@
             </div>
           </div>
 
-          <!-- 统计时段（仅断面 / 乘降 / 关联换乘按时段统计）-->
-          <div v-if="['segments', 'boarding', 'transfer'].includes(pfaLineSection)" class="time-range-section">
-            <div class="time-unit-row">
-              <span class="time-unit-label">统计时间单位</span>
-              <div class="time-unit-selector" role="group" aria-label="统计时间单位">
-                <button
-                  v-for="option in timeUnitOptions"
-                  :key="option.value"
-                  type="button"
-                  :class="['time-unit-btn', segmentTimeUnit === option.value ? 'active' : '']"
-                  @click="segmentTimeUnit = option.value"
-                >
-                  {{ option.label }}
-                </button>
-              </div>
-            </div>
-            <div class="time-range-header">
-              <span class="title">统计时段选择</span>
-              <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
-            </div>
-            <el-slider
-              v-model="segmentTimeRange"
-              range
-              :min="6"
-              :max="23"
-              :step="segmentTimeStep"
-              :show-tooltip="false"
-              class="time-range-slider"
-            />
-          </div>
+          <!-- 统计时段（仅断面 / 乘降 / 关联换乘按时段统计）；滑杆+间隔分段按钮，样式同换乘分析头部 -->
+          <TimeRangeFilter
+            v-if="['segments', 'boarding', 'transfer'].includes(pfaLineSection)"
+            v-model:range="segmentTimeRange"
+            v-model:unit="segmentTimeUnit"
+            :min="6"
+            :max="23"
+            :step="segmentTimeStep"
+          />
 
           <!-- ① 线路断面客流与满载率 -->
           <section v-if="pfaLineSection === 'segments'" class="pfa-section">
@@ -185,18 +164,19 @@
             </div>
             <div class="segments-table">
               <div class="table-header">
-                <span class="col-name">断面（相邻站点）</span>
+                <span class="col-name">断面名称</span>
                 <span class="col-flow">客流量</span>
                 <span class="col-load">满载率</span>
               </div>
               <div class="table-body">
                 <!-- 环线/往返可能出现重名断面：组合键保证唯一稳定 -->
-                <!-- 行背景条 = 客流量占峰值比例，让整张表读作沿线断面客流剖面；峰值断面高亮 -->
+                <!-- 行背景条 = 客流量占峰值比例，让整张表读作沿线断面客流剖面；峰值断面高亮；
+                     条色取该断面在地图上的分档色（同一套断点），面板与地图互为索引 -->
                 <div
                   v-for="(seg, idx) in routeSegments"
                   :key="`${seg.routeKey || ''}-${seg.fromFacilityId || seg.fromName || ''}-${seg.toFacilityId || seg.toName || ''}-${idx}`"
                   :class="['table-row', segmentsMaxFlow > 0 && seg.flow === segmentsMaxFlow ? 'is-peak' : '']"
-                  :style="{ '--seg-bar-w': segmentBarPercent(seg.flow) }"
+                  :style="segmentRowStyle(seg)"
                 >
                   <span class="col-name">
                     <span v-if="segmentsMaxFlow > 0 && seg.flow === segmentsMaxFlow" class="peak-tag">峰值</span>
@@ -315,6 +295,7 @@
           <section v-else-if="pfaLineSection === 'transfer'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">关联线路分析（直接换乘）</span>
+              <span class="section-unit-note">换乘人数单位：人次</span>
             </div>
             <div
               class="transfer-analysis-layout"
@@ -357,8 +338,8 @@
     <div v-else-if="!runMonitorSimplifiedRight && !pfaRightPanel" class="rm-right-card rm-ranking-card">
       <div class="rm-right-card-title">
         <div class="rm-title-head">
-          <p class="rm-panel-kicker">线路客流</p>
-          <h2>{{ activeTransitType === 'bus' ? '公交' : '地铁' }}线路客流排行</h2>
+          <p class="rm-panel-kicker">{{ activeRankMetric.label }}</p>
+          <h2>{{ activeTransitType === 'bus' ? '公交' : '地铁' }}线路排行 TOP10</h2>
         </div>
         <div class="rm-ranking-tools">
           <div class="rm-seg" role="group" aria-label="客流类型">
@@ -372,6 +353,15 @@
               {{ type === 'bus' ? '公交' : '地铁' }}
             </button>
           </div>
+          <el-select
+            v-model="rankMetric"
+            class="rm-rank-metric-select"
+            size="small"
+            aria-label="排名依据"
+            @click.stop
+          >
+            <el-option v-for="metric in RANK_METRICS" :key="metric.key" :value="metric.key" :label="metric.label" />
+          </el-select>
           <button type="button" class="rm-export-btn" @click.stop="handleExportLeaderboard">
             <el-icon><Download /></el-icon>
             <span>导出</span>
@@ -382,7 +372,7 @@
         <div class="ranking-header">
           <span class="col-rank">排序</span>
           <span class="col-name">线路名称</span>
-          <span class="col-flow">日均客流量</span>
+          <span class="col-flow" :title="`${activeRankMetric.label}（${activeRankMetric.unit}）`">{{ activeRankMetric.header }}</span>
         </div>
         <div class="ranking-scroll-list">
           <button
@@ -402,8 +392,8 @@
               <span class="route-desc-text">{{ item.desc }}</span>
             </div>
             <div class="col-flow">
-              <span class="flow-value">{{ item.passengerFlow.toLocaleString() }}</span>
-              <span class="flow-unit">人次</span>
+              <span class="flow-value">{{ item.valueText }}</span>
+              <span class="flow-unit">{{ activeRankMetric.unit }}</span>
             </div>
           </button>
         </div>
@@ -452,8 +442,7 @@
         <span class="pfa-od-legend-label">{{ item.label }}</span>
       </div>
       <div class="pfa-od-legend-dirs">
-        <span><i class="pfa-od-dir-dot up"></i>上行站点</span>
-        <span><i class="pfa-od-dir-dot down"></i>下行站点</span>
+        <span><i class="pfa-od-dir-dot" :style="{ borderColor: PFA_OD_STATION_COLOR }"></i>线路站点</span>
       </div>
     </div>
   </teleport>
@@ -532,6 +521,9 @@ import { abortOtherModelDataRequests, getCachedLineAll, getCachedRoutePanel, get
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
 import ColorScaleControl from "./ColorScaleControl.vue";
+import TimeRangeFilter from "./TimeRangeFilter.vue";
+import { buildBoardingHeatmapOption } from "../utils/boardingHeatmap.js";
+import "../styles/boardingHeatmapDialog.css";
 import { RouteLayer } from "../layers/RouteLayer.js";
 import { emptyFeatureCollection, stationsToFeatureCollection } from "../layers/maplibreLayerUtils.js";
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
@@ -539,7 +531,7 @@ import { buildFlowCurveFeatureCollection, emptyFlowCurveCollection } from "../ut
 import { compareZh, createDebouncedMirror, isCanceledRequest } from "../utils/panelShared.js";
 import { provisionalRouteLinks } from "../utils/routeGeometry.js";
 import { buildValueLegendItems, classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale } from "@/utils/colorSchemes.js";
-import { MAP_THEME, hexNumber } from "@/utils/mapTheme.js";
+import { MAP_THEME, hexNumber, hexToRgba } from "@/utils/mapTheme.js";
 import { PURE_METRO_LINE, isMetroLine, metroLineCanonicalName, metroLineNumber } from "@/utils/transitMode.js";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 import { injectSync } from "@/utils";
@@ -1254,106 +1246,23 @@ const boardingHeatmapData = computed(() => {
 
 const boardingHeatmapOption = computed(() => {
   const { stationNames, bucketLabels, cells, maxCellFlow } = boardingHeatmapData.value;
-  const manyStations = stationNames.length > 8;
-  const safeMax = Math.max(1, maxCellFlow);
-  return {
-    backgroundColor: "transparent",
+  return buildBoardingHeatmapOption({
+    xLabels: stationNames,
+    yLabels: bucketLabels,
+    cells,
+    maxCellFlow,
+    seriesName: "站点乘降热力",
     // 拖动时段滑块期间关闭动画，避免连续 setOption 反复重启入场动画（同乘降图）
     animationDuration: segmentTimeRangeDragging.value ? 0 : 280,
-    animationEasing: "quarticOut",
-    tooltip: {
-      position: "top",
-      appendToBody: true,
-      backgroundColor: "rgba(255, 255, 255, 0.98)",
-      borderColor: "rgba(17, 32, 58, 0.1)",
-      borderWidth: 1,
-      padding: [8, 11],
-      extraCssText: "border-radius:10px;box-shadow:0 12px 32px -14px rgba(13,38,76,0.34);",
-      textStyle: { color: "#1c2024", fontSize: 12 },
-      formatter: (params) => {
-        const [xIndex, yIndex, flow] = params?.value || [];
-        const boarding = toFiniteNumber(params?.data?.boarding, 0);
-        const alighting = toFiniteNumber(params?.data?.alighting, 0);
-        return `<div style="font-weight: 700; margin-bottom: 4px;">${stationNames[xIndex] || "未知站点"} · ${bucketLabels[yIndex] || ""}</div>
-          <div style="color:#667085;">乘 ${boarding.toLocaleString()} · 降 ${alighting.toLocaleString()}</div>
-          <div style="text-align: right; font-weight: 700; font-variant-numeric: tabular-nums;">合计 ${toFiniteNumber(flow, 0).toLocaleString()} 人次</div>`;
-      }
+    tooltipFormatter: (params) => {
+      const [xIndex, yIndex, flow] = params?.value || [];
+      const boarding = toFiniteNumber(params?.data?.boarding, 0);
+      const alighting = toFiniteNumber(params?.data?.alighting, 0);
+      return `<div style="font-weight: 700; margin-bottom: 4px;">${stationNames[xIndex] || "未知站点"} · ${bucketLabels[yIndex] || ""}</div>
+        <div style="color:#667085;">乘 ${boarding.toLocaleString()} · 降 ${alighting.toLocaleString()}</div>
+        <div style="text-align: right; font-weight: 700; font-variant-numeric: tabular-nums;">合计 ${toFiniteNumber(flow, 0).toLocaleString()} 人次</div>`;
     },
-    // 矩阵风格：右侧竖向色条，格子间白色描边
-    grid: {
-      left: "2%",
-      right: 58,
-      top: 8,
-      bottom: 8,
-      containLabel: true
-    },
-    xAxis: {
-      type: "category",
-      data: stationNames,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: {
-        color: "#667085",
-        fontSize: 11,
-        interval: 0,
-        rotate: manyStations ? 45 : 0
-      }
-    },
-    yAxis: {
-      type: "category",
-      data: bucketLabels,
-      inverse: true, // 早时段在上
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: "#667085", fontSize: 11 }
-    },
-    visualMap: {
-      type: "continuous",
-      min: 0,
-      max: safeMax,
-      calculable: true,
-      orient: "vertical",
-      right: 0,
-      top: "middle",
-      itemWidth: 14,
-      itemHeight: 220,
-      inRange: {
-        // 绿(少)→黄→红(多)，与满载率配色语义一致
-        color: ["#1a9850", "#66bd63", "#a6d96a", "#d9ef8b", "#fee08b", "#fdae61", "#f46d43", "#d73027"]
-      },
-      textStyle: { color: "#667085", fontSize: 11 }
-    },
-    series: [
-      {
-        name: "站点乘降热力",
-        type: "heatmap",
-        // 两端深色格子（深绿/深红）改白色数值，中段浅色格子用深色数值
-        data: cells.map((cell) => {
-          const ratio = cell.value[2] / safeMax;
-          return ratio <= 0.18 || ratio >= 0.68
-            ? { ...cell, label: { color: "#ffffff" } }
-            : cell;
-        }),
-        label: {
-          show: cells.length <= 160,
-          color: "#3f4a3f",
-          fontSize: 10,
-          formatter: (params) => toFiniteNumber(params?.value?.[2], 0).toLocaleString()
-        },
-        itemStyle: {
-          borderColor: "#ffffff",
-          borderWidth: 2,
-          borderRadius: 2
-        },
-        emphasis: {
-          itemStyle: {
-            shadowBlur: 8,
-            shadowColor: "rgba(15, 23, 42, 0.35)"
-          }
-        }
-      }
-    ]
-  };
+  });
 });
 
 function transferLineKey(name = "") {
@@ -1641,33 +1550,99 @@ function handleExportLeaderboard() {
     proxy?.$message?.warning("暂无排行数据可导出");
     return;
   }
+  const metric = activeRankMetric.value;
   const typeText = activeTransitType.value === "bus" ? "公交" : "地铁";
   exportCsvFile(
     [
-      ["排名", "线路名称", "说明", "日均客流量(人次)"],
-      ...list.map((item, index) => [index + 1, item.lineName, item.desc, item.passengerFlow]),
+      ["排名", "线路名称", "说明", `${metric.label}(${metric.unit})`],
+      ...list.map((item, index) => [index + 1, item.lineName, item.desc, item.valueText]),
     ],
-    `${typeText}线路客流排行.csv`,
+    `${typeText}线路${metric.label}排行.csv`,
   );
-  proxy?.$message?.success(`${typeText}线路客流排行已导出 CSV 文件`);
+  proxy?.$message?.success(`${typeText}线路${metric.label}排行已导出 CSV 文件`);
 }
 
 const activeTransitType = ref("bus");
 
+// 未选中线路时的排名依据（需求：Top10 + 五指标可切换）。指标值全部来自 routePanel
+// lineGroups 的线级口径（公交上下行合并）；客流强度 = passengerStrength(人次/公里)×100；
+// 高峰满载率 = 各断面 loadRateByHour（后端不封顶）的全日最大值。
+const RANK_METRICS = [
+  { key: "passenger", label: "线路总客流量", header: "总客流量", unit: "人次", decimals: 0 },
+  { key: "perVehicleFlow", label: "车均日载客量", header: "车均日载客", unit: "人次/日", decimals: 0 },
+  { key: "perTripFlow", label: "单班次日载客量", header: "单班次日载客", unit: "人次/日", decimals: 0 },
+  { key: "strength", label: "客流强度", header: "客流强度", unit: "人次/百公里", decimals: 0 },
+  { key: "peakLoadRate", label: "高峰满载率", header: "高峰满载率", unit: "%", decimals: 1 },
+];
+const RANK_TOP_LIMIT = 10;
+const rankMetric = ref("passenger");
+const activeRankMetric = computed(() => RANK_METRICS.find((metric) => metric.key === rankMetric.value) || RANK_METRICS[0]);
+
+function segmentsPeakLoadRate(segments) {
+  let peak = 0;
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    const rates = segment?.loadRateByHour;
+    if (!Array.isArray(rates)) continue;
+    for (let h = 0; h < rates.length; h++) {
+      const value = Number(rates[h]) || 0;
+      if (value > peak) peak = value;
+    }
+  }
+  return peak;
+}
+
+// 线级五指标条目（只依赖 routePanelData，切指标/制式不重算）
+const lineRankEntries = computed(() => {
+  const panel = routePanelData.value;
+  const groups = panel?.lineGroups;
+  if (!groups || typeof groups !== "object") return [];
+  const routes = panel?.routes || {};
+  const entries = [];
+  Object.values(groups).forEach((group) => {
+    const metrics = group?.metrics || {};
+    // 首末站说明取组内首个方向的 desc（组自身 desc 是地铁多源线路占位）
+    const firstRouteKey = Array.isArray(group?.routeKeys) ? group.routeKeys[0] : "";
+    entries.push({
+      lineName: group?.lineName || "--",
+      desc: routes[firstRouteKey]?.desc || group?.desc || "",
+      mode: group?.mode === "subway" ? "subway" : "bus",
+      passenger: toFiniteNumber(metrics.passenger, 0),
+      perVehicleFlow: toFiniteNumber(metrics.perVehicleFlow, 0),
+      perTripFlow: toFiniteNumber(metrics.perTripFlow, 0),
+      strength: toFiniteNumber(metrics.passengerStrength, 0) * 100, // 人次/公里 → 人次/百公里
+      peakLoadRate: segmentsPeakLoadRate(group?.segments),
+    });
+  });
+  return entries;
+});
+
+function rankValueText(value, decimals) {
+  const safe = toFiniteNumber(value, 0);
+  return decimals > 0 ? safe.toFixed(decimals) : Math.round(safe).toLocaleString();
+}
+
 const currentLeaderboard = computed(() => {
-  const list = routePanelData.value?.summary?.leaderboard?.[activeTransitType.value] || [];
-  return list.map(item => ({
+  const metric = activeRankMetric.value;
+  const entries = lineRankEntries.value.filter((entry) => entry.mode === activeTransitType.value);
+  if (entries.length) {
+    const sorted = [...entries].sort((a, b) =>
+      (b[metric.key] - a[metric.key]) || a.lineName.localeCompare(b.lineName, "zh-CN"));
+    return sorted.slice(0, RANK_TOP_LIMIT).map((entry) => ({
+      lineName: entry.lineName,
+      desc: entry.desc,
+      valueText: rankValueText(entry[metric.key], metric.decimals),
+    }));
+  }
+  // lineGroups 缺失（异常兜底）：回退后端预排行，仅支持总客流口径
+  if (metric.key !== "passenger") return [];
+  const fallback = routePanelData.value?.summary?.leaderboard?.[activeTransitType.value] || [];
+  return fallback.slice(0, RANK_TOP_LIMIT).map((item) => ({
     lineName: item.lineName || item.lineId || "--",
     desc: item.desc || "",
-    passengerFlow: toFiniteNumber(item.passengerFlow, 0)
+    valueText: rankValueText(item.passengerFlow, 0),
   }));
 });
 
-const timeUnitOptions = [
-  { label: "15min", value: 15 },
-  { label: "30min", value: 30 },
-  { label: "60min", value: 60 },
-];
 const segmentTimeUnit = ref(60);
 const segmentTimeStep = computed(() => segmentTimeUnit.value / 60);
 const segmentTimeRange = ref([8, 18]);
@@ -1717,7 +1692,7 @@ function handleExportDetail() {
   if (section === "segments") {
     label = "断面客流";
     rows = [
-      ["断面（相邻站点）", "客流量(人次)", "满载率(%)"],
+      ["断面名称", "客流量(人次)", "满载率(%)"],
       ...routeSegments.value.map((seg) => [seg.name, seg.flow, seg.loadRate]),
     ];
   } else if (section === "boarding") {
@@ -1845,6 +1820,26 @@ function segmentBarPercent(flow) {
   return max > 0 ? `${Math.max(0, (flow / max) * 100)}%` : "0%";
 }
 
+// 断面分档色阶（宿主注入，与地图断面线/站点圈同一套颜色与分位断点）
+const runMonitorPfaSegmentScale = inject("runMonitorPfaSegmentScale", null);
+
+// 行内样式：客流条宽 + 该断面在地图上的分档色（条底为淡化色、条头为原色）。
+// 断点未就绪（整包加载中）时不下发颜色变量，CSS 回退主题蓝
+function segmentRowStyle(seg) {
+  const style = { "--seg-bar-w": segmentBarPercent(seg.flow) };
+  const scale = runMonitorPfaSegmentScale?.value;
+  const colors = Array.isArray(scale?.colors) ? scale.colors : [];
+  const breaks = Array.isArray(scale?.breaks) ? scale.breaks : [];
+  if (colors.length && breaks.length) {
+    const color = colors[Math.min(classifyByBreaks(seg.flow, breaks), colors.length - 1)];
+    if (color) {
+      style["--seg-bar-color"] = hexToRgba(color, 0.3);
+      style["--seg-bar-edge"] = color;
+    }
+  }
+  return style;
+}
+
 function pointToLinkDistanceSq(coord, link) {
   const px = Number(coord?.x);
   const py = Number(coord?.y);
@@ -1946,6 +1941,9 @@ function buildSingleRouteFlowMapLinks(route, segments = []) {
 
   const result = links.map((link) => ({ ...link, flow: 0 }));
   const endpointIndex = buildRouteLinkEndpointIndex(links);
+  // 相邻断面的首尾链路下标会在站点处重叠一位；先到先得，避免下一断面把
+  // “止于该站”的边界链路覆盖成自己的客流——否则颜色会提前一条链路（站前）就切换
+  const assigned = new Uint8Array(links.length);
   let mappedCount = 0;
   let cursor = 0;
   for (let i = 0; i + 1 < facilities.length; i++) {
@@ -1964,6 +1962,8 @@ function buildSingleRouteFlowMapLinks(route, segments = []) {
     const key = stationPairKeyOf(fromFac?.facilityName, toFac?.facilityName);
     const flow = flowByPair.get(key) ?? indexedSegmentFlow(segments, i);
     for (let linkIndex = start; linkIndex <= end; linkIndex++) {
+      if (assigned[linkIndex]) continue;
+      assigned[linkIndex] = 1;
       result[linkIndex].flow = flow;
     }
     mappedCount++;
@@ -2111,8 +2111,8 @@ const PFA_OD_CURVE_CASING_LAYER_ID = "pfa-station-od-curve-casing-layer";
 const PFA_OD_STATION_SOURCE_ID = "pfa-station-od-station-source";
 const PFA_OD_STATION_LAYER_ID = "pfa-station-od-station-layer";
 const PFA_OD_STATION_LABEL_LAYER_ID = "pfa-station-od-station-label-layer";
-const PFA_OD_PRIMARY_COLOR = MAP_THEME.od.up; // 与选中线路主线（上行）颜色一致
-const PFA_OD_REVERSE_COLOR = MAP_THEME.od.down; // 与反向线路（下行）颜色一致
+// 乘降模式选中线路由宿主复用 reverse 蓝层绘制（index.vue），站点圈描边与其同色
+const PFA_OD_STATION_COLOR = MAP_THEME.route.down;
 // 期望线风格：整体细线，仅按流量档位做轻微加粗（参考站间OD期望线图，避免高流量线路糊成一团）
 const PFA_OD_MIN_WIDTH = 0.6;
 const PFA_OD_MAX_WIDTH = 2.8;
@@ -2140,12 +2140,18 @@ const stationOdFlows = computed(() => {
   if (!PFA_OD_MAP_ENABLED || !shouldRenderPfaRightPanel.value || pfaLineSection.value !== "boarding" || !currentSelectedRoute.value) {
     return [];
   }
+  // OD 期望线跟随乘降统计的时间段筛选，同一 [start, end) 口径；
+  // 取防抖镜像，拖动滑块时不高频重建地图曲线数据
+  const [startHour, endHour] = debouncedSegmentTimeRange.value;
   const flows = [];
   const push = (panel, direction) => {
     (Array.isArray(panel?.stationOd) ? panel.stationOd : []).forEach((od) => {
       const from = odPointToLngLat(od?.fromX, od?.fromY);
       const to = odPointToLngLat(od?.toX, od?.toY);
-      const value = Number(od?.flow);
+      // route-panel-v16 起提供 flowByHour（按上车时刻分桶）；旧缓存缺字段时退回全天总量（不随时段变化）
+      const value = Array.isArray(od?.flowByHour)
+        ? sumHourRangeProportional(od.flowByHour, startHour, endHour)
+        : Number(od?.flow);
       if (!from || !to || !(value > 0)) return;
       flows.push({
         from,
@@ -2217,10 +2223,7 @@ const stationOdRender = computed(() => {
         type: "Feature",
         id: `od-station-${stationFeatures.size}`,
         geometry: { type: "Point", coordinates: coord },
-        properties: {
-          name: label,
-          color: flow.direction === "down" ? PFA_OD_REVERSE_COLOR : PFA_OD_PRIMARY_COLOR,
-        },
+        properties: { name: label },
       });
     });
   });
@@ -2273,18 +2276,19 @@ function ensureStationOdLayers(map) {
     });
   }
   if (!map.getLayer(PFA_OD_STATION_LAYER_ID)) {
-    // 需求6同款空心圈：填充透明，描边取所在方向线路颜色
+    // 断面站点圈同款白芯珠子：白底盖住线体、描边取线路色（同色空心圈叠在同色线上会隐形），
+    // 半径曲线与 RM_LAYER_STATION_SEGMENT_RING 对齐，低缩放档不小于线半宽保证盖线
     map.addLayer({
       id: PFA_OD_STATION_LAYER_ID,
       type: "circle",
       source: PFA_OD_STATION_SOURCE_ID,
       paint: {
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2.6, 13, 4.6, 16, 7.5],
+        "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 4, 13, 5.6, 16, 8],
         "circle-color": "#ffffff",
-        "circle-opacity": 0,
-        "circle-stroke-color": ["get", "color"],
-        "circle-stroke-width": 2,
-        "circle-stroke-opacity": 0.96,
+        "circle-opacity": 1,
+        "circle-stroke-color": PFA_OD_STATION_COLOR,
+        "circle-stroke-width": 2.5,
+        "circle-stroke-opacity": 1,
       },
     });
   }
@@ -3440,91 +3444,14 @@ defineExpose({
   border-radius: var(--dm2-radius-pill);
   background: var(--dm2-accent);
 }
+/* 图表计量单位注记（挂 section-header 右侧，弱化为辅助信息） */
+.pfa-route-sections .section-unit-note {
+  flex: none;
+  font-size: var(--dm2-text-xs);
+  color: var(--dm2-muted);
+}
 
-/* 统计时段：控件组，浅蓝磨砂底 */
-.pfa-route-sections .time-range-section {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--dm2-space-2);
-  padding: var(--dm2-space-3) var(--dm2-space-4);
-  margin: var(--dm2-space-4) 0 0;
-  border-radius: var(--dm2-radius);
-  background: var(--dm2-surface-sunken);
-  border: 1px solid var(--dm2-line);
-}
-.pfa-route-sections .time-unit-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dm2-space-3);
-}
-.pfa-route-sections .time-unit-label {
-  color: var(--dm2-muted);
-  font-size: var(--dm2-text-xs);
-  font-weight: var(--dm2-fw-semibold);
-}
-.pfa-route-sections .time-unit-selector {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border: 1px solid var(--dm2-line);
-  border-radius: var(--dm2-radius-sm);
-  background: var(--dm2-surface);
-}
-.pfa-route-sections .time-unit-btn {
-  height: 24px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: calc(var(--dm2-radius-sm) - 3px);
-  background: transparent;
-  color: var(--dm2-muted);
-  font-family: var(--dm2-font-num);
-  font-size: var(--dm2-text-xs);
-  font-weight: var(--dm2-fw-semibold);
-  cursor: pointer;
-  transition: color var(--dm2-dur-fast) var(--dm2-ease),
-    background-color var(--dm2-dur-fast) var(--dm2-ease);
-}
-.pfa-route-sections .time-unit-btn:hover {
-  color: var(--dm2-ink-soft);
-}
-.pfa-route-sections .time-unit-btn.active {
-  background: var(--dm2-accent);
-  color: #fff;
-}
-.pfa-route-sections .time-range-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.pfa-route-sections .time-range-header .title {
-  font-size: var(--dm2-text-sm);
-  font-weight: var(--dm2-fw-semibold);
-  color: var(--dm2-ink-soft);
-}
-.pfa-route-sections .time-range-header .range-text {
-  font-size: var(--dm2-text-sm);
-  font-weight: var(--dm2-fw-bold);
-  color: var(--dm2-accent);
-  font-family: var(--dm2-font-num);
-  font-variant-numeric: tabular-nums;
-}
-.pfa-route-sections .time-range-slider {
-  width: calc(100% - 8px);
-  margin: 0 auto;
-}
-.pfa-route-sections .time-range-slider :deep(.el-slider__runway) {
-  background-color: var(--dm2-line);
-}
-.pfa-route-sections .time-range-slider :deep(.el-slider__bar) {
-  background-color: var(--dm2-accent);
-}
-.pfa-route-sections .time-range-slider :deep(.el-slider__button) {
-  border-color: var(--dm2-accent);
-  width: 14px;
-  height: 14px;
-}
+/* 统计时段筛选条样式收敛进 TimeRangeFilter 组件（与换乘分析头部同款） */
 
 /* ① 断面客流与满载率：扁平数据表（修复列对齐）*/
 .pfa-route-sections .segments-table {
@@ -3566,13 +3493,14 @@ defineExpose({
   border-bottom: 1px solid var(--dm2-line-faint);
   transition: background-color var(--dm2-dur-fast) var(--dm2-ease);
 }
-/* 断面客流量条：左起按占峰值比例填充，行尾一条竖线标出条头；各行条头连起来即沿线断面客流剖面 */
+/* 断面客流量条：左起按占峰值比例填充，行尾一条竖线标出条头；各行条头连起来即沿线断面客流剖面。
+   条色 = 该断面在地图上的分档色（--seg-bar-color/--seg-bar-edge 按行下发），断点未就绪回退主题蓝 */
 .pfa-route-sections .segments-table .table-row::before {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
   width: var(--seg-bar-w, 0);
-  background: var(--dm2-accent-weak);
+  background: var(--seg-bar-color, var(--dm2-accent-weak));
   transition: width var(--dm2-dur) var(--dm2-ease);
   pointer-events: none;
   z-index: 0;
@@ -3585,7 +3513,7 @@ defineExpose({
   left: var(--seg-bar-w, 0);
   width: 2px;
   margin-left: -2px;
-  background: var(--dm2-accent);
+  background: var(--seg-bar-edge, var(--dm2-accent));
   opacity: 0.45;
   transition: left var(--dm2-dur) var(--dm2-ease);
   pointer-events: none;
@@ -4052,15 +3980,10 @@ defineExpose({
   width: 9px;
   height: 9px;
   border-radius: 50%;
+  /* 与地图站点珠子一致：白芯；描边色由模板 :style 绑定线路蓝（teleport 到 body，勿用 CSS v-bind） */
   border: 2px solid transparent;
-  background: transparent;
+  background: #ffffff;
   box-sizing: border-box;
-}
-.pfa-od-dir-dot.up {
-  border-color: #f97316;
-}
-.pfa-od-dir-dot.down {
-  border-color: #1569de;
 }
 
 :global(.boarding-fullscreen-dialog) {
@@ -4127,94 +4050,7 @@ defineExpose({
   min-height: 0;
 }
 
-/* 站点乘降热力图弹窗（append-to-body，Element 内部结构用 :global）。
-   注意：element.scss 按需引入时未包含 dialog.scss，el-dialog 无任何默认结构样式，
-   需自带宽度 / 居中 / 背景（同 boarding-fullscreen-dialog 自带背景的原因）。 */
-:global(.boarding-heatmap-overlay .el-overlay-dialog) {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: auto;
-}
-:global(.boarding-heatmap-dialog) {
-  position: relative;
-  width: 100vw;
-  height: 100vh;
-  margin: 0;
-  background: #f7fbff;
-  border-radius: 0;
-  overflow: hidden;
-  outline: none; /* 焦点陷阱聚焦容器时不显示浏览器默认焦点环 */
-}
-:global(.boarding-heatmap-dialog .el-dialog__header) {
-  margin-right: 0;
-  padding: 14px 20px;
-  border-bottom: 1px solid rgba(21, 105, 222, 0.12);
-}
-:global(.boarding-heatmap-dialog .el-dialog__headerbtn) {
-  position: absolute;
-  top: 12px;
-  right: 14px;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: #64748b;
-  font-size: 18px;
-  cursor: pointer;
-}
-:global(.boarding-heatmap-dialog .el-dialog__headerbtn:hover) {
-  color: #1569de;
-}
-:global(.boarding-heatmap-dialog .el-dialog__body) {
-  padding: 12px 20px 18px;
-}
-.boarding-heatmap-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  padding-right: 28px;
-}
-.boarding-heatmap-kicker {
-  margin-bottom: 2px;
-  color: var(--dm2-muted);
-  font-size: var(--dm2-text-xs);
-  font-weight: var(--dm2-fw-semibold);
-}
-.boarding-heatmap-title {
-  color: var(--dm2-ink);
-  font-size: 17px;
-  font-weight: 700;
-  line-height: 1.25;
-}
-.boarding-heatmap-meta {
-  flex: 0 0 auto;
-  color: var(--dm2-accent);
-  font-size: var(--dm2-text-xs);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.boarding-heatmap-body {
-  height: calc(100vh - 110px);
-  min-height: 340px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.boarding-heatmap-body .boarding-heatmap-chart {
-  width: 100%;
-  height: 100%;
-}
-.boarding-heatmap-body .el-empty {
-  margin: 0 auto;
-}
+/* 乘降热力图全屏弹窗壳与头部样式收敛进 styles/boardingHeatmapDialog.css（与站点客流分析共用） */
 
 /* 分区右上角的轻量元信息（样本量等）*/
 .pfa-route-sections .pfa-section-meta {
@@ -4795,6 +4631,18 @@ defineExpose({
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 排名依据选择器（五指标切换），与 rm-seg 同行放不下时换行 */
+.rm-rank-metric-select {
+  width: 132px;
+
+  :deep(.el-select__wrapper) {
+    min-height: 26px;
+    font-size: 11.5px;
+  }
 }
 
 .rm-seg {

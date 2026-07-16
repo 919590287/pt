@@ -31,6 +31,9 @@ import java.util.Set;
  *   <li>平均候车时间：基于 plans 计划出发时间（非 events 实际时间），按候车开始时刻所在小时分桶，桶内累加求均值，单位秒。</li>
  *   <li>满载率（日周转系数口径）：车辆集合全天累计【上车】人次 ÷ 车辆静态容量（座位+站位）合计，输出小数；
  *       与公交行业“高峰断面满载率”不同，展示侧需注明口径。</li>
+ *   <li>高峰/平峰发车间隔：时刻表相邻班次间隔的分窗均值，高峰窗=早高峰 7:00-9:00 + 晚高峰 17:00-19:00
+ *       （行业口径），其余运营时段为平峰；间隔按中点时刻归窗，>2h 的间隔视为停开断档不计入
+ *       （仅高峰运营线路的午间停开、夜班线按钟面排序产生的跨日假间隔）。</li>
  * </ul>
  * 任何口径调整必须同步升级依赖它的缓存版本（如 MatsimPrecomputedCache.VISUAL_CACHE_VERSION），否则旧值会继续下发。
  */
@@ -38,7 +41,59 @@ public final class TransitMetrics {
 
     private static final double COVERAGE_RADIUS = 300.0;
 
+    /** 发车间隔口径参数：早晚高峰窗（时）与停开断档阈值（秒）。 */
+    private static final double PEAK_AM_START_HOUR = 7.0;
+    private static final double PEAK_AM_END_HOUR = 9.0;
+    private static final double PEAK_PM_START_HOUR = 17.0;
+    private static final double PEAK_PM_END_HOUR = 19.0;
+    private static final double HEADWAY_BREAK_SECONDS = 2 * 3600.0;
+
     private TransitMetrics() {
+    }
+
+    /**
+     * 高峰/平峰发车间隔（分钟）：从单方向时刻表的发车时刻序列自动识别。
+     * <p>
+     * 相邻班次间隔按中点钟面时刻（mod 24h，兼容 MATSim 跨日时刻）落入早晚高峰窗（7-9、17-19）计高峰，
+     * 其余计平峰；超过 2 小时的间隔视为停开断档剔除（覆盖“仅高峰运营”的午间停开与夜班线跨日假间隔）。
+     * 若全部间隔都超阈值（长间隔郊区线，班距本身就大于 2h），退化为不剔除全量计入，避免有班次却无间隔。
+     *
+     * @param sortedDepartureTimes 升序发车时刻（秒），可为空
+     * @return {高峰间隔, 平峰间隔}（分钟，未四舍五入）；对应窗内无有效间隔时为 0，调用方应显示“暂无数据”
+     */
+    public static double[] peakOffPeakHeadwayMinutes(double[] sortedDepartureTimes) {
+        double[] result = headwayMinutesByWindow(sortedDepartureTimes, HEADWAY_BREAK_SECONDS);
+        if (result[0] == 0 && result[1] == 0) {
+            result = headwayMinutesByWindow(sortedDepartureTimes, Double.MAX_VALUE);
+        }
+        return result;
+    }
+
+    private static double[] headwayMinutesByWindow(double[] times, double breakThresholdSeconds) {
+        double peakSum = 0;
+        int peakCount = 0;
+        double offPeakSum = 0;
+        int offPeakCount = 0;
+        for (int i = 0; times != null && i + 1 < times.length; i++) {
+            double gap = times[i + 1] - times[i];
+            if (gap <= 0 || gap > breakThresholdSeconds) {
+                continue; // 同刻重复班次不构成间隔；超阈值视为停开断档
+            }
+            double midHour = ((times[i] + gap / 2) / 3600.0) % 24;
+            boolean inPeak = (midHour >= PEAK_AM_START_HOUR && midHour < PEAK_AM_END_HOUR)
+                    || (midHour >= PEAK_PM_START_HOUR && midHour < PEAK_PM_END_HOUR);
+            if (inPeak) {
+                peakSum += gap;
+                peakCount++;
+            } else {
+                offPeakSum += gap;
+                offPeakCount++;
+            }
+        }
+        return new double[]{
+                peakCount > 0 ? peakSum / peakCount / 60.0 : 0.0,
+                offPeakCount > 0 ? offPeakSum / offPeakCount / 60.0 : 0.0,
+        };
     }
 
     /**

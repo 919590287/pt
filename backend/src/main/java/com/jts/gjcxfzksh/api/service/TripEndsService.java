@@ -4,7 +4,7 @@ import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 
 import java.util.Map;
 
-/** 公交出行监测 · 起终点分布监测（模式照 PopulationService）。 */
+/** 公交出行监测 · 出行分布监测（原起终点分布监测，模式照 PopulationService）。 */
 public interface TripEndsService {
 
     Map<String, Object> summary(DatasourceParam param);

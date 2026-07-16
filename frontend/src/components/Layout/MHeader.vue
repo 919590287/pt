@@ -1,6 +1,6 @@
 <!-- Header -->
 <template>
-  <header class="header-container" :class="{ 'has-model-selector': hasModelSelector }">
+  <header class="header-container">
     <div class="title-box">
       <svg class="logo-icon" viewBox="0 0 36 36" width="30" height="30" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect width="36" height="36" rx="9" fill="url(#logo-gradient)" class="logo-bg" />
@@ -40,7 +40,7 @@
         <span class="item-title">{{ item.title }}</span>
       </RouterLink>
     </nav>
-    <div class="header-actions">
+    <div class="header-actions" :class="{ 'has-context-divider': showHeaderHelp }">
       <el-dropdown
         v-if="isRunMonitorRoute"
         class="help-menu"
@@ -68,6 +68,20 @@
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+
+      <button
+        v-if="isHelpPlaceholderRoute"
+        class="help-menu-btn"
+        type="button"
+        :title="`${currentModuleTitle}帮助（占位）`"
+        :aria-label="`${currentModuleTitle}帮助，功能待接入`"
+      >
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M9.6 9a2.6 2.6 0 1 1 4.5 1.8c-1.1.8-2.1 1.3-2.1 2.7"></path>
+          <path d="M12 17h.01"></path>
+        </svg>
+      </button>
 
       <el-dropdown class="user-menu" popper-class="user-dropdown-popper" transition="none" trigger="click" @command="handleUserCommand">
         <button class="user-profile-btn" type="button" :title="`用户管理：${currentUsername}`" aria-label="用户管理">
@@ -164,8 +178,16 @@ import { clearAuth, getUsername, saveAuth } from "@/utils/auth";
 const route = useRoute();
 const router = useRouter();
 const MapRef = inject("MapRef", ref(null));
-const hasModelSelector = computed(() => ["datavisualization", "datamanagement", "scenarioedit", "transferanalysis"].includes(route.name));
 const isRunMonitorRoute = computed(() => route.name === "datavisualization");
+const HELP_MODULE_TITLES = {
+  datamanagement: "数据管理",
+  datavisualization: "运行监测",
+  passengerflowanalysis: "客流分析",
+  transferanalysis: "换乘分析",
+};
+const showHeaderHelp = computed(() => Boolean(HELP_MODULE_TITLES[route.name]));
+const isHelpPlaceholderRoute = computed(() => showHeaderHelp.value && !isRunMonitorRoute.value);
+const currentModuleTitle = computed(() => HELP_MODULE_TITLES[route.name] || "当前页面");
 const currentUsername = ref(getUsername() || "用户");
 const renameDialogVisible = ref(false);
 const renameFormRef = ref(null);
@@ -363,7 +385,7 @@ const headerMenus = [
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: minmax(240px, var(--title-width)) minmax(360px, 1fr) auto;
+  grid-template-columns: minmax(240px, var(--title-width)) minmax(0, 1fr) 580px;
   align-items: center;
   column-gap: var(--space-lg);
   width: var(--app-unscaled-viewport-width);
@@ -541,12 +563,12 @@ const headerMenus = [
 .nav-list {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
-  justify-self: start;
+  justify-content: center;
+  justify-self: center;
   min-width: 0;
   max-width: 100%;
-  gap: clamp(4px, 0.6vw, 10px);
-  margin-left: clamp(8px, 1.2vw, 20px);
+  gap: clamp(4px, 0.5vw, 8px);
+  margin: 0;
   padding: 0 var(--space-xs);
   overflow-x: auto;
   overflow-y: hidden;
@@ -558,7 +580,7 @@ const headerMenus = [
 
   .item {
     height: 36px;
-    padding: 0 clamp(8px, 0.9vw, 14px);
+    padding: 0 clamp(8px, 0.75vw, 11px);
     border-radius: 6px;
     color: #4b5563;
     font-size: 0.95rem;
@@ -597,18 +619,19 @@ const headerMenus = [
   }
 }
 
-.header-container.has-model-selector {
-  .nav-list {
-    margin-right: clamp(540px, 29vw, 590px);
-    padding-right: 0;
-  }
-}
-
 .header-actions {
   display: flex;
   align-items: center;
   justify-self: end;
   gap: 8px;
+
+  &.has-context-divider::before {
+    content: "";
+    width: 1px;
+    height: 22px;
+    flex: 0 0 1px;
+    background: rgba(17, 32, 58, 0.14);
+  }
 }
 
 .user-menu {
@@ -722,13 +745,6 @@ const headerMenus = [
     }
   }
 
-  .header-container.has-model-selector {
-    .nav-list {
-      justify-content: flex-start;
-      margin-right: clamp(480px, 42vw, 540px);
-      padding-right: 0;
-    }
-  }
 }
 
 @media (max-width: 860px) {
@@ -758,14 +774,6 @@ const headerMenus = [
     }
   }
 }
-@media (max-width: 960px) {
-  .header-container.has-model-selector {
-    .nav-list {
-      margin-right: 0;
-    }
-  }
-}
-
 /* Unified chrome for data-heavy platform pages —— 统一到「高端蓝」单一强调色 */
 .header-container {
   --platform-ink: #1c2024;
@@ -776,7 +784,7 @@ const headerMenus = [
   --platform-border: rgba(17, 32, 58, 0.08);
   --platform-ease: cubic-bezier(0.32, 0.72, 0, 1);
   --title-width: 286px;
-  grid-template-columns: minmax(240px, var(--title-width)) minmax(360px, 1fr) auto;
+  grid-template-columns: minmax(240px, var(--title-width)) minmax(0, 1fr) 580px;
   column-gap: 24px;
   height: var(--header-height);
   padding: 0 21px;
@@ -819,13 +827,13 @@ const headerMenus = [
 }
 
 .nav-list {
-  gap: 10px;
-  margin-left: 20px;
+  gap: 8px;
+  margin: 0;
 }
 
 .nav-list .item {
   height: 36px;
-  padding: 0 14px;
+  padding: 0 10px;
   border-radius: 11px;
   color: var(--platform-muted);
   font-size: 0.93rem;
@@ -878,15 +886,12 @@ const headerMenus = [
   font-weight: 700;
 }
 
-.header-container.has-model-selector .nav-list {
-  margin-right: 500px;
-}
-
 @media (max-width: 960px) {
-  .header-container.has-model-selector .nav-list {
-    margin-right: 0;
+  .header-container {
+    grid-template-columns: minmax(240px, 1fr) auto minmax(240px, 1fr);
   }
 }
+
 </style>
 
 <style lang="scss">
@@ -900,19 +905,11 @@ const headerMenus = [
   backdrop-filter: blur(8px);
   overflow: visible !important;
   
-  // Custom morphing and scaling entry transition
-  transform-origin: top right !important;
-  transition: 
-    transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
-    opacity 0.28s ease-out,
-    filter 0.3s ease-out,
-    border-radius 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+  /* Popper 的定位依赖 transform，只做透明度入场，避免菜单打开时产生整体缩放闪动。 */
+  transition: opacity 160ms var(--app-ease-out, ease-out) !important;
 
   @starting-style {
     opacity: 0 !important;
-    transform: scale(0.18) translate(76px, -52px) !important;
-    filter: blur(6px) !important;
-    border-radius: 50% !important;
   }
 
   // Hide standard list bullets leaking from global stylesheet resets

@@ -1,0 +1,101 @@
+/* 乘降热力图/乘降客流全屏弹窗共用壳：线路客流分析与站点客流分析同款（append-to-body，全局作用域）。
+   注意：element.scss 按需引入时未包含 dialog.scss，el-dialog 无任何默认结构样式，
+   需自带宽高 / 居中 / 背景；令牌变量挂在 :root，body 下的弹窗可正常取值。 */
+
+.boarding-heatmap-overlay .el-overlay-dialog {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.boarding-heatmap-dialog {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  background: #f7fbff;
+  border-radius: 0;
+  overflow: hidden;
+  outline: none; /* 焦点陷阱聚焦容器时不显示浏览器默认焦点环 */
+}
+
+.boarding-heatmap-dialog .el-dialog__header {
+  margin-right: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(21, 105, 222, 0.12);
+}
+
+.boarding-heatmap-dialog .el-dialog__headerbtn {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.boarding-heatmap-dialog .el-dialog__headerbtn:hover {
+  color: #1569de;
+}
+
+.boarding-heatmap-dialog .el-dialog__body {
+  padding: 12px 20px 18px;
+}
+
+.boarding-heatmap-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding-right: 28px;
+}
+
+.boarding-heatmap-kicker {
+  margin-bottom: 2px;
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  font-weight: var(--dm2-fw-semibold);
+}
+
+.boarding-heatmap-title {
+  color: var(--dm2-ink);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.boarding-heatmap-meta {
+  flex: 0 0 auto;
+  color: var(--dm2-accent);
+  font-size: var(--dm2-text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.boarding-heatmap-body {
+  height: calc(100vh - 110px);
+  min-height: 340px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.boarding-heatmap-body .boarding-heatmap-chart {
+  width: 100%;
+  height: 100%;
+}
+
+.boarding-heatmap-body .el-empty {
+  margin: 0 auto;
+}

@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- 临时验证页（勿提交）：公交客流走廊带宽调参，vite dev 下直接访问 /harness-corridor.html -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>走廊带宽调参 harness</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #fff; }
+    #deck-canvas { position: absolute; inset: 0; }
+    #hud {
+      position: fixed; top: 10px; left: 10px; z-index: 10;
+      background: rgba(255,255,255,0.92); border: 1px solid #ccd;
+      border-radius: 8px; padding: 8px 12px; font: 12px/1.6 -apple-system, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="deck-canvas"></canvas>
+  <div id="hud"><span id="info">loading…</span></div>
+  <script type="module" src="/harness-corridor.mjs"></script>
+</body>
+</html>

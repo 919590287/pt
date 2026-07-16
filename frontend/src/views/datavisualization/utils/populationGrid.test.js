@@ -3,34 +3,36 @@ import {
   CELL_AREA_KM2,
   buildDensityLegendItems,
   buildGridColors,
+  buildGridElevations,
   buildGridPositions,
   densityClassIndex,
   mercatorToLngLat,
   parsePopulationGrid,
 } from "./populationGrid.js";
 
-// 按 §3 契约手工构造一份 bin：header(18B) + n×16B 记录，小端
-function makeGridBuffer(cells, { mercCellSize = 108.8, version = 1, magic = "PGRD" } = {}) {
-  const buffer = new ArrayBuffer(18 + cells.length * 16);
+// 按 §3 + v2 增列契约手工构造一份 bin：header(18B) + n×18B 记录，小端
+function makeGridBuffer(cells, { mercCellSize = 108.8, version = 2, magic = "PGRD" } = {}) {
+  const buffer = new ArrayBuffer(18 + cells.length * 18);
   const view = new DataView(buffer);
   for (let k = 0; k < 4; k++) view.setUint8(k, magic.charCodeAt(k));
   view.setUint16(4, version, true);
   view.setUint32(6, cells.length, true);
   view.setFloat64(10, mercCellSize, true);
   cells.forEach((cell, k) => {
-    const base = 18 + k * 16;
+    const base = 18 + k * 18;
     view.setInt32(base, cell.i, true);
     view.setInt32(base + 4, cell.j, true);
     view.setUint32(base + 8, cell.home, true);
     view.setUint32(base + 12, cell.work, true);
+    view.setUint16(base + 16, cell.street ?? 0xffff, true);
   });
   return buffer;
 }
 
 describe("parsePopulationGrid", () => {
-  it("按契约解析 header 与记录（含负栅格索引）并累计总量", () => {
+  it("按契约解析 header 与记录（含负栅格索引/街道列）并累计总量", () => {
     const buffer = makeGridBuffer([
-      { i: 104000, j: 24000, home: 12, work: 3 },
+      { i: 104000, j: 24000, home: 12, work: 3, street: 42 },
       { i: -5, j: -7, home: 0, work: 9 },
     ]);
     const grid = parsePopulationGrid(buffer);
@@ -40,13 +42,14 @@ describe("parsePopulationGrid", () => {
     expect(Array.from(grid.j)).toEqual([24000, -7]);
     expect(Array.from(grid.home)).toEqual([12, 0]);
     expect(Array.from(grid.work)).toEqual([3, 9]);
+    expect(Array.from(grid.street)).toEqual([42, 0xffff]);
     expect(grid.homeTotal).toBe(12);
     expect(grid.workTotal).toBe(12);
   });
 
   it("magic / version / 长度不符时显式抛错", () => {
     expect(() => parsePopulationGrid(makeGridBuffer([], { magic: "XXXX" }))).toThrow(/magic/);
-    expect(() => parsePopulationGrid(makeGridBuffer([], { version: 2 }))).toThrow(/版本/);
+    expect(() => parsePopulationGrid(makeGridBuffer([], { version: 1 }))).toThrow(/版本/);
     const truncated = makeGridBuffer([{ i: 0, j: 0, home: 1, work: 1 }]).slice(0, 20);
     expect(() => parsePopulationGrid(truncated)).toThrow(/长度/);
     expect(() => parsePopulationGrid(null)).toThrow();
@@ -98,6 +101,24 @@ describe("densityClassIndex / buildGridColors", () => {
     const counts = Uint32Array.from([1]);
     const colors = buildGridColors(counts, scheme); // 1 人 → 100 人/km² → 第 0 级
     expect([colors[0], colors[1], colors[2], colors[3]]).toEqual([238, 244, 228, 100]);
+  });
+});
+
+describe("buildGridElevations", () => {
+  it("按原始数值除以固定系数线性映射，保持 0 值不拉伸", () => {
+    const elevations = buildGridElevations(Uint32Array.from([0, 25, 100]), {
+      heightDivisor: 0.5,
+    });
+    expect(Array.from(elevations)).toEqual([0, 50, 200]);
+  });
+
+  it("支持人口单格计数向人/km²换算后再除以固定系数", () => {
+    const elevations = buildGridElevations(Uint32Array.from([1, 400]), {
+      valueMultiplier: 1 / CELL_AREA_KM2,
+      heightDivisor: 10,
+    });
+    expect(elevations[0]).toBe(10);
+    expect(elevations[1]).toBe(4000);
   });
 });
 

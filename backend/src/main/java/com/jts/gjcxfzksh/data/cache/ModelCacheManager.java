@@ -271,7 +271,8 @@ public class ModelCacheManager {
                     && MatsimTransferCache.isReady(data)
                     && MatsimPopulationCache.isReady(data)
                     && MatsimTripEndsCache.isReady(data)
-                    && MatsimCorridorCache.isReady(data);
+                    && MatsimCorridorCache.isReady(data)
+                    && MatsimLinkSpeedCache.isReady(data);
         } catch (Exception e) {
             log.warn("模型组件缓存状态读取失败: model={}", scheme == null ? "" : scheme.getName(), e);
             return false;
@@ -329,6 +330,7 @@ public class ModelCacheManager {
         manifest.put("populationCacheVersion", MatsimPopulationCache.POPULATION_CACHE_VERSION);
         manifest.put("tripEndsCacheVersion", MatsimTripEndsCache.TRIPENDS_CACHE_VERSION);
         manifest.put("corridorCacheVersion", MatsimCorridorCache.CORRIDOR_CACHE_VERSION);
+        manifest.put("linkSpeedCacheVersion", MatsimLinkSpeedCache.LINK_SPEED_CACHE_VERSION);
 
         Path path = MatsimCachePaths.manifestPath(scheme);
         Files.createDirectories(path.getParent());

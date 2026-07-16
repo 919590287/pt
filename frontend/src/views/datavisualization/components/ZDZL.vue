@@ -76,13 +76,14 @@
               重试
             </el-button>
           </div>
-          <div v-if="!stationPanelUnavailable && PFA_TIME_RANGE_SECTIONS.includes(pfaStationSection)" class="time-range-section">
-            <div class="time-range-header">
-              <span class="title">统计时段选择</span>
-              <span class="range-text">{{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }}</span>
-            </div>
-            <el-slider v-model="segmentTimeRange" range :min="6" :max="23" :step="1" :show-tooltip="false" class="time-range-slider" />
-          </div>
+          <!-- 统计时段：滑杆样式同换乘分析头部（站点口径按小时统计，无间隔档位） -->
+          <TimeRangeFilter
+            v-if="!stationPanelUnavailable && PFA_TIME_RANGE_SECTIONS.includes(pfaStationSection)"
+            v-model:range="segmentTimeRange"
+            :min="6"
+            :max="23"
+            :step="1"
+          />
 
           <section v-if="!stationPanelUnavailable && pfaStationSection === 'boarding'" class="pfa-section">
             <div class="section-header">
@@ -100,9 +101,23 @@
                     {{ type === 'bar' ? '柱状图' : '热力图' }}
                   </button>
                 </div>
+                <button
+                  type="button"
+                  class="chart-fullscreen-btn"
+                  title="全屏查看"
+                  aria-label="全屏查看当前图表"
+                  @click="openBoardingFullscreen"
+                >
+                  <el-icon><FullScreen /></el-icon>
+                </button>
               </div>
             </div>
-            <div v-if="boardingChartType === 'bar'" class="chart-container-wrapper">
+            <div
+              v-if="boardingChartType === 'bar'"
+              class="chart-container-wrapper boarding-clickable-chart"
+              title="点击全屏查看"
+              @click="openBoardingBarFullscreen"
+            >
               <el-auto-resizer class="chart_box">
                 <template #default="{ height, width }">
                   <VChart
@@ -119,7 +134,7 @@
               v-else-if="boardingHeatmapData.hasData"
               class="chart-container-wrapper station-boarding-heatmap-wrapper"
               :style="{ height: `${boardingHeatmapPanelHeight}px` }"
-              title="全屏查看"
+              title="点击全屏查看"
               @click="openBoardingHeatmapFullscreen"
             >
               <el-auto-resizer class="chart_box">
@@ -134,7 +149,7 @@
                 </template>
               </el-auto-resizer>
             </div>
-            <el-empty v-else class="pfa-empty-chart" description="当前时段暂无线路×OD客流数据" />
+            <el-empty v-else class="pfa-empty-chart" description="当前时段暂无乘降客流数据" />
           </section>
 
           <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'od'" class="pfa-section">
@@ -161,7 +176,8 @@
                   <div v-for="(item, idx) in odStationChart" :key="`${item.chartLabel}-${idx}`" class="transfer-table-row">
                     <span class="col-od-route text-ellipsis">
                       <strong>{{ item.chartLabel }}</strong>
-                      <small v-if="item.routeCount > 1">{{ item.routeCount }} 条线路</small>
+                      <!-- 计数后括注具体线路名；列宽有限溢出省略，悬停看全量 -->
+                      <small v-if="item.routeCount > 1" :title="item.routeLabel">{{ item.routeLabel }}</small>
                     </span>
                     <span class="col-od-flow text-right bold">{{ item.flow.toLocaleString() }} <small>人次</small></span>
                   </div>
@@ -555,36 +571,67 @@
     </div>
   </teleport>
 
+  <!-- 弹窗壳与头部样式复用 styles/boardingHeatmapDialog.css（与线路客流分析乘降热力图同款全屏壳） -->
   <el-dialog
     v-model="boardingHeatmapVisible"
-    class="station-heatmap-dialog"
-    modal-class="station-heatmap-overlay"
-    width="70%"
-    align-center
+    class="boarding-heatmap-dialog"
+    modal-class="boarding-heatmap-overlay"
+    fullscreen
     append-to-body
     destroy-on-close
     :lock-scroll="true"
   >
     <template #header>
-      <div class="station-heatmap-header">
+      <div class="boarding-heatmap-header">
         <div>
-          <div class="station-heatmap-kicker">站点乘降热力图</div>
-          <div class="station-heatmap-title">{{ selectedStationName || '站点乘降分析' }}</div>
+          <div class="boarding-heatmap-kicker">站点乘降热力图</div>
+          <div class="boarding-heatmap-title">{{ selectedStationName || '站点乘降分析' }}</div>
         </div>
-        <span class="station-heatmap-meta">
-          {{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }} · 线路 × OD对端站
+        <span class="boarding-heatmap-meta">
+          {{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }} · 线路 × 统计时段
         </span>
       </div>
     </template>
-    <div class="station-heatmap-body">
+    <div class="boarding-heatmap-body">
       <VChart
         v-if="boardingHeatmapData.hasData"
-        class="station-heatmap-chart"
+        class="boarding-heatmap-chart"
         :option="boardingHeatmapOption"
         autoresize
         :update-options="{ notMerge: true, lazyUpdate: true }"
       />
-      <el-empty v-else description="当前时段暂无线路×OD客流数据" />
+      <el-empty v-else description="当前时段暂无乘降客流数据" />
+    </div>
+  </el-dialog>
+
+  <!-- 站点乘降柱状图全屏（与热力图弹窗同一套壳样式） -->
+  <el-dialog
+    v-model="boardingBarFullscreenVisible"
+    class="boarding-heatmap-dialog"
+    modal-class="boarding-heatmap-overlay"
+    fullscreen
+    append-to-body
+    destroy-on-close
+    :lock-scroll="true"
+  >
+    <template #header>
+      <div class="boarding-heatmap-header">
+        <div>
+          <div class="boarding-heatmap-kicker">站点乘降客流</div>
+          <div class="boarding-heatmap-title">{{ selectedStationName || '站点乘降分析' }}</div>
+        </div>
+        <span class="boarding-heatmap-meta">
+          {{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }} · 上车 {{ stationBoardingSummary.boarding }} · 下车 {{ stationBoardingSummary.alighting }}
+        </span>
+      </div>
+    </template>
+    <div class="boarding-heatmap-body">
+      <VChart
+        class="boarding-heatmap-chart"
+        :option="boardingBarFullscreenChartOption"
+        autoresize
+        :update-options="{ notMerge: true, lazyUpdate: true }"
+      />
     </div>
   </el-dialog>
 </template>
@@ -592,10 +639,13 @@
 <script setup>
 import { ref, shallowRef, onMounted, onUnmounted, watch, inject, computed, getCurrentInstance, nextTick } from "vue";
 import { graphic, VChart } from "@/plugins/echarts";
-import { Location, Download } from "@element-plus/icons-vue";
+import { Location, Download, FullScreen } from "@element-plus/icons-vue";
 import { abortOtherModelDataRequests, getCachedLineAll, getCachedStationPanel, getModelDerived } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
+import TimeRangeFilter from "./TimeRangeFilter.vue";
+import { buildBoardingHeatmapOption } from "../utils/boardingHeatmap.js";
+import "../styles/boardingHeatmapDialog.css";
 import { StationLayer } from "../layers/StationLayer.js";
 import { buildFlowCurveFeatureCollection } from "../utils/flowCurves.js";
 import { classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale } from "@/utils/colorSchemes.js";
@@ -918,9 +968,10 @@ const stationBoardingSummary = computed(() => {
   const endHour = debouncedSegmentTimeRange.value[1];
   const boarding = sumHourSlice(currentStationPanel.value?.boardingByHour, startHour, endHour);
   const alighting = sumHourSlice(currentStationPanel.value?.alightingByHour, startHour, endHour);
+  // 展示口径取整，与乘降柱状图/热力图一致不出现小数
   return {
-    boarding: boarding.toLocaleString(),
-    alighting: alighting.toLocaleString(),
+    boarding: Math.round(boarding).toLocaleString(),
+    alighting: Math.round(alighting).toLocaleString(),
   };
 });
 
@@ -2475,6 +2526,11 @@ const segmentTimeRange = ref([8, 18]);
 // 拖动时段滑块每档触发「OD 全链路重算 + notMerge 重绘 + 地图曲线层重建」级联，
 // 重计算统一消费 180ms 防抖镜像；v-model 与时段文案读原值保证即时反馈
 const { debounced: debouncedSegmentTimeRange, cancel: cancelSegmentTimeMirror } = createDebouncedMirror(segmentTimeRange, 180);
+// 拖动进行中（原值与镜像不一致）临时关闭热力图动画，避免连环动画重启（同线路客流分析）
+const segmentTimeRangeDragging = computed(
+  () => segmentTimeRange.value[0] !== debouncedSegmentTimeRange.value[0]
+    || segmentTimeRange.value[1] !== debouncedSegmentTimeRange.value[1],
+);
 const odViewMode = ref("table");
 const boardingChartType = ref("bar");
 // 需求8：OD曲线分级色阶配置（色阶控件与图例已移到地图左下角 index.vue），此处复用注入的共享配置；
@@ -2487,6 +2543,8 @@ const runMonitorOdCurveMaxFlow = inject("runMonitorOdCurveMaxFlow", null);
 const runMonitorOdCurveValues = inject("runMonitorOdCurveValues", null);
 // 需求9：乘降热力图弹窗
 const boardingHeatmapVisible = ref(false);
+// 乘降柱状图全屏弹窗（与热力图弹窗并列，按当前图表类型二选一打开）
+const boardingBarFullscreenVisible = ref(false);
 // 需求10：可达性分组显隐（整值替换更新）
 const reachabilityLevelVisibility = ref({ direct: true, transfer1: true, transfer2: true });
 
@@ -2501,6 +2559,19 @@ function formatHourRangeLabel(hour) {
 function openBoardingHeatmapFullscreen() {
   if (!boardingHeatmapData.value.hasData) return;
   boardingHeatmapVisible.value = true;
+}
+
+function openBoardingBarFullscreen() {
+  boardingBarFullscreenVisible.value = true;
+}
+
+// 头部全屏按钮：跟随当前图表类型打开对应弹窗
+function openBoardingFullscreen() {
+  if (boardingChartType.value === "heatmap") {
+    openBoardingHeatmapFullscreen();
+  } else {
+    openBoardingBarFullscreen();
+  }
 }
 
 function handleExportDetail() {
@@ -2559,8 +2630,8 @@ function handleExportDetail() {
   proxy?.$message?.success(`${sectionLabel}已导出 CSV 文件`);
 }
 
-// 站点乘降分析
-const boardingAlightingChartOption = computed(() => {
+// 站点乘降分析（面板/全屏共用一套构建器，全屏放大字号与间距）
+function buildStationBoardingChartOption({ fullscreen = false } = {}) {
   const startHour = debouncedSegmentTimeRange.value[0];
   const endHour = debouncedSegmentTimeRange.value[1];
 
@@ -2570,11 +2641,12 @@ const boardingAlightingChartOption = computed(() => {
   const boardingByHour = currentStationPanel.value?.boardingByHour || [];
   const alightingByHour = currentStationPanel.value?.alightingByHour || [];
 
-  // 与 hourSlice 同口径：左闭右开 [startHour, endHour)
+  // 与 hourSlice 同口径：左闭右开 [startHour, endHour)；
+  // 展示口径取整（模型比例聚合会产生小数，业务要求柱状图不出现小数）
   for (let hour = startHour; hour < endHour; hour++) {
     hours.push(formatHourRangeLabel(hour));
-    boardingData.push(toFiniteNumber(boardingByHour[hour], 0));
-    alightingData.push(-toFiniteNumber(alightingByHour[hour], 0));
+    boardingData.push(Math.round(toFiniteNumber(boardingByHour[hour], 0)));
+    alightingData.push(-Math.round(toFiniteNumber(alightingByHour[hour], 0)));
   }
 
   return {
@@ -2610,7 +2682,7 @@ const boardingAlightingChartOption = computed(() => {
       data: ["上车人数", "下车人数"],
       textStyle: {
         color: "#64748b",
-        fontSize: 11
+        fontSize: fullscreen ? 13 : 11
       },
       top: 0,
       icon: "rect"
@@ -2618,8 +2690,8 @@ const boardingAlightingChartOption = computed(() => {
     grid: {
       left: "3%",
       right: "4%",
-      bottom: "18%",
-      top: "15%",
+      bottom: fullscreen ? "8%" : "18%",
+      top: fullscreen ? "9%" : "15%",
       containLabel: true
     },
     xAxis: {
@@ -2632,13 +2704,15 @@ const boardingAlightingChartOption = computed(() => {
       },
       axisLabel: {
         color: "#64748b",
-        fontSize: 10,
+        fontSize: fullscreen ? 12 : 10,
         interval: 0,
-        rotate: 28
+        rotate: fullscreen ? 0 : 28
       }
     },
     yAxis: {
       type: "value",
+      // 业务要求：刻度最小单位 1，不出现小数档
+      minInterval: 1,
       axisLine: {
         show: false
       },
@@ -2653,7 +2727,7 @@ const boardingAlightingChartOption = computed(() => {
       },
       axisLabel: {
         color: "#64748b",
-        fontSize: 10,
+        fontSize: fullscreen ? 12 : 10,
         formatter: (value) => {
           return Math.abs(value);
         }
@@ -2704,7 +2778,10 @@ const boardingAlightingChartOption = computed(() => {
       }
     ]
   };
-});
+}
+
+const boardingAlightingChartOption = computed(() => buildStationBoardingChartOption());
+const boardingBarFullscreenChartOption = computed(() => buildStationBoardingChartOption({ fullscreen: true }));
 
 // 站点OD分析
 const odTableData = computed(() => {
@@ -2738,22 +2815,42 @@ const odTableData = computed(() => {
   }));
 });
 
-// 图表：按对端站点聚合（同名站累加、只出现一次；表格仍保留按线路方向的明细）
+// 图表：按对端站点聚合（同名站累加、只出现一次；表格仍保留按线路方向的明细）。
+// 线路数按去重后的线路名统计（同线上下行/到发两行合并算一条），并在计数后括注具体线路名
 const odStationChart = computed(() => {
   const map = new Map();
   for (const r of odTableData.value) {
     const label = String(r.chartLabel || r.counterpart || r.destination || r.origin || "未知").trim();
     const key = normalizeStationSearchName(label) || label;
+    const lineName = String(r.lineName || "").trim();
     const existing = map.get(key);
     if (existing) {
       existing.flow += r.flow;
-      existing.routeCount += 1;
+      existing.mergedRows += 1;
+      if (lineName) existing.lineNames.add(lineName);
     } else {
-      map.set(key, { chartLabel: label, label, flow: r.flow, routeLabel: r.routeLabel, routeCount: 1 });
+      map.set(key, {
+        chartLabel: label,
+        label,
+        flow: r.flow,
+        routeLabel: r.routeLabel,
+        routeCount: 1,
+        mergedRows: 1,
+        lineNames: new Set(lineName ? [lineName] : []),
+      });
     }
   }
   const rows = Array.from(map.values()).sort((a, b) => b.flow - a.flow);
-  rows.forEach((r) => { if (r.routeCount > 1) r.routeLabel = `${r.routeCount} 条线路`; });
+  rows.forEach((r) => {
+    const names = Array.from(r.lineNames);
+    r.routeCount = Math.max(1, names.length);
+    if (names.length > 1) {
+      r.routeLabel = `${names.length} 条线路（${names.join("、")}）`;
+    } else if (names.length === 1 && r.mergedRows > 1) {
+      // 同一线路的多行（上下行/到发）合并：方向描述不再适用，退回纯线路名
+      r.routeLabel = names[0];
+    }
+  });
   return rows;
 });
 
@@ -2976,171 +3073,80 @@ watch(
   { immediate: true },
 );
 
-// —— 需求9：站点乘降热力图（线路 × OD对端站） ——
+// —— 需求9改：站点乘降热力图（横轴=经停线路，纵轴=统计时段，格值=该线该时段乘降客流）。
+// 数据仍来自站点 od 明细（含本站为起/讫的双向 OD），按线路 × 小时聚合，
+// 纵轴口径与线路客流分析的乘降热力图对齐（统计时段分桶，本页时间粒度为小时）。
 const boardingHeatmapData = computed(() => {
   const startHour = debouncedSegmentTimeRange.value[0];
   const endHour = debouncedSegmentTimeRange.value[1];
-  const selfName = normalizeStationSearchName(selectedStationName.value);
   const odRows = Array.isArray(currentStationPanel.value?.od) ? currentStationPanel.value.od : [];
+  const hourCount = Math.max(0, endHour - startHour);
 
   const lineTotals = new Map();
-  const counterpartTotals = new Map();
-  // 嵌套 Map 聚合，避免站名/线路名含分隔符的拼接歧义
-  const cellFlows = new Map();
+  // lineName -> 各时段客流数组（下标 = hour - startHour）
+  const hourFlowsByLine = new Map();
   odRows.forEach((item) => {
     if (!item) return;
     const lineName = String(item.lineName || "").trim() || "未知线路";
-    const counterpart = String(
-      item.counterpart
-      || (normalizeStationSearchName(item.destination) === selfName ? item.origin : item.destination)
-      || ""
-    ).trim();
-    if (!counterpart) return;
-    const flow = sumHourSlice(item.flowByHour, startHour, endHour);
-    if (flow <= 0) return;
-    lineTotals.set(lineName, (lineTotals.get(lineName) || 0) + flow);
-    counterpartTotals.set(counterpart, (counterpartTotals.get(counterpart) || 0) + flow);
-    if (!cellFlows.has(lineName)) cellFlows.set(lineName, new Map());
-    const row = cellFlows.get(lineName);
-    row.set(counterpart, (row.get(counterpart) || 0) + flow);
+    const flowByHour = Array.isArray(item.flowByHour) ? item.flowByHour : [];
+    // 先登记所有经停线路，即使该线在所选时段的客流全为 0，也保留完整矩阵列。
+    if (!lineTotals.has(lineName)) lineTotals.set(lineName, 0);
+    if (!hourFlowsByLine.has(lineName)) {
+      hourFlowsByLine.set(lineName, Array.from({ length: hourCount }, () => 0));
+    }
+    const hourFlows = hourFlowsByLine.get(lineName);
+    for (let hour = startHour; hour < endHour; hour++) {
+      const flow = Math.max(0, toFiniteNumber(flowByHour[hour], 0));
+      lineTotals.set(lineName, (lineTotals.get(lineName) || 0) + flow);
+      hourFlows[hour - startHour] += flow;
+    }
   });
 
   const lines = Array.from(lineTotals.entries()).sort((a, b) => b[1] - a[1]).map(([name]) => name);
-  // OD 对端站按客流取前 20
-  const counterparts = Array.from(counterpartTotals.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 20)
-    .map(([name]) => name);
-  const counterpartIndex = new Map(counterparts.map((name, index) => [name, index]));
+  const hourLabels = Array.from({ length: hourCount }, (_, index) => formatHourRangeLabel(startHour + index));
 
   const cells = [];
   let maxCellFlow = 0;
+  let totalFlow = 0;
   lines.forEach((lineName, xIndex) => {
-    const row = cellFlows.get(lineName);
-    if (!row) return;
-    row.forEach((flow, counterpart) => {
-      const yIndex = counterpartIndex.get(counterpart);
-      if (yIndex === undefined) return;
-      cells.push([xIndex, yIndex, flow]);
+    const hourFlows = hourFlowsByLine.get(lineName);
+    if (!hourFlows) return;
+    hourFlows.forEach((flow, hourIndex) => {
+      cells.push([xIndex, hourIndex, flow]);
       maxCellFlow = Math.max(maxCellFlow, flow);
+      totalFlow += flow;
     });
   });
-  return { lines, counterparts, cells, maxCellFlow, hasData: cells.length > 0 };
+  return { lines, hourLabels, cells, maxCellFlow, hasData: cells.length > 0 && totalFlow > 0 };
 });
 
 const boardingHeatmapPanelHeight = computed(() => {
-  const rows = boardingHeatmapData.value.counterparts?.length || 0;
+  const rows = boardingHeatmapData.value.hourLabels?.length || 0;
   const columns = boardingHeatmapData.value.lines?.length || 0;
   return Math.max(300, Math.min(680, rows * 24 + (columns > 8 ? 150 : 118)));
 });
 
 const boardingHeatmapOption = computed(() => {
-  const { lines, counterparts, cells, maxCellFlow } = boardingHeatmapData.value;
-  const safeMax = Math.max(1, maxCellFlow);
-  return {
-    backgroundColor: "transparent",
-    animationDuration: 280,
-    animationEasing: "quarticOut",
-    tooltip: {
-      position: "top",
-      backgroundColor: "rgba(30, 41, 59, 0.9)",
-      borderColor: "rgba(255, 255, 255, 0.15)",
-      textStyle: {
-        color: "#ffffff",
-        fontSize: 12
-      },
-      formatter: (params) => {
-        const [xIndex, yIndex, flow] = params?.value || [];
-        return `<div style="font-weight: bold; margin-bottom: 4px;">${lines[xIndex] || "未知线路"} × ${counterparts[yIndex] || "未知站点"}</div>
-          <div style="text-align: right;">${toFiniteNumber(flow, 0).toLocaleString()} 人次</div>`;
-      }
+  const { lines, hourLabels, cells, maxCellFlow } = boardingHeatmapData.value;
+  return buildBoardingHeatmapOption({
+    xLabels: lines,
+    yLabels: hourLabels,
+    cells,
+    maxCellFlow,
+    seriesName: "线路×时段乘降客流",
+    // 拖动时段滑块期间关闭动画，避免连续 setOption 反复重启入场动画（同线路客流分析）
+    animationDuration: segmentTimeRangeDragging.value ? 0 : 280,
+    tooltipFormatter: (params) => {
+      const [xIndex, yIndex, flow] = params?.value || [];
+      return `<div style="font-weight: 700; margin-bottom: 4px;">${lines[xIndex] || "未知线路"} × ${hourLabels[yIndex] || "未知时段"}</div>
+        <div style="text-align: right; font-weight: 700; font-variant-numeric: tabular-nums;">${Math.round(toFiniteNumber(flow, 0)).toLocaleString()} 人次</div>`;
     },
-    grid: {
-      left: "3%",
-      right: 58,
-      top: 8,
-      bottom: 8,
-      containLabel: true
+    labelFormatter: (params) => {
+      // 展示口径取整，与柱状图一致不出现小数
+      const flow = Math.round(toFiniteNumber(params?.value?.[2], 0));
+      return flow.toLocaleString();
     },
-    xAxis: {
-      type: "category",
-      data: lines,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 11,
-        interval: 0,
-        rotate: lines.length > 8 ? 45 : 0
-      }
-    },
-    yAxis: {
-      type: "category",
-      data: counterparts,
-      inverse: true,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: {
-        color: "#64748b",
-        fontSize: 11,
-        width: 150,
-        overflow: "truncate"
-      }
-    },
-    visualMap: {
-      type: "continuous",
-      min: 0,
-      max: safeMax,
-      calculable: true,
-      orient: "vertical",
-      right: 0,
-      top: "middle",
-      itemWidth: 14,
-      itemHeight: 220,
-      inRange: {
-        color: ["#1a9850", "#66bd63", "#a6d96a", "#d9ef8b", "#fee08b", "#fdae61", "#f46d43", "#d73027"]
-      },
-      textStyle: {
-        color: "#64748b",
-        fontSize: 11
-      }
-    },
-    series: [
-      {
-        name: "线路×OD客流",
-        type: "heatmap",
-        // 与线路客流分析热力图一致：两端深色格子用白字，中段浅色格子用深色数字
-        data: cells.map((cell) => {
-          const flow = toFiniteNumber(cell?.[2], 0);
-          const ratio = flow / safeMax;
-          if (ratio <= 0.18 || ratio >= 0.68) {
-            return { value: cell, label: { color: "#ffffff" } };
-          }
-          return cell;
-        }),
-        label: {
-          show: cells.length <= 120,
-          color: "#3f4a3f",
-          fontSize: 10,
-          formatter: (params) => {
-            const flow = toFiniteNumber(params?.value?.[2], 0);
-            return flow > 0 ? flow.toLocaleString() : "";
-          }
-        },
-        itemStyle: {
-          borderColor: "#ffffff",
-          borderWidth: 2,
-          borderRadius: 2
-        },
-        emphasis: {
-          itemStyle: {
-            shadowBlur: 8,
-            shadowColor: "rgba(15, 23, 42, 0.35)"
-          }
-        }
-      }
-    ]
-  };
+  });
 });
 
 // 可达性分析
@@ -3709,55 +3715,7 @@ defineExpose({
   background: var(--dm2-accent);
 }
 
-.pfa-station-sections .time-range-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--dm2-space-2);
-  padding: var(--dm2-space-3) var(--dm2-space-4);
-  margin: var(--dm2-space-4) 0 0;
-  border-radius: 8px;
-  background: var(--dm2-surface-sunken);
-  border: 1px solid var(--dm2-line);
-}
-
-.pfa-station-sections .time-range-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.pfa-station-sections .time-range-header .title {
-  font-size: var(--dm2-text-sm);
-  font-weight: var(--dm2-fw-semibold);
-  color: var(--dm2-ink-soft);
-}
-
-.pfa-station-sections .time-range-header .range-text {
-  font-size: var(--dm2-text-sm);
-  font-weight: var(--dm2-fw-bold);
-  color: var(--dm2-accent);
-  font-family: var(--dm2-font-num);
-  font-variant-numeric: tabular-nums;
-}
-
-.pfa-station-sections .time-range-slider {
-  width: calc(100% - 8px);
-  margin: 0 auto;
-}
-
-.pfa-station-sections .time-range-slider :deep(.el-slider__runway) {
-  background-color: var(--dm2-line);
-}
-
-.pfa-station-sections .time-range-slider :deep(.el-slider__bar) {
-  background-color: var(--dm2-accent);
-}
-
-.pfa-station-sections .time-range-slider :deep(.el-slider__button) {
-  width: 14px;
-  height: 14px;
-  border-color: var(--dm2-accent);
-}
+/* 统计时段筛选条样式收敛进 TimeRangeFilter 组件（与换乘分析头部同款） */
 
 .pfa-station-sections .pfa-section-meta {
   font-size: var(--dm2-text-xs);
@@ -3813,6 +3771,36 @@ defineExpose({
 .pfa-station-sections .station-boarding-heatmap-wrapper {
   min-height: 300px;
   cursor: zoom-in;
+}
+
+/* 乘降柱状图整块可点击全屏（与热力图同一 zoom-in 光标语义） */
+.pfa-station-sections .boarding-clickable-chart {
+  cursor: zoom-in;
+}
+
+/* 头部全屏按钮：与图表类型胶囊同排，视觉权重对齐齿轮类工具按钮 */
+.pfa-station-sections .chart-fullscreen-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--dm2-line);
+  border-radius: 6px;
+  background: var(--dm2-surface-sunken);
+  color: var(--dm2-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color var(--dm2-dur-fast) var(--dm2-ease),
+    border-color var(--dm2-dur-fast) var(--dm2-ease),
+    background-color var(--dm2-dur-fast) var(--dm2-ease);
+}
+
+.pfa-station-sections .chart-fullscreen-btn:hover {
+  color: var(--dm2-accent);
+  border-color: rgba(21, 105, 222, 0.32);
+  background: rgba(21, 105, 222, 0.08);
 }
 
 .pfa-station-sections .station-boarding-heatmap-chart {
@@ -5240,108 +5228,5 @@ defineExpose({
 .reachability-list-head .reachability-level-switch {
   flex-shrink: 0;
   margin-left: var(--dm2-space-2);
-}
-</style>
-
-<style lang="scss">
-/* 需求9：热力图弹窗 append-to-body，样式需全局作用域。
-   注意：element.scss 按需引入时未包含 dialog.scss，el-dialog 无任何默认结构样式，
-   需自带宽度 / 居中 / 背景（同 XLZL.vue boarding-heatmap-dialog）。 */
-.station-heatmap-overlay .el-overlay-dialog {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: auto;
-}
-
-.station-heatmap-dialog {
-  position: relative;
-  width: var(--el-dialog-width, 70%);
-  max-width: 1200px;
-  min-width: 560px;
-  margin: 0 auto;
-  background: #f7fbff;
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.22);
-  outline: none; /* 焦点陷阱聚焦容器时不显示浏览器默认焦点环 */
-
-  .el-dialog__header {
-    margin-right: 0;
-    padding: 14px 20px;
-    border-bottom: 1px solid rgba(21, 105, 222, 0.12);
-  }
-
-  .el-dialog__headerbtn {
-    position: absolute;
-    top: 12px;
-    right: 14px;
-    width: 28px;
-    height: 28px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: #64748b;
-    font-size: 18px;
-    cursor: pointer;
-
-    &:hover {
-      color: #1569de;
-    }
-  }
-
-  .el-dialog__body {
-    padding: 12px 20px 18px;
-  }
-}
-
-.station-heatmap-header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  padding-right: 28px;
-
-  .station-heatmap-kicker {
-    font-size: 12px;
-    color: #667085;
-    margin-bottom: 2px;
-  }
-
-  .station-heatmap-title {
-    font-size: 17px;
-    font-weight: 700;
-    color: #12304f;
-    line-height: 1.25;
-  }
-
-  .station-heatmap-meta {
-    font-size: 12px;
-    color: #1569de;
-    font-variant-numeric: tabular-nums;
-    white-space: nowrap;
-  }
-}
-
-.station-heatmap-body {
-  height: 62vh;
-  min-height: 360px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-
-  .station-heatmap-chart {
-    width: 100%;
-    height: 100%;
-  }
-
-  .el-empty {
-    margin: 0 auto;
-  }
 }
 </style>

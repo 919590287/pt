@@ -182,7 +182,7 @@
   <!-- 车辆运行监测右侧面板：外壳与线路/站点/客流/体检四块面板同构（无卡中卡、无蓝色标题条、无折叠钮）。
        teleport 出去的节点带的是本组件 scope，样式在本文件内自持。 -->
   <teleport to="#datavisualization_index_box2" defer v-if="runMonitorPanels && !vehicleStaticInfo">
-    <section class="rm-veh-card">
+    <section class="rm-veh-card rm-veh-status-card">
       <header class="rm-veh-card-title">
         <h2>车辆运行监测</h2>
         <span class="rm-veh-live"><span class="rm-veh-live-dot"></span>实时</span>
@@ -231,6 +231,50 @@
           </strong>
         </div>
       </div>
+    </section>
+
+    <!-- 主要拥堵路段 TOP10：随播放时刻按 15min 桶刷新，点击行定位到地图并高亮该路段。
+         数据独立于"路段公交车速"图层开关加载（共享同一份矩阵缓存，图层开启时零额外请求） -->
+    <section class="rm-veh-card rm-congest-card">
+      <header class="rm-veh-card-title">
+        <h2>主要拥堵路段<em class="rm-congest-top-badge">TOP10</em></h2>
+        <span v-if="congestStatus === 'ready'" class="rm-congest-window" aria-label="统计时段">{{ congestWindowText }}</span>
+      </header>
+      <p class="rm-congest-note">{{ congestNote }}</p>
+
+      <div v-if="congestStatus === 'loading'" class="rm-congest-state" role="status">
+        <span class="rm-play-spinner" aria-hidden="true"></span>车速数据加载中…
+      </div>
+      <div v-else-if="congestStatus === 'generating'" class="rm-congest-state" role="status">
+        <span class="rm-play-spinner" aria-hidden="true"></span>车速缓存生成中，就绪后自动显示…
+      </div>
+      <div v-else-if="congestStatus === 'empty'" class="rm-congest-state">该模型无公交车速数据</div>
+      <div v-else-if="!congestTop.length" class="rm-congest-state">当前时段无明显拥堵路段</div>
+
+      <ol v-else class="rm-congest-list">
+        <li v-for="item in congestTop" :key="item.key">
+          <button
+            type="button"
+            :class="['rm-congest-row', activeCongestKey === item.key ? 'active' : '']"
+            :aria-pressed="activeCongestKey === item.key"
+            :title="`${item.bandLabel} · 较自由流降速${item.dropText} · 点击定位到地图`"
+            @click="focusCongestGroup(item)"
+          >
+            <span :class="['rm-congest-rank', item.rank <= 3 ? 'is-top' : '']">{{ item.rank }}</span>
+            <span class="rm-congest-main">
+              <span class="rm-congest-name">{{ item.name }}</span>
+              <span class="rm-congest-sub">{{ item.sub || "—" }}</span>
+            </span>
+            <span class="rm-congest-speed">
+              <span class="rm-congest-speed-val">
+                <i class="rm-congest-dot" :style="{ background: item.bandColor }" aria-hidden="true"></i>
+                <strong>{{ item.speedKmh }}</strong><em>km/h</em>
+              </span>
+              <span class="rm-congest-drop">延误 {{ item.delayText }}</span>
+            </span>
+          </button>
+        </li>
+      </ol>
     </section>
   </teleport>
 
@@ -326,8 +370,22 @@ import {
   dataTrajectoryFrameBinary,
 } from "@/api/trajectory.js";
 import { VehicleTrajectoryLayer, VEHICLE_MODE_CONFIG, parseVehicleTrajectoryBinaryChunk } from "../layers/VehicleTrajectoryLayer.js";
+import { LinkSpeedHighlightManager, LinkSpeedLayerManager } from "../layers/LinkSpeedLayer.js";
 import { getCachedChunk, putCachedChunk, pruneChunkCache } from "@/utils/trajectoryChunkCache.js";
+import { getCachedLinkSpeedMatrix, getCachedLinkSpeedSummary, getModelDerived } from "@/utils/modelDataCache.js";
+import {
+  CONGEST_MIN_SPEED_KMH,
+  CONGEST_SPEED_RATIO_MAX,
+  LINK_SPEED_U16_SENTINEL,
+  buildLinkSpeedFreeflow,
+  linkSpeedBucketOf,
+  parseLinkSpeedMatrix,
+  selectCongestedGroups,
+} from "../utils/linkSpeed.js";
 import { isCanceledRequest } from "../utils/panelShared.js";
+import { MAP_THEME } from "@/utils/mapTheme.js";
+import { classifyByBreaks } from "@/utils/colorSchemes.js";
+import { mercatorToLngLat } from "../utils/populationGrid.js";
 
 const props = defineProps({
   model: String,
@@ -346,6 +404,10 @@ const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
 const VehicleSizeRef = inject("VehicleSizeRef", ref(36));
 const VehicleVisibilityModeRef = inject("VehicleVisibilityModeRef", ref("all"));
+// 路段公交车速（拥堵路况）图层：开关/透明度由 index.vue 设置面板下发，状态回报给左下角图例
+const LinkSpeedEnabledRef = inject("LinkSpeedEnabledRef", ref(false));
+const LinkSpeedOpacityRef = inject("LinkSpeedOpacityRef", ref(85));
+const LinkSpeedStatusRef = inject("LinkSpeedStatusRef", ref("idle"));
 const DEFAULT_CHUNK_SECONDS = 300;
 const PREFETCH_WINDOW_SECONDS = 120;
 const MAX_CHUNK_CACHE = 7;
@@ -1443,8 +1505,333 @@ watch(currentTime, (time) => {
   scheduleSeekRender(time);
 });
 
+// ===== 路段公交车速图层（需求：可开关，默认关；随播放时钟按 15min 桶分时着色）=====
+// 数据：link-speed-v1 缓存（summary 轮询 generating → matrix.bin 解析共享缓存）；
+// 时钟：挂 currentTime 节流 ref（120ms 粒度对 15min 桶绰绰有余，不进 rAF 热路径）。
+const LINK_SPEED_POLL_MS = 8000;
+let linkSpeedManager = null;
+let linkSpeedSeq = 0;
+let linkSpeedPollTimer = null;
+
+function stopLinkSpeedPolling() {
+  if (linkSpeedPollTimer) {
+    clearTimeout(linkSpeedPollTimer);
+    linkSpeedPollTimer = null;
+  }
+}
+
+function scheduleLinkSpeedPoll() {
+  stopLinkSpeedPolling();
+  linkSpeedPollTimer = setTimeout(() => {
+    linkSpeedPollTimer = null;
+    bootstrapLinkSpeed();
+  }, LINK_SPEED_POLL_MS);
+}
+
+function ensureLinkSpeedManager() {
+  if (!linkSpeedManager) {
+    linkSpeedManager = new LinkSpeedLayerManager();
+  }
+  if (MapRef?.value) {
+    linkSpeedManager.attach(MapRef.value);
+  }
+  return linkSpeedManager;
+}
+
+function syncLinkSpeedBucket(simSeconds) {
+  const data = linkSpeedManager?.data;
+  if (!data || !data.count) return;
+  linkSpeedManager.setBucket(linkSpeedBucketOf(simSeconds, data.buckets, data.bucketSeconds));
+}
+
+async function bootstrapLinkSpeed() {
+  stopLinkSpeedPolling();
+  if (!props.model || !LinkSpeedEnabledRef.value) return;
+  const seq = ++linkSpeedSeq;
+  const model = props.model;
+  if (LinkSpeedStatusRef.value !== "generating") {
+    LinkSpeedStatusRef.value = "loading";
+  }
+  try {
+    const summary = await getCachedLinkSpeedSummary(model);
+    if (seq !== linkSpeedSeq || props.model !== model || !LinkSpeedEnabledRef.value) return;
+    if (!summary || summary.status === "generating") {
+      LinkSpeedStatusRef.value = "generating";
+      scheduleLinkSpeedPoll();
+      return;
+    }
+    const version = String(summary.generatedAt || summary.cacheVersion || "");
+    const buffer = await getCachedLinkSpeedMatrix(model, version);
+    if (seq !== linkSpeedSeq || props.model !== model || !LinkSpeedEnabledRef.value) return;
+    if (!buffer) {
+      LinkSpeedStatusRef.value = "generating";
+      scheduleLinkSpeedPoll();
+      return;
+    }
+    const parsed = getModelDerived(model, "linkSpeedMatrix", () => markRaw(parseLinkSpeedMatrix(buffer)));
+    const manager = ensureLinkSpeedManager();
+    manager.setData(parsed);
+    manager.setOpacity(Number(LinkSpeedOpacityRef.value) / 100);
+    manager.setVisible(true);
+    syncLinkSpeedBucket(isPlaying.value ? playbackClock : currentTime.value);
+    LinkSpeedStatusRef.value = parsed.count > 0 ? "ready" : "empty";
+  } catch (error) {
+    if (seq !== linkSpeedSeq || isCanceledRequest(error)) return;
+    // 后端旧版本无该接口/缓存未建：按生成中轮询，部署后自动出图
+    LinkSpeedStatusRef.value = "generating";
+    scheduleLinkSpeedPoll();
+  }
+}
+
+watch(LinkSpeedEnabledRef, (enabled) => {
+  if (enabled) {
+    if (linkSpeedManager?.data?.count) {
+      linkSpeedManager.setVisible(true);
+      syncLinkSpeedBucket(isPlaying.value ? playbackClock : currentTime.value);
+      LinkSpeedStatusRef.value = "ready";
+    } else {
+      bootstrapLinkSpeed();
+    }
+  } else {
+    linkSpeedSeq += 1;
+    stopLinkSpeedPolling();
+    linkSpeedManager?.setVisible(false);
+    LinkSpeedStatusRef.value = "idle";
+  }
+});
+
+watch(LinkSpeedOpacityRef, (value) => {
+  linkSpeedManager?.setOpacity(Number(value) / 100);
+});
+
+// ===== 主要拥堵路段 TOP10（右侧面板卡片，随播放时钟按 15min 桶刷新，点击定位）=====
+// 数据与车速图层共享同一份 summary/matrix 缓存（modelDataCache 去重），但状态机独立：
+// 面板信息不被"默认关闭"的图层开关卡住，图层后开时命中缓存秒出。
+const CONGEST_TOP_LIMIT = 10;
+const congestStatus = ref("loading"); // loading | generating | ready | empty
+const congestSummary = shallowRef(null); // { names: 路名字典, districts: 街道→行政区 }
+const congestData = shallowRef(null); // parseLinkSpeedMatrix 结果（与图层共享 markRaw 对象）
+const congestFreeflow = shallowRef(null); // 每链路自由流基准（全天最大桶速，模型级派生缓存）
+const congestBucket = ref(linkSpeedBucketOf(28800, 96, 900)); // 独立桶 ref：currentTime 每 120ms 变，跨桶才触发榜单重算
+const activeCongestKey = ref("");
+let congestSeq = 0;
+let congestPollTimer = null;
+let congestHighlightManager = null;
+
+// 口径一句话（常量单一来源）：准入=降速幅度，排序=累计延误，钳位爬行值按异常剔除
+const congestNote = `公交净行驶车速较自由流降速≥${Math.round((1 - CONGEST_SPEED_RATIO_MAX) * 100)}%的路段，`
+  + `按时段累计延误排序、随播放时刻变化（模型抽样口径，低于 ${CONGEST_MIN_SPEED_KMH} km/h 的异常穿越已剔除）`;
+
+const congestWindowText = computed(() => {
+  const bucketSeconds = congestData.value?.bucketSeconds || 900;
+  const start = congestBucket.value * bucketSeconds;
+  return `${formatClock(start)}–${formatClock(start + bucketSeconds)}`;
+});
+
+const congestTop = computed(() => {
+  const data = congestData.value;
+  const freeflow = congestFreeflow.value;
+  if (congestStatus.value !== "ready" || !data || !freeflow) return [];
+  const summary = congestSummary.value || {};
+  const names = Array.isArray(summary.names) ? summary.names : [];
+  const districts = Array.isArray(summary.districts) ? summary.districts : [];
+  const theme = MAP_THEME.linkSpeed;
+  return selectCongestedGroups(data, freeflow, congestBucket.value, CONGEST_TOP_LIMIT).map((group, index) => {
+    const band = classifyByBreaks(group.speedKmh, theme.breaks);
+    const roadName = group.nameIdx >= 0 ? names[group.nameIdx] || "" : "";
+    const district = group.street !== LINK_SPEED_U16_SENTINEL ? districts[group.street] || "" : "";
+    const segNote = group.links.length > 1 ? `${group.links.length} 段拥堵` : "";
+    // 有路名：路名为主、行政区+段数为辅；无路名：行政区提为主标题，避免十行全是"未命名路段"
+    let name;
+    let sub;
+    if (roadName) {
+      name = roadName;
+      sub = [district, segNote].filter(Boolean).join(" · ");
+    } else if (district) {
+      name = district;
+      sub = ["未命名路段", segNote].filter(Boolean).join(" · ");
+    } else {
+      name = "未命名路段";
+      sub = segNote;
+    }
+    return {
+      ...group,
+      rank: index + 1,
+      name,
+      sub,
+      dropText: `${Math.round((1 - group.speedKmh / group.freeflowKmh) * 100)}%`,
+      delayText: formatDelay(group.delaySeconds),
+      bandColor: theme.colors[band],
+      bandLabel: theme.labels[band],
+    };
+  });
+});
+
+function formatClock(seconds) {
+  const total = ((Math.round(seconds) % 86400) + 86400) % 86400;
+  const h = String(Math.floor(total / 3600)).padStart(2, "0");
+  const m = String(Math.floor((total % 3600) / 60)).padStart(2, "0");
+  return `${h}:${m}`;
+}
+
+// 组累计延误 → 行内文案（抽样口径原值，不扩样）：分钟为主，≥1 小时换算
+function formatDelay(seconds) {
+  const minutes = Number(seconds) / 60;
+  if (!Number.isFinite(minutes) || minutes <= 0) return "—";
+  if (minutes >= 60) return `${(minutes / 60).toFixed(1)} 小时`;
+  return `${Math.max(1, Math.round(minutes))} 分`;
+}
+
+function ensureCongestHighlight() {
+  if (!congestHighlightManager) {
+    congestHighlightManager = new LinkSpeedHighlightManager();
+  }
+  if (MapRef?.value) {
+    congestHighlightManager.attach(MapRef.value);
+  }
+  return congestHighlightManager;
+}
+
+function syncCongestBucket(simSeconds) {
+  const data = congestData.value;
+  const next = linkSpeedBucketOf(simSeconds, data?.buckets || 96, data?.bucketSeconds || 900);
+  if (next !== congestBucket.value) {
+    congestBucket.value = next;
+  }
+}
+
+function stopCongestPolling() {
+  if (congestPollTimer) {
+    clearTimeout(congestPollTimer);
+    congestPollTimer = null;
+  }
+}
+
+function scheduleCongestPoll() {
+  stopCongestPolling();
+  congestPollTimer = setTimeout(() => {
+    congestPollTimer = null;
+    bootstrapCongestion();
+  }, LINK_SPEED_POLL_MS);
+}
+
+async function bootstrapCongestion() {
+  stopCongestPolling();
+  if (!props.model) return;
+  const seq = ++congestSeq;
+  const model = props.model;
+  if (congestStatus.value !== "generating") {
+    congestStatus.value = "loading";
+  }
+  try {
+    const summary = await getCachedLinkSpeedSummary(model);
+    if (seq !== congestSeq || props.model !== model) return;
+    if (!summary || summary.status === "generating") {
+      congestStatus.value = "generating";
+      scheduleCongestPoll();
+      return;
+    }
+    const version = String(summary.generatedAt || summary.cacheVersion || "");
+    const buffer = await getCachedLinkSpeedMatrix(model, version);
+    if (seq !== congestSeq || props.model !== model) return;
+    if (!buffer) {
+      congestStatus.value = "generating";
+      scheduleCongestPoll();
+      return;
+    }
+    const parsed = getModelDerived(model, "linkSpeedMatrix", () => markRaw(parseLinkSpeedMatrix(buffer)));
+    congestSummary.value = markRaw(summary);
+    congestData.value = parsed;
+    // 自由流基线 O(链路×96) 只算一次，随模型 entry 缓存；组件重挂载/页签往返直接命中
+    congestFreeflow.value = getModelDerived(model, "linkSpeedFreeflow", () => buildLinkSpeedFreeflow(parsed));
+    ensureCongestHighlight().setData(parsed);
+    syncCongestBucket(isPlaying.value ? playbackClock : currentTime.value);
+    congestStatus.value = parsed.count > 0 ? "ready" : "empty";
+  } catch (error) {
+    if (seq !== congestSeq || isCanceledRequest(error)) return;
+    // 后端旧版本无该接口/缓存未建：按生成中轮询，部署后自动出榜（与车速图层同一容错口径）
+    congestStatus.value = "generating";
+    scheduleCongestPoll();
+  }
+}
+
+function clearCongestFocus() {
+  activeCongestKey.value = "";
+  congestHighlightManager?.clear();
+}
+
+// 点击榜单行：定位到该路段（组内链路联合外接框）+ 高亮描边 + 自动开启车速图层，
+// 让地图上能同时看到"这是哪"与"堵成什么颜色"。再点一次取消高亮。
+function focusCongestGroup(group) {
+  if (activeCongestKey.value === group.key) {
+    clearCongestFocus();
+    return;
+  }
+  activeCongestKey.value = group.key;
+  if (!LinkSpeedEnabledRef.value) {
+    LinkSpeedEnabledRef.value = true; // 矩阵已在缓存，watch 触发的 bootstrap 秒出图
+  }
+  ensureCongestHighlight().highlight(group.links);
+  const data = congestData.value;
+  const map = MapRef?.value?.map;
+  if (!data || !map?.fitBounds) return;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const k of group.links) {
+    minX = Math.min(minX, data.x1[k], data.x2[k]);
+    maxX = Math.max(maxX, data.x1[k], data.x2[k]);
+    minY = Math.min(minY, data.y1[k], data.y2[k]);
+    maxY = Math.max(maxY, data.y1[k], data.y2[k]);
+  }
+  if (!Number.isFinite(minX)) return;
+  map.fitBounds([mercatorToLngLat(minX, minY), mercatorToLngLat(maxX, maxY)],
+    { padding: 120, duration: 600, maxZoom: 15.5 });
+}
+
+// 跨桶后榜单整体换血，旧选中/高亮指向的时段已过去，一并清除
+watch(congestBucket, clearCongestFocus);
+
+watch(() => props.model, () => {
+  // index.vue 以模型名作组件 key，正常走整组件重建；此 watch 兜底热切换：清空旧模型状态重引导
+  congestSeq += 1;
+  stopCongestPolling();
+  clearCongestFocus();
+  congestSummary.value = null;
+  congestData.value = null;
+  congestFreeflow.value = null;
+  congestHighlightManager?.setData(null);
+  bootstrapCongestion();
+});
+
+// 播放/拖动进度条：currentTime 节流回写（120ms），跨 15min 桶时图层整层换色 + 拥堵榜重算
+watch(currentTime, (time) => {
+  syncCongestBucket(time);
+  if (!LinkSpeedEnabledRef.value) return;
+  syncLinkSpeedBucket(time);
+});
+
+// 地图实例晚于组件就绪时补挂（commit 内部对未挂载地图静默）
+watch(() => MapRef?.value, (wrapper) => {
+  if (wrapper && linkSpeedManager) {
+    linkSpeedManager.attach(wrapper);
+    linkSpeedManager.commit();
+  }
+  if (wrapper && congestHighlightManager) {
+    congestHighlightManager.attach(wrapper);
+    congestHighlightManager.commit();
+  }
+});
+
 onMounted(() => {
   ensureTrajectoryLayer();
+  // 开关状态跨模型/跨进出页签保留（ref 归 index.vue 持有）：进页即恢复上次的开启态
+  if (LinkSpeedEnabledRef.value) {
+    bootstrapLinkSpeed();
+  }
+  // 拥堵榜独立引导：不依赖图层开关，面板进页即出数据
+  bootstrapCongestion();
 });
 
 onUnmounted(() => {
@@ -1465,6 +1852,21 @@ onUnmounted(() => {
   if (trajectoryLayer) {
     trajectoryLayer.dispose();
     trajectoryLayer = null;
+  }
+  // 车速图层随组件卸载移除（切页签/换模型即卸载）；开关偏好留在 index.vue 的 ref 里
+  linkSpeedSeq += 1;
+  stopLinkSpeedPolling();
+  if (linkSpeedManager) {
+    linkSpeedManager.dispose();
+    linkSpeedManager = null;
+  }
+  LinkSpeedStatusRef.value = "idle";
+  // 拥堵榜同步清场：失效在途请求、停止轮询、摘掉高亮层
+  congestSeq += 1;
+  stopCongestPolling();
+  if (congestHighlightManager) {
+    congestHighlightManager.dispose();
+    congestHighlightManager = null;
   }
   if (isTrajectoryMonitorActive.value) {
     rightPanelHasContent.value = false;
@@ -2246,6 +2648,227 @@ onUnmounted(() => {
   }
 }
 
+/* ── 主要拥堵路段 TOP10 ──
+   面板宿主是定长 flex 列且 overflow:hidden（与其余四块监测同构，不做外层滚动）：
+   状态卡取自然高度（flex:none），拥堵卡吃掉剩余高度（继承 .rm-veh-card 的 flex:1），
+   榜单在卡内部滚动——否则状态卡会被压成 0 高、hero 溢出压到榜单上（原 bug）。 */
+.rm-veh-status-card {
+  flex: none;
+}
+
+.rm-congest-card {
+  /* flex:1 + min-height:0 继承自 .rm-veh-card，占据状态卡以下的全部空间 */
+  padding-top: 16px;
+  border-top: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+}
+
+/* 卡内主标题降一级，从属于面板主标题"车辆运行监测" */
+.rm-congest-card .rm-veh-card-title h2 {
+  font-size: 16.5px;
+}
+
+.rm-congest-top-badge {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: var(--dm2-radius-pill, 999px);
+  background: var(--dm2-delete-weak, rgba(196, 41, 28, 0.1));
+  color: var(--dm2-delete, #c4291c);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+  vertical-align: 3px;
+}
+
+.rm-congest-window {
+  flex: none;
+  padding: 3px 9px;
+  border-radius: var(--dm2-radius-pill, 999px);
+  background: var(--dm2-surface-sunken, #f4f7fb);
+  color: var(--dm2-ink-soft, #3b4452);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 11.5px;
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
+}
+
+.rm-congest-note {
+  margin: 9px 0 0;
+  color: var(--dm2-muted-soft, #98a2b3);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.rm-congest-state {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 12px;
+  padding: 14px 13px;
+  border-radius: var(--dm2-radius-sm, 10px);
+  background: var(--dm2-surface-sunken, #f4f7fb);
+  color: var(--dm2-muted, #667085);
+  font-size: 12.5px;
+  font-weight: 620;
+}
+
+.rm-congest-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0 4px 0 0; /* 右留 4px 给滚动条，行不被吃掉 */
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 32, 58, 0.18) transparent;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border-radius: var(--dm2-radius-pill, 999px);
+    background: rgba(17, 32, 58, 0.18);
+  }
+}
+
+/* 整行即按钮：排名 | 路名+区/段数 | 速度+降幅，点击定位 */
+.rm-congest-row {
+  width: 100%;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+  border-radius: var(--dm2-radius-sm, 10px);
+  background: var(--dm2-surface, #ffffff);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dm2-dur-fast, 140ms) var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1)),
+    background-color var(--dm2-dur-fast, 140ms) var(--dm2-ease, cubic-bezier(0.32, 0.72, 0, 1));
+
+  &:hover {
+    border-color: rgba(0, 113, 227, 0.3);
+    background: var(--dm2-accent-weak, rgba(0, 113, 227, 0.1));
+  }
+
+  &:active {
+    transform: translateY(1px);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--dm2-accent-ring, rgba(0, 113, 227, 0.18));
+    outline-offset: 1px;
+  }
+
+  /* 选中（已定位）态：与地图高亮描边同一亮蓝语义 */
+  &.active {
+    border-color: rgba(33, 102, 243, 0.55);
+    background: rgba(33, 102, 243, 0.09);
+    box-shadow: inset 2px 0 0 #2166f3;
+  }
+}
+
+.rm-congest-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--dm2-surface-sunken, #f4f7fb);
+  color: var(--dm2-muted, #667085);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 12px;
+  font-weight: 780;
+  font-variant-numeric: tabular-nums;
+
+  /* 前三名：最堵的路段用拥堵红强调 */
+  &.is-top {
+    background: var(--dm2-delete-weak, rgba(196, 41, 28, 0.1));
+    color: var(--dm2-delete, #c4291c);
+  }
+}
+
+.rm-congest-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rm-congest-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dm2-ink, #1c2024);
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rm-congest-sub {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--dm2-muted, #667085);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rm-congest-speed {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.rm-congest-speed-val {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+
+  strong {
+    color: var(--dm2-ink, #1c2024);
+    font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+    font-size: 16px;
+    font-weight: 800;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  em {
+    color: var(--dm2-muted, #667085);
+    font-size: 10.5px;
+    font-style: normal;
+    font-weight: 650;
+  }
+}
+
+.rm-congest-dot {
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(17, 32, 58, 0.12);
+}
+
+.rm-congest-drop {
+  color: var(--dm2-muted-soft, #98a2b3);
+  font-family: var(--dm2-font-num, "SF Pro Display", system-ui);
+  font-size: 10.5px;
+  font-weight: 680;
+  font-variant-numeric: tabular-nums;
+}
+
 @keyframes rmVehPulse {
   0% { box-shadow: 0 0 0 0 rgba(26, 138, 63, 0.45); }
   70% { box-shadow: 0 0 0 6px rgba(26, 138, 63, 0); }
@@ -2258,7 +2881,8 @@ onUnmounted(() => {
   }
 
   .rm-veh-split-seg,
-  .rm-veh-unfollow {
+  .rm-veh-unfollow,
+  .rm-congest-row {
     transition: none;
   }
 }

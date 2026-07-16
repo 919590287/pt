@@ -113,6 +113,8 @@ export class CityBuildingsLayer extends Layer {
     this._requestId = 0;
     this._stackFrame = null;
     this._styleDataHandler = null;
+    // 业务专题可临时独占 3D 场景；只抑制展示与请求，不卸载已有建筑数据。
+    this.suppressed = false;
   }
 
   onAdd(map) {
@@ -246,9 +248,16 @@ export class CityBuildingsLayer extends Layer {
   }
 
   shouldShowBuildings() {
-    if (!this.map) return false;
+    if (!this.map || this.suppressed) return false;
     const is3D = this.map.enableRotate || Math.abs(this.map.pitch - 90) > 0.5;
     return is3D && this.map.zoom >= this.minZoom;
+  }
+
+  setSuppressed(suppressed) {
+    const next = !!suppressed;
+    if (next === this.suppressed) return;
+    this.suppressed = next;
+    this.updateActivity();
   }
 
   updateActivity() {

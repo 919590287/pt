@@ -107,6 +107,176 @@
   --dm2-dur-slow: 420ms;
 }
 
+/* Shared analysis model toolbar: Run Monitor, Passenger Flow and Transfer Analysis. */
+.analysis-model-toolbar {
+  --analysis-control-height: 34px;
+  position: fixed;
+  top: calc(var(--app-header-height, 58px) / 2);
+  /* 为顶栏右侧按钮让位：按钮随 --app-layout-scale 缩放，让位量也必须跟着缩放 */
+  right: calc(var(--app-edge, 24px) + var(--app-scaled-64, 64px) + var(--analysis-toolbar-extra-inset, var(--app-scaled-26, 26px)));
+  z-index: calc(var(--z-header, 1500) + 10);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: min(58vw, 520px);
+  min-width: 0;
+  transform: translateY(-50%);
+  transform-origin: right center;
+  scale: var(--app-layout-scale, 1);
+  font-family: var(--app-font-sans);
+}
+
+.analysis-model-toolbar .analysis-source-segment {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: var(--analysis-control-height);
+  padding: 3px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  background: oklch(98.5% 0.006 250 / 0.96);
+  box-shadow: 0 4px 14px rgba(13, 38, 76, 0.06);
+}
+
+.analysis-model-toolbar .analysis-source-segment button {
+  min-width: 42px;
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    color 160ms var(--app-ease-out),
+    background-color 160ms var(--app-ease-out),
+    box-shadow 160ms var(--app-ease-out);
+}
+
+.analysis-model-toolbar .analysis-source-segment button:hover,
+.analysis-model-toolbar .analysis-source-segment button:focus-visible {
+  color: var(--app-blue-strong);
+  background: var(--app-blue-soft);
+}
+
+.analysis-model-toolbar .analysis-source-segment button:focus-visible {
+  outline: none;
+  box-shadow: var(--app-focus-ring);
+}
+
+.analysis-model-toolbar .analysis-source-segment button.active {
+  color: var(--app-blue-strong);
+  background: color-mix(in oklch, var(--app-blue-soft) 82%, oklch(97% 0.008 250));
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--app-blue) 18%, transparent);
+}
+
+.analysis-model-toolbar .analysis-model-label {
+  flex: 0 0 auto;
+  margin: 0 2px 0 4px;
+  color: var(--app-ink);
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.analysis-model-toolbar .analysis-scheme-select {
+  flex: 0 0 auto;
+  width: clamp(104px, 8vw, 124px);
+}
+
+.analysis-model-toolbar .analysis-model-select {
+  flex: 0 0 auto;
+  width: clamp(158px, 12vw, 188px);
+}
+
+.analysis-model-toolbar .el-select__wrapper,
+.analysis-model-toolbar .el-input__wrapper {
+  min-height: var(--analysis-control-height);
+  padding: 0 10px;
+  border-radius: 8px;
+  background: oklch(98.5% 0.006 250 / 0.96);
+  box-shadow: inset 0 0 0 1px var(--app-border-strong);
+  transition:
+    background-color 160ms var(--app-ease-out),
+    box-shadow 160ms var(--app-ease-out);
+}
+
+.analysis-model-toolbar .el-select:not(.is-disabled) .el-select__wrapper:hover,
+.analysis-model-toolbar .el-select:not(.is-disabled) .el-input__wrapper:hover {
+  background: oklch(99% 0.004 250);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--app-blue) 44%, transparent);
+}
+
+.analysis-model-toolbar .el-select__wrapper.is-focused,
+.analysis-model-toolbar .el-select.is-focused .el-select__wrapper,
+.analysis-model-toolbar .el-input__wrapper.is-focus {
+  background: oklch(99% 0.004 250);
+  box-shadow: inset 0 0 0 1.5px var(--app-blue), var(--app-focus-ring);
+}
+
+.analysis-model-toolbar .el-select__selected-item,
+.analysis-model-toolbar .el-select__placeholder,
+.analysis-model-toolbar .el-input__inner {
+  color: var(--app-ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.analysis-model-toolbar .el-select__caret {
+  color: var(--app-blue);
+}
+
+.analysis-model-toolbar .el-select.is-disabled {
+  opacity: 0.62;
+}
+
+.analysis-model-toolbar .load-error {
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--app-coral);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 960px) {
+  .analysis-model-toolbar {
+    top: calc(var(--app-header-height, 58px) + 12px);
+    right: var(--app-edge, 24px);
+    max-width: calc(100vw - (var(--app-edge, 24px) * 2));
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 640px) {
+  .analysis-model-toolbar {
+    left: var(--app-edge, 24px);
+    transform: none;
+  }
+
+  .analysis-model-toolbar .analysis-model-label,
+  .analysis-model-toolbar .load-error {
+    width: 100%;
+    margin-left: 0;
+    text-align: right;
+  }
+
+  .analysis-model-toolbar .analysis-scheme-select {
+    width: min(34vw, 116px);
+  }
+
+  .analysis-model-toolbar .analysis-model-select {
+    width: min(48vw, 176px);
+  }
+}
+
 /* Shared left navigation chrome, used by Data Management and Run Monitor. */
 .dm-sidebar {
   --dm-panel-scale: var(--app-layout-scale, 1);

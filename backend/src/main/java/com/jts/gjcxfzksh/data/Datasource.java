@@ -3,6 +3,7 @@ package com.jts.gjcxfzksh.data;
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
 import com.jts.gjcxfzksh.data.cache.MatsimCorridorCache;
+import com.jts.gjcxfzksh.data.cache.MatsimLinkSpeedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPopulationCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
@@ -338,11 +339,14 @@ public class Datasource {
             // 人口分布缓存（population-v1）：只依赖 plans/population + 内嵌街道资源，
             // 与换乘缓存互不依赖（设计文档《公交出行监测人口分布模块设计方案》§2）。
             MatsimPopulationCache.prepareOnModelLoad(data);
-            // 起终点分布缓存（tripends-v1）：依赖 personTracks + schedule + 内嵌街道资源，
-            // personTracks 在 prepareAllOnModelLoad 后已就绪（与换乘缓存同前提）。
+            // 出行分布缓存（tripends 家族）：端点依赖 plans/population（活动出行口径），
+            // OD 依赖 personTracks + schedule（prepareAllOnModelLoad 后已就绪），另用内嵌街道资源。
             MatsimTripEndsCache.prepareOnModelLoad(data);
             // 走廊缓存（corridor-v1）：只依赖 schedule + network + 内嵌资源（街道面/路名边车表）。
             MatsimCorridorCache.prepareOnModelLoad(data);
+            // 链路车速缓存（link-speed-v1）：独立单遍流式扫 events（不依赖 personTracks），
+            // 首建约一次 events 解压/解析成本，之后 manifest 指纹命中即跳过。
+            MatsimLinkSpeedCache.prepareOnModelLoad(data);
             MatsimStationPanelCache.prepareOnModelLoad(data);
             MatsimPrecomputedCache.prepareOnModelLoad(data);
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);

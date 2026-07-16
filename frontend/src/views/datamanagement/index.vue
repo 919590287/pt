@@ -11213,7 +11213,7 @@ onBeforeUnmount(() => {
   opacity: 1 !important;
   display: flex !important;
   top: calc(var(--app-header-height, 58px) / 2) !important;
-  right: calc(var(--app-edge, 24px) + 70px) !important;
+  right: calc(var(--app-edge, 24px) + var(--app-scaled-64, 64px) + var(--app-scaled-26, 26px)) !important;
   z-index: calc(var(--z-header, 1500) + 20) !important;
   pointer-events: auto !important;
 }

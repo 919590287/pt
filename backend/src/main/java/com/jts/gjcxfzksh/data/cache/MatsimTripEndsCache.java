@@ -2,12 +2,26 @@ package com.jts.gjcxfzksh.data.cache;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jts.gjcxfzksh.api.common.Constant;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import lombok.extern.slf4j.Slf4j;
+import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
+import org.matsim.api.core.v01.Scenario;
+import org.matsim.api.core.v01.population.Activity;
+import org.matsim.api.core.v01.population.Leg;
+import org.matsim.api.core.v01.population.Person;
+import org.matsim.api.core.v01.population.Plan;
+import org.matsim.api.core.v01.population.PlanElement;
+import org.matsim.api.core.v01.population.Population;
+import org.matsim.core.config.Config;
+import org.matsim.core.config.ConfigUtils;
+import org.matsim.core.population.io.StreamingPopulationReader;
+import org.matsim.core.scenario.ScenarioUtils;
+import org.matsim.core.utils.geometry.CoordinateTransformation;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
 import org.matsim.pt.transitSchedule.api.TransitStopFacility;
 
@@ -25,21 +39,23 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.PriorityQueue;
 import java.util.TreeMap;
 
 /**
- * 公交出行监测 · 起终点分布监测缓存家族（人口分布监测的同级子模块）。
+ * 公交出行监测 · 出行分布监测缓存家族（人口分布监测的同级子模块，原「起终点分布监测」）。
  * <p>
- * 模型加载时从 {@code PTPersonTrack} 上下车流水单遍识别每人的整段公交出行（journey），
- * 抽取起点（整段出行首次上车站）与终点（整段出行最终下车站），并同遍聚合公交出行 OD，
+ * 模型加载时做两遍独立扫描：①从 MATSim plans 抽取每次「活动出行」（含 pt leg 的 trip）的
+ * 起点/终点活动坐标（端点工件）；②从 {@code PTPersonTrack} 上下车流水识别整段公交出行
+ * （journey）并聚合站点级公交出行 OD（OD 工件，供公交OD监测子模块）。
  * 产出五个工件（全部为模型抽样量，前端直出不扩样；scale 仅作元信息下发）：
  * <ul>
  *   <li>{@code tripends-summary.json}：总量指标 + 口径参数（右侧首屏直出）；</li>
  *   <li>{@code tripends-grid.bin}：100 米栅格二进制表——布局与 population-grid.bin 完全同契约
- *       （PGRD 头 + 16B/cell，见 {@link MatsimPopulationCache#encodeGrid}），列语义映射为
+ *       （PGRD 头 + 18B/cell，见 {@link MatsimPopulationCache#encodeGrid}），列语义映射为
  *       home 列=起点人次、work 列=终点人次，前端复用同一解析器；</li>
  *   <li>{@code tripends-streets.json}：176 街道全量统计（origin/destination，含 0 值）+ totals；</li>
  *   <li>{@code tripends-od-streets.json}：街道级 OD 对（有向，o/d 为街道要素索引 = 资源文件序，
@@ -49,16 +65,22 @@ import java.util.TreeMap;
  * </ul>
  * 口径契约（任何改动必须 bump {@link #TRIPENDS_CACHE_VERSION}）：
  * <ul>
+ *   <li>端点（出行分布监测，v4 起活动口径）：selectedPlan（空回退首 plan，照
+ *       MatsimPopulationCache.acceptPerson）按「非 interaction 活动」切分 trip，trip 内含
+ *       {@code mode=pt} 的 leg（判定与 TransitMetrics 同源 {@link Constant#ROUTE_MODE_PT}）
+ *       即计一次公交出行——起点 = 出行前置活动坐标、终点 = 出行后置活动坐标（EPSG:3857，
+ *       非大模型内存 population 已由 Datasource 统一转换，大模型流式读 plans 懒解析转换器）；
+ *       活动缺坐标/转换失败的端点跳过（journeys 照计，originPoints/destPoints 不计）；</li>
  *   <li>乘车段 = 同人 enter/leave 流水按时间排序后的配对（排序与配对口径复刻
  *       MatsimTransferCache.collectPersonEvents，不成对记录计入 droppedTracks）；</li>
- *   <li>整段出行 = 相邻乘车段满足「0 ≤ 上车时刻−前段下车时刻 ≤ 1800s 且前站与后站地面距离
- *       ≤ 800m」时链为同一 journey（数值与换乘分析 §3 一致，仅数值一致、独立版本化互不引用）；
- *       全部公交制式（bus/subway/tram）一视同仁参与链接；缺坐标/缺站点无法校验时保守断链；</li>
- *   <li>起点 = journey 首段上车 stopFacility、终点 = journey 末段下车 stopFacility，坐标取
- *       transitSchedule（EPSG:3857）；缺坐标的端点跳过（journeys 照计，originPoints/destPoints 不计）；</li>
+ *   <li>整段出行（仅 OD 工件使用）= 相邻乘车段满足「0 ≤ 上车时刻−前段下车时刻 ≤ 1800s 且
+ *       前站与后站地面距离 ≤ 800m」时链为同一 journey（数值与换乘分析 §3 一致，仅数值一致、
+ *       独立版本化互不引用）；全部公交制式（bus/subway/tram）一视同仁参与链接；
+ *       缺坐标/缺站点无法校验时保守断链；</li>
  *   <li>栅格与街道归属：与人口分布同口径——mercCellSize=100/cos(centerLat) 分箱 +
  *       内嵌街道面点面归属（复用 {@link MatsimPopulationCache#streetIndex()}，未命中计 unassigned*）；</li>
- *   <li>OD 口径：一段整段出行计一对 (O,D)=（首上车站, 末下车站），有向、含同街道/同格自环；
+ *   <li>OD 口径（公交OD监测，维持站点口径不随端点改动）：一段整段出行计一对
+ *       (O,D)=（首上车站, 末下车站），坐标取 transitSchedule（EPSG:3857），有向、含同街道/同格自环；
  *       任一端缺坐标的出行不计入 OD（odSkipped）；栅格 OD 的街道归属列按“格中心”点面归属
  *       （仅用于前端行政区过滤/提示，与端点级街道统计允许极少数跨界格差异）。</li>
  * </ul>
@@ -70,7 +92,11 @@ public final class MatsimTripEndsCache {
     //     栅格/街道归属同 population-v1；grid.bin 复用 PGRD 契约（home=起点、work=终点）。
     // v2: 增加公交出行 OD 工件（街道 OD json + 栅格 OD PGOD bin，人次降序 + 20 万对截断）；
     //     端点/栅格口径不变。
-    public static final String TRIPENDS_CACHE_VERSION = "tripends-v2";
+    // v3: grid.bin 随 PGRD v2 增加格中心街道列（前端行政区过滤隐藏区外栅格），口径不变。
+    // v4: 模块改名「出行分布监测」，端点口径从「journey 首上车站/末下车站」改为「本次活动出行的
+    //     起终点」（plans 中含 pt leg 的 trip 两端非 interaction 活动坐标）；journeys/riders 随之
+    //     改为 plans 口径；OD 工件维持 events 站点口径不变；源指纹新增 plans。
+    public static final String TRIPENDS_CACHE_VERSION = "tripends-v4";
 
     // ===== 口径常量（改动必须 bump 版本）=====
     /** 出行链识别时间窗（秒）。与 MatsimTransferCache.TRANSFER_WINDOW_SECONDS 仅数值一致，互不引用。 */
@@ -138,7 +164,7 @@ public final class MatsimTripEndsCache {
                     && TRIPENDS_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            log.warn("起终点分布缓存状态读取失败: {}", manifestPath(data), e);
+            log.warn("出行分布缓存状态读取失败: {}", manifestPath(data), e);
             return false;
         }
     }
@@ -151,7 +177,7 @@ public final class MatsimTripEndsCache {
         try {
             return loadCachedJson(summaryPath(data));
         } catch (Exception e) {
-            log.warn("读取起终点分布汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
+            log.warn("读取出行分布汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
             return Map.of();
         }
     }
@@ -164,7 +190,7 @@ public final class MatsimTripEndsCache {
         try {
             return loadCachedJson(streetsPath(data));
         } catch (Exception e) {
-            log.warn("读取起终点分布街道缓存失败: model={}, path={}", data.getName(), streetsPath(data), e);
+            log.warn("读取出行分布街道缓存失败: model={}, path={}", data.getName(), streetsPath(data), e);
             return Map.of();
         }
     }
@@ -177,7 +203,7 @@ public final class MatsimTripEndsCache {
         try {
             return Files.readAllBytes(gridPath(data));
         } catch (Exception e) {
-            log.warn("读取起终点分布栅格表失败: model={}, path={}", data.getName(), gridPath(data), e);
+            log.warn("读取出行分布栅格表失败: model={}, path={}", data.getName(), gridPath(data), e);
             return null;
         }
     }
@@ -227,7 +253,7 @@ public final class MatsimTripEndsCache {
             });
             return sha256Hex(content.toString().getBytes(StandardCharsets.UTF_8)).substring(0, 16);
         } catch (Exception e) {
-            log.warn("起终点分布栅格表 ETag 计算失败: {}", manifestPath(data), e);
+            log.warn("出行分布栅格表 ETag 计算失败: {}", manifestPath(data), e);
             return null;
         }
     }
@@ -236,7 +262,7 @@ public final class MatsimTripEndsCache {
         return Map.of(
                 "status", "generating",
                 "cacheVersion", TRIPENDS_CACHE_VERSION,
-                "message", "起终点分布缓存正在后台生成"
+                "message", "出行分布缓存正在后台生成"
         );
     }
 
@@ -262,7 +288,7 @@ public final class MatsimTripEndsCache {
             MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
             MEMORY_CACHE.remove(cacheKey(streetsPath(data)));
             MEMORY_CACHE.remove(cacheKey(odStreetsPath(data)));
-            log.info("起终点分布缓存生成完成: model={}, journeys={}, riders={}, origin={}, dest={}, "
+            log.info("出行分布缓存生成完成: model={}, journeys={}, riders={}, origin={}, dest={}, "
                             + "unassigned={}/{}, droppedTracks={}, gridCells={}, bin={}B, "
                             + "odStreetPairs={}, odGridPairs={}(dropped {}), odBin={}B, 耗时={}ms",
                     data.getName(), artifacts.summary.get("journeys"), artifacts.summary.get("riders"),
@@ -278,21 +304,82 @@ public final class MatsimTripEndsCache {
                 writeJsonAtomic(manifestPath(data), manifest(data, false));
             } catch (Exception ignored) {
             }
-            throw new RuntimeException("起终点分布缓存生成失败: " + e.getMessage(), e);
+            throw new RuntimeException("出行分布缓存生成失败: " + e.getMessage(), e);
         }
     }
 
     /**
-     * 从 personTracks + schedule 坐标索引识别整段出行并聚合。
-     * 零轨道/零事件模型产出全零工件（176 街道仍全量下发）。
+     * 两遍独立扫描：①plans → 活动出行端点（journeys/riders/originPoints/destPoints/栅格/街道）；
+     * ②personTracks + schedule 坐标索引 → 整段出行 OD（od* 工件）。
+     * 零人口/零事件模型产出全零工件（176 街道仍全量下发）。
      */
     private static Artifacts buildArtifacts(MatsimData data) {
         Map<String, double[]> coordByFacility = facilityCoords(data.getSchedule());
         MatsimPopulationCache.StreetIndex streets = MatsimPopulationCache.streetIndex();
         Aggregation aggregation = new Aggregation(
                 MatsimPopulationCache.mercCellSize(data.getCenter()), streets, coordByFacility);
+        aggregatePtTrips(data, aggregation);
+        if (aggregation.transformFailures > 0) {
+            log.warn("出行分布缓存坐标转换失败端点已跳过: model={}, count={}",
+                    data.getName(), aggregation.transformFailures);
+        }
         aggregateJourneys(data.getPersonTracks(), coordByFacility, aggregation);
         return assemble(aggregation, streets, MatsimPopulationCache.effectiveSampleRate(data));
+    }
+
+    /**
+     * 端点数据源（plans，模式照 MatsimPopulationCache.buildArtifacts）：非大模型直接读内存
+     * population（坐标已被 Datasource 统一转换到 EPSG:3857），大模型流式读 plans 文件。
+     */
+    private static void aggregatePtTrips(MatsimData data, Aggregation out) {
+        if (data.isLargeModel()) {
+            streamPlans(data, out);
+            return;
+        }
+        Population population = data.getScenario() == null ? null : data.getPopulation();
+        if (population == null) {
+            return;
+        }
+        for (Person person : population.getPersons().values()) {
+            out.acceptPerson(person, null);
+        }
+    }
+
+    /**
+     * 大模型流式抽取（写法照 MatsimPopulationCache.streamPlans，坐标转换器懒解析语义同源）：
+     * 读入端关闭坐标自动转换，在首个 person 回调时按 population 级 coordinateReferenceSystem
+     * 属性解析转换器（选择链复用 {@link MatsimPopulationCache#ctf}）。
+     */
+    private static void streamPlans(MatsimData data, Aggregation out) {
+        String plansFile = data.getOutfile() == null ? null : data.getOutfile().getPlans();
+        if (plansFile == null || plansFile.isBlank() || !Files.exists(Path.of(plansFile))) {
+            log.warn("出行分布缓存未找到 plans 文件，端点按空人口处理: model={}, plans={}", data.getName(), plansFile);
+            return;
+        }
+        Config readCfg = ConfigUtils.createConfig();
+        // 关闭读入时的坐标自动转换（默认 config 的 global CRS 是 Atlantis，不清空会触发错误转换）
+        readCfg.global().setCoordinateSystem(null);
+        Scenario readScenario = ScenarioUtils.createScenario(readCfg);
+        String globalCRS = data.getConfig() == null ? null : data.getConfig().global().getCoordinateSystem();
+        String inputCRS = data.getConfig() == null ? null : data.getConfig().plans().getInputCRS();
+        CoordinateTransformation[] lazyCtf = new CoordinateTransformation[1];
+        boolean[] ctfResolved = new boolean[1];
+        StreamingPopulationReader reader = new StreamingPopulationReader(readScenario);
+        reader.addAlgorithm(person -> {
+            if (!ctfResolved[0]) {
+                String planCRS = (String) readScenario.getPopulation().getAttributes()
+                        .getAttribute("coordinateReferenceSystem");
+                lazyCtf[0] = MatsimPopulationCache.ctf(globalCRS, inputCRS, planCRS);
+                ctfResolved[0] = true;
+                log.info("出行分布缓存流式读取 plans: model={}, planCRS={}, inputCRS={}, globalCRS={}, 转换={}",
+                        data.getName(), planCRS, inputCRS, globalCRS, lazyCtf[0] != null);
+            }
+            out.acceptPerson(person, lazyCtf[0]);
+            if (out.persons % 1_000_000 == 0) {
+                log.info("出行分布缓存流式读取进度: model={}, persons={}", data.getName(), out.persons);
+            }
+        });
+        reader.readFile(plansFile);
     }
 
     /** schedule 全部 stopFacility 坐标（EPSG:3857，Datasource 加载时已统一转换）。 */
@@ -340,34 +427,43 @@ public final class MatsimTripEndsCache {
     // 整段出行识别与聚合
     // ===================================================================================
 
-    /** 乘车段：enter/leave 配对结果（起终点识别只关心站点与时刻，不关心线路/制式）。 */
+    /** 乘车段：enter/leave 配对结果（OD 识别只关心站点与时刻，不关心线路/制式）。 */
     private record RideSegment(String boardFacility, double boardTime,
                                String alightFacility, double alightTime) {
     }
 
     /**
-     * 单遍聚合器：每识别出一段整段出行立即完成两端点的栅格分箱 + 街道归属 + OD 配对累加，
-     * 不留存点集。cells 的 key/编码与 MatsimPopulationCache 完全同源，origin↔home 列、
-     * destination↔work 列。
+     * 单遍聚合器（端点/OD 两套口径共用一份栅格与街道上下文，不留存点集）：
+     * 端点侧每识别出一次活动出行立即完成两端活动坐标的栅格分箱 + 街道归属；
+     * OD 侧每识别出一段整段出行立即完成站点格 OD 配对累加。
+     * cells 的 key/编码与 MatsimPopulationCache 完全同源，origin↔home 列、destination↔work 列。
      */
     static final class Aggregation {
         final double mercCellSize;
         private final MatsimPopulationCache.StreetIndex streets;
         private final Map<String, double[]> coordByFacility;
+        // ===== 端点（plans 活动出行口径，v4）=====
         final Long2IntOpenHashMap originCells = new Long2IntOpenHashMap();
         final Long2IntOpenHashMap destCells = new Long2IntOpenHashMap();
         final int[] streetOrigin;
         final int[] streetDest;
-        /** 栅格 OD：O 格键 → (D 格键 → 抽样人次)。 */
-        final Long2ObjectOpenHashMap<Long2IntOpenHashMap> gridOd = new Long2ObjectOpenHashMap<>();
-        /** 街道 OD 矩阵（行主序 [o*size+d]，有向，含 o==d 自环）。 */
-        final int[] streetOd;
+        /** plans 扫描人数（仅进度日志，不进 summary）。 */
+        long persons;
+        /** 公交出行数（plans 口径：含 pt leg 的 trip）。 */
         long journeys;
+        /** 有 ≥1 次公交出行的人数（plans 口径）。 */
         long riders;
         long originPoints;
         long destPoints;
         long unassignedOrigin;
         long unassignedDest;
+        /** 活动坐标转换失败数（与坐标缺失同待遇跳过，日志披露）。 */
+        long transformFailures;
+        // ===== OD（events 整段出行站点口径）=====
+        /** 栅格 OD：O 格键 → (D 格键 → 抽样人次)。 */
+        final Long2ObjectOpenHashMap<Long2IntOpenHashMap> gridOd = new Long2ObjectOpenHashMap<>();
+        /** 街道 OD 矩阵（行主序 [o*size+d]，有向，含 o==d 自环）。 */
+        final int[] streetOd;
         long droppedTracks;
         /** 两端坐标齐全、计入栅格 OD 的整段出行数。 */
         long odJourneys;
@@ -387,20 +483,108 @@ public final class MatsimTripEndsCache {
             this.streetOd = new int[size * size];
         }
 
-        void acceptJourney(RideSegment first, RideSegment last) {
+        /**
+         * 端点抽取一个 person（selectedPlan 空回退首 plan，照 MatsimPopulationCache.acceptPerson）：
+         * 非 interaction 活动切分 trip，trip 内出现 {@code mode=pt} 的 leg（与 TransitMetrics 同源
+         * {@link Constant#ROUTE_MODE_PT}）即计一次公交出行——起点=前置活动坐标、终点=后置活动坐标。
+         */
+        void acceptPerson(Person person, CoordinateTransformation ctf) {
+            persons++;
+            Plan plan = person.getSelectedPlan();
+            if (plan == null && !person.getPlans().isEmpty()) {
+                plan = person.getPlans().get(0);
+            }
+            if (plan == null) {
+                return;
+            }
+            boolean rode = false;
+            Activity previous = null;
+            boolean tripHasPt = false;
+            for (PlanElement element : plan.getPlanElements()) {
+                if (element instanceof Leg leg) {
+                    if (Constant.ROUTE_MODE_PT.equals(leg.getMode())) {
+                        tripHasPt = true;
+                    }
+                    continue;
+                }
+                if (!(element instanceof Activity act)) {
+                    continue;
+                }
+                String type = act.getType();
+                if (type != null && type.toLowerCase(Locale.ROOT).contains("interaction")) {
+                    continue; // pt interaction 等中转活动不是 trip 边界（与人口分布同语义）
+                }
+                if (previous != null && tripHasPt) {
+                    acceptPtTrip(transformedCoord(previous.getCoord(), ctf), transformedCoord(act.getCoord(), ctf));
+                    rode = true;
+                }
+                previous = act;
+                tripHasPt = false;
+            }
+            if (rode) {
+                riders++;
+            }
+        }
+
+        /** 一次公交出行：两端各自独立计入端点统计（缺坐标的端点跳过，journeys 照计）。 */
+        void acceptPtTrip(Coord origin, Coord destination) {
             journeys++;
+            addEndpoint(origin, true);
+            addEndpoint(destination, false);
+        }
+
+        /** 坐标为 null / 转换失败的端点跳过（与人口分布 transformedCoord 同待遇）。 */
+        private Coord transformedCoord(Coord coord, CoordinateTransformation ctf) {
+            if (coord == null) {
+                return null;
+            }
+            if (ctf == null) {
+                return coord;
+            }
+            try {
+                return ctf.transform(coord);
+            } catch (Exception e) {
+                transformFailures++;
+                return null;
+            }
+        }
+
+        /** 缺坐标的端点跳过；街道未命中计入 unassigned*（与人口分布同语义）。 */
+        private void addEndpoint(Coord coord, boolean isOrigin) {
+            if (coord == null) {
+                return;
+            }
+            if (isOrigin) {
+                originPoints++;
+            } else {
+                destPoints++;
+            }
+            (isOrigin ? originCells : destCells)
+                    .addTo(MatsimPopulationCache.cellKey(coord.getX(), coord.getY(), mercCellSize), 1);
+            int streetIdx = streets == null ? -1 : streets.locate(coord.getX(), coord.getY());
+            if (streetIdx >= 0) {
+                (isOrigin ? streetOrigin : streetDest)[streetIdx]++;
+            } else if (isOrigin) {
+                unassignedOrigin++;
+            } else {
+                unassignedDest++;
+            }
+        }
+
+        /** OD 侧：一段整段出行计一对（首上车站, 末下车站）；任一端缺站坐标整体跳过（odSkipped）。 */
+        void acceptJourney(RideSegment first, RideSegment last) {
             double[] oCoord = endpointCoord(first.boardFacility());
             double[] dCoord = endpointCoord(last.alightFacility());
-            int oStreet = addEndpoint(oCoord, true);
-            int dStreet = addEndpoint(dCoord, false);
             if (oCoord == null || dCoord == null) {
-                odSkipped++; // 任一端缺坐标：端点统计已按各自情况计入，OD 整体跳过
+                odSkipped++;
                 return;
             }
             odJourneys++;
             long oCell = MatsimPopulationCache.cellKey(oCoord[0], oCoord[1], mercCellSize);
             long dCell = MatsimPopulationCache.cellKey(dCoord[0], dCoord[1], mercCellSize);
             gridOd.computeIfAbsent(oCell, ignored -> new Long2IntOpenHashMap()).addTo(dCell, 1);
+            int oStreet = streets == null ? -1 : streets.locate(oCoord[0], oCoord[1]);
+            int dStreet = streets == null ? -1 : streets.locate(dCoord[0], dCoord[1]);
             if (oStreet >= 0 && dStreet >= 0) {
                 streetOd[oStreet * streets.size() + dStreet]++;
             } else {
@@ -411,37 +595,11 @@ public final class MatsimTripEndsCache {
         private double[] endpointCoord(String facilityId) {
             return facilityId == null ? null : coordByFacility.get(facilityId);
         }
-
-        /**
-         * 缺坐标的端点跳过（journeys 照计，返回 -2）；街道未命中计入 unassigned*（与人口分布同语义，
-         * 返回 -1）；命中返回街道要素索引。
-         */
-        private int addEndpoint(double[] coord, boolean isOrigin) {
-            if (coord == null) {
-                return -2;
-            }
-            if (isOrigin) {
-                originPoints++;
-            } else {
-                destPoints++;
-            }
-            (isOrigin ? originCells : destCells)
-                    .addTo(MatsimPopulationCache.cellKey(coord[0], coord[1], mercCellSize), 1);
-            int streetIdx = streets == null ? -1 : streets.locate(coord[0], coord[1]);
-            if (streetIdx >= 0) {
-                (isOrigin ? streetOrigin : streetDest)[streetIdx]++;
-            } else if (isOrigin) {
-                unassignedOrigin++;
-            } else {
-                unassignedDest++;
-            }
-            return streetIdx;
-        }
     }
 
     /**
-     * 主流程：按 person 分组 → 时间排序 → enter/leave 交替配对成乘车段（配对与 dropped 口径复刻
-     * MatsimTransferCache.collectPersonEvents）→ 按 30min/800m 链成整段出行 → 端点聚合。
+     * OD 主流程：按 person 分组 → 时间排序 → enter/leave 交替配对成乘车段（配对与 dropped 口径复刻
+     * MatsimTransferCache.collectPersonEvents）→ 按 30min/800m 链成整段出行 → 站点格 OD 聚合。
      */
     static void aggregateJourneys(
             Collection<PTPersonTrack> tracks,
@@ -507,7 +665,6 @@ public final class MatsimTripEndsCache {
             return;
         }
 
-        out.riders++;
         RideSegment journeyFirst = segments.get(0);
         RideSegment journeyLast = segments.get(0);
         for (int i = 1; i < segments.size(); i++) {
@@ -568,7 +725,7 @@ public final class MatsimTripEndsCache {
     static Artifacts assemble(Aggregation aggregation, MatsimPopulationCache.StreetIndex streets, double scale) {
         // grid.bin 直接复用 population 的 PGRD 编码：home 列=起点、work 列=终点（前端同一解析器）
         byte[] gridBin = MatsimPopulationCache.encodeGrid(
-                aggregation.originCells, aggregation.destCells, aggregation.mercCellSize);
+                aggregation.originCells, aggregation.destCells, aggregation.mercCellSize, streets);
         int gridCells = (gridBin.length - MatsimPopulationCache.BIN_HEADER_BYTES)
                 / MatsimPopulationCache.BIN_BYTES_PER_CELL;
         OdGridEncoded odGrid = encodeOdGrid(aggregation.gridOd, aggregation.mercCellSize, streets, MAX_GRID_OD_PAIRS);
@@ -705,7 +862,8 @@ public final class MatsimTripEndsCache {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("windowSec", JOURNEY_WINDOW_SECONDS);
         params.put("maxDistM", (int) JOURNEY_MAX_DIST_M);
-        params.put("modes", "all-transit"); // bus/subway/tram 全部计入整段出行
+        params.put("modes", "all-transit"); // bus/subway/tram 全部计入整段出行（OD 链接口径）
+        params.put("endpoints", "activity"); // v4：端点=活动出行起终点（plans）；OD 仍为站点口径
 
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("status", "ready");
@@ -716,6 +874,7 @@ public final class MatsimTripEndsCache {
         summary.put("mercCellSize", aggregation.mercCellSize);
         summary.put("gridCells", gridCells);
         summary.put("params", params);
+        // 出行分布监测（plans 活动出行口径）
         summary.put("journeys", aggregation.journeys);
         summary.put("riders", aggregation.riders);
         summary.put("originPoints", aggregation.originPoints);
@@ -723,7 +882,8 @@ public final class MatsimTripEndsCache {
         summary.put("unassignedOrigin", aggregation.unassignedOrigin);
         summary.put("unassignedDest", aggregation.unassignedDest);
         summary.put("droppedTracks", aggregation.droppedTracks);
-        // 公交OD监测：口径与截断披露
+        // 公交OD监测（events 站点口径）：口径与截断披露；odJourneys+odSkipped=events 整段出行数，
+        // 与 journeys（plans 口径）允许少量口径差异（模拟截断/stuck 等）
         summary.put("odJourneys", aggregation.odJourneys);
         summary.put("odSkipped", aggregation.odSkipped);
         summary.put("odStreetUnassigned", aggregation.odStreetUnassigned);
@@ -779,10 +939,11 @@ public final class MatsimTripEndsCache {
     }
 
     /**
-     * 源指纹：events（乘车流水唯一数据源）+ transitSchedule（站点坐标输入）
-     * + 街道资源标识（路径 + 内容 sha256，资源升级即失效重建）。
+     * 源指纹：plans（端点数据源，v4 起）+ events（OD 乘车流水数据源）
+     * + transitSchedule（OD 站点坐标输入）+ 街道资源标识（路径 + 内容 sha256，资源升级即失效重建）。
      */
     private static void sourceFingerprint(MatsimData data, Map<String, Object> result) {
+        putFileFingerprint(result, "plans", data.getOutfile() == null ? null : data.getOutfile().getPlans());
         putFileFingerprint(result, "events", data.getOutfile() == null ? null : data.getOutfile().getEvents());
         putFileFingerprint(result, "schedule",
                 data.getOutfile() == null ? null : data.getOutfile().getTransitSchedule());

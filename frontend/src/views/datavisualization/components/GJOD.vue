@@ -1,10 +1,12 @@
 <!-- 公交OD监测（公交出行监测模块第三子模块）
-     地图：整段公交出行 OD 期望线（deck.gl LineLayer，rm-busod-lines），可切换街道质心 / 100m 栅格中心连线；
+     地图：整段公交出行 OD 期望线（deck.gl LineLayer，rm-busod-lines），可切换街道质心 / 栅格中心连线
+     （栅格粒度 100m–2km 可调、间隔 100m，由 100m 格对前端聚合成超格）；
      线色/线宽按当前显示流量集合的分位分级（绿→黄→红，参考期望线制图惯例）；
-     街道边界/名称标注（maplibre，rm-busod-street-*）。
-     右侧：街道级 OD 对排序榜（有向，含同街道内部出行），teleport 到 index.vue 右侧容器（同 RKFB 模式）；
+     街道边界/名称标注（maplibre，rm-busod-street-*），行政区模式只显示范围内街道。
+     右侧：街道级 OD 对排序榜（有向，**不含同街道内部出行**，用户定版），teleport 到 index.vue 右侧容器；
      图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
-     口径：O=整段公交出行首次上车站、D=最终下车站（与起终点分布同链，30min/800m 全制式）；
+     口径：O=整段公交出行首次上车站、D=最终下车站（events 乘车链 30min/800m 全制式；
+     与出行分布监测共用 tripends 缓存家族，但出行分布端点自 v4 起已改活动口径，本模块维持站点口径）；
      一律直出模型抽样人次（不做 ÷scale 扩样）；地图线为双向合计（自环不画），榜单为有向对。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
@@ -59,6 +61,19 @@
           </button>
         </div>
 
+        <div v-if="granularity === 'grid'" class="gjod-cell-size" aria-label="栅格边长调节">
+          <span class="gjod-cell-size-label">栅格边长</span>
+          <el-slider
+            v-model="gridCellSizeM"
+            class="gjod-cell-size-slider"
+            :min="100"
+            :max="2000"
+            :step="100"
+            :format-tooltip="(v) => `${v} m`"
+          />
+          <span class="gjod-cell-size-value">{{ gridCellSizeM }} m</span>
+        </div>
+
         <div class="gjod-hero">
           <div class="gjod-hero-head">
             <span class="gjod-hero-label">公交出行OD总量</span>
@@ -96,8 +111,7 @@
               >
                 <span class="gjod-rank-main">
                   <span class="gjod-rank-name">
-                    <template v-if="row.o === row.d">{{ row.oName }}<em class="gjod-rank-inner">内部</em></template>
-                    <template v-else>{{ row.oName }}<i class="gjod-rank-arrow" aria-hidden="true">→</i>{{ row.dName }}</template>
+                    {{ row.oName }}<i class="gjod-rank-arrow" aria-hidden="true">→</i>{{ row.dName }}
                   </span>
                   <span class="gjod-rank-value">{{ formatInt(row.n) }}</span>
                   <span class="gjod-rank-share">{{ row.shareText }}</span>
@@ -109,7 +123,7 @@
             </li>
           </ol>
           <p v-if="rankRows.length > visibleRankRows.length" class="gjod-rank-footnote">
-            按人次排序，显示前 {{ visibleRankRows.length }} 对（共 {{ rankRows.length }} 对，含同街道内部出行）
+            按人次排序，显示前 {{ visibleRankRows.length }} 对（共 {{ rankRows.length }} 对，不含同街道内部出行）
           </p>
         </div>
       </template>
@@ -122,7 +136,7 @@
       v-if="status === 'ready' && pageActive && legendItems.length"
       class="gjod-map-legend"
       aria-label="公交OD流量图例（人次）"
-      :title="granularity === 'street' ? '按街道质心连线，线量为双向合计' : '按 100m 栅格中心连线，线量为双向合计'"
+      :title="granularity === 'street' ? '按街道质心连线，线量为双向合计' : `按 ${gridCellSizeM}m 栅格中心连线，线量为双向合计`"
       @click.stop
     >
       <div class="gjod-map-legend-head">
@@ -168,7 +182,7 @@ const MapRef = inject("MapRef", ref(null));
 
 const GRANULARITY_OPTIONS = [
   { key: "street", label: "街道" },
-  { key: "grid", label: "100m 栅格" },
+  { key: "grid", label: "栅格" },
 ];
 const OD_LINE_LAYER_KEY = "rm-busod-lines";
 const STREET_SOURCE_ID = "rm-busod-streets";
@@ -182,6 +196,8 @@ const GENERATING_POLL_MS = 8000;
 const status = ref("loading"); // loading | generating | error | ready
 const errorMessage = ref("");
 const granularity = ref("street"); // street | grid
+// 栅格连线边长（米）：100m–2km、间隔 100m；由 100m 格对聚合成 N×100m 超格
+const gridCellSizeM = ref(100);
 const summary = shallowRef(null);
 const odStreets = shallowRef(null); // { pairs:[[o,d,n]...], totals }（o/d=街道要素索引，n 抽样人次）
 const streetStats = shallowRef(null); // tripends-streets.json（index 对齐的街道元信息来源）
@@ -289,7 +305,7 @@ function streetInScope(idx) {
 }
 
 // ---------------------------------------------------------------------------
-// 街道 OD 榜单（有向，含 o==d 内部出行；数值为模型抽样人次，不扩样）
+// 街道 OD 榜单（有向；**同街道内部出行 o==d 不计入**，用户定版；数值为模型抽样人次，不扩样）
 // ---------------------------------------------------------------------------
 
 const displayedPairs = computed(() => {
@@ -299,6 +315,7 @@ const displayedPairs = computed(() => {
   const rows = [];
   for (const pair of pairs) {
     const [o, d, n] = pair;
+    if (o === d) continue; // 同街道内部出行不计算、不上榜
     if (!streetInScope(o) || !streetInScope(d)) continue;
     rows.push({ o, d, n });
   }
@@ -333,10 +350,8 @@ const visibleRankRows = computed(() => {
 function rowTooltip(row) {
   const oDistrict = streetMeta.value[row.o]?.district || "";
   const dDistrict = streetMeta.value[row.d]?.district || "";
-  const head = row.o === row.d
-    ? `${row.oName}（${oDistrict}）内部出行`
-    : `${row.oName}（${oDistrict}）→ ${row.dName}（${dDistrict}）`;
-  return `${head}：${formatInt(row.n)} 人次，占${scopeLabel.value} ${row.shareText}`;
+  return `${row.oName}（${oDistrict}）→ ${row.dName}（${dDistrict}）：`
+    + `${formatInt(row.n)} 人次，占${scopeLabel.value} ${row.shareText}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,11 +382,17 @@ const streetLines = computed(() => {
   return lines;
 });
 
-/** 栅格模式连线：PGOD 记录范围过滤 → 双向合并 → 流量 Top-K，锚点取格中心。 */
+/**
+ * 栅格模式连线：PGOD 记录范围过滤 → 聚合到 N×100m 超格（N=gridCellSizeM/100，
+ * 超格索引 = floor(格索引/N)，纯整数运算无需重新分箱）→ 双向合并 → 流量 Top-K，锚点取超格中心。
+ * 同超格自环不成线（含原 100m 自环）。注意：后端 PGOD 截断保留的是 100m 粒度的流量 Top 对，
+ * 粗粒度视图由其聚合而来，droppedPairs>0 时低量长尾略有低估（summary 有披露）。
+ */
 const gridLineState = computed(() => {
   const grid = odGrid.value;
   if (!grid || !grid.count) return { lines: [], truncated: false };
   const scoped = scopeLabel.value !== DISPLAY_RANGE_ALL;
+  const n = Math.max(1, Math.round(gridCellSizeM.value / 100));
   const merged = new Map();
   for (let k = 0; k < grid.count; k++) {
     if (scoped) {
@@ -380,11 +401,11 @@ const gridLineState = computed(() => {
       if (oIdx === OD_STREET_UNASSIGNED || dIdx === OD_STREET_UNASSIGNED) continue;
       if (!streetInScope(oIdx) || !streetInScope(dIdx)) continue;
     }
-    const iO = grid.iO[k];
-    const jO = grid.jO[k];
-    const iD = grid.iD[k];
-    const jD = grid.jD[k];
-    if (iO === iD && jO === jD) continue; // 同格自环不成线
+    const iO = Math.floor(grid.iO[k] / n);
+    const jO = Math.floor(grid.jO[k] / n);
+    const iD = Math.floor(grid.iD[k] / n);
+    const jD = Math.floor(grid.jD[k] / n);
+    if (iO === iD && jO === jD) continue; // 同（超）格自环不成线
     // 无序格对键：按 (i,j) 字典序取正规方向
     const forward = iO < iD || (iO === iD && jO <= jD);
     const key = forward ? `${iO},${jO},${iD},${jD}` : `${iD},${jD},${iO},${jO}`;
@@ -395,7 +416,7 @@ const gridLineState = computed(() => {
   const all = Array.from(merged.values());
   all.sort((a, b) => b.flow - a.flow);
   const truncated = all.length > GRID_RENDER_LIMIT;
-  const cs = grid.mercCellSize;
+  const cs = grid.mercCellSize * n;
   const lines = all.slice(0, GRID_RENDER_LIMIT).map((entry) => ({
     from: mercatorToLngLat((entry.iA + 0.5) * cs, (entry.jA + 0.5) * cs),
     to: mercatorToLngLat((entry.iB + 0.5) * cs, (entry.jB + 0.5) * cs),
@@ -481,22 +502,22 @@ function odLineLayerInstance() {
   });
 }
 
-// 街道 FeatureCollection 附加展示属性（范围内外淡化；标注仅街道名）
+// 街道 FeatureCollection 附加展示属性（标注仅街道名）。
+// 行政区模式：区外街道轮廓/名称整体不下发（用户定版：只显示范围内部）。
 function decoratedStreetsGeojson() {
   const fc = streetsGeojson.value;
   if (!fc) return null;
   const scope = scopeLabel.value;
-  return {
-    type: "FeatureCollection",
-    features: fc.features.map((feature) => {
-      const propsIn = feature.properties || {};
-      const inScope = scope === DISPLAY_RANGE_ALL || propsIn.district === scope;
-      return {
-        ...feature,
-        properties: { ...propsIn, inScope: inScope ? 1 : 0, label: String(propsIn.name || "") },
-      };
-    }),
-  };
+  const features = [];
+  for (const feature of fc.features) {
+    const propsIn = feature.properties || {};
+    if (scope !== DISPLAY_RANGE_ALL && propsIn.district !== scope) continue;
+    features.push({
+      ...feature,
+      properties: { ...propsIn, inScope: 1, label: String(propsIn.name || "") },
+    });
+  }
+  return { type: "FeatureCollection", features };
 }
 
 function ensureStreetLayers(map) {
@@ -621,7 +642,7 @@ function focusPair(row) {
 // 生命周期
 // ---------------------------------------------------------------------------
 
-watch(granularity, () => refreshMapLayers());
+watch([granularity, gridCellSizeM], () => refreshMapLayers());
 watch(() => displayRange.selected, () => refreshMapLayers());
 
 onMounted(bootstrap);
@@ -721,6 +742,50 @@ onUnmounted(() => {
   &:active {
     transform: scale(0.98);
   }
+}
+
+/* —— 栅格边长调节（100m–2km，间隔 100m） —— */
+.gjod-cell-size {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 0 2px;
+}
+
+.gjod-cell-size-label {
+  flex-shrink: 0;
+  color: var(--dm2-muted);
+  font-size: 11px;
+  font-weight: 680;
+}
+
+.gjod-cell-size-slider {
+  flex: 1;
+  min-width: 0;
+
+  :deep(.el-slider__runway) {
+    height: 4px;
+  }
+
+  :deep(.el-slider__bar) {
+    height: 4px;
+  }
+
+  :deep(.el-slider__button) {
+    width: 12px;
+    height: 12px;
+  }
+}
+
+.gjod-cell-size-value {
+  flex-shrink: 0;
+  width: 52px;
+  text-align: right;
+  color: var(--dm2-ink);
+  font-size: 11.5px;
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
 }
 
 /* —— 主指标 —— */
@@ -842,17 +907,6 @@ onUnmounted(() => {
   color: var(--dm2-muted);
   font-style: normal;
   font-weight: 650;
-}
-
-.gjod-rank-inner {
-  margin-left: 5px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  border: 1px solid var(--dm2-line-faint);
-  color: var(--dm2-muted);
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 680;
 }
 
 .gjod-rank-value {

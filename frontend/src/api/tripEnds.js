@@ -1,6 +1,6 @@
 import request from "@/utils/request";
 
-// 起终点分布监测：全网汇总（scale/栅格元信息/出行与端点口径；未就绪返回 { status: "generating" }）
+// 出行分布监测（原起终点分布监测）：全网汇总（scale/栅格元信息/出行与端点口径；未就绪返回 { status: "generating" }）
 // POST /pt/tripends/summary
 export function getTripEndsSummary(data, config = {}) {
   return request({
@@ -11,7 +11,7 @@ export function getTripEndsSummary(data, config = {}) {
   });
 }
 
-// 起终点分布监测：按街道聚合（176 街道全量抽样人次 origin/destination + totals；未就绪返回 generating）
+// 出行分布监测：按街道聚合（176 街道全量抽样人次 origin/destination + totals；未就绪返回 generating）
 // POST /pt/tripends/streets
 export function getTripEndsStreets(data, config = {}) {
   return request({
@@ -22,7 +22,7 @@ export function getTripEndsStreets(data, config = {}) {
   });
 }
 
-// 起终点分布监测：100m 栅格二进制表（PGRD 契约，home 列=起点、work 列=终点；
+// 出行分布监测：100m 栅格二进制表（PGRD 契约，home 列=出行起点、work 列=出行终点；
 // ETag/immutable 由后端下发，浏览器 HTTP 缓存自动 304）
 // GET /pt/tripends/grid.bin?datasource=&v=
 export function getTripEndsGridBinary(data, config = {}) {

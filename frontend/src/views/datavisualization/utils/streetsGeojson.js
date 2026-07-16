@@ -1,4 +1,4 @@
-// 街道边界面（模型无关静态资源）模块级 memo：人口分布 / 起终点分布 / 公交OD 子模块共用，
+// 街道边界面（模型无关静态资源）模块级 memo：人口分布 / 出行分布 / 公交OD 子模块共用，
 // 跨模型/跨组件实例复用一份解析结果；失败不缓存，允许重试。
 import { markRaw } from "vue";
 import { getStreetsGeojson } from "@/api/population.js";

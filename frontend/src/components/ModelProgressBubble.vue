@@ -165,7 +165,8 @@ function onPillClick() {
 .model-progress-bubble {
   position: fixed;
   top: calc(var(--app-header-height, 58px) + 12px);
-  right: calc(var(--app-edge, 24px) + 64px);
+  /* 右边缘与运行监测工具条对齐 */
+  right: calc(var(--app-edge, 24px) + var(--app-scaled-64, 64px) + var(--app-scaled-46, 46px));
   z-index: calc(var(--z-header, 1000) + 9);
   display: flex;
   flex-direction: column;

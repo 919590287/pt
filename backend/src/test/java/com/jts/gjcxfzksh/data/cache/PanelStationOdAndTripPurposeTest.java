@@ -50,7 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * route-panel-v14 / station-panel-v15 契约：
+ * route-panel-v15 / station-panel-v15 契约：
  * 任务A 线路站间 OD（stationOd）、任务B 出行目的活动画像（过滤 interaction）、
  * 任务C 换乘判定（同 facility，或同站名且 ≤500m；v12 的 200m 邻近异名站台规则已移除）、
  * 任务D 公交 lineGroups（bus::lineId）。
@@ -78,6 +78,10 @@ class PanelStationOdAndTripPurposeTest {
         // 任务A：route "up" 的站间 OD——p1/p3/p4 都从甲站坐到乙站，合并为一条 flow=3。
         Map<?, ?> up = (Map<?, ?>) routes.get("up");
         assertNotNull(up);
+        // v15 契约：route 级 metrics 含发车间隔字段（fixture 单班次 → 无间隔=0）
+        Map<?, ?> upMetrics = (Map<?, ?>) up.get("metrics");
+        assertEquals(0.0, ((Number) upMetrics.get("peakHeadwayMin")).doubleValue(), 1e-9);
+        assertEquals(0.0, ((Number) upMetrics.get("offPeakHeadwayMin")).doubleValue(), 1e-9);
         List<?> stationOd = (List<?>) up.get("stationOd");
         assertEquals(1, stationOd.size());
         Map<?, ?> od = (Map<?, ?>) stationOd.getFirst();
@@ -86,6 +90,13 @@ class PanelStationOdAndTripPurposeTest {
         assertEquals("fa2", od.get("toFacilityId"));
         assertEquals("乙站", od.get("toName"));
         assertEquals(3, ((Number) od.get("flow")).intValue());
+        // v16 契约：flowByHour 按上车时刻分桶（p1 8点、p3 10点、p4 11点），合计=flow。
+        List<?> odFlowByHour = (List<?>) od.get("flowByHour");
+        assertEquals(24, odFlowByHour.size());
+        assertEquals(1, ((Number) odFlowByHour.get(8)).intValue());
+        assertEquals(1, ((Number) odFlowByHour.get(10)).intValue());
+        assertEquals(1, ((Number) odFlowByHour.get(11)).intValue());
+        assertEquals(3, odFlowByHour.stream().mapToInt(v -> ((Number) v).intValue()).sum());
         assertEquals(0.0, ((Number) od.get("fromX")).doubleValue(), 1e-9);
         assertEquals(0.0, ((Number) od.get("fromY")).doubleValue(), 1e-9);
         assertEquals(LON_5000, ((Number) od.get("toX")).doubleValue(), 1e-6);
@@ -98,6 +109,10 @@ class PanelStationOdAndTripPurposeTest {
         assertEquals("fa2", ((Map<?, ?>) downOd.getFirst()).get("fromFacilityId"));
         assertEquals("fa1", ((Map<?, ?>) downOd.getFirst()).get("toFacilityId"));
         assertEquals(1, ((Number) ((Map<?, ?>) downOd.getFirst()).get("flow")).intValue());
+        // p2 9 点上车 → flowByHour[9]=1。
+        List<?> downFlowByHour = (List<?>) ((Map<?, ?>) downOd.getFirst()).get("flowByHour");
+        assertEquals(1, ((Number) downFlowByHour.get(9)).intValue());
+        assertEquals(1, downFlowByHour.stream().mapToInt(v -> ((Number) v).intValue()).sum());
 
         // 任务B：route "up" 画像 = 乘坐者本次出行的出行目的活动（p1→work，p3→shopping），合计 100%。
         Map<?, ?> demographics = (Map<?, ?>) up.get("demographics");
@@ -168,7 +183,11 @@ class PanelStationOdAndTripPurposeTest {
         assertEquals(1, ((Number) hourlyFlow.get(9)).intValue());
         assertEquals(1, ((Number) hourlyFlow.get(10)).intValue());
         assertEquals(1, ((Number) hourlyFlow.get(11)).intValue());
-        assertEquals(4L, ((Number) ((Map<?, ?>) busGroup.get("metrics")).get("passenger")).longValue());
+        Map<?, ?> groupMetrics = (Map<?, ?>) busGroup.get("metrics");
+        assertEquals(4L, ((Number) groupMetrics.get("passenger")).longValue());
+        // v15 契约：组级发车间隔字段随代表方向输出（fixture 每方向仅 1 班 → 无间隔=0）
+        assertEquals(0.0, ((Number) groupMetrics.get("peakHeadwayMin")).doubleValue(), 1e-9);
+        assertEquals(0.0, ((Number) groupMetrics.get("offPeakHeadwayMin")).doubleValue(), 1e-9);
         assertNotNull(busGroup.get("boardingByHour"));
         assertNotNull(busGroup.get("alightingByHour"));
         assertNotNull(busGroup.get("capacityByHour"));
@@ -182,6 +201,13 @@ class PanelStationOdAndTripPurposeTest {
         Map<?, ?> second = (Map<?, ?>) groupOd.get(1);
         assertEquals("fa2", second.get("fromFacilityId"));
         assertEquals(1, ((Number) second.get("flow")).intValue());
+        // v16 契约：lineGroup 合并时 flowByHour 同步累加（上行 8/10/11 点各 1，下行 9 点 1）。
+        List<?> groupFirstFlowByHour = (List<?>) first.get("flowByHour");
+        assertEquals(1, ((Number) groupFirstFlowByHour.get(8)).intValue());
+        assertEquals(1, ((Number) groupFirstFlowByHour.get(10)).intValue());
+        assertEquals(1, ((Number) groupFirstFlowByHour.get(11)).intValue());
+        List<?> groupSecondFlowByHour = (List<?>) second.get("flowByHour");
+        assertEquals(1, ((Number) groupSecondFlowByHour.get(9)).intValue());
 
         // transfers 聚合（组外线路）：v13/v14 收紧后本 fixture 的公交组无跨线换乘（p3 的
         // 100m 不同名站台不再算换乘）；组外换乘聚合改由地铁组验证（p7 同设施换乘 far-line）。

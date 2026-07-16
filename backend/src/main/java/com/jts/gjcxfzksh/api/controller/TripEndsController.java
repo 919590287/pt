@@ -24,19 +24,19 @@ import org.springframework.web.bind.annotation.RestController;
 /** 街道面 GeoJSON 复用 PopulationController 的 /pt/population/streets.geojson（模型无关资源）。 */
 @RestController
 @RequestMapping("/pt/tripends")
-@Tag(name = "起终点分布监测", description = "公交出行监测 · 起终点分布监测")
+@Tag(name = "出行分布监测", description = "公交出行监测 · 出行分布监测（原起终点分布监测，端点=活动出行起终点）")
 public class TripEndsController {
 
     @Resource
     private TripEndsService tripEndsService;
 
-    @Operation(summary = "起终点分布汇总（总量指标+口径参数，未就绪返回 generating）")
+    @Operation(summary = "出行分布汇总（总量指标+口径参数，未就绪返回 generating）")
     @PostMapping("/summary")
     public AjaxResult summary(@RequestBody DatasourceParam param) {
         return AjaxResult.ok(tripEndsService.summary(param));
     }
 
-    @Operation(summary = "街道级起终点统计（176 街道全量+totals，未就绪返回 generating）")
+    @Operation(summary = "街道级出行起终点统计（176 街道全量+totals，未就绪返回 generating）")
     @PostMapping("/streets")
     public AjaxResult streets(@RequestBody DatasourceParam param) {
         return AjaxResult.ok(tripEndsService.streets(param));
@@ -83,11 +83,11 @@ public class TripEndsController {
     }
 
     /**
-     * 二进制起终点栅格表（PGRD 契约，home 列=起点、work 列=终点）。写法逐行照
+     * 二进制出行起终点栅格表（PGRD 契约，home 列=起点、work 列=终点）。写法逐行照
      * PopulationController.gridBinary：强校验 ETag + immutable，鉴权走 AuthInterceptor。
      * 缓存未就绪返回 404（前端以 summary 的 generating 态轮询，不解析 404 体）。
      */
-    @Operation(summary = "二进制起终点栅格表(GET 可缓存)")
+    @Operation(summary = "二进制出行起终点栅格表(GET 可缓存)")
     @GetMapping(value = "/grid.bin", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<byte[]> gridBinary(
             @RequestParam("datasource") String datasource,

@@ -193,4 +193,90 @@ class TransitMetricsTest {
         track.setEnter(enter);
         return track;
     }
+
+    // ===== 高峰/平峰发车间隔（peakOffPeakHeadwayMinutes）：四类真实时刻表形态 + 边界 =====
+
+    /** 生成 [start, end] 闭区间内按固定间隔（分钟）的发车时刻（秒）。 */
+    private static java.util.stream.DoubleStream uniformDepartures(double startHour, double endHour, double headwayMin) {
+        int count = (int) Math.floor((endHour - startHour) * 60 / headwayMin) + 1;
+        return java.util.stream.IntStream.range(0, count)
+                .mapToDouble(i -> startHour * 3600 + i * headwayMin * 60);
+    }
+
+    @Test
+    void headwayUniformAllDayLineHasEqualPeakAndOffPeak() {
+        // 番141路形态：07:00-22:00 全天 15 分均一
+        double[] times = uniformDepartures(7, 22, 15).toArray();
+        double[] result = TransitMetrics.peakOffPeakHeadwayMinutes(times);
+        assertEquals(15.0, result[0], 1e-9);
+        assertEquals(15.0, result[1], 1e-9);
+    }
+
+    @Test
+    void headwayDenserPeakIsSeparatedFromOffPeak() {
+        // 715路形态：早晚高峰 12 分、其余 15 分。
+        // 用整两小时高峰块避免跨窗混段：7-9 时 12 分、9-17 时 15 分、17-19 时 12 分、19-21 时 15 分
+        double[] times = java.util.stream.DoubleStream.concat(
+                java.util.stream.DoubleStream.concat(
+                        uniformDepartures(7, 9, 12),
+                        uniformDepartures(9.25, 17, 15)),
+                java.util.stream.DoubleStream.concat(
+                        uniformDepartures(17.2, 19, 12),
+                        uniformDepartures(19.25, 21, 15))
+        ).sorted().toArray();
+        double[] result = TransitMetrics.peakOffPeakHeadwayMinutes(times);
+        assertTrue(result[0] < 13.0 && result[0] >= 12.0, "高峰间隔应≈12分，实际 " + result[0]);
+        assertTrue(result[1] > 14.0 && result[1] <= 15.5, "平峰间隔应≈15分，实际 " + result[1]);
+    }
+
+    @Test
+    void headwayPeakOnlyLineHasNoOffPeakValue() {
+        // B6路快线形态：仅早晚高峰运营（7:15-9:00 与 17:00-19:00 各 15 分），午间 8 小时停开断档须剔除
+        double[] times = java.util.stream.DoubleStream.concat(
+                uniformDepartures(7.25, 9, 15),
+                uniformDepartures(17, 19, 15)
+        ).toArray();
+        double[] result = TransitMetrics.peakOffPeakHeadwayMinutes(times);
+        assertEquals(15.0, result[0], 1e-9);
+        assertEquals(0.0, result[1], 1e-9, "午间断档不应折算成平峰间隔");
+    }
+
+    @Test
+    void headwayNightLineExcludesCrossDayGapAndHasNoPeak() {
+        // 夜102路形态：22:00-次日1:00 运营，按钟面排序会出现 21h 假间隔，须剔除；高峰窗无班次
+        double[] times = {
+                10 * 60, 30 * 60, 60 * 60, // 0:10 / 0:30 / 1:00
+                22 * 3600, 22 * 3600 + 30 * 60, 23 * 3600, 23 * 3600 + 30 * 60, // 22:00-23:30 每 30 分
+        };
+        double[] result = TransitMetrics.peakOffPeakHeadwayMinutes(times);
+        assertEquals(0.0, result[0], 1e-9, "夜班线高峰窗无班次应输出 0（前端显示暂无）");
+        assertEquals(28.0, result[1], 1e-9, "平峰=夜间有效间隔均值 (20+30+30+30+30)/5");
+    }
+
+    @Test
+    void headwaySparseRuralLineFallsBackWhenAllGapsExceedBreakThreshold() {
+        // 郊区长间隔线：班距 180 分本身>2h 断档阈值，应退化为全量计入而非全 0
+        double[] times = uniformDepartures(6, 18, 180).toArray();
+        double[] result = TransitMetrics.peakOffPeakHeadwayMinutes(times);
+        assertEquals(180.0, result[0], 1e-9);
+        assertEquals(180.0, result[1], 1e-9);
+    }
+
+    @Test
+    void headwayHandlesMatsimOverDayTimesAndDuplicates() {
+        // MATSim 跨日时刻（>24h）按钟面归窗：24:30/25:00/25:30 的间隔属于凌晨平峰；
+        // 同刻重复班次（大站快车双出）不构成间隔
+        double[] times = {24.5 * 3600, 24.5 * 3600, 25 * 3600, 25.5 * 3600};
+        double[] result = TransitMetrics.peakOffPeakHeadwayMinutes(times);
+        assertEquals(0.0, result[0], 1e-9);
+        assertEquals(30.0, result[1], 1e-9);
+    }
+
+    @Test
+    void headwayEmptyOrSingleDepartureYieldsZero() {
+        assertEquals(0.0, TransitMetrics.peakOffPeakHeadwayMinutes(new double[0])[0], 1e-9);
+        assertEquals(0.0, TransitMetrics.peakOffPeakHeadwayMinutes(new double[0])[1], 1e-9);
+        assertEquals(0.0, TransitMetrics.peakOffPeakHeadwayMinutes(new double[]{8 * 3600})[0], 1e-9);
+        assertEquals(0.0, TransitMetrics.peakOffPeakHeadwayMinutes(null)[1], 1e-9);
+    }
 }

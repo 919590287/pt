@@ -1,14 +1,16 @@
-<!-- 起终点分布监测（公交出行监测模块，人口分布监测的同级子模块）
+<!-- 出行分布监测（公交出行监测模块，人口分布监测的同级子模块；原「起终点分布监测」，
+     文件名/qzd- 前缀/rm-tripends-* 图层 id 为历史内部标识，保持不动）
      地图：100m 起终点栅格（deck.gl GridCellLayer，rm-tripends-grid）+ 街道边界/名称占比标注（maplibre，rm-tripends-street-*）。
      右侧：起点/终点切换 + 按街道占比排序榜，teleport 到 index.vue 的右侧容器（同 RKFB 模式）；
      栅格客流图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
-     口径：整段公交出行（乘车段按 30min/800m 链接，全制式）——起点=首段上车站、终点=末段下车站；
+     口径（tripends-v4）：本次活动出行的起终点——plans 中含 pt leg 的 trip，
+     起点=出行前置活动位置、终点=出行后置活动位置（不再是上/下车站点）；
      一律直出模型抽样人次（不做 ÷scale 扩样）；grid.bin 复用 PGRD 契约（home 列=起点、work 列=终点）。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
-    <div class="qzd-card" aria-label="起终点分布监测面板">
+    <div class="qzd-card" aria-label="出行分布监测面板">
       <div class="qzd-title">
-        <h2>起终点分布监测</h2>
+        <h2>出行分布监测</h2>
         <span class="qzd-scope" :title="`显示范围：${scopeLabel}`">{{ scopeLabel }}</span>
       </div>
 
@@ -20,8 +22,8 @@
             <polyline points="12 7 12 12 15.5 14"></polyline>
           </svg>
         </span>
-        <p class="qzd-status-title">起终点分布缓存生成中</p>
-        <p class="qzd-status-desc">后端正在为当前模型识别整段公交出行的起终点，就绪后将自动展示。</p>
+        <p class="qzd-status-title">出行分布缓存生成中</p>
+        <p class="qzd-status-desc">后端正在为当前模型提取公交出行的活动起终点，就绪后将自动展示。</p>
       </div>
 
       <div v-else-if="status === 'error'" class="qzd-status" role="alert">
@@ -32,7 +34,7 @@
             <line x1="12" y1="17" x2="12.01" y2="17"></line>
           </svg>
         </span>
-        <p class="qzd-status-title">起终点分布数据加载失败</p>
+        <p class="qzd-status-title">出行分布数据加载失败</p>
         <p class="qzd-status-desc">{{ errorMessage }}</p>
         <button type="button" class="qzd-retry" @click="bootstrap">重新加载</button>
       </div>
@@ -75,7 +77,7 @@
             </svg>
           </span>
           <p class="qzd-status-title">{{ scopeLabel }}范围内暂无{{ metricLabel }}</p>
-          <p class="qzd-status-desc">当前模型在该范围内没有对应的{{ endpointNoun }}，可切换显示范围或指标。</p>
+          <p class="qzd-status-desc">当前模型在该范围内没有对应的{{ metricLabel }}，可切换显示范围或指标。</p>
         </div>
 
         <div v-else class="qzd-street-rank">
@@ -148,14 +150,17 @@ import {
 import { fetchStreetsGeojsonOnce } from "../utils/streetsGeojson.js";
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import {
+  GRID_STREET_SENTINEL,
   buildDensityLegendItems,
   buildGridColors,
+  buildGridElevations,
   buildGridPositions,
   parsePopulationGrid,
 } from "../utils/populationGrid.js";
 
 const props = defineProps({
   model: String,
+  threeDimensional: Boolean,
 });
 
 const MapRef = inject("MapRef", ref(null));
@@ -170,6 +175,8 @@ const STREET_LINE_ID = "rm-tripends-street-line";
 const STREET_LABEL_ID = "rm-tripends-street-label";
 const RANK_ROW_LIMIT = 30;
 const GENERATING_POLL_MS = 8000;
+// 3D 柱高 = 单格客流（人次） ÷ 系数。
+const TRIP_ENDS_HEIGHT_DIVISOR = 0.1;
 
 const status = ref("loading"); // loading | generating | error | ready
 const errorMessage = ref("");
@@ -182,7 +189,6 @@ const streetsGeojson = shallowRef(null); // 模型无关街道面
 const displayRange = useDisplayRangeStore();
 const scopeLabel = computed(() => displayRange.selected || DISPLAY_RANGE_ALL);
 const metricLabel = computed(() => (metric.value === "origin" ? "出行起点" : "出行终点"));
-const endpointNoun = computed(() => (metric.value === "origin" ? "上车点" : "下车点"));
 
 // 断点为人次/km²（= 单格人次 ×100），图例按人次/格展示（÷100）
 const legendItems = buildDensityLegendItems(
@@ -269,7 +275,7 @@ function bootstrap() {
         schedulePoll();
         return;
       }
-      errorMessage.value = message || "起终点分布数据加载失败";
+      errorMessage.value = message || "出行分布数据加载失败";
       status.value = "error";
     });
 }
@@ -311,6 +317,19 @@ const visibleStreetRows = computed(() => streetRows.value.slice(0, RANK_ROW_LIMI
 const showDistrictInRow = computed(() => scopeLabel.value === DISPLAY_RANGE_ALL);
 const scopeTotal = computed(() => streetRows.value.reduce((sum, row) => sum + row.value, 0));
 
+// 行政区范围掩膜：街道要素索引（=streets 行序=grid.street 列语义）→ 是否在范围内；全市为 null
+const scopeStreetMask = computed(() => {
+  const scope = scopeLabel.value;
+  if (scope === DISPLAY_RANGE_ALL) return null;
+  const streets = streetStats.value?.streets;
+  if (!Array.isArray(streets)) return null;
+  const mask = new Uint8Array(streets.length);
+  streets.forEach((street, idx) => {
+    if (street.district === scope) mask[idx] = 1;
+  });
+  return mask;
+});
+
 // ---------------------------------------------------------------------------
 // 地图图层：deck 栅格 + maplibre 街道边界/标注
 // ---------------------------------------------------------------------------
@@ -322,9 +341,33 @@ function gridLayerInstance() {
   const positions = getModelDerived(model, "tripEndsGridPositions", () => markRaw(buildGridPositions(data)));
   // PGRD 列语义映射：home 列=起点、work 列=终点（见后端 MatsimTripEndsCache）
   const counts = metric.value === "origin" ? data.home : data.work;
-  const colors = getModelDerived(model, `tripEndsGridColors:${metric.value}`, () =>
+  const baseColors = getModelDerived(model, `tripEndsGridColors:${metric.value}`, () =>
     markRaw(buildGridColors(counts, MAP_THEME.tripEnds)),
   );
+  const baseElevations = getModelDerived(model, `tripEndsGridElevations:linear-v2:${metric.value}`, () =>
+    markRaw(buildGridElevations(counts, {
+      heightDivisor: TRIP_ENDS_HEIGHT_DIVISOR,
+    })),
+  );
+  // 行政区模式：区外/未命中街道的格子整体隐藏（临时副本，不入缓存避免按行政区累积内存）
+  const mask = scopeStreetMask.value;
+  let colors = mask || props.threeDimensional ? baseColors.slice() : baseColors;
+  let elevations = baseElevations;
+  if (props.threeDimensional) {
+    for (let k = 0; k < data.count; k++) {
+      if (colors[k * 4 + 3] > 0) colors[k * 4 + 3] = 255;
+    }
+  }
+  if (mask) {
+    elevations = baseElevations.slice();
+    for (let k = 0; k < data.count; k++) {
+      const streetIdx = data.street[k];
+      if (streetIdx === GRID_STREET_SENTINEL || !mask[streetIdx]) {
+        colors[k * 4 + 3] = 0;
+        elevations[k] = 0;
+      }
+    }
+  }
   return new GridCellLayer({
     id: GRID_LAYER_KEY,
     beforeId: STREET_LINE_ID, // 栅格压在街道描边/标注之下
@@ -333,38 +376,41 @@ function gridLayerInstance() {
       attributes: {
         getPosition: { value: positions, size: 2 },
         getFillColor: { value: colors, size: 4 },
+        getElevation: { value: elevations, size: 1 },
       },
     },
     // ×1.02：fp32 实例定位抖动会在整齐栅格上留出发丝缝，2% 重叠肉眼不可见（同 RKFB）
     cellSize: (Number(summary.value?.cellSizeMeters) > 0 ? Number(summary.value.cellSizeMeters) : 100) * 1.02,
-    extruded: false,
+    extruded: props.threeDimensional,
+    elevationScale: 1,
+    opacity: 1,
     pickable: false,
   });
 }
 
-// 街道 FeatureCollection 附加展示属性（label/占比/是否在显示范围内）
+// 街道 FeatureCollection 附加展示属性（label/占比）。
+// 行政区模式：区外街道轮廓/名称整体不下发（用户定版：只显示范围内部）。
 function decoratedStreetsGeojson() {
   const fc = streetsGeojson.value;
   if (!fc) return null;
   const scope = scopeLabel.value;
   const shareByCode = new Map(streetRows.value.map((row) => [String(row.code), row.shareText]));
-  return {
-    type: "FeatureCollection",
-    features: fc.features.map((feature) => {
-      const propsIn = feature.properties || {};
-      const code = String(propsIn.code || feature.id || "");
-      const inScope = scope === DISPLAY_RANGE_ALL || propsIn.district === scope;
-      const share = shareByCode.get(code);
-      return {
-        ...feature,
-        properties: {
-          ...propsIn,
-          inScope: inScope ? 1 : 0,
-          label: inScope && share ? `${propsIn.name}\n${share}` : String(propsIn.name || ""),
-        },
-      };
-    }),
-  };
+  const features = [];
+  for (const feature of fc.features) {
+    const propsIn = feature.properties || {};
+    if (scope !== DISPLAY_RANGE_ALL && propsIn.district !== scope) continue;
+    const code = String(propsIn.code || feature.id || "");
+    const share = shareByCode.get(code);
+    features.push({
+      ...feature,
+      properties: {
+        ...propsIn,
+        inScope: 1,
+        label: share ? `${propsIn.name}\n${share}` : String(propsIn.name || ""),
+      },
+    });
+  }
+  return { type: "FeatureCollection", features };
 }
 
 function ensureStreetLayers(map) {
@@ -426,7 +472,7 @@ function refreshMapLayers() {
   } catch (error) {
     // 地图尚未就绪（样式加载中等）时静默，数据/指标变化会再次触发
     pendingLayerRefresh = true;
-    console.warn("[起终点分布监测] 图层刷新失败，等待下次触发", error);
+    console.warn("[出行分布监测] 图层刷新失败，等待下次触发", error);
   }
 }
 
@@ -440,7 +486,7 @@ function removeMapLayers() {
     if (map.getLayer(STREET_LINE_ID)) map.removeLayer(STREET_LINE_ID);
     if (map.getSource(STREET_SOURCE_ID)) map.removeSource(STREET_SOURCE_ID);
   } catch (error) {
-    console.warn("[起终点分布监测] 图层清理失败", error);
+    console.warn("[出行分布监测] 图层清理失败", error);
   }
 }
 
@@ -483,16 +529,22 @@ function focusStreet(code) {
 
 watch(metric, () => refreshMapLayers());
 watch(() => displayRange.selected, () => refreshMapLayers());
+watch(() => props.threeDimensional, () => refreshMapLayers());
 
 onMounted(bootstrap);
 
 onActivated(() => {
   pageActive.value = true;
-  if (pendingLayerRefresh) refreshMapLayers();
+  // KeepAlive 失活时会主动从共享 overlay 注销图层，回来后用内存数据重建。
+  if (status.value === "ready" || pendingLayerRefresh) refreshMapLayers();
 });
 
 onDeactivated(() => {
   pageActive.value = false;
+  // Deck 图层不属于 MyMap.layers，MapLayout 的页面图层暂存无法自动摘除它。
+  // 必须显式从共享 overlay 注销，否则切到数据管理/换乘分析后仍会继续渲染。
+  pendingLayerRefresh = status.value === "ready";
+  removeMapLayers();
 });
 
 onUnmounted(() => {

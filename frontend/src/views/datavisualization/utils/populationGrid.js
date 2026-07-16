@@ -1,14 +1,18 @@
 // 人口分布监测：population-grid.bin 解析与栅格渲染数据构建（纯函数，Worker 可复用）。
-// 二进制契约见 docs/公交出行监测人口分布模块设计方案.md §3（与后端 MatsimPopulationCache 对齐，小端）：
-//   header: magic "PGRD"(4B) + version u16(=1) + count u32 + mercCellSize f64  = 18B
-//   record × count（16B/cell）: i i32, j i32, home u32, work u32   —— 模型抽样人数，展示侧直出不扩样
-// cell 西南角 = (i*cs, j*cs)（EPSG:3857）。起终点分布复用本契约（home 列=起点、work 列=终点）。
+// 二进制契约见 docs/公交出行监测人口分布模块设计方案.md §3 + v2 增列（与后端 MatsimPopulationCache 对齐，小端）：
+//   header: magic "PGRD"(4B) + version u16(=2) + count u32 + mercCellSize f64  = 18B
+//   record × count（18B/cell）: i i32, j i32, home u32, work u32, street u16
+//   —— home/work 为模型抽样人数，展示侧直出不扩样；street 为格中心街道要素索引
+//     （资源文件序，0xFFFF=未命中，行政区过滤用）。
+// cell 西南角 = (i*cs, j*cs)（EPSG:3857）。出行分布监测复用本契约（home 列=出行起点、work 列=出行终点）。
 
 /** 与后端 GeoUtil/前端 LngLatUtils 同源的 Web 墨卡托半周长 */
 const EARTH_RADIUS = 20037508.3427892;
 const HEADER_BYTES = 18;
-const RECORD_BYTES = 16;
+const RECORD_BYTES = 18;
 const GRID_MAGIC = "PGRD";
+/** street 列的“未命中街道”哨兵（与后端 STREET_SENTINEL 一致）。 */
+export const GRID_STREET_SENTINEL = 0xffff;
 /** 100m 栅格单元面积（km²），密度 = 抽样人数 ÷ CELL_AREA_KM2（不扩样） */
 export const CELL_AREA_KM2 = 0.01;
 
@@ -33,7 +37,7 @@ export function parsePopulationGrid(buffer) {
     throw new Error(`人口栅格 magic 不符: ${magic}`);
   }
   const version = view.getUint16(4, true);
-  if (version !== 1) {
+  if (version !== 2) {
     throw new Error(`人口栅格版本不支持: ${version}`);
   }
   const count = view.getUint32(6, true);
@@ -48,6 +52,7 @@ export function parsePopulationGrid(buffer) {
   const j = new Int32Array(count);
   const home = new Uint32Array(count);
   const work = new Uint32Array(count);
+  const street = new Uint16Array(count);
   let homeTotal = 0;
   let workTotal = 0;
   let offset = HEADER_BYTES;
@@ -56,11 +61,12 @@ export function parsePopulationGrid(buffer) {
     j[k] = view.getInt32(offset + 4, true);
     home[k] = view.getUint32(offset + 8, true);
     work[k] = view.getUint32(offset + 12, true);
+    street[k] = view.getUint16(offset + 16, true);
     homeTotal += home[k];
     workTotal += work[k];
     offset += RECORD_BYTES;
   }
-  return { count, mercCellSize, i, j, home, work, homeTotal, workTotal };
+  return { count, mercCellSize, i, j, home, work, street, homeTotal, workTotal };
 }
 
 /**
@@ -113,6 +119,28 @@ export function buildGridColors(counts, { breaks, ramp, alphaLow = 120, alpha = 
     colors[base + 3] = cls === 0 ? alphaLow : alpha;
   }
   return colors;
+}
+
+/**
+ * 按人口密度 / 客流构建 3D 柱高（米）。
+ * 直接线性计算：高度 = 单格数值 × valueMultiplier ÷ heightDivisor。
+ * valueMultiplier 用于把单格计数换算成目标口径：人口传 1/CELL_AREA_KM2，出行传 1。
+ */
+export function buildGridElevations(
+  counts,
+  {
+    valueMultiplier = 1,
+    heightDivisor = 1,
+  } = {},
+) {
+  const multiplier = Number(valueMultiplier) > 0 ? Number(valueMultiplier) : 1;
+  const divisor = Number(heightDivisor) > 0 ? Number(heightDivisor) : 1;
+  const elevations = new Float32Array(counts.length);
+  for (let k = 0; k < counts.length; k++) {
+    const value = Math.max(0, Number(counts[k]) || 0) * multiplier;
+    if (value > 0) elevations[k] = value / divisor;
+  }
+  return elevations;
 }
 
 /** 图例条目：与 buildGridColors 完全同一套 breaks/ramp，避免图-例分家 */

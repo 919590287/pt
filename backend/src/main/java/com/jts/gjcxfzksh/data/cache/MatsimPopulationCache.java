@@ -82,18 +82,22 @@ public final class MatsimPopulationCache {
 
     // v1: 首版口径：home*/work* 前缀 + interaction 排除 + selectedPlan 回退首 plan；
     //     100m 栅格（mercCellSize 按模型中心纬度修正）；街道归属=点面 point-in-polygon（多候选取最小要素索引）。
-    public static final String POPULATION_CACHE_VERSION = "population-v1";
+    // v2: grid.bin 增加“格中心街道要素索引”列（16B→18B/cell，BIN_VERSION=2），
+    //     供前端行政区过滤隐藏区外栅格；抽取/统计口径不变。
+    public static final String POPULATION_CACHE_VERSION = "population-v2";
 
     /** 栅格边长（地面米，§1）。栅格实际投影边长 mercCellSize 随模型中心纬度修正。 */
     static final double CELL_SIZE_METERS = 100.0;
 
-    // ===== population-grid.bin 布局常量（§3，前后端二进制契约，禁止偏离；小端）=====
+    // ===== population-grid.bin 布局常量（§3 + v2 增列，前后端二进制契约，禁止偏离；小端）=====
     static final byte[] BIN_MAGIC = {'P', 'G', 'R', 'D'};
-    static final int BIN_VERSION = 1;
+    static final int BIN_VERSION = 2;
     /** 头部字节数：magic(4) + version u16(2) + count u32(4) + mercCellSize f64(8)。 */
     static final int BIN_HEADER_BYTES = 18;
-    /** 每 cell 字节数（行式）：i i32 + j i32 + home u32 + work u32。 */
-    static final int BIN_BYTES_PER_CELL = 16;
+    /** 每 cell 字节数（行式）：i i32 + j i32 + home u32 + work u32 + street u16（格中心归属）。 */
+    static final int BIN_BYTES_PER_CELL = 18;
+    /** street 列的“未命中街道”哨兵值（u16 全 1）。 */
+    static final int STREET_SENTINEL = 0xFFFF;
 
     /** 内嵌街道面资源（WGS84，176 街道，属性 code/name/district/areaKm2）。 */
     static final String STREETS_RESOURCE = "/geo/gz_streets_wgs84.geojson.gz";
@@ -725,19 +729,22 @@ public final class MatsimPopulationCache {
     }
 
     static Artifacts assemble(Aggregation aggregation, StreetIndex streets, double scale) {
-        byte[] gridBin = encodeGrid(aggregation.homeCells, aggregation.workCells, aggregation.mercCellSize);
+        byte[] gridBin = encodeGrid(aggregation.homeCells, aggregation.workCells, aggregation.mercCellSize, streets);
         int gridCells = (gridBin.length - BIN_HEADER_BYTES) / BIN_BYTES_PER_CELL;
         return new Artifacts(gridBin, buildSummary(aggregation, gridCells, scale),
                 buildStreets(aggregation, streets));
     }
 
     /**
-     * population-grid.bin（§3，小端）：
-     * header = magic "PGRD" + version u16(=1) + count u32 + mercCellSize f64（共 18B）；
-     * record × count（16B/cell，行式）= i i32, j i32, home u32, work u32（抽样人数）。
+     * population-grid.bin（§3 + v2 增列，小端）：
+     * header = magic "PGRD" + version u16(=2) + count u32 + mercCellSize f64（共 18B）；
+     * record × count（18B/cell，行式）= i i32, j i32, home u32, work u32（抽样人数）,
+     * street u16（格中心点面归属的街道要素索引，{@link #STREET_SENTINEL}=未命中；仅供前端行政区过滤，
+     * 与端点级街道统计允许极少数跨界格差异）。
      * cell 写入序按打包键升序（i 升序，同 i 内 j 按无符号序）——仅为构建可复现，契约不约束顺序。
      */
-    static byte[] encodeGrid(Long2IntOpenHashMap homeCells, Long2IntOpenHashMap workCells, double mercCellSize) {
+    static byte[] encodeGrid(Long2IntOpenHashMap homeCells, Long2IntOpenHashMap workCells,
+                             double mercCellSize, StreetIndex streets) {
         LongOpenHashSet keySet = new LongOpenHashSet(homeCells.keySet());
         keySet.addAll(workCells.keySet());
         long[] keys = keySet.toLongArray();
@@ -753,6 +760,14 @@ public final class MatsimPopulationCache {
             buffer.putInt(cellJ(key));
             buffer.putInt(homeCells.get(key)); // 缺省 0（fastutil 默认返回值）
             buffer.putInt(workCells.get(key));
+            int street = STREET_SENTINEL;
+            if (streets != null) {
+                int idx = streets.locate((cellI(key) + 0.5) * mercCellSize, (cellJ(key) + 0.5) * mercCellSize);
+                if (idx >= 0) {
+                    street = idx;
+                }
+            }
+            buffer.putShort((short) street);
         }
         return buffer.array();
     }

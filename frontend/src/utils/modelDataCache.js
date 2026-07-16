@@ -12,6 +12,7 @@ import {
   getTripEndsSummary,
 } from "@/api/tripEnds.js";
 import { getCorridorLinksBinary, getCorridorNames, getCorridorSummary } from "@/api/corridor.js";
+import { getLinkSpeedMatrixBinary, getLinkSpeedSummary } from "@/api/linkspeed.js";
 
 // 缓存的模型数上限（LRU）：监测页当前模型 + 方案编辑父模型 + 少量历史，超出淘汰最久未用的
 const MAX_CACHED_MODELS = 4;
@@ -250,7 +251,7 @@ export function getCachedTripEndsStreets(model) {
   return sharedModelPanelRequest(model, "tripEndsStreets", getTripEndsStreets);
 }
 
-// 起终点栅格二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口栅格同构）。
+// 出行分布栅格二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口栅格同构）。
 export function getCachedTripEndsGrid(model, version = "") {
   const key = modelKey(model);
   if (!key) return Promise.resolve(null);
@@ -294,7 +295,7 @@ export function getCachedTripEndsOdStreets(model) {
   return sharedModelPanelRequest(model, "tripEndsOdStreets", getTripEndsOdStreets);
 }
 
-// 公交OD栅格对二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口/起终点栅格同构）。
+// 公交OD栅格对二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口/出行分布栅格同构）。
 export function getCachedTripEndsOdGrid(model, version = "") {
   const key = modelKey(model);
   if (!key) return Promise.resolve(null);
@@ -375,6 +376,50 @@ export function getCachedCorridorLinks(model, version = "") {
     .finally(() => {
       if (entry[promiseKey]) delete entry[promiseKey];
       const pendingKey = controllerKey(key, "corridorLinks");
+      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
+      evictStaleModels();
+    });
+
+  return entry[promiseKey];
+}
+
+export function getCachedLinkSpeedSummary(model) {
+  return sharedModelPanelRequest(model, "linkSpeedSummary", getLinkSpeedSummary);
+}
+
+// 链路车速矩阵二进制：按模型键控缓存 ArrayBuffer + 并发去重（与走廊路段表同构）。
+export function getCachedLinkSpeedMatrix(model, version = "") {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const entry = entryFor(key);
+  const dataKey = "linkSpeedMatrixData";
+  const promiseKey = "linkSpeedMatrixPromise";
+  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
+  if (entry[promiseKey]) return entry[promiseKey];
+
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  if (controller) pendingControllers.set(controllerKey(key, "linkSpeedMatrix"), controller);
+
+  entry[promiseKey] = getLinkSpeedMatrixBinary(
+    { datasource: key, v: version },
+    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+  )
+    .then((response) => {
+      const buffer = response instanceof ArrayBuffer ? response : response?.data;
+      if (!(buffer instanceof ArrayBuffer)) return null;
+      entry[dataKey] = buffer;
+      return buffer;
+    })
+    .catch((error) => {
+      delete entry[dataKey];
+      if (!isCanceled(error)) {
+        delete entry[promiseKey];
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (entry[promiseKey]) delete entry[promiseKey];
+      const pendingKey = controllerKey(key, "linkSpeedMatrix");
       if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
       evictStaleModels();
     });
@@ -478,10 +523,23 @@ function warmPanel(model, type, loader) {
     });
 }
 
+// 链路车速包（summary→matrix 连锁）：返回 summary 供 warmPanel 的 generating 重试判定，
+// 就绪时顺带把矩阵二进制拉进模型缓存——车辆运行监测开"路段公交车速"开关即出图，不再现场等待
+function loadLinkSpeedBundle(model) {
+  return getCachedLinkSpeedSummary(model).then((summary) => {
+    if (summary && summary.status !== "generating") {
+      const version = String(summary.generatedAt || summary.cacheVersion || "");
+      getCachedLinkSpeedMatrix(model, version).catch(() => null);
+    }
+    return summary;
+  });
+}
+
 // 模型进入前预热客流交互所需的前端缓存：
 // - lineAll / facilityAll：地图点选、线路/站点搜索、线网 GeoJSON
 // - routePanel：线路着色、选中线路右侧面板、断面客流
-// stationPanel 体量可能更大，默认放到 idle 后台预热，避免阻塞线路点选首屏。
+// stationPanel 体量可能更大，默认放到 idle 后台预热，避免阻塞线路点选首屏；
+// 链路车速包（summary+矩阵）同批 idle 预热，与模型缓存一起就位。
 export function warmModelInteractionCache(model, options = {}) {
   const key = modelKey(model);
   if (!key) return Promise.resolve(null);
@@ -492,6 +550,7 @@ export function warmModelInteractionCache(model, options = {}) {
   const warmHeavyPanels = () => Promise.allSettled([
     includeStationPanel ? warmPanel(key, "stationPanel", getCachedStationPanel) : Promise.resolve(null),
     includeEvaluation ? warmPanel(key, "evaluation", getCachedEvaluation) : Promise.resolve(null),
+    warmPanel(key, "linkSpeed", loadLinkSpeedBundle),
   ]);
 
   const promise = Promise.all([

@@ -23,7 +23,7 @@ const MIN_LAYOUT_SCALE = 0.5;
 const MAX_LAYOUT_SCALE = 3;
 const BASE_HEADER_HEIGHT = 58;
 const BASE_EDGE = 24;
-const SCALED_LENGTHS = [2, 12, 16, 18, 20, 24, 26, 70, 76, 108, 260, 282, 320, 414];
+const SCALED_LENGTHS = [2, 12, 16, 18, 20, 24, 26, 46, 64, 70, 76, 108, 260, 282, 320, 414];
 let layoutFrameId = 0;
 
 function updateLayoutScale() {

@@ -8,8 +8,8 @@
 <template>
   <div class="ta-wrapper">
     <!-- 顶栏右上角：数据源分段 + 方案 + 模型（与运行监测/客流分析同款，position:fixed 浮于 header） -->
-    <div class="ta-datebase" role="search" aria-label="方案与模型选择">
-      <div class="data-source-segment" role="group" aria-label="数据源类型">
+    <div class="ta-datebase analysis-model-toolbar" role="search" aria-label="方案与模型选择">
+      <div class="data-source-segment analysis-source-segment" role="group" aria-label="数据源类型">
         <button
           v-for="item in DATA_SOURCE_OPTIONS"
           :key="item.value"
@@ -20,11 +20,11 @@
           {{ item.label }}
         </button>
       </div>
-      <label class="handle" for="ta-scheme-selector">当前方案</label>
-      <el-select id="ta-scheme-selector" v-model="area" clearable filterable :loading="schemesLoading" :disabled="!isSimulationMode" aria-label="当前方案" @change="onAreaChange">
+      <label class="handle analysis-model-label" for="ta-scheme-selector">当前方案</label>
+      <el-select id="ta-scheme-selector" class="analysis-scheme-select" v-model="area" clearable filterable :loading="schemesLoading" :disabled="!isSimulationMode" aria-label="当前方案" @change="onAreaChange">
         <el-option v-for="s in schemeList" :key="s" :label="s" :value="s" />
       </el-select>
-      <el-select class="ta-model-select" v-model="modelName" clearable filterable :disabled="!isSimulationMode || !area || modelsLoading" :loading="modelsLoading" aria-label="选择模型">
+      <el-select class="ta-model-select analysis-model-select" v-model="modelName" clearable filterable :disabled="!isSimulationMode || !area || modelsLoading" :loading="modelsLoading" aria-label="选择模型">
         <el-option v-for="m in models" :key="m.name" :label="modelLabel(m)" :value="m.name">
           <div class="ta-model-option">
             <span class="ta-model-option-name" :title="m.name">{{ modelLabel(m) }}</span>
@@ -2305,72 +2305,7 @@ onUnmounted(() => {
   }
 }
 
-/* ---- 顶栏右上角 方案/模型 选择器（复刻运行监测 datebase_box，用全局 --app-* 令牌） ---- */
-.ta-datebase {
-  position: fixed;
-  top: calc(var(--app-header-height, 58px) / 2);
-  right: calc(var(--app-edge, 24px) + 64px);
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs, 8px);
-  transform: translateY(-50%);
-  transform-origin: right center;
-  z-index: calc(var(--z-header, 1400) + 10);
-  max-width: min(62vw, 680px);
-  min-width: 0;
-
-  .data-source-segment {
-    display: inline-flex;
-    align-items: center;
-    height: 34px;
-    padding: 3px;
-    border: 1px solid var(--app-border-strong, rgba(21, 105, 222, 0.28));
-    border-radius: var(--app-card-radius, 6px);
-    background: rgba(251, 253, 255, 0.9);
-    box-shadow: 0 8px 20px rgba(37, 99, 235, 0.08);
-    flex: 0 0 auto;
-
-    button {
-      height: 26px;
-      min-width: 42px;
-      padding: 0 10px;
-      border: 0;
-      border-radius: 7px;
-      background: transparent;
-      color: var(--app-muted, #667085);
-      font: inherit;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: background 160ms ease, color 160ms ease, box-shadow 160ms ease;
-
-      &.active {
-        color: var(--app-blue, #1569de);
-        background: rgba(21, 105, 222, 0.1);
-        box-shadow: 0 0 0 1px rgba(21, 105, 222, 0.12) inset;
-      }
-    }
-  }
-
-  .handle {
-    cursor: default;
-    font-size: 0.95rem;
-    font-weight: 600;
-    color: #374151;
-    white-space: nowrap;
-  }
-
-  .el-select {
-    width: clamp(150px, 14vw, 210px);
-
-    :deep(.el-input__wrapper) {
-      background-color: rgba(251, 253, 255, 0.88);
-      box-shadow: 0 0 0 1px var(--app-border-strong, rgba(21, 105, 222, 0.28)) inset;
-      border-radius: var(--app-card-radius, 6px);
-      padding: 6px 12px;
-    }
-  }
-}
+/* 顶栏右上角选择器使用 tokens.css 的 analysis-model-toolbar 共享样式。 */
 .ta-model-option {
   display: flex;
   align-items: center;

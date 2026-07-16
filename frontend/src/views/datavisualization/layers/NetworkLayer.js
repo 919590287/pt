@@ -562,6 +562,9 @@ export class NetworkLayer extends Layer {
     // 默认把连续链路拼成 PathLayer（更平滑）；置 false 走 GPU 实例化 LineLayer（逐链路），
     // 主线程不再遍历拼路径，配合 worker 二进制转换实现大线路断面的毫秒级上屏
     this.continuousPath = opt.continuousPath !== false;
+    // interleaved 模式锚层：指定后本图层插到该 maplibre 图层之下（如断面线让位站点空心圈）。
+    // 锚层尚未创建时回退顶层，锚层就绪后的下一次 deck 提交会自动归位。
+    this.beforeId = opt.beforeId || null;
     this.layerId = `network-line-${this.id}`;
     this.tileMode = false;
     this.tileZoom = opt.tileZoom || TILE_ZOOM;
@@ -796,6 +799,13 @@ export class NetworkLayer extends Layer {
       }
       this.scheduleTileLoad();
     }
+  }
+
+  // deck 传入不存在的 beforeId 时 maplibre 只 fire error 且不挂组图层（该组 deck 层整体不渲染），
+  // 因此仅在锚层已存在时才使用，否则回退 buildingLayerId（保持旧行为：通常为 null → 顶层组）
+  currentBeforeId() {
+    if (this.beforeId && this.map?.map?.getLayer?.(this.beforeId)) return this.beforeId;
+    return this.map?.buildingLayerId;
   }
 
   hasZoomDependentStyle() {
@@ -1330,7 +1340,7 @@ export class NetworkLayer extends Layer {
       // 现状说明：本页未挂 CityBuildingsLayer 时 buildingLayerId 为 null，deck 层与其后
       // addLayer 的 maplibre 业务层的相对顺序取决于插入时序；统一 anchor 层需要动共享
       // 地图初始化（本轮范围外），deck 层之间的顺序由注册表 order（zIndex）保证
-      beforeId: this.map?.buildingLayerId,
+      beforeId: this.currentBeforeId(),
       widthScale,
       widthUnits: "pixels",
       pickable: false,

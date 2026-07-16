@@ -79,11 +79,11 @@ class MatsimPopulationCacheTest {
 
     /** 按 §3 布局逐字段回读 grid.bin。 */
     private record DecodedGrid(int version, int count, double mercCellSize,
-                               int[] i, int[] j, long[] home, long[] work) {
+                               int[] i, int[] j, long[] home, long[] work, int[] street) {
     }
 
     private static DecodedGrid decode(byte[] bin) {
-        assertEquals(0, (bin.length - 18) % 16, "记录区必须是 16B 的整数倍");
+        assertEquals(0, (bin.length - 18) % 18, "记录区必须是 18B 的整数倍");
         ByteBuffer buffer = ByteBuffer.wrap(bin).order(ByteOrder.LITTLE_ENDIAN);
         byte[] magic = new byte[4];
         buffer.get(magic);
@@ -95,14 +95,16 @@ class MatsimPopulationCacheTest {
         int[] j = new int[count];
         long[] home = new long[count];
         long[] work = new long[count];
+        int[] street = new int[count];
         for (int r = 0; r < count; r++) {
             i[r] = buffer.getInt();
             j[r] = buffer.getInt();
             home[r] = Integer.toUnsignedLong(buffer.getInt());
             work[r] = Integer.toUnsignedLong(buffer.getInt());
+            street[r] = Short.toUnsignedInt(buffer.getShort());
         }
         assertEquals(0, buffer.remaining(), "bin 不得有多余字节（无对齐填充）");
-        return new DecodedGrid(version, count, mercCellSize, i, j, home, work);
+        return new DecodedGrid(version, count, mercCellSize, i, j, home, work, street);
     }
 
     // ---------------------------------------------------------------- 提取口径（§1）
@@ -201,15 +203,15 @@ class MatsimPopulationCacheTest {
         work.put(MatsimPopulationCache.packCell(5, -3), 4); // 只有 work 的 cell（home=0）
         double mercCellSize = 108.712345;
 
-        byte[] bin = MatsimPopulationCache.encodeGrid(home, work, mercCellSize);
-        assertEquals(18 + 16 * 3, bin.length, "总长 = 头 18 + 16 × cell 数");
+        byte[] bin = MatsimPopulationCache.encodeGrid(home, work, mercCellSize, null);
+        assertEquals(18 + 18 * 3, bin.length, "总长 = 头 18 + 18 × cell 数");
 
-        // 头部逐字节：magic "PGRD" + version u16=1（小端）+ count u32=3（小端）
+        // 头部逐字节：magic "PGRD" + version u16=2（小端）+ count u32=3（小端）
         assertEquals('P', bin[0]);
         assertEquals('G', bin[1]);
         assertEquals('R', bin[2]);
         assertEquals('D', bin[3]);
-        assertEquals(1, bin[4]);
+        assertEquals(2, bin[4]);
         assertEquals(0, bin[5]);
         assertEquals(3, bin[6]);
         assertEquals(0, bin[7]);
@@ -217,7 +219,7 @@ class MatsimPopulationCacheTest {
         assertEquals(0, bin[9]);
 
         DecodedGrid decoded = decode(bin);
-        assertEquals(1, decoded.version());
+        assertEquals(2, decoded.version());
         assertEquals(3, decoded.count());
         assertEquals(mercCellSize, decoded.mercCellSize(), 0.0); // f64 精确回读
         // 写入序按打包键升序：(-1,-1) < (0,0) < (5,-3)（同 i 内 j 无符号序）
@@ -225,11 +227,14 @@ class MatsimPopulationCacheTest {
         assertArrayEquals(new int[]{-1, 0, -3}, decoded.j());
         assertArrayEquals(new long[]{2, 1, 0}, decoded.home());
         assertArrayEquals(new long[]{1, 0, 4}, decoded.work());
+        // 无街道索引：street 列一律哨兵 0xFFFF
+        assertArrayEquals(new int[]{0xFFFF, 0xFFFF, 0xFFFF}, decoded.street());
     }
 
     @Test
     void emptyGridProducesHeaderOnlyBin() {
-        byte[] bin = MatsimPopulationCache.encodeGrid(new Long2IntOpenHashMap(), new Long2IntOpenHashMap(), 100.0);
+        byte[] bin = MatsimPopulationCache.encodeGrid(
+                new Long2IntOpenHashMap(), new Long2IntOpenHashMap(), 100.0, null);
         assertEquals(18, bin.length);
         DecodedGrid decoded = decode(bin);
         assertEquals(0, decoded.count());
@@ -399,7 +404,7 @@ class MatsimPopulationCacheTest {
         assertTrue(MatsimPopulationCache.isReady(data));
         Map<String, Object> summary = MatsimPopulationCache.readPopulationSummary(data);
         assertEquals("ready", summary.get("status"));
-        assertEquals("population-v1", summary.get("cacheVersion"));
+        assertEquals("population-v2", summary.get("cacheVersion"));
         assertEquals(2, ((Number) summary.get("persons")).intValue());
         assertEquals(2, ((Number) summary.get("homePersons")).intValue());
         assertEquals(1, ((Number) summary.get("workPersons")).intValue());
@@ -413,7 +418,7 @@ class MatsimPopulationCacheTest {
         byte[] bin = MatsimPopulationCache.readGridBytes(data);
         assertNotNull(bin);
         DecodedGrid grid = decode(bin);
-        assertEquals(1, grid.version());
+        assertEquals(2, grid.version());
         assertEquals(MatsimPopulationCache.mercCellSize(data.getCenter()), grid.mercCellSize(), 0.0);
 
         String tag = MatsimPopulationCache.gridBinTag(data);

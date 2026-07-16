@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service;
 import java.util.Map;
 
 /**
- * 起终点分布监测薄服务层（模式照 PopulationServiceImpl）：鉴权与取数交给
+ * 出行分布监测薄服务层（模式照 PopulationServiceImpl）：鉴权与取数交给
  * DatasourceService，读缓存交给 MatsimTripEndsCache，本层不做任何聚合。
  */
 @Service

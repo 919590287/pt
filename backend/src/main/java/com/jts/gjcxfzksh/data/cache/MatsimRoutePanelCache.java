@@ -6,6 +6,7 @@ import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.ModelProcessingPool;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.utils.DistanceUtil;
+import com.jts.gjcxfzksh.utils.TransitMetrics;
 import lombok.extern.slf4j.Slf4j;
 import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
@@ -78,7 +79,12 @@ public final class MatsimRoutePanelCache {
     //        首末班仅统计有班次的成员；
     //      ⑦公交/地铁判定收紧（裸“N线”须带地铁/轨道前缀，接驳/巴士等公交词优先）；
     //      ⑧出行目的兜底键仅在 routeId 全局唯一时使用；上下车归属统一 pt-events-v3 动态映射。
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v14";
+    // v15: route/lineGroup metrics 新增 peakHeadwayMin/offPeakHeadwayMin（高峰/平峰发车间隔，分钟）：
+    //      时刻表自动识别，高峰窗 7-9/17-19、>2h 断档剔除（口径见 TransitMetrics），
+    //      lineGroup 取“有班次的最长单向”代表方向。需重算缓存。
+    // v16: stationOd 新增 flowByHour（24 小时分桶，按上车时刻，与断面客流同口径），
+    //      支撑前端站间 OD 期望线随时段筛选；Top500 截断仍按全天总量排序。需重算缓存。
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v16";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
@@ -586,9 +592,10 @@ public final class MatsimRoutePanelCache {
                     if (route != null) {
                         String fromFacilityId = idString(boarding.getFacilityId());
                         String toFacilityId = idString(track.getFacilityId());
-                        route.addStationOd(fromFacilityId, toFacilityId);
-                        // 断面客流：整次乘坐按上车时刻计入其途经的全部断面
-                        route.addRideSegments(fromFacilityId, toFacilityId, hourOf(safeTime(boarding)));
+                        // 站间 OD 与断面客流同口径：整次乘坐记入上车时刻所在小时桶
+                        int hour = hourOf(safeTime(boarding));
+                        route.addStationOd(fromFacilityId, toFacilityId, hour);
+                        route.addRideSegments(fromFacilityId, toFacilityId, hour);
                     }
                 }
                 boarding = null;
@@ -1238,7 +1245,10 @@ public final class MatsimRoutePanelCache {
         return result;
     }
 
-    /** 任务A：stationOd payload——flow 降序、只输出 flow>0、上限 {@link #STATION_OD_LIMIT} 条，坐标为经纬度。 */
+    /**
+     * 任务A：stationOd payload——flow 降序、只输出 flow>0、上限 {@link #STATION_OD_LIMIT} 条，坐标为经纬度。
+     * v16 起附带 flowByHour（按上车时刻分桶）；Top500 截断仍按全天总量，前端时段筛选在该子集上进行。
+     */
     private static List<Map<String, Object>> stationOdPayloads(
             Collection<StationOdAccumulator> odFlows,
             Map<String, FacilityGeo> facilityGeo
@@ -1262,6 +1272,7 @@ public final class MatsimRoutePanelCache {
                     payload.put("toX", to == null ? null : to.lon());
                     payload.put("toY", to == null ? null : to.lat());
                     payload.put("flow", od.flow);
+                    payload.put("flowByHour", od.flowByHour);
                     return payload;
                 })
                 .toList();
@@ -1310,6 +1321,9 @@ public final class MatsimRoutePanelCache {
         private final double directness;
         private final double firstTime;
         private final double lastTime;
+        // 本方向高峰/平峰发车间隔（分钟，0=无有效间隔），时刻表构造期一次算好供 route/lineGroup 两级输出
+        private final double peakHeadwayMin;
+        private final double offPeakHeadwayMin;
         private final List<StopMeta> stops = new ArrayList<>();
         // facilityId → 该设施在 stops 序列中的全部序号（环线可多次出现）
         private final Map<String, List<Integer>> facilityStopIndices = new HashMap<>();
@@ -1347,14 +1361,15 @@ public final class MatsimRoutePanelCache {
             this.mode = inferTransitMode(lineName, lineId, routeName, routeId, route.getTransportMode());
             this.routeDistance = routeDistance(route, network);
             this.directness = directness(route, routeDistance);
-            this.firstTime = route.getDepartures().values().stream()
+            double[] departureTimes = route.getDepartures().values().stream()
                     .mapToDouble(Departure::getDepartureTime)
-                    .min()
-                    .orElse(0.0);
-            this.lastTime = route.getDepartures().values().stream()
-                    .mapToDouble(Departure::getDepartureTime)
-                    .max()
-                    .orElse(0.0);
+                    .sorted()
+                    .toArray();
+            this.firstTime = departureTimes.length > 0 ? departureTimes[0] : 0.0;
+            this.lastTime = departureTimes.length > 0 ? departureTimes[departureTimes.length - 1] : 0.0;
+            double[] headways = TransitMetrics.peakOffPeakHeadwayMinutes(departureTimes);
+            this.peakHeadwayMin = headways[0];
+            this.offPeakHeadwayMin = headways[1];
             int index = 0;
             for (TransitRouteStop stop : route.getStops()) {
                 String facilityId = stop.getStopFacility().getId().toString();
@@ -1405,12 +1420,15 @@ public final class MatsimRoutePanelCache {
         }
 
         // indexStationOd 按人并行配对，落到同一 route 时需要同步。
-        private synchronized void addStationOd(String fromFacilityId, String toFacilityId) {
+        private synchronized void addStationOd(String fromFacilityId, String toFacilityId, int hour) {
             if (fromFacilityId == null || toFacilityId == null || fromFacilityId.equals(toFacilityId)) {
                 return;
             }
             String key = fromFacilityId + '\u0001' + toFacilityId;
-            stationOd.computeIfAbsent(key, ignored -> new StationOdAccumulator(fromFacilityId, toFacilityId)).flow++;
+            StationOdAccumulator od = stationOd.computeIfAbsent(key,
+                    ignored -> new StationOdAccumulator(fromFacilityId, toFacilityId));
+            od.flow++;
+            od.flowByHour[hour]++;
         }
 
         /**
@@ -1522,6 +1540,8 @@ public final class MatsimRoutePanelCache {
             metrics.put("vehicles", vehicles);
             metrics.put("perTripFlow", departureCount > 0 ? round2(totalBoardings / (double) departureCount) : 0.0);
             metrics.put("perVehicleFlow", vehicles > 0 ? round2(totalBoardings / (double) vehicles) : 0.0);
+            metrics.put("peakHeadwayMin", round2(peakHeadwayMin));
+            metrics.put("offPeakHeadwayMin", round2(offPeakHeadwayMin));
             payload.put("metrics", metrics);
             return payload;
         }
@@ -1620,6 +1640,11 @@ public final class MatsimRoutePanelCache {
         // 上下行 facility 并集会把对向站台算成两站，站距被低估约一半
         private double repDistance = 0.0;
         private int repStopCount = 0;
+        // 发车间隔的代表方向单独选（有班次的最长单向）：上下行间隔合并求均无意义，
+        // 而 repDistance 方向可能是无班次的占位 route
+        private double repHeadwayDistance = -1.0;
+        private double repPeakHeadwayMin = 0.0;
+        private double repOffPeakHeadwayMin = 0.0;
 
         private LineGroupAccumulator(String lineId, String lineName, String mode) {
             this.lineId = lineId;
@@ -1643,6 +1668,11 @@ public final class MatsimRoutePanelCache {
             if (route.routeDistance > repDistance) {
                 repDistance = route.routeDistance;
                 repStopCount = route.stops.size();
+            }
+            if (route.departureCount > 0 && route.routeDistance > repHeadwayDistance) {
+                repHeadwayDistance = route.routeDistance;
+                repPeakHeadwayMin = route.peakHeadwayMin;
+                repOffPeakHeadwayMin = route.offPeakHeadwayMin;
             }
             vehicleIds.addAll(route.vehicleIds);
             riderIds.addAll(route.riderIds);
@@ -1675,11 +1705,13 @@ public final class MatsimRoutePanelCache {
                         ignored -> new TransferAccumulator(source.lineId, source.lineName, source.routeId, source.routeName, source.station));
                 addIntArray(target.flowByHour, source.flowByHour);
             }
-            // 站间 OD 聚合：同站对流量相加。
+            // 站间 OD 聚合：同站对流量相加（全天合计与小时分桶同步累加）。
             for (Map.Entry<String, StationOdAccumulator> entry : route.stationOd.entrySet()) {
                 StationOdAccumulator source = entry.getValue();
-                stationOd.computeIfAbsent(entry.getKey(),
-                        ignored -> new StationOdAccumulator(source.fromFacilityId, source.toFacilityId)).flow += source.flow;
+                StationOdAccumulator target = stationOd.computeIfAbsent(entry.getKey(),
+                        ignored -> new StationOdAccumulator(source.fromFacilityId, source.toFacilityId));
+                target.flow += source.flow;
+                addIntArray(target.flowByHour, source.flowByHour);
             }
             // 出行目的活动计数聚合（route.finish 已先于 buildLineGroups 执行）。
             route.tripPurposeCounts.forEach((type, count) -> tripPurposeCounts.merge(type, count, Integer::sum));
@@ -1738,6 +1770,8 @@ public final class MatsimRoutePanelCache {
             metrics.put("vehicles", vehicles);
             metrics.put("perTripFlow", departureCount > 0 ? round2(totalBoardings / (double) departureCount) : 0.0);
             metrics.put("perVehicleFlow", vehicles > 0 ? round2(totalBoardings / (double) vehicles) : 0.0);
+            metrics.put("peakHeadwayMin", round2(repPeakHeadwayMin));
+            metrics.put("offPeakHeadwayMin", round2(repOffPeakHeadwayMin));
             payload.put("metrics", metrics);
             return payload;
         }
@@ -1759,11 +1793,12 @@ public final class MatsimRoutePanelCache {
     private record FacilityGeo(String name, Coord coord, Double lon, Double lat) {
     }
 
-    /** 任务A：一个“上车站→下车站”对的全天客流。 */
+    /** 任务A：一个“上车站→下车站”对的客流（全天合计 + 按上车时刻的小时分桶）。 */
     private static final class StationOdAccumulator {
         private final String fromFacilityId;
         private final String toFacilityId;
         private int flow = 0;
+        private final int[] flowByHour = new int[HOURS];
 
         private StationOdAccumulator(String fromFacilityId, String toFacilityId) {
             this.fromFacilityId = fromFacilityId;

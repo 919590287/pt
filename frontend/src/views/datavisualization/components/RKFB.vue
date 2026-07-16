@@ -142,14 +142,18 @@ import {
 import { fetchStreetsGeojsonOnce } from "../utils/streetsGeojson.js";
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import {
+  CELL_AREA_KM2,
+  GRID_STREET_SENTINEL,
   buildDensityLegendItems,
   buildGridColors,
+  buildGridElevations,
   buildGridPositions,
   parsePopulationGrid,
 } from "../utils/populationGrid.js";
 
 const props = defineProps({
   model: String,
+  threeDimensional: Boolean,
 });
 
 const MapRef = inject("MapRef", ref(null));
@@ -164,6 +168,8 @@ const STREET_LINE_ID = "rm-population-street-line";
 const STREET_LABEL_ID = "rm-population-street-label";
 const RANK_ROW_LIMIT = 30;
 const GENERATING_POLL_MS = 8000;
+// 3D 柱高 = 人口密度（人/km²） ÷ 系数。
+const POPULATION_HEIGHT_DIVISOR = 10;
 
 const status = ref("loading"); // loading | generating | error | ready
 const errorMessage = ref("");
@@ -302,6 +308,19 @@ const visibleStreetRows = computed(() => streetRows.value.slice(0, RANK_ROW_LIMI
 const showDistrictInRow = computed(() => scopeLabel.value === DISPLAY_RANGE_ALL);
 const scopeTotal = computed(() => streetRows.value.reduce((sum, row) => sum + row.value, 0));
 
+// 行政区范围掩膜：街道要素索引（=streets 行序=grid.street 列语义）→ 是否在范围内；全市为 null
+const scopeStreetMask = computed(() => {
+  const scope = scopeLabel.value;
+  if (scope === DISPLAY_RANGE_ALL) return null;
+  const streets = streetStats.value?.streets;
+  if (!Array.isArray(streets)) return null;
+  const mask = new Uint8Array(streets.length);
+  streets.forEach((street, idx) => {
+    if (street.district === scope) mask[idx] = 1;
+  });
+  return mask;
+});
+
 // ---------------------------------------------------------------------------
 // 地图图层：deck 栅格 + maplibre 街道边界/标注
 // ---------------------------------------------------------------------------
@@ -312,9 +331,34 @@ function gridLayerInstance() {
   if (!data || !model) return null;
   const positions = getModelDerived(model, "populationGridPositions", () => markRaw(buildGridPositions(data)));
   const counts = metric.value === "home" ? data.home : data.work;
-  const colors = getModelDerived(model, `populationGridColors:${metric.value}`, () =>
+  const baseColors = getModelDerived(model, `populationGridColors:${metric.value}`, () =>
     markRaw(buildGridColors(counts, MAP_THEME.population)),
   );
+  const baseElevations = getModelDerived(model, `populationGridElevations:linear-v2:${metric.value}`, () =>
+    markRaw(buildGridElevations(counts, {
+      valueMultiplier: 1 / CELL_AREA_KM2,
+      heightDivisor: POPULATION_HEIGHT_DIVISOR,
+    })),
+  );
+  // 行政区模式：区外/未命中街道的格子整体隐藏（临时副本，不入缓存避免按行政区累积内存）
+  const mask = scopeStreetMask.value;
+  let colors = mask || props.threeDimensional ? baseColors.slice() : baseColors;
+  let elevations = baseElevations;
+  if (props.threeDimensional) {
+    for (let k = 0; k < data.count; k++) {
+      if (colors[k * 4 + 3] > 0) colors[k * 4 + 3] = 255;
+    }
+  }
+  if (mask) {
+    elevations = baseElevations.slice();
+    for (let k = 0; k < data.count; k++) {
+      const streetIdx = data.street[k];
+      if (streetIdx === GRID_STREET_SENTINEL || !mask[streetIdx]) {
+        colors[k * 4 + 3] = 0;
+        elevations[k] = 0;
+      }
+    }
+  }
   return new GridCellLayer({
     id: GRID_LAYER_KEY,
     beforeId: STREET_LINE_ID, // 栅格压在街道描边/标注之下
@@ -323,38 +367,41 @@ function gridLayerInstance() {
       attributes: {
         getPosition: { value: positions, size: 2 },
         getFillColor: { value: colors, size: 4 },
+        getElevation: { value: elevations, size: 1 },
       },
     },
     // ×1.02：fp32 实例定位抖动会在整齐栅格上留出发丝缝，2% 重叠肉眼不可见（试验页已验证）
     cellSize: (Number(summary.value?.cellSizeMeters) > 0 ? Number(summary.value.cellSizeMeters) : 100) * 1.02,
-    extruded: false,
+    extruded: props.threeDimensional,
+    elevationScale: 1,
+    opacity: 1,
     pickable: false,
   });
 }
 
-// 街道 FeatureCollection 附加展示属性（label/占比/是否在显示范围内）
+// 街道 FeatureCollection 附加展示属性（label/占比）。
+// 行政区模式：区外街道轮廓/名称整体不下发（用户定版：只显示范围内部）。
 function decoratedStreetsGeojson() {
   const fc = streetsGeojson.value;
   if (!fc) return null;
   const scope = scopeLabel.value;
   const shareByCode = new Map(streetRows.value.map((row) => [String(row.code), row.shareText]));
-  return {
-    type: "FeatureCollection",
-    features: fc.features.map((feature) => {
-      const propsIn = feature.properties || {};
-      const code = String(propsIn.code || feature.id || "");
-      const inScope = scope === DISPLAY_RANGE_ALL || propsIn.district === scope;
-      const share = shareByCode.get(code);
-      return {
-        ...feature,
-        properties: {
-          ...propsIn,
-          inScope: inScope ? 1 : 0,
-          label: inScope && share ? `${propsIn.name}\n${share}` : String(propsIn.name || ""),
-        },
-      };
-    }),
-  };
+  const features = [];
+  for (const feature of fc.features) {
+    const propsIn = feature.properties || {};
+    if (scope !== DISPLAY_RANGE_ALL && propsIn.district !== scope) continue;
+    const code = String(propsIn.code || feature.id || "");
+    const share = shareByCode.get(code);
+    features.push({
+      ...feature,
+      properties: {
+        ...propsIn,
+        inScope: 1,
+        label: share ? `${propsIn.name}\n${share}` : String(propsIn.name || ""),
+      },
+    });
+  }
+  return { type: "FeatureCollection", features };
 }
 
 function ensureStreetLayers(map) {
@@ -473,16 +520,22 @@ function focusStreet(code) {
 
 watch(metric, () => refreshMapLayers());
 watch(() => displayRange.selected, () => refreshMapLayers());
+watch(() => props.threeDimensional, () => refreshMapLayers());
 
 onMounted(bootstrap);
 
 onActivated(() => {
   pageActive.value = true;
-  if (pendingLayerRefresh) refreshMapLayers();
+  // KeepAlive 失活时会主动从共享 overlay 注销图层，回来后用内存数据重建。
+  if (status.value === "ready" || pendingLayerRefresh) refreshMapLayers();
 });
 
 onDeactivated(() => {
   pageActive.value = false;
+  // Deck 图层不属于 MyMap.layers，MapLayout 的页面图层暂存无法自动摘除它。
+  // 必须显式从共享 overlay 注销，否则切到数据管理/换乘分析后仍会继续渲染。
+  pendingLayerRefresh = status.value === "ready";
+  removeMapLayers();
 });
 
 onUnmounted(() => {
