@@ -1,5 +1,5 @@
 <!-- 公交OD监测（公交出行监测模块第三子模块）
-     地图：整段公交出行 OD 期望线（deck.gl LineLayer，rm-busod-lines），可切换街道质心 / 栅格中心连线
+     地图：整段公交出行 OD 期望线（仿真用 LineLayer；真实数据用贝塞尔 PathLayer），可切换街道质心 / 栅格中心连线
      （栅格粒度 100m–2km 可调、间隔 100m，由 100m 格对前端聚合成超格）；
      线色/线宽按当前显示流量集合的分位分级（绿→黄→红，参考期望线制图惯例）；
      街道边界/名称标注（maplibre，rm-busod-street-*），行政区模式只显示范围内街道。
@@ -159,9 +159,10 @@
 
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch, inject, markRaw } from "vue";
-import { LineLayer } from "@deck.gl/layers";
+import { LineLayer, PathLayer } from "@deck.gl/layers";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 import {
   getCachedTripEndsOdGrid,
   getCachedTripEndsOdStreets,
@@ -173,6 +174,7 @@ import { fetchStreetsGeojsonOnce, streetCentroidsByCode } from "../utils/streets
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import { mercatorToLngLat, densityClassIndex, buildDensityLegendItems } from "../utils/populationGrid.js";
 import { OD_STREET_UNASSIGNED, parseBusOdGrid, quantileBreaks } from "../utils/busOdGrid.js";
+import { curvedLineCoordinates } from "../utils/flowCurves.js";
 
 const props = defineProps({
   model: String,
@@ -462,6 +464,39 @@ function odLineLayerInstance() {
   });
   // 流量升序绘制：主走廊后画压在细线之上（deck 按数据顺序渲染）
   const ordered = [...lines].sort((a, b) => a.flow - b.flow);
+
+  // 真实客流的站点/栅格非常密集，直连会把相邻 OD 画成成排平行线，既难辨识
+  // 起讫关系也容易误读为实际道路。改用 Web Mercator 空间计算的期望曲线；
+  // 仿真数据继续保留既有直线表现，避免无关视觉口径变化。
+  if (isRealDatasource(props.model)) {
+    const paths = ordered.map((line) => {
+      const cls = densityClassIndex(line.flow, breaks);
+      const [r, g, b] = rgb[Math.min(cls, rgb.length - 1)];
+      return {
+        path: curvedLineCoordinates(line.from, line.to, {
+          curvature: 0.16,
+          segments: 20,
+          side: 1,
+        }),
+        color: [r, g, b, theme.alpha],
+        width: widths[Math.min(cls, widths.length - 1)],
+      };
+    });
+    return new PathLayer({
+      id: OD_LINE_LAYER_KEY,
+      beforeId: STREET_LABEL_ID,
+      data: paths,
+      getPath: (item) => item.path,
+      getColor: (item) => item.color,
+      getWidth: (item) => item.width,
+      widthUnits: "pixels",
+      widthMinPixels: 1,
+      capRounded: true,
+      jointRounded: true,
+      pickable: false,
+    });
+  }
+
   const count = ordered.length;
   const source = new Float64Array(count * 2);
   const target = new Float64Array(count * 2);

@@ -62,7 +62,9 @@ public final class MatsimStationPanelCache {
     //      ④连续两条上车记录（下车事件缺失）导致的 OD 丢段计数并打日志，不再完全静默；
     //      ⑤公交/地铁判定收紧（裸“N线”须带地铁/轨道前缀，接驳/巴士等公交词优先判 bus）；
     //      ⑥上下车归属统一 pt-events-v3 动态映射（TransitDriverStarts + 司机显式过滤）。
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v15";
+    // v16: 可达站点明细在计算完成时立即截断为前80项，仅保留精确总数和有限展示样本。
+    //      旧实现为每个站点长期持有三份全量 LinkedHashSet，V6 的高连通网络会产生平方级引用并耗尽 8GB 堆。
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v16";
 
     // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
     // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
@@ -1075,13 +1077,13 @@ public final class MatsimStationPanelCache {
         return false;
     }
 
-    private static List<String> limitedStationNames(Set<String> stationNames) {
+    private static List<String> limitedStationNames(Collection<String> stationNames) {
         return sortedStationNames(stationNames).stream()
                 .limit(REACHABILITY_STATION_LIMIT)
                 .toList();
     }
 
-    private static List<String> sortedStationNames(Set<String> stationNames) {
+    private static List<String> sortedStationNames(Collection<String> stationNames) {
         return stationNames.stream()
                 .filter(name -> name != null && !name.isBlank())
                 .sorted(String::compareToIgnoreCase)
@@ -1265,9 +1267,11 @@ public final class MatsimStationPanelCache {
         private final int[] boardingByHour = new int[HOURS];
         private final int[] alightingByHour = new int[HOURS];
         private final Map<String, OdAccumulator> od = new HashMap<>();
-        private Set<String> directReachableStations = Set.of();
-        private Set<String> transfer1ReachableStations = Set.of();
-        private Set<String> transfer2ReachableStations = Set.of();
+        // 面板只展示前 REACHABILITY_STATION_LIMIT 个名称。全量集合只在当前站点的图搜索期间
+        // 短暂存在；这里保存有限 List，避免所有站点同时持有近乎全网的三份 HashSet。
+        private List<String> directReachableStations = List.of();
+        private List<String> transfer1ReachableStations = List.of();
+        private List<String> transfer2ReachableStations = List.of();
         private Map<String, Object> demographics = Map.of(
                 "commuter", 0,
                 "student", 0,
@@ -1331,12 +1335,12 @@ public final class MatsimStationPanelCache {
         }
 
         private void setReachability(Set<String> direct, Set<String> transfer1, Set<String> transfer2) {
-            this.directReachableStations = new LinkedHashSet<>(direct);
-            this.transfer1ReachableStations = new LinkedHashSet<>(transfer1);
-            this.transfer2ReachableStations = new LinkedHashSet<>(transfer2);
             this.directReachable = direct.size();
             this.transfer1Reachable = transfer1.size();
             this.transfer2Reachable = transfer2.size();
+            this.directReachableStations = limitedStationNames(direct);
+            this.transfer1ReachableStations = limitedStationNames(transfer1);
+            this.transfer2ReachableStations = limitedStationNames(transfer2);
         }
 
         private void finish(Population population, Map<String, Map<String, Integer>> tripPurposeByAccessStop) {
@@ -1423,9 +1427,9 @@ public final class MatsimStationPanelCache {
             reachability.put("direct", directReachable);
             reachability.put("transfer1", transfer1Reachable);
             reachability.put("transfer2", transfer2Reachable);
-            reachability.put("directStations", limitedStationNames(directReachableStations));
-            reachability.put("transfer1Stations", limitedStationNames(transfer1ReachableStations));
-            reachability.put("transfer2Stations", limitedStationNames(transfer2ReachableStations));
+            reachability.put("directStations", directReachableStations);
+            reachability.put("transfer1Stations", transfer1ReachableStations);
+            reachability.put("transfer2Stations", transfer2ReachableStations);
             reachability.put("stationListLimit", REACHABILITY_STATION_LIMIT);
             payload.put("reachability", reachability);
             payload.put("demographics", demographics);

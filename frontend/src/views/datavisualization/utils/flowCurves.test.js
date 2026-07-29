@@ -32,4 +32,15 @@ describe("OD desire lines", () => {
       width: 3.4,
     });
   });
+
+  it("bends real OD desire lines away from the straight chord while preserving endpoints", () => {
+    const from = [113.2, 23.0];
+    const to = [113.4, 23.0];
+    const coordinates = curvedLineCoordinates(from, to, { curvature: 0.16, segments: 20 });
+    const midpoint = coordinates[Math.floor(coordinates.length / 2)];
+
+    expect(coordinates[0]).toEqual(from);
+    expect(coordinates.at(-1)).toEqual(to);
+    expect(midpoint[1]).toBeGreaterThan(23.005);
+  });
 });
