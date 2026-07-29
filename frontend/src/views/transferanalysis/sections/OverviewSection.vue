@@ -74,9 +74,9 @@ const kpiCards = computed(() => {
   const k = agg.value?.kpi;
   if (!k) return [];
   return [
-    { label: "换乘人次", value: fmtCount(ctx.expand(k.events)), tip: "单位：人次。基于 30min+800m 时间—空间规则推定，已扩样" },
-    { label: "公交→地铁", value: fmtCount(ctx.expand(k.busToMetro)), tip: "单位：人次（已扩样）" },
-    { label: "地铁→公交", value: fmtCount(ctx.expand(k.metroToBus)), tip: "单位：人次（已扩样）" },
+    { label: "换乘人次", value: fmtCount(ctx.expand(k.events)), tip: "单位：人次。基于 30min+800m 时间—空间规则推定，模型原始数量" },
+    { label: "公交→地铁", value: fmtCount(ctx.expand(k.busToMetro)), tip: "单位：人次（模型原始数量）" },
+    { label: "地铁→公交", value: fmtCount(ctx.expand(k.metroToBus)), tip: "单位：人次（模型原始数量）" },
     { label: "换乘人数", value: fmtCount(ctx.expand(k.persons)), tip: "单位：人。去重 Agent 数（一人多次换乘只计一次）" },
   ];
 });
@@ -110,7 +110,7 @@ const pairRankOpt = computed(() =>
   ),
 );
 
-// 五段分布(0-5/5-10/10-15/15-20/20-30min):值扩样,占比对全量,色带低→高=绿→黄→红
+// 五段分布(0-5/5-10/10-15/15-20/20-30min)：模型原始数量，占比对当前模型总量。
 const distribution = computed(() => {
   const hist = agg.value?.histogramMin;
   if (!hist) return [];

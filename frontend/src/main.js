@@ -1,5 +1,4 @@
 import "./assets/styles/main.scss";
-import "maplibre-gl/dist/maplibre-gl.css";
 
 import { createApp } from "vue";
 import { createPinia } from "pinia";
@@ -9,10 +8,14 @@ import router from "./router";
 
 // import "element-plus/dist/index.css";
 // ✅ 引入自定义的 SCSS 主题文件
-import '@/assets/styles/element.scss'
-import { ElMessage, ElMessageBox, installElementPlus } from "@/plugins/element-plus";
+import "@/assets/styles/element.core.scss";
+import { ElMessage, installElementPlus } from "@/plugins/element-plus";
 import { appendErrorLog, installErrorLogExport } from "@/utils/errorLog";
+import { initUiTheme } from "@/utils/uiTheme";
 // import moment from 'moment'
+
+// 首帧前恢复明暗主题（跟随持久化的底图选择），避免暗色用户看到白闪。
+initUiTheme();
 
 const app = createApp(App);
 
@@ -41,11 +44,8 @@ window.addEventListener("unhandledrejection", (event) => {
 installErrorLogExport();
 
 app.config.globalProperties.$message = ElMessage
-app.config.globalProperties.$alert = ElMessageBox.alert
-app.config.globalProperties.$confirm = ElMessageBox.confirm
-app.config.globalProperties.$prompt = ElMessageBox.prompt
 // app.config.globalProperties.$moment = moment
 app.use(createPinia());
-app.use(router);
 installElementPlus(app);
+app.use(router);
 app.mount("#app");

@@ -36,6 +36,9 @@ public class SchemeVO {
     @Schema(description = "加载状态说明")
     private String loadMessage;
 
+    @Schema(description = "运行时模型代际；卸载或重载后递增")
+    private long loadVersion;
+
     @Schema(description = "模型基础数据加载进度百分比")
     private int loadProgressPercent;
 
@@ -62,6 +65,9 @@ public class SchemeVO {
 
     @Schema(description = "缓存生成已用秒数")
     private long cacheElapsedSeconds;
+
+    @Schema(description = "当前整套缓存成功生成时间；重建完成后变化")
+    private long cacheGeneratedAt;
 
     @Schema(description = "缓存生成预计剩余秒数，-1 表示未知")
     private long cacheEtaSeconds;

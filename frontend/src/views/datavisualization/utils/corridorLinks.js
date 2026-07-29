@@ -5,7 +5,7 @@
 //                             coeff u16, nameIdx u16, street u16, flow u32
 // 记录按系数升序写入（重复系数子模块按写入序绘制即可压顶；客流子模块自行按 flow 排序）；
 // nameIdx / street 的 0xFFFF 为“无名 / 未命中街道”哨兵；
-// coeff=经过的不同公交线路数（无扩样语义），flow=断面客流（双向叠加，模型抽样人次直出）。
+// coeff=经过的不同公交线路数，flow=断面客流（双向叠加，模型原始人次）。
 
 import { mercatorToLngLat } from "./populationGrid.js";
 
@@ -92,4 +92,90 @@ export function buildFlowPathData(links, indexes, { refFlow, maxWidthM, exponent
     seg += 1;
   }
   return { length: positive, startIndices, positions, widths };
+}
+
+/**
+ * 为公交客流走廊榜单道路生成地图名称标注。
+ * 每条道路只取一个代表点：优先选最高断面客流路段，客流并列时选更长的路段，
+ * 然后使用该路段中点。这样标注始终落在真实道路上，且靠近使该道路上榜的主客流带。
+ * 返回顺序与 rankedRoads 一致，便于保留榜单名次。
+ */
+export function buildFlowRoadLabelData(links, indexes, rankedRoads) {
+  if (!links || !Array.isArray(indexes) || !Array.isArray(rankedRoads) || !rankedRoads.length) return [];
+
+  const rankedByName = new Map();
+  rankedRoads.forEach((road, rank) => {
+    if (road && !rankedByName.has(road.nameIdx)) {
+      rankedByName.set(road.nameIdx, { road, rank: rank + 1 });
+    }
+  });
+
+  const bestSegmentByName = new Map();
+  for (const k of indexes) {
+    if (!Number.isInteger(k) || k < 0 || k >= links.count) continue;
+    const nameIdx = links.nameIdx[k];
+    if (!rankedByName.has(nameIdx)) continue;
+
+    const flow = Number(links.flow[k]) || 0;
+    const dx = links.x2[k] - links.x1[k];
+    const dy = links.y2[k] - links.y1[k];
+    const lengthSquared = dx * dx + dy * dy;
+    const previous = bestSegmentByName.get(nameIdx);
+    if (!previous || flow > previous.flow || (flow === previous.flow && lengthSquared > previous.lengthSquared)) {
+      bestSegmentByName.set(nameIdx, { k, flow, lengthSquared });
+    }
+  }
+
+  const labels = [];
+  for (const { road, rank } of rankedByName.values()) {
+    const candidate = bestSegmentByName.get(road.nameIdx);
+    if (!candidate) continue;
+    const k = candidate.k;
+    labels.push({
+      nameIdx: road.nameIdx,
+      name: String(road.name || ""),
+      rank,
+      position: mercatorToLngLat(
+        (links.x1[k] + links.x2[k]) / 2,
+        (links.y1[k] + links.y2[k]) / 2,
+      ),
+    });
+  }
+  return labels;
+}
+
+/**
+ * 道路名标注的屏幕空间避让：按名次贪心保留互不重叠的标签（低名次让位，放大后
+ * 重算时自然补显）。不用 deck CollisionFilterExtension——它以字形笔画为占位几何、
+ * 只在锚点小窗口采样归属，中文笔画间空隙大，近距标签互相落进对方笔画缝隙时避让
+ * 失效（真实数据洛溪聚簇曾复现叠字）；≤10 个标签用矩形相交贪心既确定又可单测。
+ *
+ * labels：buildFlowRoadLabelData 输出（rank 越小名次越高）。
+ * project：([lng,lat]) => {x,y}（调用方传地图实例的 project，屏幕 CSS 像素）。
+ * 文本框估算：全角字符 1em、半角 0.6em，行高 1.2em，中心 = 锚点 + pixelOffset，
+ * 四周加 paddingPx 呼吸间距。返回保留子集，顺序按名次。
+ */
+export function selectVisibleRoadLabels(labels, project, { sizePx = 11, pixelOffset = [0, -8], paddingPx = 6 } = {}) {
+  if (!Array.isArray(labels) || !labels.length || typeof project !== "function") return [];
+  const sorted = [...labels].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+  const keptBoxes = [];
+  const kept = [];
+  for (const label of sorted) {
+    const point = project(label.position);
+    const x = Number(point?.x);
+    const y = Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    let widthEm = 0;
+    for (const ch of String(label.name)) widthEm += ch.charCodeAt(0) > 0xff ? 1 : 0.6;
+    const halfW = (widthEm * sizePx) / 2 + paddingPx;
+    const halfH = (sizePx * 1.2) / 2 + paddingPx;
+    const cx = x + pixelOffset[0];
+    const cy = y + pixelOffset[1];
+    const box = [cx - halfW, cy - halfH, cx + halfW, cy + halfH];
+    const collides = keptBoxes.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1]);
+    if (collides) continue;
+    keptBoxes.push(box);
+    kept.push(label);
+  }
+  return kept;
 }

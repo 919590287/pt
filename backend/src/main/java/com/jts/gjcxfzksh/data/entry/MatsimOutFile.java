@@ -24,6 +24,11 @@ import javax.xml.transform.stream.StreamResult;
 import java.io.*;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -79,6 +84,18 @@ public class MatsimOutFile {
     private String config;
 
     /**
+     * output 目录中的原始配置路径。config 在兼容转换后会指向缓存工件，
+     * 源指纹必须始终使用这个稳定路径，否则加载态与目录探测态会得出不同代际。
+     */
+    private String sourceConfig;
+
+    /**
+     * 配置只在真正加载模型时解析。模型列表/缓存状态探测只需要文件路径，
+     * 不应为每次轮询重复做 XML + DTD 解析。
+     */
+    private Config parsedConfig;
+
+    /**
      * facilities 绝对路径
      */
     private String facilities;
@@ -128,10 +145,18 @@ public class MatsimOutFile {
             throw new RuntimeException("Matsim 输出目录为空");
         }
         int linkstatsPriority = 0;
+        String reducedConfig = null;
+        String fallbackConfig = null;
         for (File file : files) {
             String fileName = file.getName();
             if (isIgnoredOutputFile(fileName)) {
                 continue;
+            }
+            if (fileName.endsWith(OutFile.CONFIG_REDUCED + ".xml")) {
+                reducedConfig = file.getAbsolutePath();
+            } else if (fileName.contains(OutFile.CONFIG)) {
+                // 与旧逻辑一致：没有 reduced 配置时使用目录枚举中最后一个 config 候选。
+                fallbackConfig = file.getAbsolutePath();
             }
             int fileLinkstatsPriority = linkStatsPriority(fileName);
             if (fileName.contains(OutFile.PLANS)) {
@@ -161,40 +186,14 @@ public class MatsimOutFile {
                 this.alightCounts = file.getPath();
             } else if (fileName.contains(OutFile.OCCUPANCY_COUNTS)) { // 公交真实上客数据
                 this.occupancyCounts = file.getPath();
-            } else if (fileName.endsWith(OutFile.CONFIG_REDUCED + ".xml")) {
-//                String newConfigFile = config15to2024(file.getAbsolutePath());
-                Config config;
-                try {
-                    config = ConfigUtils.loadConfig(file.getAbsolutePath());
-                    this.config = file.getAbsolutePath();
-                } catch (Exception e) {
-                    log.warn("config.xml版本不兼容，尝试转换");
-                    String newConfig = config15to2024(file.getAbsolutePath(), cacheDir);
-                    config = ConfigUtils.loadConfig(newConfig);
-                    this.config = newConfig;
-                }
-                this.crs = config.global().getCoordinateSystem();
             }
             if (!isiters && file.getName().equals("ITERS")) {
                 isiters = true;
             }
         }
-        // 没有config_reduced.xml使用config.xml
-        if (this.config == null) {
-            Arrays.stream(files).filter(file -> !isIgnoredOutputFile(file.getName()) && file.getName().contains(OutFile.CONFIG)).forEach(file -> {
-                Config config;
-                try {
-                    config = ConfigUtils.loadConfig(file.getAbsolutePath());
-                    this.config = file.getAbsolutePath();
-                } catch (Exception e) {
-                    log.warn("config.xml版本不兼容，尝试转换");
-                    String newConfig = config15to2024(file.getAbsolutePath(), cacheDir);
-                    config = ConfigUtils.loadConfig(newConfig);
-                    this.config = newConfig;
-                }
-                this.crs = config.global().getCoordinateSystem();
-            });
-        }
+        // 优先 reduced；这里只记录路径，真正加载模型时再解析一次。
+        this.sourceConfig = reducedConfig != null ? reducedConfig : fallbackConfig;
+        this.config = this.sourceConfig;
 
         if (this.config == null) {
             throw new RuntimeException("没有找到config.xml或config_reduced.xml结尾的文件，请检查[" + dir.getAbsolutePath() + "]目录");
@@ -282,6 +281,60 @@ public class MatsimOutFile {
     }
 
     /**
+     * 解析并缓存 MATSim 配置。旧版本配置的兼容转换仍保持原有逻辑，
+     * 但从目录扫描/状态轮询路径移到真实模型加载路径，且同一实例只执行一次。
+     */
+    public synchronized Config loadConfig() {
+        if (parsedConfig != null) {
+            return parsedConfig;
+        }
+        String originalConfig = sourceConfig;
+        Config loaded;
+        String reusableConverted = reusableConvertedConfig(originalConfig, cacheDir);
+        if (reusableConverted != null) {
+            try {
+                loaded = ConfigUtils.loadConfig(reusableConverted);
+                this.config = reusableConverted;
+                this.crs = loaded.global().getCoordinateSystem();
+                this.parsedConfig = loaded;
+                return loaded;
+            } catch (Exception e) {
+                // 派生文件可能因异常关机或人工修改而损坏；继续尝试原文件并强制重建。
+                log.warn("已转换配置缓存不可用，将重新生成: {}", reusableConverted);
+            }
+        }
+        try {
+            loaded = ConfigUtils.loadConfig(originalConfig);
+        } catch (Exception e) {
+            log.warn("config.xml版本不兼容，尝试转换");
+            String converted = config15to2024(originalConfig, cacheDir, reusableConverted != null);
+            loaded = ConfigUtils.loadConfig(converted);
+            this.config = converted;
+        }
+        this.crs = loaded.global().getCoordinateSystem();
+        this.parsedConfig = loaded;
+        return loaded;
+    }
+
+    /**
+     * 判断路径是当前原始配置，或是由它生成且仍未过期的兼容转换工件。
+     * 用于平滑读取旧轨迹 manifest，避免为了修正指纹路径重扫数十 GB 源文件。
+     */
+    public boolean isSourceOrCompatibleConvertedConfig(String candidate) {
+        if (candidate == null || candidate.isBlank() || sourceConfig == null || sourceConfig.isBlank()) {
+            return false;
+        }
+        Path normalizedCandidate = Path.of(candidate).toAbsolutePath().normalize();
+        Path normalizedSource = Path.of(sourceConfig).toAbsolutePath().normalize();
+        if (normalizedSource.equals(normalizedCandidate)) {
+            return true;
+        }
+        String converted = reusableConvertedConfig(sourceConfig, cacheDir);
+        return converted != null
+                && Path.of(converted).toAbsolutePath().normalize().equals(normalizedCandidate);
+    }
+
+    /**
      * 获取所有matsim运行需要的文件
      */
     public List<String> getInputFiles() {
@@ -341,6 +394,10 @@ public class MatsimOutFile {
     }
 
     public static String config15to2024(String filename, String cacheDir) {
+        return config15to2024(filename, cacheDir, false);
+    }
+
+    private static String config15to2024(String filename, String cacheDir, boolean force) {
         try {
             File source = new File(filename);
             String newVersion;
@@ -358,27 +415,64 @@ public class MatsimOutFile {
                 }
                 newVersion = new File(generatedDir, source.getName().replace(".xml", "") + CONVERTED_XML_SUFFIX).getAbsolutePath();
                 versionFile = new File(newVersion + ".version");
-                if (versionFile.exists() && new File(newVersion).exists()) {
+                if (!force && isReusableConvertedConfig(source, new File(newVersion), versionFile)) {
                     return newVersion;
                 }
             }
-            File v2024config = new File(newVersion);
-            BufferedReader raf = new BufferedReader(new FileReader(filename));
-            StringBuilder xmlval = new StringBuilder(10000);
-            raf.lines().forEach(line -> {
-                xmlval.append(line + "\n");
-            });
-            String newXmlval = config15to2024Val(xmlval.toString());
-            OutputStream out = new FileOutputStream(v2024config);
-            out.write(newXmlval.getBytes());
-            out.flush();
-            out.close();
-            raf.close();
-            versionFile.createNewFile();
+            String xmlval = Files.readString(source.toPath(), StandardCharsets.UTF_8);
+            String newXmlval = config15to2024Val(xmlval);
+            writeAtomically(new File(newVersion).toPath(), newXmlval);
+            if (cacheDir == null || cacheDir.isBlank()) {
+                versionFile.createNewFile();
+            } else {
+                writeAtomically(versionFile.toPath(), conversionFingerprint(source));
+            }
             return newVersion;
         } catch (Exception e) {
             log.error("config.xml版本转换出错", e);
             throw new RuntimeException("config.xml版本转换出错", e);
+        }
+    }
+
+    private static String reusableConvertedConfig(String filename, String cacheDir) {
+        if (filename == null || cacheDir == null || cacheDir.isBlank()) {
+            return null;
+        }
+        File source = new File(filename);
+        File converted = new File(new File(cacheDir, "generated-inputs"),
+                source.getName().replace(".xml", "") + CONVERTED_XML_SUFFIX);
+        File versionFile = new File(converted.getAbsolutePath() + ".version");
+        return isReusableConvertedConfig(source, converted, versionFile) ? converted.getAbsolutePath() : null;
+    }
+
+    private static boolean isReusableConvertedConfig(File source, File converted, File versionFile) {
+        if (!source.isFile() || !converted.isFile() || !versionFile.isFile()) {
+            return false;
+        }
+        try {
+            return conversionFingerprint(source).equals(Files.readString(versionFile.toPath(), StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static String conversionFingerprint(File source) {
+        return CONVERTED_XML_SUFFIX + "|" + source.getAbsolutePath() + "|" + source.length() + "|" + source.lastModified();
+    }
+
+    private static void writeAtomically(Path target, String content) throws IOException {
+        Path parent = target.toAbsolutePath().getParent();
+        Files.createDirectories(parent);
+        Path temporary = Files.createTempFile(parent, target.getFileName().toString(), ".tmp");
+        try {
+            Files.writeString(temporary, content, StandardCharsets.UTF_8);
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 

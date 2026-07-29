@@ -1,8 +1,9 @@
 /**
- * 换乘分析地图图层管理器（maplibre 原生，无 deck 依赖）。
+ * 换乘分析 MapLibre 图层管理器。选中枢纽后的长距离动态流向由同目录的 Deck 管理器负责；
+ * 本类保留地铁线网、站点、换乘短连线与标签，并提供聚焦态降噪。
  *
- * 图层栈（自下而上）：换乘热力 → 弧线白描边 → 换乘弧线 → 站间连线 →
- * 接驳公交站空心圈 → 枢纽气泡 → 枢纽名标注。全部幂等创建；clear() 先删
+ * 图层栈（自下而上）：换乘热力 → 地铁线网 → 行政区黑色虚线 → 弧线白描边 → 换乘弧线 →
+ * 公交来向线 → 换乘站间连线 → 统一白心站点 → 枢纽站点 → 站名标注。全部幂等创建；clear() 先删
  * layer 再删 source（平台约定，source 被引用时删不掉）。
  *
  * 配色唯一来源 MAP_THEME.transfer（mapTheme.js），时间色带经 colorSchemes
@@ -10,19 +11,29 @@
  * 缩放级别微调，避免复杂表达式。
  */
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { adminDistrictOutlineStyle } from "@/utils/adminDistrictRange.js";
 import { sampleScheme } from "@/utils/colorSchemes.js";
 import { buildFlowCurveFeatureCollection, emptyFlowCurveCollection } from "@/views/datavisualization/utils/flowCurves.js";
 
 const SRC_HUBS = "ta-hubs-src";
+const SRC_METRO_NETWORK = "ta-metro-network-src";
+const SRC_METRO_NETWORK_ACTIVE = "ta-metro-network-active-src";
 const SRC_FLOWS = "ta-flows-src";
 const SRC_HEAT = "ta-heat-src";
 const SRC_LINKS = "ta-links-src";
+const SRC_ORIGIN_LINKS = "ta-origin-links-src";
 const SRC_STOPS = "ta-stops-src";
+const SRC_DISTRICT = "ta-display-range-src";
 
 const LAYER_HEAT = "ta-heat";
+const LAYER_METRO_NETWORK = "ta-metro-network";
+const LAYER_METRO_NETWORK_ACTIVE = "ta-metro-network-active";
+const LAYER_METRO_NETWORK_DASH = "ta-metro-network-dash";
+const LAYER_DISTRICT = "ta-display-range-outline";
 const LAYER_FLOW_CASING = "ta-flow-casing";
 const LAYER_FLOW = "ta-flow";
 const LAYER_LINKS = "ta-links";
+const LAYER_ORIGIN_LINKS = "ta-origin-links";
 const LAYER_STOPS = "ta-stops";
 const LAYER_STOP_LABELS = "ta-stop-labels";
 const LAYER_HUBS = "ta-hubs";
@@ -32,8 +43,8 @@ const LAYER_HUB_LABELS = "ta-hub-labels";
 const LABEL_ALL_MINZOOM = 12;
 
 // 删除顺序：栈顶到栈底
-const ALL_LAYERS = [LAYER_STOP_LABELS, LAYER_HUB_LABELS, LAYER_HUBS, LAYER_STOPS, LAYER_LINKS, LAYER_FLOW, LAYER_FLOW_CASING, LAYER_HEAT];
-const ALL_SOURCES = [SRC_HUBS, SRC_FLOWS, SRC_HEAT, SRC_LINKS, SRC_STOPS];
+const ALL_LAYERS = [LAYER_STOP_LABELS, LAYER_HUB_LABELS, LAYER_HUBS, LAYER_STOPS, LAYER_LINKS, LAYER_ORIGIN_LINKS, LAYER_FLOW, LAYER_FLOW_CASING, LAYER_DISTRICT, LAYER_METRO_NETWORK_DASH, LAYER_METRO_NETWORK_ACTIVE, LAYER_METRO_NETWORK, LAYER_HEAT];
+const ALL_SOURCES = [SRC_HUBS, SRC_METRO_NETWORK, SRC_METRO_NETWORK_ACTIVE, SRC_FLOWS, SRC_HEAT, SRC_LINKS, SRC_ORIGIN_LINKS, SRC_STOPS, SRC_DISTRICT];
 
 export function emptyFeatureCollection() {
   return { type: "FeatureCollection", features: [] };
@@ -59,6 +70,10 @@ export class TransferLayerManager {
     this.boundClick = null;
     this.boundEnter = null;
     this.boundLeave = null;
+    this.metroLineClickHandler = null;
+    this.boundMetroLineClick = null;
+    this.boundMetroLineEnter = null;
+    this.boundMetroLineLeave = null;
     this.sourceRefs = new Map(); // sourceId -> 上次 setData 的引用（引用相等短路）
   }
 
@@ -134,6 +149,59 @@ export class TransferLayerManager {
       });
     }
 
+    // 行政区模式先铺全网灰线，再在其上叠区内红线；全市模式两份几何重合，灰线自然被遮住。
+    if (!map.getLayer(LAYER_METRO_NETWORK)) {
+      this.addLayerBelowBuildings({
+        id: LAYER_METRO_NETWORK,
+        type: "line",
+        source: SRC_METRO_NETWORK,
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": MAP_THEME.network.outside,
+          "line-opacity": MAP_THEME.network.outsideOpacity,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 11, 3.4, 14, 5.5, 16, 7.2],
+        },
+      });
+    }
+    if (!map.getLayer(LAYER_METRO_NETWORK_ACTIVE)) {
+      this.addLayerBelowBuildings({
+        id: LAYER_METRO_NETWORK_ACTIVE,
+        type: "line",
+        source: SRC_METRO_NETWORK_ACTIVE,
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": MAP_THEME.metro.line,
+          "line-opacity": 0.92,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 11, 3.4, 14, 5.5, 16, 7.2],
+        },
+      });
+    }
+    if (!map.getLayer(LAYER_METRO_NETWORK_DASH)) {
+      this.addLayerBelowBuildings({
+        id: LAYER_METRO_NETWORK_DASH,
+        type: "line",
+        source: SRC_METRO_NETWORK_ACTIVE,
+        layout: { "line-join": "round" },
+        paint: {
+          "line-color": "#ffffff",
+          "line-opacity": 0.9,
+          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.7, 11, 1.2, 14, 2, 16, 2.6],
+          "line-dasharray": [2.2, 2.8],
+        },
+      });
+    }
+
+    if (!map.getLayer(LAYER_DISTRICT)) {
+      const style = adminDistrictOutlineStyle();
+      this.addLayerBelowBuildings({
+        id: LAYER_DISTRICT,
+        type: "line",
+        source: SRC_DISTRICT,
+        layout: { ...style.layout, visibility: "none" },
+        paint: style.paint,
+      });
+    }
+
     if (!map.getLayer(LAYER_FLOW_CASING)) {
       // 白色描边衬底：同线网 casing 语言，让弧线在浅色底图上边缘利落
       this.addLayerBelowBuildings({
@@ -162,8 +230,23 @@ export class TransferLayerManager {
       });
     }
 
+    if (!map.getLayer(LAYER_ORIGIN_LINKS)) {
+      // 完整公交出行段：起点→终点统一用灰线，方向颜色只留给公交—地铁换乘短连线。
+      this.addLayerBelowBuildings({
+        id: LAYER_ORIGIN_LINKS,
+        type: "line",
+        source: SRC_ORIGIN_LINKS,
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": MAP_THEME.network.outside,
+          "line-width": ["interpolate", ["linear"], ["get", "width"], 1, 1.2, 6, 4.4],
+          "line-opacity": 0.72,
+        },
+      });
+    }
+
     if (!map.getLayer(LAYER_LINKS)) {
-      // 枢纽详情：公交站→地铁站连线（细直线，色=平均换乘时间分级）
+      // 兼容层：两段式详情已迁往 Deck；保留 source/layer 供无 Deck 降级或后续静态模式复用。
       this.addLayerBelowBuildings({
         id: LAYER_LINKS,
         type: "line",
@@ -179,33 +262,36 @@ export class TransferLayerManager {
     }
 
     if (!map.getLayer(LAYER_STOPS)) {
-      // 接驳公交站空心圈（需求语言与 OD 端点一致）
+      // 聚焦态所有公交节点共用同一站点语言：白心、深青蓝描边，仅用尺寸区分层级。
       this.addLayerBelowBuildings({
         id: LAYER_STOPS,
         type: "circle",
         source: SRC_STOPS,
+        layout: { "circle-sort-key": ["get", "sortKey"] },
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, ["*", ["get", "r"], 0.6], 13, ["get", "r"], 16, ["*", ["get", "r"], 1.4]],
-          "circle-color": "#ffffff",
-          "circle-opacity": 0,
-          "circle-stroke-color": ["get", "color"],
-          "circle-stroke-width": 1.8,
-          "circle-stroke-opacity": 0.92,
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, ["*", ["get", "r"], 0.9], 13, ["get", "r"], 16, ["*", ["get", "r"], 1.08]],
+          "circle-color": MAP_THEME.transfer.stationFill,
+          "circle-opacity": 1,
+          "circle-stroke-color": MAP_THEME.transfer.stationStroke,
+          "circle-stroke-width": ["coalesce", ["get", "strokeWidth"], 1.5],
+          "circle-stroke-opacity": 0.98,
+          "circle-pitch-scale": "viewport",
+          "circle-pitch-alignment": "viewport",
         },
       });
     }
 
     if (!map.getLayer(LAYER_STOP_LABELS)) {
-      // 站点详情对端站名（选中站点后连线端点的站名；量少不做缩放分级，重叠由碰撞检测隐藏）
+      // 接驳公交站始终标注，外部端点仅标注 Top 项；空 label 不参与碰撞。
       this.addLayerBelowBuildings({
         id: LAYER_STOP_LABELS,
         type: "symbol",
         source: SRC_STOPS,
         layout: {
-          "text-field": ["get", "name"],
+          "text-field": ["get", "label"],
           "text-size": 10.5,
           "text-anchor": "top",
-          "text-offset": [0, 0.9],
+          "text-offset": [0, 0.82],
           "text-max-width": 12,
           "text-optional": true,
           // 碰撞时大流量对端优先（与枢纽标注同规则）
@@ -227,12 +313,14 @@ export class TransferLayerManager {
         // circle-sort-key 是 layout 属性（放 paint 会导致样式校验失败）
         layout: { "circle-sort-key": ["get", "sortKey"] },
         paint: {
-          "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, ["*", ["get", "r"], 0.72], 13, ["get", "r"], 16, ["*", ["get", "r"], 1.35]],
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 9, ["*", ["get", "r"], 0.86], 13, ["get", "r"], 16, ["*", ["get", "r"], 1.1]],
           "circle-color": ["get", "color"],
-          "circle-opacity": 0.78,
+          "circle-opacity": ["coalesce", ["get", "opacity"], 0.78],
           "circle-stroke-color": ["get", "strokeColor"],
           "circle-stroke-width": ["get", "strokeWidth"],
-          "circle-stroke-opacity": 0.95,
+          "circle-stroke-opacity": 0.98,
+          "circle-pitch-scale": "viewport",
+          "circle-pitch-alignment": "viewport",
         },
       });
     }
@@ -246,10 +334,10 @@ export class TransferLayerManager {
         // 重叠由 MapLibre 符号碰撞检测自动隐藏（zoom 过滤按整数级别求值，符合阈值语义）
         filter: ["any", ["==", ["get", "labeled"], 1], [">=", ["zoom"], LABEL_ALL_MINZOOM]],
         layout: {
-          "text-field": ["get", "name"],
+          "text-field": ["get", "label"],
           "text-size": 11,
           "text-anchor": "top",
-          "text-offset": [0, 1.1],
+          "text-offset": [0, 0.95],
           "text-max-width": 12,
           "text-optional": true,
           // 碰撞时大流量站优先（sort-key 小者先布局；sortKey 大=重要，取负转优先级）
@@ -268,6 +356,11 @@ export class TransferLayerManager {
   /** hubs: GeoJSON FeatureCollection（属性 r/color/strokeColor/strokeWidth/name/labeled/sortKey/idx） */
   setHubs(collection) {
     this.setSourceData(SRC_HUBS, collection);
+  }
+
+  setMetroNetwork(collection, activeCollection = collection) {
+    this.setSourceData(SRC_METRO_NETWORK, collection);
+    this.setSourceData(SRC_METRO_NETWORK_ACTIVE, activeCollection);
   }
 
   /**
@@ -292,8 +385,73 @@ export class TransferLayerManager {
     this.setSourceData(SRC_LINKS, collection);
   }
 
+  setOriginLinks(collection) {
+    this.setSourceData(SRC_ORIGIN_LINKS, collection);
+  }
+
   setStops(collection) {
     this.setSourceData(SRC_STOPS, collection);
+  }
+
+  setDistrict(collection) {
+    this.setSourceData(SRC_DISTRICT, collection);
+  }
+
+  /** 选中枢纽时把地铁底网压到背景层，避免红白双线抢走 Deck 客流线的视觉焦点。 */
+  setFocusMode(focused) {
+    const map = this.map;
+    if (!map?.getLayer || !map?.setPaintProperty) return;
+    const detail = Boolean(focused);
+    const opacityByLayer = {
+      [LAYER_METRO_NETWORK]: detail ? 0.18 : MAP_THEME.network.outsideOpacity,
+      [LAYER_METRO_NETWORK_ACTIVE]: detail ? 0.34 : 0.92,
+      [LAYER_METRO_NETWORK_DASH]: detail ? 0.28 : 0.9,
+    };
+    Object.entries(opacityByLayer).forEach(([layerId, opacity]) => {
+      if (map.getLayer(layerId)) map.setPaintProperty(layerId, "line-opacity", opacity);
+    });
+  }
+
+  /**
+   * 换乘线路分析聚焦态：active source 已由页面收窄为选中线路的完整几何；
+   * 底层全网完全隐去，主线加粗并切换为平台强调蓝，白色虚线提供内部高光。
+   */
+  setMetroLineFocusMode(focused) {
+    const map = this.map;
+    if (!map?.getLayer || !map?.setPaintProperty) return;
+    const detail = Boolean(focused);
+    if (map.getLayer(LAYER_METRO_NETWORK)) {
+      map.setPaintProperty(
+        LAYER_METRO_NETWORK,
+        "line-opacity",
+        detail ? 0 : MAP_THEME.network.outsideOpacity,
+      );
+    }
+    if (map.getLayer(LAYER_METRO_NETWORK_ACTIVE)) {
+      map.setPaintProperty(
+        LAYER_METRO_NETWORK_ACTIVE,
+        "line-color",
+        detail ? MAP_THEME.route.down : MAP_THEME.metro.line,
+      );
+      map.setPaintProperty(
+        LAYER_METRO_NETWORK_ACTIVE,
+        "line-width",
+        detail
+          ? ["interpolate", ["linear"], ["zoom"], 8, 4, 11, 6.4, 14, 9, 16, 11]
+          : ["interpolate", ["linear"], ["zoom"], 8, 2, 11, 3.4, 14, 5.5, 16, 7.2],
+      );
+      map.setPaintProperty(LAYER_METRO_NETWORK_ACTIVE, "line-opacity", detail ? 1 : 0.92);
+    }
+    if (map.getLayer(LAYER_METRO_NETWORK_DASH)) {
+      map.setPaintProperty(
+        LAYER_METRO_NETWORK_DASH,
+        "line-width",
+        detail
+          ? ["interpolate", ["linear"], ["zoom"], 8, 1, 11, 1.7, 14, 2.6, 16, 3.2]
+          : ["interpolate", ["linear"], ["zoom"], 8, 0.7, 11, 1.2, 14, 2, 16, 2.6],
+      );
+      map.setPaintProperty(LAYER_METRO_NETWORK_DASH, "line-opacity", detail ? 0.96 : 0.9);
+    }
   }
 
   setVisibility(kind, visible) {
@@ -303,7 +461,9 @@ export class TransferLayerManager {
       heat: [LAYER_HEAT],
       flows: [LAYER_FLOW_CASING, LAYER_FLOW],
       hubs: [LAYER_HUBS, LAYER_HUB_LABELS],
-      links: [LAYER_LINKS, LAYER_STOPS, LAYER_STOP_LABELS],
+      metro: [LAYER_METRO_NETWORK, LAYER_METRO_NETWORK_ACTIVE, LAYER_METRO_NETWORK_DASH],
+      links: [LAYER_ORIGIN_LINKS, LAYER_LINKS, LAYER_STOPS, LAYER_STOP_LABELS],
+      district: [LAYER_DISTRICT],
     };
     (groups[kind] || []).forEach((layerId) => {
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
@@ -342,15 +502,53 @@ export class TransferLayerManager {
     this.clickHandler = null;
   }
 
-  /** 空白处点击取消选中：全图 click，未命中气泡图层时才触发（命中交给 bindHubClick 选站） */
+  /** 地铁线路点击：以 active 线层作为命中面，属性中的 metroLineIdx 对齐换乘字典索引。 */
+  bindMetroLineClick(handler) {
+    const map = this.map;
+    if (!map?.on || this.boundMetroLineClick) return;
+    this.metroLineClickHandler = handler;
+    this.boundMetroLineClick = (e) => {
+      // 地铁线与枢纽气泡重叠时，优先保留气泡的站点选择语义。
+      const hubHit = map.getLayer(LAYER_HUBS)
+        ? map.queryRenderedFeatures(e.point, { layers: [LAYER_HUBS] })
+        : [];
+      if (hubHit?.length) return;
+      const feature = e?.features?.[0];
+      if (feature && this.metroLineClickHandler) this.metroLineClickHandler(feature.properties || {});
+    };
+    this.boundMetroLineEnter = () => {
+      map.getCanvas().style.cursor = "pointer";
+    };
+    this.boundMetroLineLeave = () => {
+      map.getCanvas().style.cursor = "";
+    };
+    map.on("click", LAYER_METRO_NETWORK_ACTIVE, this.boundMetroLineClick);
+    map.on("mouseenter", LAYER_METRO_NETWORK_ACTIVE, this.boundMetroLineEnter);
+    map.on("mouseleave", LAYER_METRO_NETWORK_ACTIVE, this.boundMetroLineLeave);
+  }
+
+  unbindMetroLineClick() {
+    const map = this.map;
+    if (map?.off && this.boundMetroLineClick) {
+      map.off("click", LAYER_METRO_NETWORK_ACTIVE, this.boundMetroLineClick);
+      map.off("mouseenter", LAYER_METRO_NETWORK_ACTIVE, this.boundMetroLineEnter);
+      map.off("mouseleave", LAYER_METRO_NETWORK_ACTIVE, this.boundMetroLineLeave);
+    }
+    this.boundMetroLineClick = null;
+    this.boundMetroLineEnter = null;
+    this.boundMetroLineLeave = null;
+    this.metroLineClickHandler = null;
+  }
+
+  /** 空白处点击取消选中：全图 click，未命中气泡或地铁线路时才触发。 */
   bindBackgroundClick(handler) {
     const map = this.map;
     if (!map?.on || this.boundBgClick) return;
     this.bgClickHandler = handler;
     this.boundBgClick = (e) => {
       if (!this.bgClickHandler) return;
-      const hubLayers = [LAYER_HUBS].filter((id) => map.getLayer(id));
-      const hit = hubLayers.length ? map.queryRenderedFeatures(e.point, { layers: hubLayers }) : [];
+      const interactiveLayers = [LAYER_HUBS, LAYER_METRO_NETWORK_ACTIVE].filter((id) => map.getLayer(id));
+      const hit = interactiveLayers.length ? map.queryRenderedFeatures(e.point, { layers: interactiveLayers }) : [];
       if (!hit || !hit.length) this.bgClickHandler();
     };
     map.on("click", this.boundBgClick);
@@ -394,6 +592,7 @@ export class TransferLayerManager {
   /** 先删 layer 再删 source（平台约定顺序） */
   clear() {
     this.unbindHubClick();
+    this.unbindMetroLineClick();
     this.unbindBackgroundClick();
     const map = this.map;
     if (!map?.getLayer) return;

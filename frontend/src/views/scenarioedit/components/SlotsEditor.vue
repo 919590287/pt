@@ -65,4 +65,9 @@ function removeRow(i) {
     line-height: 1.45;
   }
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .slots-editor .slot-row .unit {
+  color: #94a3b8;
+}
 </style>

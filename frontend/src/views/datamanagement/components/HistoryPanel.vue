@@ -586,4 +586,9 @@ function handleExport(record, command) {
   color: var(--dm2-muted-soft);
   font-size: var(--dm2-text-sm);
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .detail-close-btn:hover {
+  background: rgba(148, 180, 220, 0.1);
+}
 </style>

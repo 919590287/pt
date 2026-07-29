@@ -20,7 +20,11 @@ class PanelDerivedReadTest {
         busRoute.put("mode", "bus");
         busRoute.put("lineName", "5路");
         busRoute.put("hourlyFlow", hourly(10));
-        busRoute.put("metrics", Map.of("vehicles", 12, "departures", 100, "routeDist", 10000.0));
+        busRoute.put("metrics", Map.of(
+                "vehicles", 12,
+                "vehicleIds", List.of("v1", "v2", "v1"),
+                "departures", 100,
+                "routeDist", 10000.0));
 
         Map<String, Object> metroRoute = new LinkedHashMap<>();
         metroRoute.put("mode", "subway");
@@ -56,7 +60,8 @@ class PanelDerivedReadTest {
         // 公交运营效率分母：仅常规公交计入，日运营车公里 = Σ班次 × 线长(km)
         @SuppressWarnings("unchecked")
         Map<String, Object> busOperation = (Map<String, Object>) result.get("busOperation");
-        assertEquals(12L, busOperation.get("vehicles"));
+        assertEquals(2L, busOperation.get("vehicles"),
+                "车辆分母必须按统计范围内 vehicleId 去重，不能把各线路车辆数直接相加");
         assertEquals(100L, busOperation.get("departures"));
         assertEquals(100 * 10.0, busOperation.get("operatedKm"));
     }
@@ -67,6 +72,36 @@ class PanelDerivedReadTest {
         Map<String, Object> result = MatsimRoutePanelCache.overallFlowFromPanel(new LinkedHashMap<>(generating));
         assertEquals("generating", result.get("status"));
         assertTrue(result.get("hourlyByMode") == null);
+    }
+
+    @Test
+    void peakAverageLoadRateExpandsHourlyCapacityAcrossValidSegments() {
+        int[] firstSegment = new int[24];
+        firstSegment[7] = 40;
+        firstSegment[8] = 60;
+        firstSegment[9] = 999;  // 9:00 已离开早高峰，必须排除
+        firstSegment[17] = 20;
+        firstSegment[18] = 30;  // 对应小时无运力，不是有效断面小时
+
+        int[] secondSegment = new int[24];
+        secondSegment[7] = 10;
+        secondSegment[8] = 20;
+        secondSegment[17] = 5;
+
+        int[] capacity = new int[24];
+        capacity[7] = 100;
+        capacity[8] = 200;
+        capacity[9] = 1;
+        capacity[17] = 50;
+
+        MatsimRoutePanelCache.PeakLoadTotals totals = MatsimRoutePanelCache.peakLoadTotals(
+                List.of(firstSegment, secondSegment), capacity);
+
+        // Q=40+60+20+10+20+5=155；
+        // C=(100+200+50)×2个有效断面=700；平均高峰满载率=22.14%。
+        assertEquals(155L, totals.passenger());
+        assertEquals(700L, totals.capacity());
+        assertEquals(22.14, totals.percent(), 1e-9);
     }
 
     @Test
@@ -95,6 +130,21 @@ class PanelDerivedReadTest {
         Map<String, Object> generating = Map.of("status", "generating");
         Map<String, Object> result = MatsimStationPanelCache.stationDetailFromPanel(generating, "火车站");
         assertEquals("generating", result.get("status"));
+    }
+
+    @Test
+    void stationDetailKeyFallsBackToFacilityIdWhenDisplayNameDiffers() {
+        Map<String, Object> stations = Map.of(
+                "广州火车站", Map.of("facilityIds", List.of("platform-east", "platform-west")),
+                "公园前", Map.of("facilityIds", List.of("platform-park"))
+        );
+
+        assertEquals("广州火车站", MatsimStationPanelCache.resolveStationDetailKey(
+                stations, "地图显示别名", "platform-west"));
+        assertEquals("公园前", MatsimStationPanelCache.resolveStationDetailKey(
+                stations, " 公园前 ", "wrong-id"));
+        assertEquals("", MatsimStationPanelCache.resolveStationDetailKey(
+                stations, "不存在", "wrong-id"));
     }
 
     private static List<Double> hourly(double value) {

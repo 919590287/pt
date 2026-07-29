@@ -25,24 +25,23 @@ import org.matsim.api.core.v01.population.Person;
 import org.matsim.api.core.v01.population.PlanElement;
 import org.matsim.api.core.v01.population.Population;
 import org.matsim.core.network.NetworkUtils;
+import org.matsim.core.network.io.MatsimNetworkReader;
 import org.matsim.core.population.routes.NetworkRoute;
+import org.matsim.core.utils.geometry.CoordinateTransformation;
+import org.matsim.core.utils.geometry.transformations.TransformationFactory;
 import org.matsim.pt.transitSchedule.api.TransitLine;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitRouteStop;
-import org.matsim.pt.transitSchedule.api.TransitSchedule;
 
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -76,7 +75,28 @@ public final class MatsimPrecomputedCache {
     //      ④linkstats 流量列剔除 HRS0-24avg 全跨度汇总列（原与逐时列一起累加，flow≈真值×2）；
     //      ⑤线路客流强度(xlklqd)分组与键改用 lineId+routeId 复合键，跨线路同名 routeId 不再混计；
     //      ⑥公交分担率(fxfdl)精度提升到 0.01%（原 1% 步进）。
-    public static final String VISUAL_CACHE_VERSION = "visual-v13";
+    // v14: 数量固定为模型原始值（不扩样）；面积缺失不再用站点凸包猜测；
+    //      gjxwmd 改为汽电车线路经过的双向去重物理道路；fxfdl 改为 trip 主方式口径；
+    //      xlmzl 改为峰值在车人数/容量；pjhcsj 统一为全天均值分钟；
+    //      历史 rcxcs/xlklqd 口径（已由 v23 的公交居民出行/运营车公里口径替代）。
+    // v15: V6 不常驻 Population 明细时，从 population-v3 流式派生摘要读取
+    //      coverage300Percent/tripModeSharePercent/speedKmh/averageWaitMinutes，
+    //      不再把已有正确派生值的指标误报为 unsupported。
+    // v16: 评价指标全面收紧为 bus-only；覆盖/直线距离显式依赖运行时 CRS；线路里程严格使用
+    //      link.length，近闭合环线排除，缺 route/link 不再静默下发部分真值；车队缺时长不再猜值。
+    // v17: 依赖 population-v5 的稳定混合换乘主方式，并透传覆盖率分母完整性元数据。
+    // v18: xlcfxs 按 JT/T 1457—2023 改为各 TransitLine 方向平均长度之和/无向去重物理线网长度，
+    //      同方向 TransitRoute 变体不再重复放大分子。
+    // v19: 常住人口密度分子改为 plans 中有有效首个 home 位置的人数，不再使用全部 agent 数。
+    // v20: 公交线网密度显式固化为“无向去重道路中心线长度/行政区总面积（暂行）”，
+    //      并输出分子、分母及口径元数据供体检评估对账。
+    // v23: 线路平均高峰满载率按“班次最大站段满载率的班次均值”计算；
+    //      线路客流强度改为公交上车人次/计划运营车公里；人均日出行次数改为公交主方式且排除地铁。
+    // v24: 运营服务指标统一读取 population-v9：公交/小汽车速度比改为早晚高峰总里程/总时间，
+    //      候车为 bus-only 上车样本，新增完整 OD 分母的公交换乘次数与公交—轨道接驳比例；
+    //      非直线系数改为线路等权并输出异常线路诊断。
+    // v25: 密度指标改用真实数据行政区边界，预计算全市及各区人口、面积和裁切线网长度。
+    public static final String VISUAL_CACHE_VERSION = "visual-v25";
     private static final int VISUAL_TILE_ZOOM = 12;
     private static final int MIN_VISUAL_TILE_ZOOM = 8;
     private static final int ROUTE_DETAIL_SHARD_COUNT = 32;
@@ -119,7 +139,7 @@ public final class MatsimPrecomputedCache {
 
     private static void invalidateMemoryCache(MatsimData data) {
         String cacheDirPrefix = cacheDir(data).toString();
-        READY_CACHE_DIRS.remove(cacheDirPrefix);
+        READY_CACHE_DIRS.removeIf(key -> key.startsWith(cacheDirPrefix + "::"));
         ROUTE_INDEX_MEMORY.remove(routeIndexPath(data).toString());
         synchronized (ROUTE_SHARD_MEMORY) {
             ROUTE_SHARD_MEMORY.keySet().removeIf(key -> key.startsWith(cacheDirPrefix));
@@ -239,25 +259,33 @@ public final class MatsimPrecomputedCache {
             invalidateMemoryCache(data);
             deleteDirectory(cacheDir(data));
             Files.createDirectories(cacheDir(data));
-            Map<String, Object> info = buildInfo(data);
-            List<LineVO> routeDetails = buildLines(data);
+            PassengerStats passengerStats = passengerStats(data);
+            Map<String, Object> info = buildInfo(data, passengerStats);
+            List<LineVO> routeDetails = buildLines(data, passengerStats);
             List<LineVO> lines = buildLineSummaries(routeDetails);
             List<FacilityVO> stations = buildStations(data);
-            Map<String, List<PTLink>> networkTiles = buildNetworkTiles(data);
-            Map<String, List<PTLink>> routeTiles = buildRouteTiles(data);
 
             writeJsonAtomic(infoPath(data), info);
             writeGzipJson(linesPath(data), lines);
             writeGzipJson(stationsPath(data), stations);
+            // 大模型常驻的是公交精简网；道路底图必须临时读取原始完整 network，不能把精简网
+            // 固化成“完整路网”缓存。写盘后立即释放 map，降低与线路瓦片的峰值叠加。
+            Network visualNetwork = data.isLargeModel() ? loadFullNetworkForVisual(data) : data.getNetwork();
+            Map<String, List<PTLink>> networkTiles = buildNetworkTiles(data, visualNetwork);
             writeTileDirectory(data, NETWORK_TILES_DIR, VISUAL_TILE_ZOOM, networkTiles);
+            int networkTileCount = networkTiles.size();
+            networkTiles.clear();
+            visualNetwork = null;
+            Map<String, List<PTLink>> routeTiles = buildRouteTiles(data);
             writeTileDirectory(data, ROUTE_TILES_DIR, VISUAL_TILE_ZOOM, routeTiles);
             writeJsonAtomic(routeIndexPath(data), writeRouteDetails(data, routeDetails));
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "visual-v", VISUAL_CACHE_VERSION);
             // 重建窗口期并发读者可能把删除前的旧文件解析结果写回内存，完成后再失效一次兜底
             invalidateMemoryCache(data);
 
             log.info("模型可视化预计算完成: model={}, lines={}, stations={}, networkTiles={}, routeTiles={}",
-                    data.getName(), lines.size(), stations.size(), networkTiles.size(), routeTiles.size());
+                    data.getName(), lines.size(), stations.size(), networkTileCount, routeTiles.size());
         } catch (Exception e) {
             try {
                 writeJsonAtomic(manifestPath(data), manifest(data, false));
@@ -270,10 +298,6 @@ public final class MatsimPrecomputedCache {
     public static boolean isVisualCacheReady(MatsimData data) {
         // 就绪校验（8 次 stat + manifest 解析）在每次瓦片/详情读取时都会执行，外置盘上开销可观；
         // 校验通过后按 cacheDir 记忆化（缓存只在 ensureVisualCacheLocked 内重建，重建时失效）
-        String memoKey = cacheDir(data).toString();
-        if (READY_CACHE_DIRS.contains(memoKey)) {
-            return true;
-        }
         Path manifestPath = manifestPath(data);
         if (!Files.exists(manifestPath)
                 || !Files.exists(infoPath(data))
@@ -284,6 +308,14 @@ public final class MatsimPrecomputedCache {
                 || !Files.isDirectory(tileDir(data, ROUTE_TILES_DIR, VISUAL_TILE_ZOOM))
                 || !Files.isDirectory(routeDetailsDir(data))) {
             return false;
+        }
+        // 缓存工件根本不存在时先快速返回，避免冷模型列表请求为 15GB
+        // events/plans 做不必要的内容取样。只对已存在完整工件的候选缓存校验源版本。
+        // visualCacheTag 除源文件 revision 外还包含面积和 visual 公式版本。
+        // 只用 modelRevision 会在用户补填面积后仍命中进程内旧 info.json。
+        String memoKey = cacheDir(data) + "::" + visualCacheTag(data);
+        if (READY_CACHE_DIRS.contains(memoKey)) {
+            return true;
         }
         try {
             Map<String, Object> manifest = JSON.readValue(manifestPath.toFile(), MAP_TYPE);
@@ -300,55 +332,204 @@ public final class MatsimPrecomputedCache {
         }
     }
 
-    private static Map<String, Object> buildInfo(MatsimData data) {
+    private static Map<String, Object> buildInfo(MatsimData data, PassengerStats passengerStats) {
         Map<String, Object> result = new LinkedHashMap<>();
-        Set<Coord> coords = data.getSchedule().getFacilities().values().stream()
-                .map(item -> (Coord) item.getCoord())
-                .collect(Collectors.toSet());
-        // 口径修正：常住人口取全体 agent 数（原实现只数公交乘客）；
-        // 面积在 desc.json 未提供时用站点凸包估算（原实现退化为除以 1）
+        Map<String, Object> availability = new LinkedHashMap<>();
+        TransitMetrics.RoadTransitContext roadTransit =
+                TransitMetrics.RoadTransitContext.from(data.getSchedule());
+        Object runtimeCrs = data.getSchedule() == null ? null
+                : data.getSchedule().getAttributes().getAttribute("coordinateReferenceSystem");
+        TransitMetrics.MetricCoordinateContext coordinates =
+                TransitMetrics.MetricCoordinateContext.fromCrs(
+                        runtimeCrs == null ? null : String.valueOf(runtimeCrs));
+        TransitMetrics.RoadNetworkStats roadNetwork = TransitMetrics.roadNetworkStats(
+                data.getSchedule(), data.getNetwork(), roadTransit);
+        Set<Coord> coords = roadTransit.stopCoords();
+        Map<String, Object> populationSummary = MatsimPopulationCache.readPopulationSummary(data);
+        Map<String, Object> derivedPopulationMetrics = populationDerivedMetrics(populationSummary);
+        boolean hasDerivedPopulationMetrics = !derivedPopulationMetrics.isEmpty();
+        Long personCount = populationCount(data, populationSummary);
+        Long residentCount = residentHomePersonCount(data, populationSummary);
+        Map<String, Object> densityByDistrict = MatsimAdministrativeDensityMetrics.compute(
+                data, roadTransit, roadNetwork, residentCount);
+        Map<?, ?> cityDensity = densityByDistrict.get(
+                MatsimAdministrativeDensityMetrics.ALL_CITY) instanceof Map<?, ?> row ? row : Map.of();
         double configuredArea = data.getArea();
-        // 两分支必须同为 Double：三元表达式混用 double/Double 时结果按 double 拆箱，
-        // serviceAreaKm2 返回 null（站点<3 个）会直接 NPE
-        Double areaKm2 = configuredArea > 1.0 ? Double.valueOf(configuredArea) : TransitMetrics.serviceAreaKm2(coords);
-        int personCount = data.getPopulation() == null ? 0 : data.getPopulation().getPersons().size();
-        // 大模型不加载 plans，population 是空对象而非 null——人口/出行计划类指标必须输出 null
-        // （前端显示"暂无数据"），否则 0 值会被当真值固化进 info.json 永久下发。
-        // 实时路径对大模型返回 "generating"，buildEvaluation 对同类指标输出 null，此处保持同一口径。
-        boolean hasPopulation = personCount > 0;
-        result.put("czrkmd", areaKm2 == null || !hasPopulation ? null : (int) Math.round(personCount / areaKm2));
-
-        double networkLength = ptNetworkLength(data.getSchedule(), data.getNetwork());
-        result.put("gjxwmd", areaKm2 == null ? null : round2((networkLength / 1000.0) / areaKm2));
-
-        result.put("fgl_300", TransitMetrics.coverageResult(
-                TransitMetrics.coverage300Percent(coords, data.getPopulation())));
-        result.put("fxfdl", hasPopulation ? legTypeRate(data.getPopulation()) : null);
-
-        Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = data.getPersonTracks().stream()
-                .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
-        int boardings = (int) data.getPersonTracks().stream().filter(PTPersonTrack::getEnter).count();
-        // 万人保有量：标台数用"高峰同时在营车辆数"估算（GTFS 转换模型每班次一辆车，直接数车辆会放大一个数量级）
-        long fleetSize = TransitMetrics.peakConcurrentVehicles(data.getSchedule());
-        result.put("wrbyl", personCount == 0 || fleetSize == 0 ? null : round2(fleetSize / (personCount / 10000.0)));
-        // 车均日载客量 = 日客运总量(上车) / 保有量(车队峰值估算)
-        result.put("cjrzkl", fleetSize == 0 ? 0 : round2((double) boardings / fleetSize));
-        // 单班次载客量   人次/班 = 日客运总量(上车) / 日发班次总数
-        long departureTotal = 0;
-        for (TransitLine line : data.getSchedule().getTransitLines().values()) {
-            for (TransitRoute route : line.getRoutes().values()) {
-                departureTotal += route.getDepartures().size();
-            }
+        Double areaKm2 = null;
+        if (cityDensity.get("areaKm2") instanceof Number number) {
+            areaKm2 = number.doubleValue();
+        } else if (Double.isFinite(configuredArea) && configuredArea > 0) {
+            areaKm2 = configuredArea;
         }
-        result.put("dbczkl", departureTotal == 0 ? null : round2((double) boardings / departureTotal));
-        // ylklbl(依赖客流比例)为占位实现，已移除，接入真实口径前不下发
-        result.put("rcxcs", boardings);
-        result.put("xlfzxxs", routeNoLC(data));
-        result.put("xlcfxs", routeRC(data));
-        result.put("xlmzl", round2(TransitMetrics.fullLoadRate(
-                tracksByVehicle, data.getTv().getVehicles(), data.getScale()) * 100.0));
+        if (cityDensity.get("residentHomePersons") instanceof Number number) {
+            residentCount = Math.max(0L, number.longValue());
+        }
+        result.put("densityByDistrict", densityByDistrict);
+        result.put("densityPolicy", MatsimAdministrativeDensityMetrics.POLICY);
+        result.put("densityBoundarySignature",
+                MatsimAdministrativeDensityMetrics.boundaryFingerprint(data));
+        Population population = data.getPopulation();
+        boolean hasPlanDetails = population != null && !population.getPersons().isEmpty();
+        result.put("czrkmd", areaKm2 == null || residentCount == null ? null
+                : (int) Math.round(residentCount / areaKm2));
+        result.put("residentHomePersons", residentCount);
+        if (areaKm2 == null) {
+            unavailable(availability, "czrkmd", "nodata",
+                    "真实数据行政区边界与 desc.json 均未提供有效面积");
+            unavailable(availability, "gjxwmd", "nodata",
+                    "真实数据行政区边界与 desc.json 均未提供有效面积");
+        } else if (residentCount == null) {
+            unavailable(availability, "czrkmd", "unsupported", "缺少 plans 常住人口 home 位置计数工件");
+        }
 
-        Map<String, Double> xlklqd = routePersonStrength(data);
+        Double networkLength = cityDensity.get("busNetworkLengthMeters") instanceof Number number
+                ? number.doubleValue() : roadNetwork.lengthMeters();
+        result.put("busNetworkLengthMeters", networkLength);
+        Double busNetworkDensity = TransitMetrics.busNetworkDensityKmPerKm2(networkLength, areaKm2);
+        result.put("gjxwmd", busNetworkDensity == null ? null : round2(busNetworkDensity));
+        result.put("busNetworkAreaKm2", areaKm2);
+        result.put("busNetworkLengthPolicy", TransitMetrics.BUS_NETWORK_LENGTH_POLICY);
+        result.put("busNetworkAreaPolicy", TransitMetrics.BUS_NETWORK_AREA_POLICY);
+        if (networkLength == null) {
+            unavailable(availability, "gjxwmd", "nodata",
+                    roadNetwork.missingGeometryRoutes() > 0
+                            ? "公交线路引用了缺失或无有效长度的 route/link"
+                            : "没有有效的公交线路物理路段");
+        }
+
+        TransitMetrics.CoverageStats directCoverage = hasPlanDetails
+                && roadTransit.coordinateTransformFailures() == 0
+                ? TransitMetrics.coverage300Stats(coords, population, coordinates) : null;
+        Object coverageValue = hasDerivedPopulationMetrics
+                ? derivedPopulationMetrics.get("fgl_300")
+                : TransitMetrics.coverageResult(directCoverage == null ? null : directCoverage.percent());
+        Object modeShareValue = hasDerivedPopulationMetrics
+                ? derivedPopulationMetrics.get("fxfdl")
+                : hasPlanDetails ? busModeShare(TransitMetrics.busTripShareStats(population, roadTransit)) : null;
+        result.put("fgl_300", coverageValue);
+        result.put("coverageValidHomePersons", hasDerivedPopulationMetrics
+                ? derivedPopulationMetrics.get("coverageValidHomePersons")
+                : directCoverage == null ? null : directCoverage.validHomePersons());
+        result.put("coverageTotalPersons", hasDerivedPopulationMetrics
+                ? derivedPopulationMetrics.get("coverageTotalPersons") : personCount);
+        result.put("coverageMissingHomePersons", hasDerivedPopulationMetrics
+                ? derivedPopulationMetrics.get("coverageMissingHomePersons")
+                : directCoverage == null || personCount == null || !coordinates.isSupported()
+                ? null : Math.max(0L, personCount - directCoverage.validHomePersons()));
+        result.put("coordinateTransformFailures", hasDerivedPopulationMetrics
+                ? derivedPopulationMetrics.get("coordinateTransformFailures") : null);
+        result.put("coverageStatus", hasDerivedPopulationMetrics
+                ? derivedPopulationMetrics.get("coverageStatus")
+                : !hasPlanDetails || !coordinates.isSupported()
+                || roadTransit.coordinateTransformFailures() > 0 ? "unsupported"
+                : directCoverage == null || directCoverage.percent() == null ? "nodata" : "ready");
+        result.put("coverageDenominatorPolicy", "valid-first-home");
+        result.put("scheduleCoordinateTransformFailures", roadTransit.coordinateTransformFailures());
+        result.put("fxfdl", modeShareValue);
+        if (hasDerivedPopulationMetrics) {
+            if (Boolean.TRUE.equals(((Map<?, ?>) coverageValue).get("nodata"))) {
+                unavailable(availability, "fgl_300", "nodata", "population-v9 无可用的站点300m覆盖样本");
+            }
+            if (!(modeShareValue instanceof Map<?, ?> shares) || shares.isEmpty()) {
+                unavailable(availability, "fxfdl", "nodata", "population-v9 中无可用的机动化出行 trip");
+            }
+        } else if (!hasPlanDetails) {
+            unavailable(availability, "fgl_300", "unsupported", "当前加载模式仅保留人口计数，未保留 plans 坐标明细");
+            unavailable(availability, "fxfdl", "unsupported", "当前加载模式未保留 plans 出行链明细");
+        } else if (!coordinates.isSupported()) {
+            result.put("fgl_300", null);
+            unavailable(availability, "fgl_300", "unsupported", "模型未声明可识别的坐标系，不能计算300m地面距离");
+        } else if (roadTransit.coordinateTransformFailures() > 0) {
+            result.put("fgl_300", null);
+            unavailable(availability, "fgl_300", "unsupported",
+                    "部分公交站坐标转换失败，不能用剩余站点计算部分覆盖率");
+        }
+
+        long boardings = passengerStats.roadBoardings;
+        result.put("boardings", boardings);
+        result.put("allTransitBoardings", passengerStats.totalBoardings);
+        // 万人公共交通车辆保有量：全网运营车辆 ID 去重后按车长折算标台。
+        TransitMetrics.RoadFleetInventoryStats fleetStats =
+                TransitMetrics.roadFleetInventory(data.getSchedule(), data.getTv());
+        Long fleetSize = fleetStats.operatingVehicles();
+        Double standardVehicles = fleetStats.standardVehicles();
+        result.put("operatingVehicles", fleetSize);
+        result.put("standardVehicles", standardVehicles);
+        result.put("wrbyl", personCount == null || personCount <= 0
+                || standardVehicles == null || standardVehicles <= 0
+                ? null : round2(standardVehicles / (personCount / 10000.0)));
+        if (personCount == null) {
+            unavailable(availability, "wrbyl", "unsupported", "缺少可用的人口计数工件");
+        }
+        long departureTotal = roadTransit.departureCount();
+        TransitMetrics.BusOperatingEfficiency efficiency = TransitMetrics.busOperatingEfficiency(
+                boardings, fleetSize == null ? 0 : fleetSize, departureTotal);
+        // 车均日载客量 = 日客运总量(上车) / 全网去重运营车辆数。
+        result.put("cjrzkl", efficiency.perVehicleDaily() == null
+                ? null : round2(efficiency.perVehicleDaily()));
+        if (!fleetStats.hasOfficialStandardVehicles()) {
+            unavailable(availability, "wrbyl", "unsupported",
+                    "公交车辆或车型车长不完整，无法按官方车长系数折算标台");
+        }
+        if (fleetSize == null) {
+            unavailable(availability, "cjrzkl", "nodata", "时刻表没有引用有效的公交车辆ID");
+        }
+        // 单班次载客量   人次/班 = 日客运总量(上车) / 日发班次总数
+        result.put("dbczkl", efficiency.perDeparture() == null
+                ? null : round2(efficiency.perDeparture()));
+        // ylklbl(依赖客流比例)为占位实现，已移除，接入真实口径前不下发
+        Double dailyTripsPerPerson = dailyTripsPerPerson(data, residentCount);
+        result.put("rcxcs", dailyTripsPerPerson == null ? null : round3(dailyTripsPerPerson));
+        if (dailyTripsPerPerson == null) {
+            unavailable(availability, "rcxcs", "unsupported",
+                    "缺少公交主方式完整出行次数、常住人口分母，或存在无法判定制式的居民 legacy pt 出行");
+        }
+        TransitMetrics.RouteShapeStats routeShape = TransitMetrics.roadRouteShapeStats(
+                data.getSchedule(), data.getNetwork(), roadTransit, coordinates);
+        Double nonLinearCoefficient = routeShape.averageNonLinearCoefficient() == null
+                ? null : round2(routeShape.averageNonLinearCoefficient());
+        Double repetitionCoefficient = routeShape.repetitionCoefficient() == null
+                ? null : round2(routeShape.repetitionCoefficient());
+        result.put("xlfzxxs", nonLinearCoefficient);
+        result.put("xlcfxs", repetitionCoefficient);
+        result.put("validRoutes", routeShape.validRoutes());
+        result.put("excludedLoopRoutes", routeShape.excludedLoopRoutes());
+        result.put("missingGeometryRoutes", routeShape.missingGeometryRoutes());
+        result.put("maxNonLinearCoefficient", routeShape.maxNonLinearCoefficient() == null
+                ? null : round2(routeShape.maxNonLinearCoefficient()));
+        result.put("abnormalNonLinearLines", routeShape.abnormalNonLinearLines());
+        result.put("maxNonLinearLineId", routeShape.maxNonLinearLineId());
+        result.put("abnormalNonLinearLineIds", routeShape.abnormalNonLinearLineIds());
+        if (nonLinearCoefficient == null) {
+            unavailable(availability, "xlfzxxs", coordinates.isSupported() ? "nodata" : "unsupported",
+                    coordinates.isSupported()
+                            ? routeShape.missingGeometryRoutes() > 0
+                                    ? "部分公交线路缺 route/link 或首末站坐标，未下发部分真值"
+                                    : "没有有效的非环形公交线路"
+                            : "模型未声明可识别的坐标系，不能计算首末站地面直线距离");
+        }
+        if (repetitionCoefficient == null) {
+            unavailable(availability, "xlcfxs", "nodata",
+                    routeShape.missingGeometryRoutes() > 0
+                            ? "部分公交线路缺 route/link，未下发部分真值"
+                            : "没有有效的公交线路或物理路段");
+        }
+        TransitMetrics.PeakAverageLoadStats peakLoad = passengerStats.peakLoad.finish();
+        Double peakAverageLoadRate = peakLoad.percent() == null ? null : round2(peakLoad.percent());
+        result.put("xlmzl", peakAverageLoadRate);
+        result.put("peakAverageLoadRatePercent", peakAverageLoadRate);
+        result.put("peakScheduledDepartures", peakLoad.scheduledPeakDepartures());
+        result.put("peakValidCapacityDepartures", peakLoad.validCapacityDepartures());
+        result.put("peakMissingCapacityDepartures", peakLoad.missingCapacityDepartures());
+        if (peakAverageLoadRate == null) {
+            unavailable(availability, "xlmzl",
+                    peakLoad.missingCapacityDepartures() > 0 ? "unsupported" : "nodata",
+                    peakLoad.missingCapacityDepartures() > 0
+                            ? "高峰公交班次存在缺失车辆或额定载客量，不能下发部分真值"
+                            : "早晚高峰时段没有有效公交班次");
+        }
+
+        Map<String, Double> xlklqd = routePersonStrength(data, passengerStats);
         result.put("xlklqd", xlklqd.entrySet().stream()
                 .limit(5)
                 .collect(Collectors.toMap(
@@ -357,36 +538,149 @@ public final class MatsimPrecomputedCache {
                         (oldValue, newValue) -> oldValue,
                         LinkedHashMap::new
                 )));
-        result.put("xlklqd_sum", round2(xlklqd.values().stream().mapToDouble(Double::doubleValue).sum()));
-        if (hasPopulation) {
-            result.put("yxsdb", runSpeed(data.getPopulation()));
-            double[] awaitByHour = TransitMetrics.avgAwaitTimeByHour(data.getPopulation());
-            double[] pjhcsj = new double[awaitByHour.length];
-            for (int i = 0; i < awaitByHour.length; i++) {
-                pjhcsj[i] = round2(awaitByHour[i]);
+        TransitMetrics.RoadOperatingDistanceStats operatingDistance =
+                TransitMetrics.roadOperatingDistanceStats(
+                        data.getSchedule(), data.getNetwork(), roadTransit);
+        Double passengerStrength = TransitMetrics.busPassengerStrength(boardings, operatingDistance);
+        Double networkPassengerStrength = passengerStrength == null ? null : round2(passengerStrength);
+        result.put("xlklqd_total", networkPassengerStrength);
+        result.put("busPassengerBoardingsPerVehicleKm", networkPassengerStrength);
+        result.put("busOperatingVehicleKilometers", operatingDistance.vehicleKilometers());
+        result.put("xlklqd_sum", networkPassengerStrength);
+        if (networkPassengerStrength == null) {
+            unavailable(availability, "xlklqd", operatingDistance.missingGeometryRoutes() > 0
+                            ? "unsupported" : "nodata",
+                    operatingDistance.missingGeometryRoutes() > 0
+                            ? "有发班的公交路径缺少有效线路里程，不能下发部分真值"
+                            : "缺少公交上车人次或计划运营车公里");
+        }
+        TransitMetrics.PeakOperatingSpeedStats peakBusSpeed =
+                TransitMetrics.roadBusPeakOperatingSpeedStats(
+                        data.getSchedule(), data.getNetwork(), roadTransit);
+        result.put("peakBusOperatingDistanceMeters", peakBusSpeed.distanceMeters());
+        result.put("peakBusOperatingTravelSeconds", peakBusSpeed.travelSeconds());
+        result.put("peakBusOperatingDepartures", peakBusSpeed.samples());
+        if (hasDerivedPopulationMetrics) {
+            Map<String, Object> speeds = new LinkedHashMap<>();
+            Object cachedSpeeds = derivedPopulationMetrics.get("yxsdb");
+            if (cachedSpeeds instanceof Map<?, ?> source) {
+                source.forEach((key, value) -> {
+                    if (key != null) speeds.put(String.valueOf(key), value);
+                });
             }
-            result.put("pjhcsj", pjhcsj);
+            Double busKmh = peakBusSpeed.kmh();
+            speeds.put("ptAvg", busKmh == null ? null : round2(busKmh));
+            speeds.put("busAvg", busKmh == null ? null : round2(busKmh));
+            Object awaitMinutes = derivedPopulationMetrics.get("pjhcsj");
+            result.put("yxsdb", speeds);
+            result.put("pjhcsj", awaitMinutes);
+            result.put("pjhccs", derivedPopulationMetrics.get("pjhccs"));
+            result.put("gjjbbl", derivedPopulationMetrics.get("gjjbbl"));
+            result.put("busServiceJourneys", derivedPopulationMetrics.get("busServiceJourneys"));
+            result.put("busServiceTransfers", derivedPopulationMetrics.get("busServiceTransfers"));
+            result.put("busRailJourneys", derivedPopulationMetrics.get("busRailJourneys"));
+            result.put("peakCarDistanceMeters", derivedPopulationMetrics.get("peakCarDistanceMeters"));
+            result.put("peakCarTravelSeconds", derivedPopulationMetrics.get("peakCarTravelSeconds"));
+            result.put("peakCarSamples", derivedPopulationMetrics.get("peakCarSamples"));
+            result.put("speedPeriodPolicy", derivedPopulationMetrics.get("speedPeriodPolicy"));
+            result.put("carSpeedSpatialScope", derivedPopulationMetrics.get("carSpeedSpatialScope"));
+            result.put("busWaitSamples", derivedPopulationMetrics.get("busWaitSamples"));
+            if (!hasBothSpeeds(speeds)) {
+                unavailable(availability, "yxsdb",
+                        peakBusSpeed.missingGeometryRoutes() > 0 ? "unsupported" : "nodata",
+                        peakBusSpeed.missingGeometryRoutes() > 0
+                                ? "高峰公交班次存在缺失线路里程或行程时间，不能下发部分真值"
+                                : "population-v9 缺少高峰公交或小汽车有效速度样本");
+            }
+            if (!(awaitMinutes instanceof Number)) {
+                unavailable(availability, "pjhcsj", "nodata", "population-v9 中无可用的公交候车时间样本");
+            }
+            if (!(result.get("pjhccs") instanceof Number)) {
+                unavailable(availability, "pjhccs",
+                        "unsupported".equals(populationSummary.get("busServiceJourneyStatus"))
+                                ? "unsupported" : "nodata",
+                        "unsupported".equals(populationSummary.get("busServiceJourneyStatus"))
+                                ? "plans 中存在无法可靠判定制式的公共交通出行"
+                                : "population-v9 中无含公交乘坐段的完整 OD 出行");
+            }
+            if (!(result.get("gjjbbl") instanceof Number)) {
+                unavailable(availability, "gjjbbl",
+                        "unsupported".equals(populationSummary.get("busServiceJourneyStatus"))
+                                ? "unsupported" : "nodata",
+                        "unsupported".equals(populationSummary.get("busServiceJourneyStatus"))
+                                ? "plans 中存在无法可靠判定制式的公共交通出行"
+                                : "population-v9 中无含公交乘坐段的完整 OD 出行");
+            }
+        } else if (hasPlanDetails) {
+            Map<String, Double> speeds = runSpeed(
+                    population, data.getSchedule(), data.getNetwork(), roadTransit);
+            result.put("yxsdb", speeds);
+            Double awaitMinutes = TransitMetrics.averageRoadBusAwaitMinutes(population, roadTransit);
+            result.put("pjhcsj", awaitMinutes == null ? null : round2(awaitMinutes));
+            TransitMetrics.BusServiceJourneyStats serviceJourneys =
+                    TransitMetrics.busServiceJourneyStats(population, roadTransit);
+            result.put("pjhccs", serviceJourneys.unresolvedLegacyPtJourneys() > 0
+                    ? null : round4(serviceJourneys.averageTransfers()));
+            result.put("gjjbbl", serviceJourneys.unresolvedLegacyPtJourneys() > 0
+                    ? null : round2(serviceJourneys.busRailRatioPercent()));
+            if (!hasBothSpeeds(speeds)) {
+                unavailable(availability, "yxsdb", "nodata", "plans 缺少公交或小汽车有效速度样本");
+            }
+            if (awaitMinutes == null) {
+                unavailable(availability, "pjhcsj", "nodata", "plans 中无可用的公交候车时间样本");
+            }
         } else {
             result.put("yxsdb", null);
             result.put("pjhcsj", null);
+            result.put("pjhccs", null);
+            result.put("gjjbbl", null);
+            unavailable(availability, "yxsdb", "unsupported", "当前加载模式未保留 plans 行程明细");
+            unavailable(availability, "pjhcsj", "unsupported", "当前加载模式未保留 plans 时间明细");
+            unavailable(availability, "pjhccs", "unsupported", "当前加载模式未保留 plans 完整 OD 出行明细");
+            unavailable(availability, "gjjbbl", "unsupported", "当前加载模式未保留 plans 完整 OD 出行明细");
         }
+        if ("unsupported".equals(populationSummary.get("coverage300Status"))) {
+            result.put("fgl_300", null);
+            unavailable(availability, "fgl_300", "unsupported", "population-v9 无法完整判定公共汽电车站点或坐标系");
+        }
+        if ("unsupported".equals(populationSummary.get("busShareStatus"))) {
+            for (String metric : List.of("yxsdb", "pjhcsj", "pjhccs", "gjjbbl")) {
+                result.put(metric, null);
+                unavailable(availability, metric, "unsupported",
+                        "plans 中存在无法通过 TransitPassengerRoute 与 schedule 解析制式的 legacy pt 出行");
+            }
+        }
+        if (!roadTransit.isComplete()) {
+            String reason = "时刻表中有 " + roadTransit.unresolvedRoutes()
+                    + " 条 legacy pt 线路无法可靠判定是否为公共汽电车";
+            for (String metric : List.of("gjxwmd", "fgl_300", "wrbyl", "cjrzkl", "dbczkl",
+                    "rcxcs", "xlfzxxs", "xlcfxs", "xlmzl", "xlklqd_total",
+                    "yxsdb", "pjhcsj", "pjhccs", "gjjbbl")) {
+                result.put(metric, null);
+                unavailable(availability, metric, "unsupported", reason);
+            }
+            result.put("boardings", null);
+            unavailable(availability, "boardings", "unsupported", reason);
+        }
+        result.forEach((metric, value) -> {
+            if (value == null) {
+                availability.putIfAbsent(metric, Map.of(
+                        "status", "nodata",
+                        "reason", "源数据中缺少计算该指标所需的有效字段"
+                ));
+            }
+        });
+        result.put("availability", availability);
         return result;
     }
 
-    private static List<LineVO> buildLines(MatsimData data) {
+    private static List<LineVO> buildLines(MatsimData data, PassengerStats passengerStats) {
         List<LineVO> lineList = new ArrayList<>();
         Network network = data.getNetwork();
-        // 客流/满载率所需索引一次预建：缓存构建发生在 personTracks 就绪之后（Datasource.loadEvent 顺序保证）。
+        // 客流/平均高峰满载率所需索引一次预建：缓存构建发生在 personTracks 就绪之后
+        // （Datasource.loadEvent 顺序保证）。
         // 原实现只调 RouteDetailVO 构造器，lc/takeRate/passenger 恒为 0 被落盘，
         // routeDetail/lineAll 命中缓存时（默认常态）前端满载率/日客流永远显示 0。
-        Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = data.getPersonTracks().stream()
-                .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
-        Map<String, Long> boardingsByLineRoute = new HashMap<>();
-        for (PTPersonTrack track : data.getPersonTracks()) {
-            if (Boolean.TRUE.equals(track.getEnter()) && track.getRouteId() != null) {
-                boardingsByLineRoute.merge(track.getLineId() + "::" + track.getRouteId(), 1L, Long::sum);
-            }
-        }
         for (Map.Entry<Id<TransitLine>, TransitLine> line : data.getSchedule().getTransitLines().entrySet()) {
             TransitLine transitLine = line.getValue();
             LineVO vo = new LineVO();
@@ -395,7 +689,7 @@ public final class MatsimPrecomputedCache {
             List<RouteDetailVO> routes = new ArrayList<>();
             for (TransitRoute route : transitLine.getRoutes().values()) {
                 RouteDetailVO detail = new RouteDetailVO(route, network);
-                fillRouteStatistics(detail, transitLine.getId().toString(), route, data, tracksByVehicle, boardingsByLineRoute);
+                fillRouteStatistics(detail, transitLine.getId().toString(), route, data, passengerStats);
                 routes.add(detail);
             }
             vo.setRoutes(routes);
@@ -407,7 +701,8 @@ public final class MatsimPrecomputedCache {
 
     /**
      * 填充实时路径（RouteServiceImpl.routeDetail）同口径的三个统计指标：
-     * lc=非直线系数（线路长度/首末站直线距离）、takeRate=满载率（日周转系数口径，小数）、
+     * lc=非直线系数（线路长度/首末站直线距离）、takeRate=该路径各高峰班次
+     * 最大站段满载率的班次均值（小数）、
      * passenger=日客流（该线路上车人次，lineId+routeId 复合键）。
      */
     private static void fillRouteStatistics(
@@ -415,19 +710,14 @@ public final class MatsimPrecomputedCache {
             String lineId,
             TransitRoute route,
             MatsimData data,
-            Map<VehicleId, List<PTPersonTrack>> tracksByVehicle,
-            Map<String, Long> boardingsByLineRoute
+            PassengerStats passengerStats
     ) {
         detail.getInfo().setLc(routeDirectness(route, data.getNetwork()));
-        List<VehicleId> vehicleIds = new ArrayList<>();
-        route.getDepartures().values().forEach(departure -> {
-            if (departure.getVehicleId() != null) {
-                vehicleIds.add(VehicleId.create(departure.getVehicleId()));
-            }
-        });
-        detail.getInfo().setTakeRate(TransitMetrics.fullLoadRate(
-                vehicleIds, tracksByVehicle, data.getTv().getVehicles(), data.getScale()));
-        detail.getInfo().setPassenger(boardingsByLineRoute.getOrDefault(lineId + "::" + route.getId(), 0L));
+        Double peakPercent = passengerStats.routePeakLoad(lineId, route.getId().toString()).percent();
+        if (peakPercent != null) {
+            detail.getInfo().setTakeRate(peakPercent / 100.0);
+        }
+        detail.getInfo().setPassenger(passengerStats.boardingsByLineRoute.getOrDefault(lineId + "::" + route.getId(), 0L));
     }
 
     /** 单条 route 的非直线系数：线路长度 / 首末站直线距离；环线（直线距离 0）返回 0。 */
@@ -589,10 +879,258 @@ public final class MatsimPrecomputedCache {
         return result;
     }
 
-    private static Map<String, List<PTLink>> buildNetworkTiles(MatsimData data) {
+    /**
+     * 单次顺序扫描即可得到所有可视化统计需要的有界索引。
+     * 满载率只保留“班次→同秒净上下车变化”的有界状态，不复制数千万条乘客事件。
+     */
+    private static PassengerStats passengerStats(MatsimData data) {
+        boolean unorderedInMemory = data.getPersonTracks() != null && !data.getPersonTracks().isEmpty();
+        TransitMetrics.RoadTransitContext roadTransit =
+                TransitMetrics.RoadTransitContext.from(data.getSchedule());
+        PassengerStats stats = new PassengerStats(data, roadTransit, unorderedInMemory);
+        MatsimPersonTrackStore.forEachTrack(data, track -> {
+            stats.acceptPassengerEvent(track);
+            if (Boolean.TRUE.equals(track.getEnter())) {
+                stats.totalBoardings++;
+                if (track.getRouteId() != null) {
+                    stats.boardingsByLineRoute.merge(track.getLineId() + "::" + track.getRouteId(), 1L, Long::sum);
+                }
+            }
+            if (roadTransit.isRoadTrack(track)) {
+                if (track.getVehicleId() != null) stats.roadVehicleIds.add(track.getVehicleId());
+                if (Boolean.TRUE.equals(track.getEnter())) stats.roadBoardings++;
+            }
+        });
+        return stats;
+    }
+
+    /** 人口“计数”与 plans 对象明细分离：V6 从流式人口工件取总数。 */
+    private static Long populationCount(MatsimData data, Map<String, Object> summary) {
+        Population population = data.getPopulation();
+        if (population != null && !population.getPersons().isEmpty()) {
+            return (long) population.getPersons().size();
+        }
+        if ("ready".equals(summary.get("status")) && summary.get("persons") instanceof Number number) {
+            return Math.max(0L, number.longValue());
+        }
+        return null;
+    }
+
+    /** 常住人口只统计 plans 中具有有效首个 home 位置的人。 */
+    static Long residentHomePersonCount(MatsimData data, Map<String, Object> summary) {
+        Population population = data == null ? null : data.getPopulation();
+        if (population != null && !population.getPersons().isEmpty()) {
+            return TransitMetrics.residentHomePersonCount(population);
+        }
+        if (summary != null && "ready".equals(summary.get("status"))
+                && summary.get("homePersons") instanceof Number number) {
+            return Math.max(0L, number.longValue());
+        }
+        return null;
+    }
+
+    /**
+     * population-v9 中与评价体系直接对应的派生值。
+     * 输出键与 info.json 一致，便于大小模型共用同一下游路径。
+     */
+    static Map<String, Object> populationDerivedMetrics(Map<String, Object> summary) {
+        if (summary == null || !"ready".equals(summary.get("status"))) {
+            return Map.of();
+        }
+        Double coverage = summary.get("coverage300Percent") instanceof Number number
+                ? number.doubleValue() : null;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("fgl_300", TransitMetrics.coverageResult(coverage));
+        Object busShare = summary.get("publicTransportMotorizedSharePercent");
+        Map<String, Double> publicTransportShares = new LinkedHashMap<>();
+        if ("ready".equals(summary.get("publicTransportShareStatus"))
+                && busShare instanceof Number number) {
+            publicTransportShares.put("pt", number.doubleValue());
+            if ("ready".equals(summary.get("busShareStatus"))
+                    && summary.get("busSharePercent") instanceof Number bus) {
+                publicTransportShares.put("bus", bus.doubleValue());
+            }
+        }
+        result.put("fxfdl", publicTransportShares);
+        boolean busPlansSupported = !"unsupported".equals(summary.get("busShareStatus"));
+        result.put("yxsdb", busPlansSupported && summary.get("speedKmh") instanceof Map<?, ?>
+                ? summary.get("speedKmh") : null);
+        result.put("pjhcsj", busPlansSupported && summary.get("averageBusWaitMinutes") instanceof Number number
+                ? number.doubleValue() : null);
+        boolean serviceJourneysSupported =
+                "ready".equals(summary.get("busServiceJourneyStatus"));
+        result.put("pjhccs", serviceJourneysSupported
+                && summary.get("averageBusTransfers") instanceof Number number
+                ? number.doubleValue() : null);
+        result.put("gjjbbl", serviceJourneysSupported
+                && summary.get("busRailFeederPercent") instanceof Number number
+                ? number.doubleValue() : null);
+        result.put("busServiceJourneys", summary.get("busServiceJourneys") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("busServiceTransfers", summary.get("busServiceTransfers") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("busRailJourneys", summary.get("busRailJourneys") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("peakCarDistanceMeters", summary.get("peakCarDistanceMeters") instanceof Number number
+                ? Math.max(0.0, number.doubleValue()) : null);
+        result.put("peakCarTravelSeconds", summary.get("peakCarTravelSeconds") instanceof Number number
+                ? Math.max(0.0, number.doubleValue()) : null);
+        result.put("peakCarSamples", summary.get("peakCarSamples") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("speedPeriodPolicy", summary.get("speedPeriodPolicy"));
+        result.put("carSpeedSpatialScope", summary.get("carSpeedSpatialScope"));
+        result.put("busWaitSamples", summary.get("busWaitSamples") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        Object validHomes = summary.get("coverageValidHomePersons");
+        if (!(validHomes instanceof Number)) validHomes = summary.get("homePersons");
+        result.put("coverageValidHomePersons", validHomes instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("coverageTotalPersons", summary.get("persons") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("coverageMissingHomePersons", summary.get("coverageMissingHomePersons") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("coordinateTransformFailures", summary.get("coordinateTransformFailures") instanceof Number number
+                ? Math.max(0L, number.longValue()) : null);
+        result.put("coverageStatus", summary.get("coverage300Status"));
+        result.put("coverageDenominatorPolicy", "valid-first-home");
+        return result;
+    }
+
+    private static Map<String, Double> busModeShare(TransitMetrics.BusTripShareStats stats) {
+        if (stats == null || stats.publicTransportMotorizedPercent() == null) {
+            return Map.of();
+        }
+        Map<String, Double> shares = new LinkedHashMap<>();
+        shares.put("pt", round2(stats.publicTransportMotorizedPercent()));
+        if (stats.unresolvedLegacyPtJourneys() == 0) {
+            shares.put("bus", round2(stats.busPercent()));
+        }
+        return shares;
+    }
+
+    private static boolean hasBothSpeeds(Object value) {
+        if (!(value instanceof Map<?, ?> speeds)) return false;
+        return speeds.get("ptAvg") instanceof Number pt && pt.doubleValue() > 0
+                && speeds.get("carAvg") instanceof Number car && car.doubleValue() > 0;
+    }
+
+    /** 公交人均日出行次数 = 公交主方式完整 OD 出行数 ÷ 常住人口，明确排除地铁。 */
+    static Double dailyTripsPerPerson(MatsimData data, Long residentHomePersons) {
+        return dailyTripsPerPerson(MatsimPopulationCache.readPopulationSummary(data), residentHomePersons);
+    }
+
+    static Double dailyTripsPerPerson(Map<String, Object> summary, Long residentHomePersons) {
+        if (summary == null || residentHomePersons == null || residentHomePersons <= 0) return null;
+        if (!"ready".equals(summary.get("status"))
+                || !"ready".equals(summary.get("busDailyTripsStatus"))
+                || !(summary.get("residentBusJourneys") instanceof Number journeys)) {
+            return null;
+        }
+        return Math.max(0L, journeys.longValue()) / (double) residentHomePersons;
+    }
+
+    private static double totalRouteLengthKm(MatsimData data) {
+        double meters = 0.0;
+        for (TransitLine line : data.getSchedule().getTransitLines().values()) {
+            for (TransitRoute route : line.getRoutes().values()) {
+                if (route.getRoute() != null) {
+                    meters += DistanceUtil.distance(route.getRoute(), data.getNetwork());
+                }
+            }
+        }
+        return meters / 1000.0;
+    }
+
+    private static void unavailable(Map<String, Object> availability, String metric, String status, String reason) {
+        availability.put(metric, Map.of("status", status, "reason", reason));
+    }
+
+    /**
+     * 仅在大模型可视化缓存首次生成时临时读取完整道路网络；返回对象不会写回 MatsimData，
+     * 因而业务常驻内存仍保持公交精简网络。
+     */
+    private static Network loadFullNetworkForVisual(MatsimData data) {
+        String file = data.getOutfile() == null ? null : data.getOutfile().getNetwork();
+        if (file == null || file.isBlank()) {
+            // 合成单测可直接注入内存 scenario；真实加载路径在此之前已要求 network 输入存在。
+            if (data.getNetwork() != null && !data.getNetwork().getLinks().isEmpty()) {
+                log.warn("合成大模型未配置原始 network，测试路径回退到内存网络: model={}", data.getName());
+                return data.getNetwork();
+            }
+            throw new IllegalStateException("完整道路网络文件不存在，无法生成大模型路网瓦片");
+        }
+        if (!Files.isRegularFile(Path.of(file))) {
+            throw new IllegalStateException("完整道路网络文件不存在，无法生成大模型路网瓦片: " + file);
+        }
+        Network network = NetworkUtils.createNetwork();
+        new MatsimNetworkReader(network).readFile(file);
+
+        String globalCrs = data.getConfig() == null ? null : data.getConfig().global().getCoordinateSystem();
+        String inputCrs = data.getConfig() == null ? null : data.getConfig().network().getInputCRS();
+        String networkCrs = (String) network.getAttributes().getAttribute("coordinateReferenceSystem");
+        CoordinateTransformation transformation = coordinateTransformation(globalCrs, inputCrs, networkCrs);
+        if (transformation != null) {
+            network.getNodes().values().forEach(node -> node.setCoord(transformation.transform(node.getCoord())));
+        }
+        log.info("大模型完整道路网络临时加载完成: model={}, links={}, nodes={}",
+                data.getName(), network.getLinks().size(), network.getNodes().size());
+        return network;
+    }
+
+    private static CoordinateTransformation coordinateTransformation(String globalCrs, String inputCrs, String fileCrs) {
+        String source = fileCrs != null && !fileCrs.isBlank() ? fileCrs
+                : inputCrs != null && !inputCrs.isBlank() ? inputCrs : globalCrs;
+        if (source == null || source.isBlank() || source.equalsIgnoreCase("epsg:3857")) return null;
+        return TransformationFactory.getCoordinateTransformation(source, "epsg:3857");
+    }
+
+    private static final class PassengerStats {
+        private final TransitMetrics.PeakAverageLoadAccumulator peakLoad;
+        private final Map<String, TransitMetrics.PeakAverageLoadAccumulator> peakLoadByLineRoute =
+                new HashMap<>();
+        private long totalBoardings;
+        private long roadBoardings;
+        private final Map<String, Long> boardingsByLineRoute = new HashMap<>();
+        private final Set<VehicleId> roadVehicleIds = new HashSet<>();
+
+        private PassengerStats(
+                MatsimData data,
+                TransitMetrics.RoadTransitContext roadTransit,
+                boolean unorderedInMemory) {
+            this.peakLoad = TransitMetrics.PeakAverageLoadAccumulator.roadBus(
+                    data.getSchedule(), data.getTv(), roadTransit, unorderedInMemory);
+            for (Map.Entry<Id<TransitLine>, TransitLine> line
+                    : data.getSchedule().getTransitLines().entrySet()) {
+                for (TransitRoute route : line.getValue().getRoutes().values()) {
+                    peakLoadByLineRoute.put(line.getKey() + "::" + route.getId(),
+                            TransitMetrics.PeakAverageLoadAccumulator.route(
+                                    line.getKey(), route, data.getTv(), unorderedInMemory));
+                }
+            }
+        }
+
+        private void acceptPassengerEvent(PTPersonTrack track) {
+            peakLoad.accept(track);
+            if (track != null && track.getLineId() != null && track.getRouteId() != null) {
+                TransitMetrics.PeakAverageLoadAccumulator routePeak =
+                        peakLoadByLineRoute.get(track.getLineId() + "::" + track.getRouteId());
+                if (routePeak != null) routePeak.accept(track);
+            }
+        }
+
+        private TransitMetrics.PeakAverageLoadStats routePeakLoad(String lineId, String routeId) {
+            TransitMetrics.PeakAverageLoadAccumulator routePeak =
+                    peakLoadByLineRoute.get(lineId + "::" + routeId);
+            return routePeak == null
+                    ? new TransitMetrics.PeakAverageLoadStats(null, 0, 0, 0)
+                    : routePeak.finish();
+        }
+    }
+
+    private static Map<String, List<PTLink>> buildNetworkTiles(MatsimData data, Network network) {
         Map<String, Double> flows = readLinkFlows(data.getOutfile().getLinkstats());
         Map<String, List<PTLink>> result = new LinkedHashMap<>();
-        data.getNetwork().getLinks().forEach((linkId, link) -> {
+        network.getLinks().forEach((linkId, link) -> {
             addLinkToCoveredTiles(result, link, PTLink.base(link, flows.getOrDefault(linkId.toString(), 0D)));
         });
         return result;
@@ -660,128 +1198,59 @@ public final class MatsimPrecomputedCache {
         }
     }
 
-    /**
-     * @deprecated 未修正口径的旧实现：双向 link 各算一次（里程翻倍）、未剔除轨道线路。
-     * 只服务于 info.json（/pt/data/info），该接口前端未调用；体检评估走的是
-     * PTDataServiceImpl.buildEvaluation → TransitMetrics.networkLengthMeters。
-     * 若将来要下发 info.json 的 gjxwmd，请改用 TransitMetrics 并 bump VISUAL_CACHE_VERSION。
-     */
-    @Deprecated
-    private static double ptNetworkLength(TransitSchedule schedule, Network network) {
-        double length = 0;
-        Set<Id<Link>> links = new HashSet<>();
-        schedule.getTransitLines().forEach((lineId, line) -> line.getRoutes().forEach((routeId, route) -> {
-            NetworkRoute networkRoute = route.getRoute();
-            links.add(networkRoute.getStartLinkId());
-            links.addAll(networkRoute.getLinkIds());
-            links.add(networkRoute.getEndLinkId());
-        }));
-        for (Id<Link> linkId : links) {
-            Link link = network.getLinks().get(linkId);
-            if (link != null) {
-                length += link.getLength();
-            }
-        }
-        return length;
-    }
-
-    private static Map<String, Double> runSpeed(Population population) {
-        double ptTime = 0.0;
-        double ptDist = 0.0;
+    private static Map<String, Double> runSpeed(
+            Population population,
+            org.matsim.pt.transitSchedule.api.TransitSchedule schedule,
+            org.matsim.api.core.v01.network.Network network,
+            TransitMetrics.RoadTransitContext roadTransit) {
         double carTime = 0.0;
         double carDist = 0.0;
         for (Person person : population.getPersons().values()) {
             for (PlanElement element : person.getSelectedPlan().getPlanElements()) {
-                // Route.getDistance() 可为 NaN，累加前过滤，否则均值被污染为 NaN
-                if (element instanceof Leg leg && leg.getTravelTime().isDefined() && leg.getRoute() != null
-                        && !Double.isNaN(leg.getRoute().getDistance())) {
-                    if (Constant.ROUTE_MODE_PT.equals(leg.getMode())) {
-                        ptTime += leg.getTravelTime().seconds();
-                        ptDist += leg.getRoute().getDistance();
-                    } else if (Constant.ROUTE_MODE_CAR.equals(leg.getMode())) {
-                        carTime += leg.getTravelTime().seconds();
-                        carDist += leg.getRoute().getDistance();
-                    }
-                }
+                if (!(element instanceof Leg leg)) continue;
+                TransitMetrics.PeakOperatingSpeedStats sample =
+                        TransitMetrics.peakCarLegSpeedSample(leg);
+                if (sample == null) continue;
+                carTime += sample.travelSeconds();
+                carDist += sample.distanceMeters();
             }
         }
+        TransitMetrics.PeakOperatingSpeedStats bus =
+                TransitMetrics.roadBusPeakOperatingSpeedStats(schedule, network, roadTransit);
         Map<String, Double> result = new LinkedHashMap<>();
-        result.put("ptAvg", round2(ptTime == 0 ? 0 : ptDist / ptTime * 3.6));
-        result.put("carAvg", round2(carTime == 0 ? 0 : carDist / carTime * 3.6));
+        result.put("ptAvg", bus.kmh() == null ? null : round2(bus.kmh()));
+        result.put("busAvg", bus.kmh() == null ? null : round2(bus.kmh()));
+        result.put("carAvg", carTime > 0 ? round2(carDist / carTime * 3.6) : null);
         return result;
     }
 
-    private static double routeRC(MatsimData data) {
-        double length = 0.0;
-        Set<Id<Link>> links = new HashSet<>();
-        for (TransitLine transitLine : data.getSchedule().getTransitLines().values()) {
-            for (TransitRoute transitRoute : transitLine.getRoutes().values()) {
-                NetworkRoute networkRoute = transitRoute.getRoute();
-                length += DistanceUtil.distance(networkRoute, data.getNetwork());
-                links.add(networkRoute.getStartLinkId());
-                links.addAll(networkRoute.getLinkIds());
-                links.add(networkRoute.getEndLinkId());
-            }
-        }
-        double uniqueLength = 0.0;
-        for (Id<Link> linkId : links) {
-            Link link = data.getNetwork().getLinks().get(linkId);
-            if (link != null) {
-                uniqueLength += NetworkUtils.getEuclideanDistance(link.getFromNode().getCoord(), link.getToNode().getCoord());
-            }
-        }
-        return uniqueLength == 0 ? 0 : round2(length / uniqueLength);
-    }
-
-    private static double routeNoLC(MatsimData data) {
-        int routeCount = 0;
-        double value = 0.0;
-        for (TransitLine transitLine : data.getSchedule().getTransitLines().values()) {
-            for (TransitRoute transitRoute : transitLine.getRoutes().values()) {
-                NetworkRoute networkRoute = transitRoute.getRoute();
-                double distance = DistanceUtil.distance(networkRoute, data.getNetwork());
-                if (transitRoute.getStops().isEmpty()) {
-                    continue;
-                }
-                TransitRouteStop first = transitRoute.getStops().getFirst();
-                TransitRouteStop last = transitRoute.getStops().getLast();
-                double straight = NetworkUtils.getEuclideanDistance(first.getStopFacility().getCoord(), last.getStopFacility().getCoord());
-                if (straight > 0) {
-                    value += distance / straight;
-                    routeCount++;
-                }
-            }
-        }
-        return routeCount == 0 ? 0 : round2(value / routeCount);
-    }
-
     /**
-     * 线路客流强度（未四舍五入，按值降序）。与 PTDataServiceImpl.routePersonStrength 同口径：
-     * TransitRoute ID 只在线路内唯一，上车记录按 lineId+routeId 复合键分组；
-     * 输出键在 routeId 全局唯一时用裸 routeId，重复时用 "lineId::routeId" 消歧。
+     * 运行路径客流强度（人次/车公里，未四舍五入，按值降序）。
+     * 分母为路径长度×该路径日发班数，不再用静态线路长度冒充运营车公里。
      */
-    private static Map<String, Double> routePersonStrength(MatsimData data) {
-        Map<String, Long> boardingsByLineRoute = new HashMap<>();
-        for (PTPersonTrack track : data.getPersonTracks()) {
-            if (Boolean.TRUE.equals(track.getEnter()) && track.getRouteId() != null) {
-                boardingsByLineRoute.merge(track.getLineId() + "::" + track.getRouteId(), 1L, Long::sum);
-            }
-        }
+    private static Map<String, Double> routePersonStrength(MatsimData data, PassengerStats passengerStats) {
+        TransitMetrics.RoadTransitContext roadTransit =
+                TransitMetrics.RoadTransitContext.from(data.getSchedule());
         Map<String, Integer> routeIdCounts = new HashMap<>();
         for (TransitLine transitLine : data.getSchedule().getTransitLines().values()) {
-            for (Id<TransitRoute> routeId : transitLine.getRoutes().keySet()) {
-                routeIdCounts.merge(routeId.toString(), 1, Integer::sum);
+            for (TransitRoute route : transitLine.getRoutes().values()) {
+                if (roadTransit.isRoadRoute(transitLine, route)) {
+                    routeIdCounts.merge(route.getId().toString(), 1, Integer::sum);
+                }
             }
         }
         Map<String, Double> result = new HashMap<>();
         for (Map.Entry<Id<TransitLine>, TransitLine> line : data.getSchedule().getTransitLines().entrySet()) {
             for (Map.Entry<Id<TransitRoute>, TransitRoute> route : line.getValue().getRoutes().entrySet()) {
+                if (!roadTransit.isRoadRoute(line.getValue(), route.getValue())) continue;
                 double distance = DistanceUtil.distance(route.getValue().getRoute(), data.getNetwork());
                 String routeId = route.getKey().toString();
                 String lineRouteKey = line.getKey() + "::" + routeId;
-                double passenger = boardingsByLineRoute.getOrDefault(lineRouteKey, 0L);
+                double passenger = passengerStats.boardingsByLineRoute.getOrDefault(lineRouteKey, 0L);
+                double vehicleKm = distance > 0
+                        ? distance / 1000.0 * route.getValue().getDepartures().size() : 0.0;
                 String outputKey = routeIdCounts.getOrDefault(routeId, 0) > 1 ? lineRouteKey : routeId;
-                result.put(outputKey, distance == 0 ? 0 : passenger / (distance / 1000.0));
+                result.put(outputKey, vehicleKm == 0 ? 0 : passenger / vehicleKm);
             }
         }
         return result.entrySet().stream()
@@ -792,29 +1261,6 @@ public final class MatsimPrecomputedCache {
                         (oldValue, newValue) -> oldValue,
                         LinkedHashMap::new
                 ));
-    }
-
-    private static Map<String, Integer> legType(Population population) {
-        Map<String, Integer> types = new HashMap<>();
-        population.getPersons().values().forEach(person -> person.getSelectedPlan().getPlanElements().forEach(element -> {
-            if (element instanceof Leg leg) {
-                types.merge(leg.getMode(), 1, Integer::sum);
-            }
-        }));
-        return types;
-    }
-
-    private static Map<String, Double> legTypeRate(Population population) {
-        Map<String, Integer> types = legType(population);
-        int count = types.values().stream().mapToInt(Integer::intValue).sum();
-        Map<String, Double> result = new LinkedHashMap<>();
-        if (count == 0) {
-            return result;
-        }
-        BigDecimal total = BigDecimal.valueOf(count);
-        // 比例保留 4 位小数再转百分数 → 精确到 0.01%（与 PTDataServiceImpl.legTypeRant 同口径）
-        types.forEach((mode, value) -> result.put(mode, new BigDecimal(value).divide(total, 4, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).doubleValue()));
-        return result;
     }
 
     private static Map<String, Double> readLinkFlows(String linkstatsPath) {
@@ -1010,28 +1456,21 @@ public final class MatsimPrecomputedCache {
         // 否则用户补填真实面积/换车辆文件后旧统计继续下发
         putFileFingerprint(result, "transitVehicles", data.getOutfile().getTransitVehicles());
         result.put("areaKm2", String.valueOf(data.getArea()));
+        result.put("adminBoundarySignature",
+                MatsimAdministrativeDensityMetrics.boundaryFingerprint(data));
     }
 
     private static void putFileFingerprint(Map<String, Object> result, String key, String filePath) {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static void writeJsonAtomic(Path path, Object payload) throws Exception {
@@ -1298,5 +1737,19 @@ public final class MatsimPrecomputedCache {
             return 0.0;
         }
         return Math.round(value * 100.0) / 100.0;
+    }
+
+    private static double round3(double value) {
+        if (Double.isNaN(value) || Double.isInfinite(value)) {
+            return 0.0;
+        }
+        return Math.round(value * 1000.0) / 1000.0;
+    }
+
+    private static Double round4(Double value) {
+        if (value == null || Double.isNaN(value) || Double.isInfinite(value)) {
+            return null;
+        }
+        return Math.round(value * 10_000.0) / 10_000.0;
     }
 }

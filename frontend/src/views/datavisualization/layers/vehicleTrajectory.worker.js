@@ -1,8 +1,12 @@
+import {
+  isVehicleModeVisible,
+  normalizeVehicleVisibility,
+} from "../../../utils/vehicleVisibility.js";
+
 const EARTH_RADIUS = 6378137.0;
-const BINARY_STRIDE = 8;
+const BINARY_STRIDE = 9;
 const MODE_KEYS = ["bus", "subway", "car"];
 const MODE_CODE_TO_KEY = ["bus", "subway", "car"];
-const VEHICLE_VISIBILITY_MODES = ["all", "public", "private"];
 const MIN_FRAME_CAPACITY = 1024;
 // 帧缓冲池上限：池只服务 vehicle-frame 路径（主用的 GPU 段帧每秒 8 个小数组、GC 可承受），
 // 96MB 按 byteLength 分桶最坏可长期滞留，收敛到 32MB 足够覆盖峰值车数
@@ -16,12 +20,12 @@ const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
   return map;
 }, {});
 
-let currentVisibilityMode = "all";
+let currentVisibilityMode = normalizeVehicleVisibility();
 let pooledFrameBytes = 0;
 const frameBufferPool = new Map();
 
-// 多块缓存（双缓冲 / 预取）：每个分块只建一次每秒索引并常驻，切块时仅切换 activeKey，
-// 不再重建索引——这正是"播放经过 300s 分块边界时周期性卡顿"的根因。
+// 多块缓存（动态前瞻 / 预取）：每个分块只建一次每秒索引并常驻，切块时仅切换 activeKey。
+// v14 主播放交付 10s/块，50x 会提前常驻 3–4 块；块长始终以 header 为准。
 // 按 LRU + 字节预算淘汰，且永不淘汰当前活动块。
 let datasetVersion = 0;
 const chunkStore = new Map(); // key -> { kind, ..., index, bytes, lastUsedAt }
@@ -121,15 +125,22 @@ function modeKeyFromCode(code) {
   return MODE_CODE_TO_KEY[Math.round(Number(code) || 0)] || "car";
 }
 
-function normalizeVisibilityMode(mode) {
-  return VEHICLE_VISIBILITY_MODES.includes(mode) ? mode : "all";
+function binaryIntValues(values) {
+  if (!(values instanceof Float32Array)) return null;
+  return new Int32Array(values.buffer, values.byteOffset, values.length);
+}
+
+function binaryVehicleIndex(data, offset) {
+  return data?.segmentInts?.[offset + 7] ?? 0;
+}
+
+function binaryDistanceMeters(values, offset) {
+  const distance = Number(values?.[offset + 8]);
+  return Number.isFinite(distance) && distance >= 0 ? distance : 0;
 }
 
 function isModeVisible(mode, visibilityMode = currentVisibilityMode) {
-  const normalized = normalizeVisibilityMode(visibilityMode);
-  if (normalized === "public") return mode === "bus" || mode === "subway";
-  if (normalized === "private") return mode === "car";
-  return true;
+  return isVehicleModeVisible(mode, visibilityMode);
 }
 
 function emptyModeCount() {
@@ -229,7 +240,7 @@ function buildVehicleCursorIndex(data) {
     const segmentStart = values[offset];
     const segmentEnd = values[offset + 1];
     if (!Number.isFinite(segmentStart) || !Number.isFinite(segmentEnd) || segmentEnd <= segmentStart) continue;
-    const vehicleIndex = Math.round(Number(values[offset + 7]) || 0);
+    const vehicleIndex = binaryVehicleIndex(data, offset);
     let offsets = byVehicle.get(vehicleIndex);
     if (!offsets) {
       offsets = [];
@@ -261,6 +272,9 @@ function buildVehicleCursorIndex(data) {
 function buildBinarySecondIndex(data) {
   const values = data?.segments;
   if (!values?.length) return null;
+  // 二进制 vehicleId 与 float 字段共用同一块内存；入口既可能来自 Worker 的
+  // buildIndexedChunk，也可能是测试/恢复路径直接调用，统一在这里补齐 int32 视图。
+  if (!data.segmentInts) data.segmentInts = binaryIntValues(values);
   const start = Math.max(0, Math.floor(Number(data.chunk?.start) || 0));
   const seconds = Math.max(1, Math.ceil(Number(data.chunkSeconds || data.chunk?.end - start + 1 || 300)));
   let totalRefs = 0;
@@ -408,9 +422,9 @@ function activeFromBinary(time, data) {
     const y = sy + (ey - sy) * ratio;
     const dx = ex - sx;
     const dy = ey - sy;
-    const speed = (Math.sqrt(dx * dx + dy * dy) / duration) * 3.6;
+    const speed = (binaryDistanceMeters(values, offset) / duration) * 3.6;
     const webMercator = [originX + x, originY + y];
-    const vehicleIndex = Math.round(Number(values[offset + 7]) || 0);
+    const vehicleIndex = binaryVehicleIndex(data, offset);
 
     xs[count] = webMercator[0];
     ys[count] = webMercator[1];
@@ -468,14 +482,14 @@ function activeFromBinaryVehicleIndex(time, data, originX, originY) {
     const y = sy + (ey - sy) * ratio;
     const dx = ex - sx;
     const dy = ey - sy;
-    const speed = (Math.sqrt(dx * dx + dy * dy) / duration) * 3.6;
+    const speed = (binaryDistanceMeters(values, offset) / duration) * 3.6;
 
     xs[count] = originX + x;
     ys[count] = originY + y;
     angles[count] = Math.atan2(dy, dx) * 180 / Math.PI;
     speeds[count] = speed;
     modes[count] = MODE_KEY_TO_CODE[mode] ?? 2;
-    ids[count] = Math.round(Number(values[offset + 7]) || entry.vehicleIndex || 0);
+    ids[count] = binaryVehicleIndex(data, offset);
     count += 1;
     activeByMode[mode] += 1;
     if (Number.isFinite(speed) && speed > 0 && speed < 180) {
@@ -562,12 +576,26 @@ function segmentFrameTransfer(frame) {
     frame.endYs.buffer,
     frame.startTimes.buffer,
     frame.endTimes.buffer,
+    frame.distances.buffer,
     frame.modes.buffer,
     frame.ids.buffer,
   ];
 }
 
-function createSegmentFrame({ bucketSecond, origin, count, startXs, startYs, endXs, endYs, startTimes, endTimes, modes, ids }) {
+function createSegmentFrame({
+  bucketSecond,
+  origin,
+  count,
+  startXs,
+  startYs,
+  endXs,
+  endYs,
+  startTimes,
+  endTimes,
+  distances,
+  modes,
+  ids,
+}) {
   return {
     kind: "vehicle-segment-frame",
     bucketSecond,
@@ -579,6 +607,7 @@ function createSegmentFrame({ bucketSecond, origin, count, startXs, startYs, end
     endYs,
     startTimes,
     endTimes,
+    distances,
     modes,
     ids,
   };
@@ -599,6 +628,7 @@ function segmentFrameFromBinary(time, data, windowSeconds = 1, requestedBounds =
       endYs: new Float32Array(0),
       startTimes: new Float32Array(0),
       endTimes: new Float32Array(0),
+      distances: new Float32Array(0),
       modes: new Uint8Array(0),
       ids: new Int32Array(0),
     });
@@ -633,7 +663,7 @@ function segmentFrameFromBinary(time, data, windowSeconds = 1, requestedBounds =
     const dx = ex - sx;
     const dy = ey - sy;
     const duration = Math.max(endTime - startTime, 0.001);
-    const speed = (Math.sqrt(dx * dx + dy * dy) / duration) * 3.6;
+    const speed = (binaryDistanceMeters(values, offset) / duration) * 3.6;
 
     if (seconds >= startTime && seconds < endTime) {
       activeTotal += 1;
@@ -654,18 +684,20 @@ function segmentFrameFromBinary(time, data, windowSeconds = 1, requestedBounds =
   const endYs = new Float32Array(visibleCount);
   const startTimes = new Float32Array(visibleCount);
   const endTimes = new Float32Array(visibleCount);
+  const distances = new Float32Array(visibleCount);
   const modes = new Uint8Array(visibleCount);
   const ids = new Int32Array(visibleCount);
   for (let index = 0; index < visibleCount; index++) {
     const offset = visibleOffsets[index];
     startTimes[index] = values[offset];
     endTimes[index] = values[offset + 1];
+    distances[index] = binaryDistanceMeters(values, offset);
     startXs[index] = values[offset + 2];
     startYs[index] = values[offset + 3];
     endXs[index] = values[offset + 4];
     endYs[index] = values[offset + 5];
     modes[index] = Math.max(0, Math.min(2, Math.round(Number(values[offset + 6]) || 0)));
-    ids[index] = Math.round(Number(values[offset + 7]) || 0);
+    ids[index] = binaryVehicleIndex(data, offset);
   }
 
   const frame = createSegmentFrame({
@@ -678,6 +710,7 @@ function segmentFrameFromBinary(time, data, windowSeconds = 1, requestedBounds =
     endYs,
     startTimes,
     endTimes,
+    distances,
     modes,
     ids,
   });
@@ -777,7 +810,7 @@ function createFrame({ count, xs, ys, angles, speeds, modes, ids, keys = null })
   };
 }
 
-function frameTransfer(frame) {
+export function frameTransfer(frame) {
   return [
     frame.xs.buffer,
     frame.ys.buffer,
@@ -807,6 +840,7 @@ function buildIndexedChunk(data) {
       chunk: data.chunk || {},
       chunkSeconds: data.chunkSeconds,
       segments,
+      segmentInts: binaryIntValues(segments),
     };
     indexed.index = buildBinarySecondIndex(indexed);
     indexed.bytes = chunkBytesOf(indexed);
@@ -829,7 +863,7 @@ function storeChunk(key, indexed) {
   indexed.lastUsedAt = ++chunkUseCounter;
   chunkStore.set(key, indexed);
   chunkStoreBytes += indexed.bytes || 0;
-  evictChunks();
+  return evictChunks();
 }
 
 function touchChunk(key) {
@@ -839,6 +873,7 @@ function touchChunk(key) {
 }
 
 function evictChunks() {
+  const evictedKeys = [];
   while (chunkStore.size > MAX_CHUNK_STORE_COUNT || chunkStoreBytes > MAX_CHUNK_STORE_BYTES) {
     let victimKey = null;
     let victimUsed = Infinity;
@@ -854,7 +889,9 @@ function evictChunks() {
     const victim = chunkStore.get(victimKey);
     chunkStore.delete(victimKey);
     chunkStoreBytes -= victim?.bytes || 0;
+    evictedKeys.push(victimKey);
   }
+  return evictedKeys;
 }
 
 function clearChunkStore() {
@@ -864,7 +901,7 @@ function clearChunkStore() {
 }
 
 function activeAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode) {
-  currentVisibilityMode = normalizeVisibilityMode(visibilityMode);
+  currentVisibilityMode = normalizeVehicleVisibility(visibilityMode);
   if (!indexed) {
     return { frame: emptyFrame(), stats: emptyStats(), transfer: [] };
   }
@@ -874,7 +911,7 @@ function activeAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode)
 }
 
 function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilityMode, bucketSeconds = 1, bounds = null) {
-  currentVisibilityMode = normalizeVisibilityMode(visibilityMode);
+  currentVisibilityMode = normalizeVehicleVisibility(visibilityMode);
   if (!indexed) {
     const frame = createSegmentFrame({
       bucketSecond: Math.floor(Number(seconds) || 0),
@@ -886,6 +923,7 @@ function segmentFrameAtChunk(indexed, seconds, visibilityMode = currentVisibilit
       endYs: new Float32Array(0),
       startTimes: new Float32Array(0),
       endTimes: new Float32Array(0),
+      distances: new Float32Array(0),
       modes: new Uint8Array(0),
       ids: new Int32Array(0),
     });
@@ -923,7 +961,7 @@ if (typeof self !== "undefined") self.onmessage = (event) => {
       const key = message.key != null ? message.key : "__single__";
       const indexed = buildIndexedChunk(message.data || null);
       activeKey = key;
-      storeChunk(key, indexed);
+      const evictedKeys = storeChunk(key, indexed);
       const seconds = Number(message.seconds);
       if (Number.isFinite(seconds)) {
         const result = message.gpuSegments
@@ -934,10 +972,11 @@ if (typeof self !== "undefined") self.onmessage = (event) => {
         respond(id, {
           version: datasetVersion,
           seconds: Math.max(0, seconds),
+          evictedKeys,
           ...result,
         }, transfer);
       } else {
-        respond(id, { version: datasetVersion });
+        respond(id, { version: datasetVersion, evictedKeys });
       }
       return;
     }
@@ -945,12 +984,13 @@ if (typeof self !== "undefined") self.onmessage = (event) => {
     if (type === "addChunk") {
       // 预取/预建索引：只建好并常驻，不切换活动块、不采样（双缓冲的关键）。
       const key = message.key != null ? message.key : "__single__";
+      let evictedKeys = [];
       if (!chunkStore.has(key)) {
-        storeChunk(key, buildIndexedChunk(message.data || null));
+        evictedKeys = storeChunk(key, buildIndexedChunk(message.data || null));
       } else {
         touchChunk(key);
       }
-      respond(id, { version: datasetVersion, stored: true, key });
+      respond(id, { version: datasetVersion, stored: true, key, evictedKeys });
       return;
     }
 

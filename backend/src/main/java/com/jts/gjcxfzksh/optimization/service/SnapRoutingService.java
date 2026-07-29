@@ -194,6 +194,9 @@ public class SnapRoutingService {
 
     private Network network(String parentModel) {
         MatsimData data = Datasource.data(parentModel).matsim_data();
+        if (!data.hasFullRoadNetwork()) {
+            throw new BusinessException("大模型当前仅加载公交子路网，不支持道路吸附与寻径");
+        }
         return data.getNetwork();
     }
 

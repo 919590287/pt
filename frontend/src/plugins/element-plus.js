@@ -1,83 +1,34 @@
 import {
-  ElAutoResizer,
   ElButton,
-  ElButtonGroup,
-  ElCheckbox,
-  ElCheckboxGroup,
-  ElDialog,
-  ElDropdown,
-  ElDropdownItem,
-  ElDropdownMenu,
-  ElEmpty,
   ElForm,
   ElFormItem,
-  ElIcon,
   ElInput,
-  ElInputNumber,
   ElMessage,
-  ElMessageBox,
-  ElNotification,
-  ElOption,
-  ElOptionGroup,
-  ElPagination,
-  ElPopover,
-  ElProgress,
-  ElRadio,
-  ElRadioButton,
-  ElRadioGroup,
-  ElScrollbar,
-  ElSelect,
-  ElSelectV2,
-  ElSkeleton,
-  ElSlider,
-  ElSwitch,
-  ElTag,
-  ElTable,
-  ElTableColumn,
-  ElTimeSelect,
   provideGlobalConfig,
 } from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 
-const components = [
-  ElAutoResizer,
-  ElButton,
-  ElButtonGroup,
-  ElCheckbox,
-  ElCheckboxGroup,
-  ElDialog,
-  ElDropdown,
-  ElDropdownItem,
-  ElDropdownMenu,
-  ElEmpty,
-  ElForm,
-  ElFormItem,
-  ElIcon,
-  ElInput,
-  ElInputNumber,
-  ElOption,
-  ElOptionGroup,
-  ElPagination,
-  ElPopover,
-  ElProgress,
-  ElRadio,
-  ElRadioButton,
-  ElRadioGroup,
-  ElScrollbar,
-  ElSelect,
-  ElSelectV2,
-  ElSkeleton,
-  ElSlider,
-  ElSwitch,
-  ElTag,
-  ElTable,
-  ElTableColumn,
-  ElTimeSelect,
-];
+const authComponents = [ElButton, ElForm, ElFormItem, ElInput];
+let installedApp = null;
+let businessInstallPromise = null;
 
 export function installElementPlus(app) {
+  installedApp = app;
   provideGlobalConfig({ locale: zhCn }, app, true);
-  components.forEach((component) => app.use(component));
+  authComponents.forEach((component) => app.use(component));
 }
 
-export { ElMessage, ElMessageBox, ElNotification };
+export function ensureBusinessElementPlus() {
+  if (!installedApp) return Promise.resolve();
+  if (!businessInstallPromise) {
+    businessInstallPromise = import("./element-plus-business.js")
+      .then(({ installBusinessElementPlus }) => installBusinessElementPlus(installedApp))
+      .catch((error) => {
+        businessInstallPromise = null;
+        throw error;
+      });
+  }
+  return businessInstallPromise;
+}
+
+export { ElMessage };

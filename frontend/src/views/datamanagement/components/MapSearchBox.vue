@@ -803,4 +803,20 @@ defineExpose({ close });
   left: calc(var(--app-edge, 24px) + var(--app-scaled-70, 70px)) !important;
 }
 
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .search-clear-btn {
+  background: rgba(148, 180, 220, 0.1);
+}
+
+html.dark .search-input:hover,
+html.dark .search-input:focus {
+  box-shadow: 0 0 0 4px rgba(64, 156, 255, 0.12), var(--dm-shadow-soft) !important;
+}
+
+html.dark .result-icon-wrapper.station,
+html.dark .result-icon-wrapper.line,
+html.dark .result-icon-wrapper.depot {
+  border-color: rgba(64, 156, 255, 0.18) !important;
+}
+
 </style>

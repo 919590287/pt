@@ -1345,4 +1345,45 @@ async function confirmLinkDelete() {
 }
 
 .w-full { width: 100%; }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .anchor-mode-switch button.active {
+  background: rgba(64, 156, 255, 0.14);
+}
+
+html.dark .pick-block .seq-row:hover {
+  background: rgba(64, 156, 255, 0.1);
+}
+html.dark .pick-block .seq-row .seq-actions button:hover {
+  background: rgba(64, 156, 255, 0.11);
+}
+
+html.dark .form-box {
+  background: rgba(64, 156, 255, 0.07);
+}
+
+html.dark .row .lbl {
+  color: #94a3b8;
+}
+
+html.dark .hint {
+  color: #94a3b8;
+}
+
+html.dark .err {
+  color: #ff7a6e;
+}
+
+html.dark .ok-tip {
+  color: #4ccd76;
+  background: rgba(76, 205, 118, 0.12);
+}
+
+html.dark .affected {
+  color: #c2cddd;
+  background: rgba(234, 176, 76, 0.12);
+}
+html.dark .affected.warn {
+  color: #eab04c;
+}
 </style>

@@ -1,0 +1,38 @@
+@use "./element.variables.scss" as *;
+
+/* 暗色模式（html.dark，跟随底图选择）：Element Plus 官方 dark css 变量层。 */
+@use "element-plus/theme-chalk/src/dark/css-vars.scss" as *;
+
+/* 登录与全局错误提示所需的最小 Element Plus 样式集合。 */
+@use "element-plus/theme-chalk/src/base.scss" as *;
+@use "element-plus/theme-chalk/src/button.scss" as *;
+@use "element-plus/theme-chalk/src/form.scss" as *;
+@use "element-plus/theme-chalk/src/form-item.scss" as *;
+@use "element-plus/theme-chalk/src/input.scss" as *;
+@use "element-plus/theme-chalk/src/message.scss" as *;
+
+/* EP dark 的中性灰偏暖，统一压到平台的冷藏青色系。
+   sass 要求 @use 在所有规则之前，故本块置于文件末尾；
+   同为 html.dark 选择器，靠“后出现层叠取胜”覆盖 dark css-vars。 */
+html.dark {
+  --el-bg-color: #131a23;
+  --el-bg-color-page: #0d1218;
+  --el-bg-color-overlay: #17202b;
+  --el-fill-color-blank: #131a23;
+  --el-text-color-primary: #e7edf6;
+  --el-text-color-regular: #c2cddd;
+  --el-text-color-secondary: #94a3b8;
+  --el-text-color-placeholder: #64748b;
+  --el-border-color: rgba(148, 180, 220, 0.24);
+  --el-border-color-light: rgba(148, 180, 220, 0.18);
+  --el-border-color-lighter: rgba(148, 180, 220, 0.14);
+  --el-border-color-extra-light: rgba(148, 180, 220, 0.1);
+  --el-fill-color: rgba(148, 180, 220, 0.12);
+  --el-fill-color-light: rgba(148, 180, 220, 0.09);
+  --el-fill-color-lighter: rgba(148, 180, 220, 0.06);
+  --el-fill-color-extra-light: rgba(148, 180, 220, 0.04);
+  --el-fill-color-dark: rgba(148, 180, 220, 0.16);
+  --el-fill-color-darker: rgba(148, 180, 220, 0.2);
+  --el-mask-color: rgba(6, 10, 16, 0.66);
+  --el-mask-color-extra-light: rgba(6, 10, 16, 0.4);
+}

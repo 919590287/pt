@@ -6,7 +6,7 @@
   <title>走廊带宽调参 harness</title>
   <style>
     html, body { margin: 0; height: 100%; background: #fff; }
-    #deck-canvas { position: absolute; inset: 0; }
+    #map { position: absolute; inset: 0; }
     #hud {
       position: fixed; top: 10px; left: 10px; z-index: 10;
       background: rgba(255,255,255,0.92); border: 1px solid #ccd;
@@ -15,7 +15,7 @@
   </style>
 </head>
 <body>
-  <canvas id="deck-canvas"></canvas>
+  <div id="map"></div>
   <div id="hud"><span id="info">loading…</span></div>
   <script type="module" src="/harness-corridor.mjs"></script>
 </body>

@@ -2,7 +2,7 @@
      地图：100m 人口栅格（deck.gl GridCellLayer，rm-population-grid）+ 街道边界/名称占比标注（maplibre，rm-population-street-*）。
      右侧：居住/就业切换 + 按街道榜单，teleport 到 index.vue 的右侧容器（同 TJFX 模式）；
      栅格密度图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
-     口径：居住=plans 首个 home 活动、就业=首个 work 活动；一律直出模型抽样人数（不做 ÷scale 扩样）；
+     口径：居住=plans 首个 home 活动、就业=首个 work 活动；一律直出已加载模型的原始人数，不做任何数量缩放；
      密度=人口/街道辖区面积。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
@@ -22,6 +22,17 @@
         </span>
         <p class="rk-status-title">人口分布缓存生成中</p>
         <p class="rk-status-desc">后端正在为当前模型提取居住 / 就业分布，就绪后将自动展示。</p>
+      </div>
+
+      <div v-else-if="status === 'unsupported'" class="rk-status" role="status">
+        <span class="rk-status-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"></circle>
+            <line x1="8" y1="12" x2="16" y2="12"></line>
+          </svg>
+        </span>
+        <p class="rk-status-title">当前模型不支持人口分布</p>
+        <p class="rk-status-desc">{{ errorMessage || "缺少可读取的 plans 或活动坐标，平台不会用 0 值代替。" }}</p>
       </div>
 
       <div v-else-if="status === 'error'" class="rk-status" role="alert">
@@ -44,9 +55,9 @@
       </div>
 
       <template v-else>
-        <div class="rk-metric-switch" role="group" aria-label="人口指标切换">
+        <div :class="['rk-metric-switch', { 'is-three': metricOptions.length === 3 }]" role="group" aria-label="人口指标切换">
           <button
-            v-for="option in METRIC_OPTIONS"
+            v-for="option in metricOptions"
             :key="option.key"
             type="button"
             :class="['rk-metric-btn', { active: metric === option.key }]"
@@ -89,7 +100,7 @@
               <button
                 type="button"
                 class="rk-rank-row"
-                :title="`${row.name}（${row.district}）：${metricLabel} ${formatInt(row.value)} 人，占${scopeLabel} ${row.shareText}，密度 ${formatInt(row.density)} 人/km²`"
+                :title="streetRowTitle(row)"
                 @click="focusStreet(row.code)"
               >
                 <span class="rk-rank-main">
@@ -98,7 +109,9 @@
                     <em v-if="showDistrictInRow" class="rk-rank-district">{{ row.district }}</em>
                   </span>
                   <span class="rk-rank-value">{{ formatInt(row.value) }}<i>人</i></span>
-                  <span class="rk-rank-density">{{ formatInt(row.density) }}<i>/km²</i></span>
+                  <span class="rk-rank-density">
+                    {{ row.density == null ? "无数据" : formatInt(row.density) }}<i v-if="row.density != null">/km²</i>
+                  </span>
                 </span>
                 <span class="rk-rank-bar" aria-hidden="true">
                   <span class="rk-rank-bar-fill" :style="{ width: row.barWidth }"></span>
@@ -133,6 +146,7 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shal
 import { GridCellLayer } from "@deck.gl/layers";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 import {
   getCachedPopulationGrid,
   getCachedPopulationStreets,
@@ -157,21 +171,26 @@ const props = defineProps({
 });
 
 const MapRef = inject("MapRef", ref(null));
+const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
 
-const METRIC_OPTIONS = [
+const SIMULATION_METRIC_OPTIONS = [
   { key: "home", label: "居住人口" },
   { key: "work", label: "就业人口" },
+];
+const REAL_METRIC_OPTIONS = [
+  { key: "home", label: "通勤居住人口" },
+  { key: "work", label: "通勤就业人口" },
+  { key: "resident", label: "常住人口" },
 ];
 const GRID_LAYER_KEY = "rm-population-grid";
 const STREET_SOURCE_ID = "rm-population-streets";
 const STREET_LINE_ID = "rm-population-street-line";
 const STREET_LABEL_ID = "rm-population-street-label";
-const RANK_ROW_LIMIT = 30;
 const GENERATING_POLL_MS = 8000;
 // 3D 柱高 = 人口密度（人/km²） ÷ 系数。
 const POPULATION_HEIGHT_DIVISOR = 10;
 
-const status = ref("loading"); // loading | generating | error | ready
+const status = ref("loading"); // loading | generating | unsupported | error | ready
 const errorMessage = ref("");
 const metric = ref("home");
 const summary = shallowRef(null);
@@ -180,8 +199,14 @@ const grid = shallowRef(null); // parsePopulationGrid 结果（markRaw）
 const streetsGeojson = shallowRef(null); // 模型无关街道面
 
 const displayRange = useDisplayRangeStore();
+const isRealMode = computed(() => isRealDatasource(props.model));
+const metricOptions = computed(() => (
+  isRealMode.value ? REAL_METRIC_OPTIONS : SIMULATION_METRIC_OPTIONS
+));
 const scopeLabel = computed(() => displayRange.selected || DISPLAY_RANGE_ALL);
-const metricLabel = computed(() => (metric.value === "home" ? "居住人口" : "就业人口"));
+const metricLabel = computed(() => (
+  metricOptions.value.find((option) => option.key === metric.value)?.label || "人口"
+));
 
 const legendItems = buildDensityLegendItems(
   MAP_THEME.population.breaks,
@@ -235,6 +260,13 @@ function bootstrap() {
         schedulePoll();
         return null;
       }
+      if (payload.status === "unsupported" || payload.status === "nodata") {
+        summary.value = payload;
+        errorMessage.value = payload.message || payload.reason || "缺少人口分布所需源数据";
+        status.value = "unsupported";
+        removeMapLayers();
+        return null;
+      }
       summary.value = payload;
       const version = String(payload.generatedAt || payload.cacheVersion || "");
       return Promise.all([
@@ -270,7 +302,7 @@ function bootstrap() {
 }
 
 // ---------------------------------------------------------------------------
-// 街道榜单（随指标 / 显示范围联动；数值为模型抽样人数，不扩样）
+// 街道榜单（随指标 / 显示范围联动；数值为模型原始人数）
 // ---------------------------------------------------------------------------
 
 const streetRows = computed(() => {
@@ -283,13 +315,14 @@ const streetRows = computed(() => {
     if (scope !== DISPLAY_RANGE_ALL && street.district !== scope) continue;
     const value = Number(street[key]) || 0;
     if (!value) continue;
-    const areaKm2 = Number(street.areaKm2) > 0 ? Number(street.areaKm2) : 1;
+    const areaKm2 = Number(street.areaKm2);
     rows.push({
       code: street.code,
       name: street.name,
       district: street.district,
       value,
-      density: value / areaKm2,
+      // 缺面积时不得默认除以 1km²，否则会生成看似正常的错误密度。
+      density: Number.isFinite(areaKm2) && areaKm2 > 0 ? value / areaKm2 : null,
     });
   }
   rows.sort((a, b) => b.value - a.value);
@@ -304,9 +337,16 @@ const streetRows = computed(() => {
   return rows;
 });
 
-const visibleStreetRows = computed(() => streetRows.value.slice(0, RANK_ROW_LIMIT));
+const visibleStreetRows = computed(() => streetRows.value.slice(0, rightPanelRankLimit));
 const showDistrictInRow = computed(() => scopeLabel.value === DISPLAY_RANGE_ALL);
 const scopeTotal = computed(() => streetRows.value.reduce((sum, row) => sum + row.value, 0));
+
+function streetRowTitle(row) {
+  const prefix = `${row.name}（${row.district}）：${metricLabel.value} ${formatInt(row.value)} 人，占${scopeLabel.value} ${row.shareText}`;
+  return row.density == null
+    ? `${prefix}，密度无数据（缺少有效街道面积）`
+    : `${prefix}，密度 ${formatInt(row.density)} 人/km²`;
+}
 
 // 行政区范围掩膜：街道要素索引（=streets 行序=grid.street 列语义）→ 是否在范围内；全市为 null
 const scopeStreetMask = computed(() => {
@@ -330,7 +370,10 @@ function gridLayerInstance() {
   const model = props.model;
   if (!data || !model) return null;
   const positions = getModelDerived(model, "populationGridPositions", () => markRaw(buildGridPositions(data)));
-  const counts = metric.value === "home" ? data.home : data.work;
+  const counts = metric.value === "home"
+    ? data.home
+    : metric.value === "work" ? data.work : data.resident;
+  if (!counts) return null;
   const baseColors = getModelDerived(model, `populationGridColors:${metric.value}`, () =>
     markRaw(buildGridColors(counts, MAP_THEME.population)),
   );
@@ -597,6 +640,15 @@ onUnmounted(() => {
   padding: 3px;
   border-radius: 10px;
   background: rgba(28, 32, 36, 0.05);
+
+  &.is-three {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+
+    .rk-metric-btn {
+      padding-inline: 2px;
+      font-size: 11.5px;
+    }
+  }
 }
 
 .rk-metric-btn {
@@ -971,5 +1023,34 @@ onUnmounted(() => {
   .rk-rank-bar-fill {
     transition: none;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .rk-metric-switch {
+  background: rgba(148, 180, 220, 0.1);
+}
+html.dark .rk-metric-btn.active {
+  background: #1a2431;
+  box-shadow: 0 1px 4px rgba(2, 6, 12, 0.32);
+}
+html.dark .rk-rank-row:hover {
+  background: rgba(64, 156, 255, 0.09);
+}
+html.dark .rk-rank-bar {
+  background: rgba(148, 180, 220, 0.16);
+}
+html.dark .rk-map-legend {
+  /* --app-ink-soft 未定义，浅色落在 fallback #475467，暗色需显式提亮 */
+  color: #c2cddd;
+}
+html.dark .rk-status-icon.is-error {
+  color: #f87171;
+}
+html.dark .rk-retry {
+  background: #1a2431;
+}
+html.dark .rk-sk {
+  background: linear-gradient(90deg, rgba(148, 180, 220, 0.08) 25%, rgba(148, 180, 220, 0.14) 42%, rgba(148, 180, 220, 0.08) 60%);
+  background-size: 240% 100%;
 }
 </style>

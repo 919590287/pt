@@ -200,6 +200,20 @@ class MatsimTripEndsCacheTest {
     }
 
     @Test
+    void V6实际公交制式名也计入出行_transitWalk不计() {
+        Population population = population();
+        person(population, "subway-rider", act("home", 0.0), "subway", act("work", 5000.0));
+        person(population, "bus-rider", act("home", 100.0), "bus", act("shop", 6000.0));
+        person(population, "access-only", act("home", 200.0), "transit_walk", act("work", 7000.0));
+
+        MatsimTripEndsCache.Aggregation agg = aggregatePlans(population);
+        assertEquals(2, agg.journeys, "V6 plans 的 subway/bus leg 必须按公交出行统计");
+        assertEquals(2, agg.riders);
+        assertEquals(2, agg.originPoints);
+        assertEquals(2, agg.destPoints);
+    }
+
+    @Test
     void 多trip分别计数_中间活动为下一段起点_riders按人去重() {
         Population population = population();
         // p1：home →pt→ work →car→ shop →pt→ home（第 2 段为 car 不计）

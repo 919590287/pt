@@ -36,16 +36,26 @@ cors:
 
 matsim:
   # 可视化数据目录和拖拽式上传目录合并
-  data: "/Volumes/USB DISK/pt_data/"
+  data: ${MATSIM_DATA:/Volumes/USB DISK/pt_data/}
   # 平台派生缓存目录。不要放进真实 output，避免污染原始 MATSim 文件。
-  cache: "/Volumes/USB DISK/pt_cache/"
+  cache: ${MATSIM_CACHE:/Volumes/USB DISK/pt_cache/}
   # output 顶层关键文件估算超过该值时，自动使用大模型轻量加载模式。
-  large-model-threshold-bytes: 21474836480
+  large-model-threshold-bytes: ${MATSIM_LARGE_MODEL_THRESHOLD_BYTES:21474836480}
+  # 任一个主数据源已达大模型量级时也进入低内存模式，避免只看 output 总体积的误判。
+  large-model-plans-threshold-bytes: ${MATSIM_LARGE_MODEL_PLANS_THRESHOLD_BYTES:8589934592}
+  large-model-events-threshold-bytes: ${MATSIM_LARGE_MODEL_EVENTS_THRESHOLD_BYTES:8589934592}
   # 后台缓存生成并发数；0表示按CPU自动选择，服务器可按磁盘/内存能力调大。
   cache-build-threads: ${MATSIM_CACHE_BUILD_THREADS:0}
   # 单个模型内部的坐标转换、统计与缓存计算线程数；0=逻辑核心数-1（最多32）。
   # 低内存机器可设为 2-4，高核心服务器可按压测增大。
   processing-threads: ${MATSIM_PROCESSING_THREADS:0}
+  # 缓存就绪状态短时复用，避免前端轮询反复扫描外置磁盘。
+  cache-status-probe-ttl-ms: ${MATSIM_CACHE_STATUS_PROBE_TTL_MS:10000}
+  # 默认只为用户主动选择的模型生成缓存；不做周期自动失效或重建。
+  cache-prebuild-on-startup: ${MATSIM_CACHE_PREBUILD_ON_STARTUP:false}
+  # 构建前的磁盘安全余量；V6 还会按 output 体量估算临时工件空间。
+  cache-min-free-bytes: ${MATSIM_CACHE_MIN_FREE_BYTES:21474836480}
+  cache-clean-old-versions: ${MATSIM_CACHE_CLEAN_OLD_VERSIONS:true}
   # 轨迹缓存构建并发数；默认1（磁盘友好），多模型并行构建可调大。
   trajectory-build-threads: 1
 

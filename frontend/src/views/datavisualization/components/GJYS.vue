@@ -182,7 +182,7 @@
   <!-- 车辆运行监测右侧面板：外壳与线路/站点/客流/体检四块面板同构（无卡中卡、无蓝色标题条、无折叠钮）。
        teleport 出去的节点带的是本组件 scope，样式在本文件内自持。 -->
   <teleport to="#datavisualization_index_box2" defer v-if="runMonitorPanels && !vehicleStaticInfo">
-    <section class="rm-veh-card rm-veh-status-card">
+    <section :class="['rm-veh-card', 'rm-veh-status-card', isRealMode ? 'is-only-card' : '']">
       <header class="rm-veh-card-title">
         <h2>车辆运行监测</h2>
         <span class="rm-veh-live"><span class="rm-veh-live-dot"></span>实时</span>
@@ -235,7 +235,7 @@
 
     <!-- 主要拥堵路段 TOP10：随播放时刻按 15min 桶刷新，点击行定位到地图并高亮该路段。
          数据独立于"路段公交车速"图层开关加载（共享同一份矩阵缓存，图层开启时零额外请求） -->
-    <section class="rm-veh-card rm-congest-card">
+    <section v-if="!isRealMode" class="rm-veh-card rm-congest-card">
       <header class="rm-veh-card-title">
         <h2>主要拥堵路段<em class="rm-congest-top-badge">TOP10</em></h2>
         <span v-if="congestStatus === 'ready'" class="rm-congest-window" aria-label="统计时段">{{ congestWindowText }}</span>
@@ -248,7 +248,9 @@
       <div v-else-if="congestStatus === 'generating'" class="rm-congest-state" role="status">
         <span class="rm-play-spinner" aria-hidden="true"></span>车速缓存生成中，就绪后自动显示…
       </div>
-      <div v-else-if="congestStatus === 'empty'" class="rm-congest-state">该模型无公交车速数据</div>
+      <div v-else-if="congestStatus === 'empty'" class="rm-congest-state">
+        {{ isRealAggregateMode ? "真实数据未包含道路分段车速" : "该模型无公交车速数据" }}
+      </div>
       <div v-else-if="!congestTop.length" class="rm-congest-state">当前时段无明显拥堵路段</div>
 
       <ol v-else class="rm-congest-list">
@@ -368,8 +370,14 @@ import {
   dataTrajectoryChunk,
   dataTrajectoryChunkBinary,
   dataTrajectoryFrameBinary,
+  dataTrajectoryViewportBinary,
 } from "@/api/trajectory.js";
-import { VehicleTrajectoryLayer, VEHICLE_MODE_CONFIG, parseVehicleTrajectoryBinaryChunk } from "../layers/VehicleTrajectoryLayer.js";
+import {
+  VehicleTrajectoryLayer,
+  VEHICLE_MODE_CONFIG,
+  parseVehicleTrajectoryBinaryChunk,
+  trajectoryPrefetchBlockCount,
+} from "../layers/VehicleTrajectoryLayer.js";
 import { LinkSpeedHighlightManager, LinkSpeedLayerManager } from "../layers/LinkSpeedLayer.js";
 import { getCachedChunk, putCachedChunk, pruneChunkCache } from "@/utils/trajectoryChunkCache.js";
 import { getCachedLinkSpeedMatrix, getCachedLinkSpeedSummary, getModelDerived } from "@/utils/modelDataCache.js";
@@ -386,6 +394,19 @@ import { isCanceledRequest } from "../utils/panelShared.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
 import { classifyByBreaks } from "@/utils/colorSchemes.js";
 import { mercatorToLngLat } from "../utils/populationGrid.js";
+import {
+  quantizeTrajectoryViewport,
+  supportsTrajectorySpatialChunks,
+} from "@/utils/trajectorySpatial.js";
+import {
+  buildTrajectoryGlobalStatsIndex,
+  trajectoryDisplayStatsAt,
+} from "@/utils/trajectoryStats.js";
+import { isRealDatasource } from "@/utils/realPassengerFlow.js";
+import {
+  buildRealTrajectoryChunkSource,
+  realTrajectoryChunkAt,
+} from "@/utils/realTrajectoryChunks.js";
 
 const props = defineProps({
   model: String,
@@ -399,22 +420,26 @@ const MODE_KEYS = ["bus", "subway", "car"];
 const PLAY_SPEEDS = [1, 5, 10, 50];
 
 const MapRef = inject("MapRef");
+const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
 const addPageMapLayer = inject("AddPageMapLayer", (layer) => MapRef?.value?.addLayer(layer));
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
 const VehicleSizeRef = inject("VehicleSizeRef", ref(36));
-const VehicleVisibilityModeRef = inject("VehicleVisibilityModeRef", ref("all"));
+const VehicleVisibilityModeRef = inject("VehicleVisibilityModeRef", ref(["bus", "subway", "car"]));
 // 路段公交车速（拥堵路况）图层：开关/透明度由 index.vue 设置面板下发，状态回报给左下角图例
 const LinkSpeedEnabledRef = inject("LinkSpeedEnabledRef", ref(false));
 const LinkSpeedOpacityRef = inject("LinkSpeedOpacityRef", ref(85));
 const LinkSpeedStatusRef = inject("LinkSpeedStatusRef", ref("idle"));
-const DEFAULT_CHUNK_SECONDS = 300;
-const PREFETCH_WINDOW_SECONDS = 120;
-const MAX_CHUNK_CACHE = 7;
-// 分块缓存按字节预算淘汰，避免大 events 下 7 个大分块常驻导致 OOM。
-const MAX_CHUNK_CACHE_BYTES = 96 * 1024 * 1024;
-const MAX_BACKGROUND_PREFETCH_BYTES = 32 * 1024 * 1024;
+const DEFAULT_CHUNK_SECONDS = 30;
+const MAX_CHUNK_CACHE = 6;
+// 主线程 Map 只保留轻量描述符；字节预算与 Worker LRU 对齐，
+// 用来限制 50x 下的动态前瞻块数，不代表主线程保留了原 ArrayBuffer。
+const MAX_CHUNK_CACHE_BYTES = 160 * 1024 * 1024;
+const MAX_BACKGROUND_PREFETCH_BYTES = 128 * 1024 * 1024;
 const MAX_PERSISTENT_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_PREFETCH_CONCURRENCY = 2;
+const MAX_FORWARD_PREFETCH_BLOCKS = 4;
+const MIN_PREFETCH_SAFETY_MS = 800;
 // 播放时滑块/时间文本的刷新节流（图层仍按 rAF 每帧驱动，UI 不必每帧重渲染）。
 const UI_SYNC_INTERVAL_MS = 120;
 const SEEK_CHUNK_LOAD_DELAY_MS = 48;
@@ -459,8 +484,13 @@ let prefetchTimer = null;
 let pollTimer = null;
 let loadSeq = 0;
 let chunkSeq = 0;
+let chunkActivationSeq = 0;
+let viewportSeq = 0;
+let activeSpatialWindow = null;
+let viewportReloadTimer = null;
 let currentChunkStart = null;
 let pendingChunkStart = null;
+let pendingActivationStart = null;
 let chunkCache = new Map();
 let prefetchingChunks = new Set();
 let chunkRequests = new Map();
@@ -470,9 +500,17 @@ let foregroundChunkController = null;
 let prefetchAbortController = null;
 let passengerTimeIndex = emptyPassengerIndex();
 let passengerSeriesRows = [];
+let globalTrajectoryStats = new Map();
+// 按真实请求耗时调整前瞻。50x 时 10s 仿真块仅播放 200ms，
+// 因此默认就要提前常驻至少 3 块，慢网络下自动扩到 4 块。
+let chunkFetchEwmaMs = 400;
+let chunkFetchHighMs = 600;
 
 const summary = computed(() => trajectoryData.value?.summary || {});
 const hasTrajectory = computed(() => cacheStatus.value === "ready" && Number(summary.value.totalVehicles || 0) > 0);
+const isRealMode = computed(() => isRealDatasource(props.model));
+const isRealAggregateMode = computed(() => isRealDatasource(props.model) && trajectoryData.value?.realAggregate === true);
+let realTrajectorySource = null;
 const isTrajectoryMonitorActive = computed(() => activeDatavisualizationTab.value === "轨迹演示" || activeDatavisualizationTab.value === "车辆运行监测");
 watch([followedVehicle, activeDatavisualizationTab, () => props.runMonitorPanels], () => {
   if (isTrajectoryMonitorActive.value) {
@@ -480,9 +518,9 @@ watch([followedVehicle, activeDatavisualizationTab, () => props.runMonitorPanels
   }
 }, { immediate: true });
 
-const canControl = computed(() => hasTrajectory.value);
+const canControl = computed(() => hasTrajectory.value || isRealAggregateMode.value);
 const isGenerating = computed(() => cacheStatus.value === "generating");
-const chunkSeconds = computed(() => Math.max(60, Number(trajectoryData.value?.chunkSeconds || DEFAULT_CHUNK_SECONDS)));
+const chunkSeconds = computed(() => Math.max(1, Number(trajectoryData.value?.chunkSeconds || DEFAULT_CHUNK_SECONDS)));
 const buildProgressPercent = computed(() => {
   const min = Number(progressInfo.value.minTime || 0);
   const max = Number(progressInfo.value.maxTime || 0);
@@ -737,6 +775,69 @@ function chunkStartOf(seconds) {
   return Math.max(0, Math.floor((Number(seconds) || 0) / step) * step);
 }
 
+function spatialWindowForBounds(bounds = null) {
+  if (!supportsTrajectorySpatialChunks(trajectoryData.value || {})) return null;
+  return quantizeTrajectoryViewport(
+    bounds || trajectoryLayer?.workerSamplingPayload?.(),
+    trajectoryData.value || {},
+  );
+}
+
+function ensureActiveSpatialWindow(bounds = null) {
+  if (!supportsTrajectorySpatialChunks(trajectoryData.value || {})) {
+    activeSpatialWindow = null;
+    return null;
+  }
+  const next = spatialWindowForBounds(bounds);
+  if (next && (!activeSpatialWindow || activeSpatialWindow.key !== next.key)) {
+    activeSpatialWindow = next;
+  }
+  return activeSpatialWindow;
+}
+
+function cancelViewportReload() {
+  if (viewportReloadTimer) {
+    window.clearTimeout(viewportReloadTimer);
+    viewportReloadTimer = null;
+  }
+}
+
+function handleTrajectorySamplingBoundsChange(bounds) {
+  if (!hasTrajectory.value || !props.model || !supportsTrajectorySpatialChunks(trajectoryData.value || {})) return;
+  const next = spatialWindowForBounds(bounds);
+  if (!next || next.key === activeSpatialWindow?.key) return;
+
+  activeSpatialWindow = next;
+  viewportSeq += 1;
+  chunkSeq += 1;
+  chunkActivationSeq += 1;
+  cancelSeekSnapshot();
+  cancelSeekChunkLoad();
+  cancelPrefetchRequests();
+  foregroundChunkController?.abort();
+  foregroundChunkController = null;
+  pendingChunkStart = null;
+  pendingActivationStart = null;
+  chunkCache = new Map();
+  chunkRequests = new Map();
+  prefetchingChunks = new Set();
+
+  // 相机 move 事件可在同一帧多次到达；合并后保留当前已绘制帧，
+  // 新视口块 Worker 索引完成再原子替换，平移不闪空。
+  cancelViewportReload();
+  const expectedViewportSeq = viewportSeq;
+  viewportReloadTimer = window.setTimeout(() => {
+    viewportReloadTimer = null;
+    if (expectedViewportSeq !== viewportSeq) return;
+    loadChunkForTime(
+      isPlaying.value ? playbackClock : currentTime.value,
+      loadSeq,
+      true,
+      { priority: true },
+    );
+  }, 24);
+}
+
 function ensureTrajectoryLayer() {
   if (!MapRef?.value || trajectoryLayer) return;
   trajectoryLayer = new VehicleTrajectoryLayer({ zIndex: 1200, vehicleSize: VehicleSizeRef.value });
@@ -744,6 +845,10 @@ function ensureTrajectoryLayer() {
   trajectoryLayer.setVehicleVisibilityMode(VehicleVisibilityModeRef.value);
   trajectoryLayer.setSegmentBucketSeconds(segmentBucketSeconds.value);
   trajectoryLayer.setStatsCallback((stats) => {
+    // Manifest sidecar metrics are citywide and time-stable for a given bucket.
+    // Worker callbacks can arrive after a newer seek and describe the rendered
+    // chunk/viewport, so they must not overwrite the authoritative sidecar.
+    if (globalTrajectoryStats.size) return;
     publishLiveStats(stats);
   });
   trajectoryLayer.setFollowCallback((vehicle) => {
@@ -751,10 +856,16 @@ function ensureTrajectoryLayer() {
     // markRaw 保持裸对象，面板 computed 读取时不产生深层代理开销。
     followedVehicle.value = vehicle ? markRaw(vehicle) : null;
   });
+  trajectoryLayer.setSamplingBoundsCallback(handleTrajectorySamplingBoundsChange);
   addPageMapLayer(trajectoryLayer);
   if (currentChunkData.value) {
-    trajectoryLayer.setData(currentChunkData.value);
-    syncStats();
+    // 主线程不再持有分块字节。若地图实例晚于数据就绪，
+    // 新 Worker 内必然无该 key，按 miss 语义重取当前 10s 视口块。
+    const staleStart = currentChunkStart;
+    if (staleStart != null) chunkCache.delete(staleStart);
+    currentChunkData.value = null;
+    currentChunkStart = null;
+    loadChunkForTime(currentTime.value, loadSeq, true, { priority: true });
   }
 }
 
@@ -765,6 +876,7 @@ async function loadTrajectory() {
   cancelSeekChunkLoad();
   cancelSeekSnapshot();
   cancelScheduledPrefetch();
+  cancelViewportReload();
   cancelSeekRender();
   cancelPrefetchRequests();
   trajectoryData.value = null;
@@ -772,6 +884,10 @@ async function loadTrajectory() {
   currentChunkStart = null;
   activeSnapshotRange = null;
   pendingChunkStart = null;
+  pendingActivationStart = null;
+  viewportSeq += 1;
+  activeSpatialWindow = null;
+  chunkActivationSeq += 1;
   chunkCache = new Map();
   prefetchingChunks = new Set();
   chunkRequests = new Map();
@@ -788,6 +904,10 @@ async function loadTrajectory() {
   cumulativePassengers.value = 0;
   passengerTimeIndex = emptyPassengerIndex();
   passengerSeriesRows = [];
+  globalTrajectoryStats = new Map();
+  realTrajectorySource = null;
+  chunkFetchEwmaMs = 400;
+  chunkFetchHighMs = 600;
   if (trajectoryLayer) {
     trajectoryLayer.setData(null);
   }
@@ -830,14 +950,24 @@ async function applyTrajectoryStatus(data, seq) {
 
   passengerTimeIndex = buildPassengerIndex(data.passengerEvents || []);
   passengerSeriesRows = buildPassengerSeriesRows(data.passengerSeries || []);
+  globalTrajectoryStats = buildTrajectoryGlobalStatsIndex(data.summary?.chunks || []);
+  realTrajectorySource = isRealAggregateMode.value
+    ? getModelDerived(
+        props.model,
+        `realTrajectoryChunks:${data.cacheVersion || ""}:${data.representativeServiceDate || ""}`,
+        () => buildRealTrajectoryChunkSource(data.vehicleEvents || [], timeRange.value, chunkSeconds.value),
+      )
+    : null;
   currentTime.value = initialTime(timeRange.value);
   ensureTrajectoryLayer();
   trajectoryLayer?.setVehicleMeta(data.meta || {});
   trajectoryLayer?.setVehicleVisibilityMode(VehicleVisibilityModeRef.value);
+  ensureActiveSpatialWindow();
 
   if (cacheStatus.value === "ready") {
-    // events 已确定：清理本模型其它版本的过期分块缓存（不阻塞首块加载）。
-    pruneChunkCache(props.model, eventsTag());
+    // 仿真 events 已确定：清理本模型其它版本的过期分块缓存（不阻塞首块加载）。
+    // 真实模式的小时块来自模型级内存派生缓存，不写 IndexedDB。
+    if (!isRealMode.value) pruneChunkCache(props.model, eventsTag());
     await loadChunkForTime(currentTime.value, seq, true);
   } else if (cacheStatus.value === "generating") {
     schedulePolling(seq);
@@ -872,7 +1002,7 @@ async function ensureChunkForTime(time) {
   if (!hasTrajectory.value || !props.model) return;
   const start = chunkStartOf(time);
   if (chunkCache.has(start)) {
-    applyChunkData(start, chunkCache.get(start));
+    await applyChunkData(start, chunkCache.get(start), time);
     return;
   }
   if (currentChunkStart === start && currentChunkData.value) return;
@@ -883,10 +1013,19 @@ async function ensureChunkForTime(time) {
 async function loadChunkForTime(time, seq, force = false, options = {}) {
   const { priority = false } = options;
   const start = chunkStartOf(time);
-  if (!force && currentChunkStart === start && currentChunkData.value) return;
+  const spatialWindow = ensureActiveSpatialWindow();
+  if (supportsTrajectorySpatialChunks(trajectoryData.value || {}) && !spatialWindow) return;
+  const spatialKey = spatialWindow?.key || "full";
+  if (
+    !force
+    && currentChunkStart === start
+    && currentChunkData.value
+    && (currentChunkData.value.spatialKey || "full") === spatialKey
+  ) return;
   if (!force && chunkCache.has(start)) {
-    applyChunkData(start, chunkCache.get(start));
-    return;
+    const activated = await applyChunkData(start, chunkCache.get(start), time);
+    // 命中时已激活；Worker miss 时 applyChunkData 会自动发起唯一一次重取。
+    if (activated || !chunkCache.has(start) || pendingActivationStart === start) return;
   }
   if (!force && pendingChunkStart === start) return;
   if (priority) {
@@ -896,18 +1035,21 @@ async function loadChunkForTime(time, seq, force = false, options = {}) {
     }
   }
   const myChunkSeq = ++chunkSeq;
+  const myViewportSeq = viewportSeq;
   pendingChunkStart = start;
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   foregroundChunkController = controller;
   try {
-    const data = await requestTrajectoryChunkOnce(start, { signal: controller?.signal });
-    if (seq !== loadSeq || myChunkSeq !== chunkSeq) return;
+    const data = await requestTrajectoryChunkOnce(start, { signal: controller?.signal, spatialWindow });
+    if (seq !== loadSeq || myChunkSeq !== chunkSeq || myViewportSeq !== viewportSeq) return;
     if (data.status !== "ready") {
       await applyTrajectoryStatus(data, seq);
       return;
     }
-    rememberChunk(start, data);
-    applyChunkData(start, data);
+    const descriptor = await installChunkInWorker(start, data, true);
+    if (seq !== loadSeq || myChunkSeq !== chunkSeq || myViewportSeq !== viewportSeq || !descriptor) return;
+    rememberChunk(start, descriptor);
+    commitChunkDescriptor(start, descriptor, time);
   } catch (error) {
     // 分块加载失败或被取消（模型切换/卸载时 abort）：静默即可，
     // 播放/拖动路径跨块时会自动重试，界面由既有加载态兜底。
@@ -921,26 +1063,82 @@ async function loadChunkForTime(time, seq, force = false, options = {}) {
   }
 }
 
-function applyChunkData(start, data) {
+async function installChunkInWorker(start, data, activate) {
+  ensureTrajectoryLayer();
+  if (!trajectoryLayer || !data || data.status !== "ready") return null;
+  if (activate) {
+    // 完整块已经到手后不再让较早发出的低延迟快照反向覆盖它。
+    // cancel 会推进 seekSnapshotSeq；即使 fetch 已返回，其 Worker 结果也会按 stale 丢弃。
+    cancelSeekSnapshot();
+    activeSnapshotRange = null;
+  }
+  const bytes = chunkBytes(data);
+  const installStartedAt = performance.now();
+  const result = activate
+    ? await trajectoryLayer.setData(data)
+    : await trajectoryLayer.preindexChunk(data);
+  recordChunkFetch(performance.now() - installStartedAt);
+  if (!result || result.failed || result.stale || result.miss) return null;
+  return markRaw({
+    status: "ready",
+    start,
+    bytes,
+    workerKey: result.key || trajectoryLayer.chunkKeyOf(data),
+    spatialKey: data.spatialKey || "full",
+    chunk: {
+      start: Number(data.chunk?.start) || start,
+      end: Number(data.chunk?.end) || (start + chunkSeconds.value - 1),
+      segmentCount: Number(data.chunk?.segmentCount ?? data.segmentCount) || 0,
+    },
+  });
+}
+
+function commitChunkDescriptor(start, descriptor, time = currentTime.value) {
   // 完整分块已就绪，立即接管此前的视口快照并取消同一跳转的在途快照请求。
   cancelSeekSnapshot();
   activeSnapshotRange = null;
   currentChunkStart = start;
-  // markRaw：分块对象会原样透传图层→Worker（postMessage），保持裸对象避免结构化克隆走代理。
-  currentChunkData.value = data ? markRaw(data) : null;
-  trajectoryLayer?.setVehicleMeta(data?.meta || trajectoryData.value?.meta || {});
-  trajectoryLayer?.setData(data);
-  syncStats();
-  scheduleChunkPrefetch(start, currentTime.value);
+  // ArrayBuffer 已 transfer 给 Worker；主线程只留不含 segments 的轻量描述符。
+  currentChunkData.value = descriptor;
+  trajectoryLayer?.setVehicleMeta(trajectoryData.value?.meta || {});
+  syncStatsAt(time, true);
+  scheduleChunkPrefetch(time);
 }
 
-function rememberChunk(start, data) {
-  if (!data || data.status !== "ready") return;
-  chunkCache.set(start, data);
-  trimChunkCache(start);
+async function applyChunkData(start, descriptor, time = currentTime.value) {
+  if (!descriptor?.workerKey || !trajectoryLayer) return false;
+  if (currentChunkStart === start && currentChunkData.value?.workerKey === descriptor.workerKey) return true;
+  if (pendingActivationStart === start) return false;
+  const seq = loadSeq;
+  const activationSeq = ++chunkActivationSeq;
+  pendingActivationStart = start;
+  try {
+    const result = await trajectoryLayer.activateChunkKey(descriptor.workerKey, time);
+    if (seq !== loadSeq || activationSeq !== chunkActivationSeq || result?.stale) return false;
+    if (result?.miss || result?.failed) {
+      // Worker 字节预算淘汰后，主线程的轻量 key 会变成悬空引用。
+      // 删除它并按高优先级重取，HTTP/IndexedDB 命中时无回源。
+      chunkCache.delete(start);
+      loadChunkForTime(time, seq, true, { priority: true });
+      return false;
+    }
+    commitChunkDescriptor(start, descriptor, time);
+    return true;
+  } finally {
+    if (pendingActivationStart === start) pendingActivationStart = null;
+  }
+}
+
+function rememberChunk(start, descriptor) {
+  if (!descriptor || descriptor.status !== "ready") return;
+  chunkCache.set(start, descriptor);
+  // 预取块不能把淘汰锚点一路推向未来，始终围绕当前播放块保留最近集合。
+  trimChunkCache(currentChunkStart ?? start);
 }
 
 function chunkBytes(data) {
+  const retainedBytes = Number(data?.bytes);
+  if (Number.isFinite(retainedBytes) && retainedBytes >= 0) return retainedBytes;
   const segments = data?.segments;
   if (segments && Number.isFinite(segments.byteLength)) return segments.byteLength;
   const count = Number(data?.segmentCount) || 0;
@@ -956,6 +1154,19 @@ function canBackgroundPrefetch() {
   if (!hasTrajectory.value || !props.model) return false;
   const bytes = currentChunkBytes();
   return bytes > 0 && bytes <= MAX_BACKGROUND_PREFETCH_BYTES;
+}
+
+function forwardPrefetchBlocks() {
+  return trajectoryPrefetchBlockCount({
+    chunkSeconds: chunkSeconds.value,
+    speed: isPlaying.value ? playSpeed.value : 1,
+    ewmaMs: chunkFetchEwmaMs,
+    highMs: chunkFetchHighMs,
+    chunkBytes: currentChunkBytes(),
+    maxBytes: MAX_BACKGROUND_PREFETCH_BYTES,
+    maxBlocks: MAX_FORWARD_PREFETCH_BLOCKS,
+    minSafetyMs: MIN_PREFETCH_SAFETY_MS,
+  });
 }
 
 function trimChunkCache(anchorStart) {
@@ -988,31 +1199,28 @@ function isChunkStartInRange(start) {
 function prefetchAroundTime(time) {
   if (!canBackgroundPrefetch()) return;
   const start = chunkStartOf(time);
-  const offset = Math.max(0, Number(time) - start);
-  if (offset >= chunkSeconds.value - PREFETCH_WINDOW_SECONDS) {
+  if (!isPlaying.value) {
+    // 暂停/拖动时保持双向邻块，随机向前或向后拖动都能立即命中。
     prefetchChunk(start + chunkSeconds.value, loadSeq);
+    if (prefetchingChunks.size < MAX_PREFETCH_CONCURRENCY) {
+      prefetchChunk(start - chunkSeconds.value, loadSeq);
+    }
+    return;
   }
-  if (!isPlaying.value && offset <= PREFETCH_WINDOW_SECONDS) {
-    prefetchChunk(start - chunkSeconds.value, loadSeq);
+  const forward = forwardPrefetchBlocks();
+  for (let index = 1; index <= forward; index++) {
+    if (prefetchingChunks.size >= MAX_PREFETCH_CONCURRENCY) break;
+    prefetchChunk(start + index * chunkSeconds.value, loadSeq);
   }
 }
 
-function prefetchAdjacentChunks(start) {
-  if (!canBackgroundPrefetch()) return;
-  prefetchChunk(start + chunkSeconds.value, loadSeq);
-  prefetchChunk(start - chunkSeconds.value, loadSeq);
-}
-
-function scheduleChunkPrefetch(start, time = currentTime.value) {
+function scheduleChunkPrefetch(time = currentTime.value) {
   cancelScheduledPrefetch();
   const delay = isPlaying.value ? 80 : 650;
   prefetchTimer = window.setTimeout(() => {
     prefetchTimer = null;
     if (!canBackgroundPrefetch()) return;
     prefetchAroundTime(time);
-    if (!isPlaying.value) {
-      prefetchAdjacentChunks(start);
-    }
   }, delay);
 }
 
@@ -1040,7 +1248,10 @@ async function prefetchChunk(start, seq) {
     return;
   }
   if (!canBackgroundPrefetch()) return;
+  if (prefetchingChunks.size >= MAX_PREFETCH_CONCURRENCY) return;
   prefetchingChunks.add(start);
+  const spatialWindow = ensureActiveSpatialWindow();
+  const myViewportSeq = viewportSeq;
   if (!prefetchAbortController || prefetchAbortController.signal?.aborted) {
     prefetchAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
   }
@@ -1048,21 +1259,29 @@ async function prefetchChunk(start, seq) {
     const data = await requestTrajectoryChunkOnce(start, {
       background: true,
       signal: prefetchAbortController?.signal,
+      spatialWindow,
     });
-    if (seq === loadSeq && data?.status === "ready") {
-      rememberChunk(start, data);
-      // 预取的相邻分块同时推给 Worker 预建每秒索引并常驻，播放越过边界时即可秒切不卡（双缓冲）。
-      trajectoryLayer?.preindexChunk(data);
+    if (seq === loadSeq && myViewportSeq === viewportSeq && data?.status === "ready") {
+      // 原 ArrayBuffer 在这里直接移交 Worker 建索引；Map 仅记 key/bytes。
+      // 近邻块已常驻时，10s 边界只执行 activateChunk，不会卡顿。
+      const descriptor = await installChunkInWorker(start, data, false);
+      if (seq === loadSeq && myViewportSeq === viewportSeq && descriptor) rememberChunk(start, descriptor);
     }
   } catch (error) {
     // Prefetch is opportunistic; the foreground loader will surface errors.
   } finally {
     prefetchingChunks.delete(start);
+    // 前两个请求完成后继续填满动态前瞻窗，避免 50x 只预取到最近一块。
+    if (seq === loadSeq && myViewportSeq === viewportSeq && isPlaying.value) {
+      const resumeTime = playbackClock;
+      queueMicrotask(() => prefetchAroundTime(resumeTime));
+    }
   }
 }
 
 async function requestTrajectoryChunkOnce(start, options = {}) {
-  const key = `${options.background ? "bg" : "fg"}:${start}`;
+  const windowKey = options.spatialWindow?.key || activeSpatialWindow?.key || "full";
+  const key = `${options.background ? "bg" : "fg"}:${start}:${windowKey}`;
   if (chunkRequests.has(key)) {
     return chunkRequests.get(key);
   }
@@ -1077,51 +1296,89 @@ async function requestTrajectoryChunkOnce(start, options = {}) {
   return promise;
 }
 
-// 分块的本地缓存版本标识：events 变化（mod/size/cacheVersion 任一变化）即失效。
-function eventsTag() {
+function cacheGeneration() {
   const manifest = trajectoryData.value || {};
-  return `${manifest.cacheVersion || ""}:${manifest.eventsModified || ""}:${manifest.eventsSize || ""}`;
+  return String(
+    manifest.cacheGeneration
+    || manifest.generation
+    || manifest.generatedAt
+    || `${manifest.eventsModified || ""}:${manifest.eventsSize || ""}`,
+  );
 }
 
-function chunkCacheKey(start) {
+// 分块的本地/浏览器缓存标识：每次成功重建都应产生新 cacheGeneration。
+// 它同时进入 immutable GET URL 与 IndexedDB key，避免磁盘已替换但用户继续看旧块。
+function eventsTag() {
+  const manifest = trajectoryData.value || {};
+  return `${manifest.cacheVersion || ""}:${cacheGeneration()}:${manifest.eventsModified || ""}:${manifest.eventsSize || ""}`;
+}
+
+function chunkCacheKey(start, spatialWindow = null) {
   if (!props.model) return "";
-  return `${props.model}::${eventsTag()}::${start}`;
+  return `${props.model}::${eventsTag()}::${start}::${spatialWindow?.key || "full"}`;
 }
 
 async function requestTrajectoryChunk(start, options = {}) {
   const { background = false, signal } = options;
-  const cacheKey = chunkCacheKey(start);
+  if (isRealAggregateMode.value) {
+    const chunk = realTrajectoryChunkAt(realTrajectorySource, start);
+    if (!chunk) throw new Error("真实车辆轨迹分块尚未就绪");
+    return chunk;
+  }
+  const spatialWindow = options.spatialWindow || ensureActiveSpatialWindow();
+  const spatialMode = supportsTrajectorySpatialChunks(trajectoryData.value || {});
+  if (spatialMode && !spatialWindow) {
+    throw new Error("轨迹空间视口尚未就绪");
+  }
+  const cacheKey = chunkCacheKey(start, spatialWindow);
+  const requestStartedAt = performance.now();
   // 1) 先查本地持久缓存（IndexedDB）：命中即零网络、跨会话直读。
   if (cacheKey) {
     try {
       const cached = await getCachedChunk(cacheKey);
       if (cached && cached.byteLength) {
-        return parseVehicleTrajectoryBinaryChunk(cached, trajectoryData.value || {});
+        recordChunkFetch(performance.now() - requestStartedAt);
+        const parsed = parseVehicleTrajectoryBinaryChunk(cached, trajectoryData.value || {});
+        parsed.spatialKey = spatialWindow?.key || "full";
+        return parsed;
       }
     } catch (error) {
       // 本地缓存损坏则回退网络。
     }
   }
 
-  // 2) 走可缓存的 GET 二进制端点；成功后把原始字节写入 IndexedDB（结构化克隆，不影响已解析视图）。
+  // 2) 走可缓存的 GET 二进制端点；rev 使 immutable URL 随重建变化。
+  // 持久化完成后，这一个原 ArrayBuffer 会直接 transfer 给 Worker，主线程不留副本。
   // 网络请求挂到当前一代的取消控制器上；重新加载/卸载时统一 abort（IndexedDB 命中路径不涉网，不受影响）。
   try {
-    const res = await dataTrajectoryChunkBinary({ datasource: props.model }, start, {
-      signal,
-      silentError: background,
-    });
+    const res = spatialMode
+      ? await dataTrajectoryViewportBinary(
+          { datasource: props.model },
+          start,
+          spatialWindow,
+          cacheGeneration(),
+          { signal, silentError: background },
+          chunkSeconds.value,
+        )
+      : await dataTrajectoryChunkBinary({ datasource: props.model }, start, cacheGeneration(), {
+          signal,
+          silentError: background,
+        });
     if (res?.status === 200 && res.data?.byteLength) {
       const parsed = parseVehicleTrajectoryBinaryChunk(res.data, trajectoryData.value || {});
+      parsed.spatialKey = spatialWindow?.key || "full";
       if (cacheKey && res.data.byteLength <= MAX_PERSISTENT_CACHE_BYTES) {
-        putCachedChunk(cacheKey, res.data, { ds: props.model, ver: eventsTag() }).catch(() => {});
+        // 等 IndexedDB 完成结构化克隆后才移交所有权，避免异步 put 读到 detached buffer。
+        await putCachedChunk(cacheKey, res.data, { ds: props.model, ver: eventsTag() });
       }
+      recordChunkFetch(performance.now() - requestStartedAt);
       return parsed;
     }
   } catch (error) {
     // 被取消的请求直接上抛，不再降级 JSON 重试（调用方按取消静默处理）。
     if (isCanceledRequest(error)) throw error;
     const status = error?.cause?.response?.status || error?.response?.status;
-    if (background || status >= 500) throw error;
+    if (spatialMode || background || status >= 500) throw error;
     // JSON keeps the feature usable when an old cache or browser rejects the binary path.
   }
 
@@ -1130,6 +1387,13 @@ async function requestTrajectoryChunk(start, options = {}) {
     silentError: background,
   });
   return res.data || {};
+}
+
+function recordChunkFetch(elapsedMs) {
+  const value = Number(elapsedMs);
+  if (!Number.isFinite(value) || value <= 0) return;
+  chunkFetchEwmaMs = chunkFetchEwmaMs * 0.75 + value * 0.25;
+  chunkFetchHighMs = Math.max(value, chunkFetchHighMs * 0.92);
 }
 
 function publishLiveStats(stats, force = false) {
@@ -1141,7 +1405,13 @@ function publishLiveStats(stats, force = false) {
 
 function syncStatsAt(time, force = !isPlaying.value) {
   const layerStats = trajectoryLayer?.setTime(time) || emptyStats();
-  publishLiveStats(layerStats, force);
+  const displayStats = trajectoryDisplayStatsAt(
+    globalTrajectoryStats,
+    time,
+    VehicleVisibilityModeRef.value,
+    layerStats,
+  );
+  publishLiveStats(displayStats || emptyStats(), force);
   syncPassengerStatsAt(time, force);
 }
 
@@ -1162,7 +1432,9 @@ function driveLayerTime(time) {
   const start = chunkStartOf(time);
   if (start !== currentChunkStart) {
     if (chunkCache.has(start)) {
-      applyChunkData(start, chunkCache.get(start));
+      applyChunkData(start, chunkCache.get(start), time);
+      syncPassengerStatsAt(time);
+      return;
     } else {
       loadChunkForTime(time, loadSeq, false, { priority: true });
       const snapshotReady = activeSnapshotRange
@@ -1185,7 +1457,7 @@ function seekToTime(time, priority = false) {
   const start = chunkStartOf(time);
   if (start !== currentChunkStart) {
     if (chunkCache.has(start)) {
-      applyChunkData(start, chunkCache.get(start));
+      applyChunkData(start, chunkCache.get(start), time);
       return;
     }
     syncPassengerStatsAt(time);
@@ -1225,7 +1497,7 @@ function cancelSeekSnapshot() {
 }
 
 function scheduleSeekSnapshot(time, priority = false) {
-  if (!hasTrajectory.value || !props.model) return;
+  if (!hasTrajectory.value || !props.model || isRealMode.value) return;
   const start = chunkStartOf(time);
   if (start === currentChunkStart || chunkCache.has(start)) return;
   cancelSeekSnapshot();
@@ -1247,9 +1519,13 @@ async function requestSeekSnapshot(time, seq) {
       { datasource: props.model },
       time,
       {
-        bucketSeconds: chunkSeconds.value,
-        visibilityMode: VehicleVisibilityModeRef.value,
+        // 随机拖动只取当前 1–2 秒视口段，不再把整个 30/300s 块当“快照”。
+        bucketSeconds: Math.max(1, Math.min(2, segmentBucketSeconds.value)),
+        // 快照也保留全部制式，由 Worker 依当前开关过滤。这样切换制式时
+        // 较早发出的响应不会把当前数据反向覆盖成某一制式的子集。
+        visibilityMode: "all",
         bounds,
+        revision: cacheGeneration(),
       },
       { signal: controller?.signal, silentError: true },
     );
@@ -1266,7 +1542,8 @@ async function requestSeekSnapshot(time, seq) {
       end: (Number(snapshot.chunk?.end) || targetStart) + 1,
     };
     trajectoryLayer?.setVehicleMeta(snapshot.meta || trajectoryData.value?.meta || {});
-    trajectoryLayer?.setData(markRaw(snapshot));
+    const result = await trajectoryLayer?.setData(markRaw(snapshot));
+    if (result?.failed || result?.stale || seq !== seekSnapshotSeq || targetStart === currentChunkStart) return;
     syncStatsAt(time, true);
   } catch (error) {
     // 快照是完整分块加载前的低延迟路径；取消/失败时由完整分块自然接管。
@@ -1491,6 +1768,7 @@ watch(VehicleSizeRef, (size) => {
   trajectoryLayer?.setVehicleSize(size);
 });
 watch(VehicleVisibilityModeRef, (mode) => {
+  cancelSeekSnapshot();
   trajectoryLayer?.setVehicleVisibilityMode(mode);
   syncStats();
 });
@@ -1547,6 +1825,10 @@ function syncLinkSpeedBucket(simSeconds) {
 async function bootstrapLinkSpeed() {
   stopLinkSpeedPolling();
   if (!props.model || !LinkSpeedEnabledRef.value) return;
+  if (isRealAggregateMode.value || isRealDatasource(props.model)) {
+    LinkSpeedStatusRef.value = "empty";
+    return;
+  }
   const seq = ++linkSpeedSeq;
   const model = props.model;
   if (LinkSpeedStatusRef.value !== "generating") {
@@ -1607,7 +1889,7 @@ watch(LinkSpeedOpacityRef, (value) => {
 // ===== 主要拥堵路段 TOP10（右侧面板卡片，随播放时钟按 15min 桶刷新，点击定位）=====
 // 数据与车速图层共享同一份 summary/matrix 缓存（modelDataCache 去重），但状态机独立：
 // 面板信息不被"默认关闭"的图层开关卡住，图层后开时命中缓存秒出。
-const CONGEST_TOP_LIMIT = 10;
+const CONGEST_TOP_LIMIT = rightPanelRankLimit;
 const congestStatus = ref("loading"); // loading | generating | ready | empty
 const congestSummary = shallowRef(null); // { names: 路名字典, districts: 街道→行政区 }
 const congestData = shallowRef(null); // parseLinkSpeedMatrix 结果（与图层共享 markRaw 对象）
@@ -1620,7 +1902,7 @@ let congestHighlightManager = null;
 
 // 口径一句话（常量单一来源）：准入=降速幅度，排序=累计延误，钳位爬行值按异常剔除
 const congestNote = `公交净行驶车速较自由流降速≥${Math.round((1 - CONGEST_SPEED_RATIO_MAX) * 100)}%的路段，`
-  + `按时段累计延误排序、随播放时刻变化（模型抽样口径，低于 ${CONGEST_MIN_SPEED_KMH} km/h 的异常穿越已剔除）`;
+  + `按时段累计延误排序、随播放时刻变化（模型已加载事件原值，低于 ${CONGEST_MIN_SPEED_KMH} km/h 的异常穿越已剔除）`;
 
 const congestWindowText = computed(() => {
   const bucketSeconds = congestData.value?.bucketSeconds || 900;
@@ -1674,7 +1956,7 @@ function formatClock(seconds) {
   return `${h}:${m}`;
 }
 
-// 组累计延误 → 行内文案（抽样口径原值，不扩样）：分钟为主，≥1 小时换算
+// 组累计延误 → 行内文案（模型原始值，不做数量缩放）：分钟为主，≥1 小时换算
 function formatDelay(seconds) {
   const minutes = Number(seconds) / 60;
   if (!Number.isFinite(minutes) || minutes <= 0) return "—";
@@ -1718,6 +2000,10 @@ function scheduleCongestPoll() {
 async function bootstrapCongestion() {
   stopCongestPolling();
   if (!props.model) return;
+  if (isRealAggregateMode.value || isRealDatasource(props.model)) {
+    congestStatus.value = "empty";
+    return;
+  }
   const seq = ++congestSeq;
   const model = props.model;
   if (congestStatus.value !== "generating") {
@@ -1844,6 +2130,7 @@ onUnmounted(() => {
   cancelSeekChunkLoad();
   cancelSeekSnapshot();
   cancelScheduledPrefetch();
+  cancelViewportReload();
   cancelSeekRender();
   cancelPrefetchRequests();
   // 中止仍在途的分块请求（含预取），与上面的序号失效互为双保险。
@@ -2656,6 +2943,10 @@ onUnmounted(() => {
   flex: none;
 }
 
+.rm-veh-status-card.is-only-card {
+  flex: 1;
+}
+
 .rm-congest-card {
   /* flex:1 + min-height:0 继承自 .rm-veh-card，占据状态卡以下的全部空间 */
   padding-top: 16px;
@@ -2885,6 +3176,89 @@ onUnmounted(() => {
   .rm-congest-row {
     transition: none;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .GJYS .build-state .build-metrics {
+  color: #94a3b8;
+}
+html.dark .GJYS .control-row .time-text {
+  color: #409cff;
+}
+html.dark .GJYS .stat-grid .stat-item {
+  background: rgba(20, 27, 37, 0.8);
+  border-color: rgba(148, 180, 220, 0.16);
+}
+/* 制式语义色暗底提亮（地图车辆点/占比条色块仍取 VEHICLE_MODE_CONFIG 原值） */
+html.dark .GJYS .stat-grid .stat-item .stat-value.mode-bus {
+  color: #4ccd76;
+}
+html.dark .GJYS .stat-grid .stat-item .stat-value.mode-subway {
+  color: #f87171;
+}
+html.dark .GJYS .stat-grid .stat-item .stat-value.mode-car {
+  color: #60a5fa;
+}
+html.dark .rm-play-btn:hover:not(:disabled) {
+  box-shadow: 0 8px 22px -6px rgba(31, 127, 242, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+html.dark .rm-play-reset:hover:not(:disabled) {
+  border-color: rgba(64, 156, 255, 0.34);
+}
+html.dark .rm-play-speed-btn.active {
+  box-shadow: 0 1px 3px rgba(2, 6, 12, 0.34);
+}
+html.dark .rm-play-scrub :deep(.el-slider) {
+  --el-slider-runway-bg-color: rgba(148, 180, 220, 0.16);
+}
+html.dark .rm-play-scrub :deep(.el-slider__button) {
+  box-shadow: 0 1px 4px rgba(2, 6, 12, 0.42);
+}
+html.dark .rm-veh-split-seg + .rm-veh-split-seg {
+  /* 分段缝隙在暗底上用深色模拟（浅色用白缝） */
+  box-shadow: inset 1px 0 0 rgba(13, 19, 27, 0.85);
+}
+html.dark .rm-veh-unfollow:hover {
+  background: rgba(64, 156, 255, 0.2);
+}
+html.dark .rm-veh-info-body {
+  scrollbar-color: rgba(148, 180, 220, 0.28) transparent;
+}
+html.dark .rm-veh-info-body::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.28);
+}
+html.dark .rm-veh-info-body .station-row.previous {
+  border-color: rgba(76, 205, 118, 0.4);
+  background: rgba(76, 205, 118, 0.12);
+}
+html.dark .rm-veh-info-body .station-row.next {
+  border-color: rgba(96, 165, 250, 0.38);
+  background: rgba(96, 165, 250, 0.12);
+}
+html.dark .rm-congest-list {
+  scrollbar-color: rgba(148, 180, 220, 0.28) transparent;
+}
+html.dark .rm-congest-list::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.28);
+}
+html.dark .rm-congest-row:hover {
+  border-color: rgba(64, 156, 255, 0.34);
+}
+html.dark .rm-congest-row.active {
+  border-color: rgba(64, 156, 255, 0.6);
+  background: rgba(64, 156, 255, 0.13);
+  box-shadow: inset 2px 0 0 #409cff;
+}
+html.dark .rm-congest-dot {
+  box-shadow: inset 0 0 0 1px rgba(148, 180, 220, 0.2);
+}
+html.dark .rm-veh-live-dot {
+  animation-name: rmVehPulseDark;
+}
+@keyframes rmVehPulseDark {
+  0% { box-shadow: 0 0 0 0 rgba(76, 205, 118, 0.45); }
+  70% { box-shadow: 0 0 0 6px rgba(76, 205, 118, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(76, 205, 118, 0); }
 }
 
 </style>

@@ -154,7 +154,7 @@
 
           <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'od'" class="pfa-section">
             <div class="section-header">
-              <span class="section-title">客流OD</span>
+              <span class="section-title">客流OD TOP10</span>
               <div class="chart-type-selector">
                 <div
                   v-for="mode in PFA_OD_VIEW_MODES"
@@ -173,7 +173,7 @@
                   <span class="col-od-flow text-right">客流量</span>
                 </div>
                 <div class="transfer-table-body">
-                  <div v-for="(item, idx) in odStationChart" :key="`${item.chartLabel}-${idx}`" class="transfer-table-row">
+                  <div v-for="(item, idx) in odStationRankData" :key="`${item.chartLabel}-${idx}`" class="transfer-table-row">
                     <span class="col-od-route text-ellipsis">
                       <strong>{{ item.chartLabel }}</strong>
                       <!-- 计数后括注具体线路名；列宽有限溢出省略，悬停看全量 -->
@@ -181,7 +181,7 @@
                     </span>
                     <span class="col-od-flow text-right bold">{{ item.flow.toLocaleString() }} <small>人次</small></span>
                   </div>
-                  <div v-if="!odStationChart.length" class="pfa-empty">暂无OD客流数据</div>
+                  <div v-if="!odStationRankData.length" class="pfa-empty">暂无OD客流数据</div>
                 </div>
               </div>
             </div>
@@ -200,11 +200,16 @@
             </div>
           </section>
 
-          <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'demographics'" class="pfa-section">
+          <section v-else-if="!stationPanelUnavailable && pfaStationSection === 'demographics'" class="pfa-section passenger-profile-section">
             <div class="section-header">
               <span class="section-title">客流画像</span>
-              <span v-if="stationDemographicsRiderCount" class="pfa-section-meta">样本 {{ stationDemographicsRiderCount.toLocaleString() }} 人</span>
+              <span v-if="stationDemographicsRiderCount" class="pfa-section-meta" :title="stationDemographicsScopeText">
+                {{ stationDemographicsScopeText }} · {{ stationDemographicsSampleText }}
+              </span>
             </div>
+            <p v-if="isStationRealCardProfile" class="pfa-profile-note">
+              画像来源：刷卡记录 CARD_TYPE（票卡类型）；按本站上车刷卡人次归类，不推断性别、职业或出行目的。
+            </p>
             <div class="demo-groups">
               <div v-for="g in stationDemographicsGroups" :key="g.key" class="demo-group">
                 <div class="demo-group-head">
@@ -213,11 +218,18 @@
                 </div>
                 <div class="demo-list">
                   <div v-for="d in g.items" :key="d.key" class="demo-row">
-                    <span class="demo-label">
+                    <span class="demo-label" :title="d.label">
                       <span class="demo-dot" :style="{ background: d.color }"></span>
                       {{ d.label }}
                     </span>
-                    <span class="demo-track">
+                    <span
+                      class="demo-track"
+                      role="progressbar"
+                      :aria-label="`${d.label}占比`"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      :aria-valuenow="d.value"
+                    >
                       <span class="demo-fill" :style="{ width: Math.min(100, d.value) + '%', background: d.color }"></span>
                     </span>
                     <span class="demo-pct">{{ d.value.toFixed(1) }}%</span>
@@ -426,7 +438,7 @@
 
           <!-- View Mode Switcher -->
           <div class="od-header">
-            <span class="section-title">OD客流排名</span>
+            <span class="section-title">OD客流排名 TOP10</span>
             <div class="chart-type-selector">
               <div
                 v-for="mode in OD_VIEW_MODES"
@@ -447,7 +459,7 @@
                 <span class="col-od-flow text-right">客流量</span>
               </div>
               <div class="transfer-table-body">
-                <div v-for="(item, idx) in odTableData" :key="`${item.origin || ''}-${item.destination || ''}-${item.routeLabel || idx}`" class="transfer-table-row">
+                <div v-for="(item, idx) in odTableRankData" :key="`${item.origin || ''}-${item.destination || ''}-${item.routeLabel || idx}`" class="transfer-table-row">
                   <span class="col-od-route text-ellipsis">
                     <strong>{{ item.lineName || '未知线路' }}</strong>
                     <small>{{ item.routeDesc || item.routeName || '方向未识别' }}</small>
@@ -518,7 +530,7 @@
       <div class="rm-right-card-title">
         <div class="rm-title-head">
           <p class="rm-panel-kicker">站点客流</p>
-          <h2>{{ activeTransitType === 'bus' ? '公交' : '地铁' }}站点客流排行</h2>
+          <h2>{{ activeTransitType === 'bus' ? '公交' : '地铁' }}站点客流排行 TOP10</h2>
         </div>
         <div class="rm-ranking-tools">
           <div class="rm-seg" role="group" aria-label="客流类型">
@@ -654,10 +666,12 @@ import { injectSync } from "@/utils";
 import { compareZh, createDebouncedMirror, isCanceledRequest, runWhenIdle } from "../utils/panelShared.js";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 import { isMetroLine } from "@/utils/transitMode.js";
+import { getStationPanelDetail } from "@/api/facility.js";
 
 const props = defineProps({
   model: String,
 });
+const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
 
 // 模板 v-for 静态选项提为常量，避免每次渲染重建数组
 const DETAIL_TABS = [
@@ -677,6 +691,9 @@ const rawLines = shallowRef([]);
 // rawLines 当前归属的模型：派生索引以它为键，避免模型切换瞬间写错缓存
 let rawLinesModel = "";
 const stationPanelData = shallowRef(null);
+const selectedStationDetail = shallowRef(null);
+const selectedReverseStationDetail = shallowRef(null);
+let stationDetailRequestSeq = 0;
 const stationPanelStatus = ref("idle");
 const stationPanelError = ref("");
 let stationPanelPromise = null;
@@ -808,7 +825,53 @@ function stationsNormalizedIndex(stations) {
   return index;
 }
 
+const stationPanelKeyIndexCache = new WeakMap();
+function stationPanelKeyIndex(stations) {
+  let index = stationPanelKeyIndexCache.get(stations);
+  if (index) return index;
+  const byName = new Map();
+  const byFacilityId = new Map();
+  Object.entries(stations || {}).forEach(([key, station]) => {
+    const normalized = normalizeStationSearchName(key);
+    if (normalized && !byName.has(normalized)) byName.set(normalized, key);
+    (Array.isArray(station?.facilityIds) ? station.facilityIds : []).forEach((id) => {
+      const facilityId = String(id || "");
+      if (facilityId && !byFacilityId.has(facilityId)) byFacilityId.set(facilityId, key);
+    });
+  });
+  index = { byName, byFacilityId };
+  stationPanelKeyIndexCache.set(stations, index);
+  return index;
+}
+
+function resolveStationPanelKey(stationName, facilityId = "", panel = stationPanelData.value) {
+  const stations = panel?.stations;
+  if (!stations || typeof stations !== "object") return String(stationName || "");
+  const index = stationPanelKeyIndex(stations);
+  const normalized = normalizeStationSearchName(stationName);
+  return (normalized ? index.byName.get(normalized) : "")
+    || index.byFacilityId.get(String(facilityId || ""))
+    || String(stationName || "");
+}
+
 function stationPanelByName(stationName) {
+  const normalized = normalizeStationSearchName(stationName);
+  const primaryDetailName = selectedStationDetail.value?._requestedStationName
+    || selectedStationDetail.value?.stationName
+    || selectedStationDetail.value?.name
+    || selectedStationName.value;
+  if (selectedStationDetail.value
+      && normalizeStationSearchName(primaryDetailName) === normalized) {
+    return selectedStationDetail.value;
+  }
+  const reverseDetailName = selectedReverseStationDetail.value?._requestedStationName
+    || selectedReverseStationDetail.value?.stationName
+    || selectedReverseStationDetail.value?.name
+    || selectedReverseStationName.value;
+  if (selectedReverseStationDetail.value
+      && normalizeStationSearchName(reverseDetailName) === normalized) {
+    return selectedReverseStationDetail.value;
+  }
   const stations = stationPanelData.value?.stations;
   if (!stations || !stationName) return null;
   if (stations[stationName]) return stations[stationName];
@@ -816,6 +879,61 @@ function stationPanelByName(stationName) {
   const matchedKey = stationsNormalizedIndex(stations).get(target);
   return matchedKey ? stations[matchedKey] : null;
 }
+
+async function loadSelectedStationDetails() {
+  const model = props.model;
+  const primary = String(selectedStationName.value || "");
+  const reverse = String(selectedReverseStationName.value || "");
+  const primaryFacilityId = String(selectedStationFacilityId.value || "");
+  const reverseFacilityId = String(selectedReverseStationFacilityId.value || "");
+  const seq = ++stationDetailRequestSeq;
+  selectedStationDetail.value = null;
+  selectedReverseStationDetail.value = null;
+  if (!model || !primary) return;
+
+  const panel = stationPanelData.value || await ensureStationPanelData();
+  if (seq !== stationDetailRequestSeq || props.model !== model
+      || selectedStationName.value !== primary) return;
+  const primaryKey = resolveStationPanelKey(primary, primaryFacilityId, panel);
+  const reverseKey = reverse
+    ? resolveStationPanelKey(reverse, reverseFacilityId, panel)
+    : "";
+
+  const load = (stationName, facilityId, requestedStationName) => getStationPanelDetail(
+    { datasource: model, stationName, facilityId },
+    { silentError: true, timeout: 180_000 },
+  ).then((res) => {
+    const detail = res?.data && typeof res.data === "object" ? res.data : null;
+    if (!detail || detail.status === "generating" || !Object.keys(detail).length) return null;
+    return {
+      ...detail,
+      stationName: detail.stationName || stationName,
+      _requestedStationName: requestedStationName,
+    };
+  }).catch(() => null);
+
+  const primaryPromise = load(primaryKey, primaryFacilityId, primary);
+  const sameStation = normalizeStationSearchName(reverseKey) === normalizeStationSearchName(primaryKey);
+  const reversePromise = reverseKey && !sameStation
+    ? load(reverseKey, reverseFacilityId, reverse)
+    : Promise.resolve(null);
+  const [primaryDetail, reverseDetail] = await Promise.all([primaryPromise, reversePromise]);
+  if (seq !== stationDetailRequestSeq || props.model !== model
+      || selectedStationName.value !== primary) return;
+  selectedStationDetail.value = primaryDetail;
+  selectedReverseStationDetail.value = sameStation ? primaryDetail : reverseDetail;
+}
+
+watch(
+  [
+    selectedStationName,
+    selectedStationFacilityId,
+    selectedReverseStationName,
+    selectedReverseStationFacilityId,
+    () => props.model,
+  ],
+  () => loadSelectedStationDetails(),
+);
 
 const stationFacilityIndexCache = new WeakMap();
 function stationFacilityIndex(stations) {
@@ -896,6 +1014,9 @@ const currentStationPanel = computed(() => {
   const stationName = selectedStationName.value;
   if (!stationName) return null;
   if (shouldRenderPfaRightPanel.value) {
+    // selectedStationDetail 由请求序号与当前选中站绑定，直接采用明细；
+    // 不再因后端返回的物理站名与地图显示名不同而退回轻量摘要。
+    if (selectedStationDetail.value) return selectedStationDetail.value;
     const aggregatePanel = stationPanelByName(stationName);
     if (aggregatePanel) return aggregatePanel;
   }
@@ -980,6 +1101,19 @@ const stationDemographicsGroups = computed(() => {
 });
 const stationDemographicsRiderCount = computed(() =>
   passengerProfileRiderCount(currentStationPanel.value?.demographics || {})
+);
+const isStationRealCardProfile = computed(() => currentStationPanel.value?.demographics?.source === "real-card-type");
+const stationDemographicsScopeText = computed(() =>
+  isStationRealCardProfile.value
+    ? "本站上车乘客 · 票卡客群"
+    : currentStationPanel.value?.demographics?.activitySource === "all-activities-fallback"
+    ? "本站关联乘客 · 活动类型（回退口径）"
+    : "本站上车乘客 · 本次出行终点活动"
+);
+const stationDemographicsSampleText = computed(() =>
+  isStationRealCardProfile.value
+    ? `刷卡上车样本 ${stationDemographicsRiderCount.value.toLocaleString()} 人次`
+    : `模型原始人数 ${stationDemographicsRiderCount.value.toLocaleString()} 人`
 );
 
 const { proxy } = getCurrentInstance() || {};
@@ -1543,7 +1677,7 @@ const SELECTED_STATION_RING_LAYER_ID = "selected-station-ring-layer";
 const REACHABILITY_SOURCE_ID = "station-reachability-source";
 const REACHABILITY_LAYER_PREFIX = "station-reachability-line";
 const REACHABILITY_LEVEL_KEYS = ["direct", "transfer1", "transfer2"];
-// 需求8：客流OD地图曲线（贝塞尔弧线 + 起点站名标签）
+// 需求8：客流OD地图直线（起点 → 目的地 + 对端站名标签）
 const OD_CURVE_SOURCE_ID = "station-od-curve-source";
 const OD_CURVE_LAYER_ID = "station-od-curve-layer";
 const OD_CURVE_CASING_LAYER_ID = "station-od-curve-casing-layer";
@@ -1969,7 +2103,7 @@ function applyReachabilityLevelVisibility() {
   });
 }
 
-// —— 需求8：客流OD地图曲线 ——
+// —— 需求8：客流OD地图直线 ——
 function odCurveOverlayActive() {
   return shouldRenderPfaRightPanel.value && pfaStationSection.value === "od" && Boolean(selectedStationName.value);
 }
@@ -2058,19 +2192,20 @@ function odCurveOverlayData() {
     const inbound = item.direction === "inbound";
     const classIndex = classifyByBreaks(item.flow, breaks);
     const width = Math.round(Math.max(OD_MIN_WIDTH, OD_BASE_WIDTH * (widths[classIndex] || 1)) * 10) / 10;
+    const properties = {
+      color: colors[classIndex] || colors[colors.length - 1],
+      width,
+      stationName: item.name,
+      flow: item.flow,
+      inboundFlow: item.inboundFlow,
+      outboundFlow: item.outboundFlow,
+      direction: item.direction,
+    };
     flows.push({
       from: inbound ? remote : selfCoord,
       to: inbound ? selfCoord : remote,
       value: item.flow,
-      properties: {
-        color: colors[classIndex] || colors[colors.length - 1],
-        width,
-        stationName: item.name,
-        flow: item.flow,
-        inboundFlow: item.inboundFlow,
-        outboundFlow: item.outboundFlow,
-        direction: item.direction,
-      },
+      properties,
     });
     if (item.name) {
       labelFeatures.push({
@@ -2081,7 +2216,11 @@ function odCurveOverlayData() {
     }
   });
   return {
-    curves: buildFlowCurveFeatureCollection(flows, { curvature: 0.22 }),
+    curves: {
+      type: "FeatureCollection",
+      // 起点直达目的地，不采用真实公交线路 path；图层样式继续与仿真模式共用。
+      features: buildFlowCurveFeatureCollection(flows, { curvature: 0 }).features,
+    },
     labels: { type: "FeatureCollection", features: labelFeatures },
   };
 }
@@ -2361,6 +2500,9 @@ function ensureStationPanelData(options = {}) {
   if (!model) return Promise.resolve(null);
   if (force) {
     stationPanelData.value = null;
+    selectedStationDetail.value = null;
+    selectedReverseStationDetail.value = null;
+    stationDetailRequestSeq += 1;
     clearStationPanelRetry();
     stationPanelRetryCount = 0;
   }
@@ -2486,7 +2628,8 @@ async function loadAllData() {
 const activeTransitType = ref("bus");
 
 const currentLeaderboard = computed(() => {
-  return stationPanelData.value?.summary?.leaderboard?.[activeTransitType.value] || [];
+  const rows = stationPanelData.value?.summary?.leaderboard?.[activeTransitType.value] || [];
+  return rows.slice(0, rightPanelRankLimit);
 });
 
 // CSV 导出（带 BOM，Excel 直接打开中文不乱码）；项目无 xlsx 依赖，避免引新包
@@ -2642,7 +2785,7 @@ function buildStationBoardingChartOption({ fullscreen = false } = {}) {
   const alightingByHour = currentStationPanel.value?.alightingByHour || [];
 
   // 与 hourSlice 同口径：左闭右开 [startHour, endHour)；
-  // 展示口径取整（模型比例聚合会产生小数，业务要求柱状图不出现小数）
+  // 展示口径取整（跨站/线路聚合可产生小数，业务要求柱状图不出现小数）
   for (let hour = startHour; hour < endHour; hour++) {
     hours.push(formatHourRangeLabel(hour));
     boardingData.push(Math.round(toFiniteNumber(boardingByHour[hour], 0)));
@@ -2815,6 +2958,9 @@ const odTableData = computed(() => {
   }));
 });
 
+// 右侧表格只展示 TOP10；完整 OD 明细继续供地图与导出使用。
+const odTableRankData = computed(() => odTableData.value.slice(0, rightPanelRankLimit));
+
 // 图表：按对端站点聚合（同名站累加、只出现一次；表格仍保留按线路方向的明细）。
 // 线路数按去重后的线路名统计（同线上下行/到发两行合并算一条），并在计数后括注具体线路名
 const odStationChart = computed(() => {
@@ -2854,41 +3000,19 @@ const odStationChart = computed(() => {
   return rows;
 });
 
-// 图表高度随对端站点数量增长（每站约 26px），面板内滚动，保证站点全部可见、不省略
-// 高度封顶：枢纽站对端可达数百个，无上限时 dpr=2 下会生成数十 MB 的超高位图，低端机可能直接崩
-const OD_CHART_MAX_HEIGHT = 520;
-const OD_CHART_VISIBLE_ROWS = Math.floor((OD_CHART_MAX_HEIGHT - 40) / 26);
-const odChartHeight = computed(() => Math.max(260, Math.min(OD_CHART_MAX_HEIGHT, odStationChart.value.length * 26 + 40)));
-const odChartNeedsZoom = computed(() => odStationChart.value.length > OD_CHART_VISIBLE_ROWS);
+// 右侧图表按对端站点聚合后取 TOP10，不改变全量聚合结果。
+const odStationRankData = computed(() => odStationChart.value.slice(0, rightPanelRankLimit));
+
+// 图表仅展示 TOP10，每站约 26px；小样本保留最低高度，避免空旷或轴标签拥挤。
+const odChartHeight = computed(() => Math.max(260, odStationRankData.value.length * 26 + 40));
 
 const odChartOption = computed(() => {
-  const chartRows = odStationChart.value.slice().reverse();
+  const chartRows = odStationRankData.value.slice().reverse();
   const labels = chartRows.map(d => d.chartLabel);
   const flows = chartRows.map(d => d.flow);
-  // 超出可视行数时用 dataZoom 分页浏览（初始窗口停在客流最大的顶部行），画布高度不再随对端站数无限增长
-  const zoomStartValue = Math.max(0, chartRows.length - OD_CHART_VISIBLE_ROWS);
 
   return {
     backgroundColor: "transparent",
-    dataZoom: odChartNeedsZoom.value
-      ? [
-          {
-            type: "slider",
-            yAxisIndex: 0,
-            width: 12,
-            right: 2,
-            startValue: zoomStartValue,
-            endValue: chartRows.length - 1,
-            zoomLock: false,
-            brushSelect: false,
-            showDetail: false,
-            borderColor: "rgba(21, 105, 222, 0.15)",
-            fillerColor: "rgba(21, 105, 222, 0.12)",
-            handleSize: 14,
-          },
-          { type: "inside", yAxisIndex: 0, zoomOnMouseWheel: false, moveOnMouseWheel: true },
-        ]
-      : undefined,
     tooltip: {
       trigger: "axis",
       axisPointer: {
@@ -3292,6 +3416,9 @@ watch(() => props.model, (newModel) => {
     clearStationPanelRetry();
     stationPanelRetryCount = 0;
     stationPanelData.value = null;
+    selectedStationDetail.value = null;
+    selectedReverseStationDetail.value = null;
+    stationDetailRequestSeq += 1;
     stationPanelStatus.value = "idle";
     stationPanelError.value = "";
     allMapStations.value = [];
@@ -3331,6 +3458,8 @@ function clearSelection() {
   // 关闭热力图弹窗，避免残留已取消选中站点的弹窗
   boardingHeatmapVisible.value = false;
   selectedStationName.value = "";
+  selectedStationDetail.value = null;
+  selectedReverseStationDetail.value = null;
   selectedStationFacilityId.value = "";
   selectedStationCoord.value = null;
   selectedReverseStationName.value = "";
@@ -3723,6 +3852,12 @@ defineExpose({
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+.pfa-station-sections .pfa-profile-note {
+  margin: 0 0 var(--dm2-space-3);
+  color: var(--dm2-muted);
+  font-size: var(--dm2-text-xs);
+  line-height: 1.55;
+}
 
 .pfa-station-sections .chart-container-wrapper {
   height: 220px;
@@ -3808,6 +3943,18 @@ defineExpose({
   height: 100%;
 }
 
+.pfa-station-sections .passenger-profile-section > .section-header {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.pfa-station-sections .passenger-profile-section > .section-header .pfa-section-meta {
+  max-width: 100%;
+  line-height: 1.45;
+  white-space: normal;
+}
+
 .pfa-station-sections .demo-groups {
   display: flex;
   flex-direction: column;
@@ -3851,12 +3998,17 @@ defineExpose({
 
 .pfa-station-sections .demo-row {
   display: grid;
-  grid-template-columns: minmax(76px, 0.32fr) minmax(0, 1fr) 50px;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  grid-template-areas:
+    "label percentage"
+    "track track";
   align-items: center;
-  gap: var(--dm2-space-3);
+  column-gap: var(--dm2-space-3);
+  row-gap: 7px;
 }
 
 .pfa-station-sections .demo-label {
+  grid-area: label;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -3876,6 +4028,8 @@ defineExpose({
 }
 
 .pfa-station-sections .demo-track {
+  grid-area: track;
+  width: 100%;
   height: 7px;
   border-radius: 999px;
   background: var(--dm2-line);
@@ -3890,7 +4044,9 @@ defineExpose({
 }
 
 .pfa-station-sections .demo-pct {
+  grid-area: percentage;
   text-align: right;
+  white-space: nowrap;
   font-size: var(--dm2-text-sm);
   font-weight: var(--dm2-fw-semibold);
   color: var(--dm2-ink);

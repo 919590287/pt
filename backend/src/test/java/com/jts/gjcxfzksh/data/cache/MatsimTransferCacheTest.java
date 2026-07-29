@@ -88,7 +88,9 @@ class MatsimTransferCacheTest {
 
     /** 按 §11.2 布局逐列回读 bin。 */
     private record Decoded(int version, int count, int[] person, long[] tBoard, int[] sec, int[] dir,
-                           int[] busLine, int[] busRoute, int[] busStop, int[] metroLine, int[] metroStop,
+                           int[] busLine, int[] busRoute, int[] busStop, int[] busOriginStop,
+                           int[] busDestinationStop,
+                           int[] metroLine, int[] metroStop,
                            int[] hub) {
     }
 
@@ -106,6 +108,8 @@ class MatsimTransferCacheTest {
         int[] busLine = new int[count];
         int[] busRoute = new int[count];
         int[] busStop = new int[count];
+        int[] busOriginStop = new int[count];
+        int[] busDestinationStop = new int[count];
         int[] metroLine = new int[count];
         int[] metroStop = new int[count];
         int[] hub = new int[count];
@@ -116,11 +120,13 @@ class MatsimTransferCacheTest {
         for (int i = 0; i < count; i++) busLine[i] = Short.toUnsignedInt(buffer.getShort());
         for (int i = 0; i < count; i++) busRoute[i] = Short.toUnsignedInt(buffer.getShort());
         for (int i = 0; i < count; i++) busStop[i] = Short.toUnsignedInt(buffer.getShort());
+        for (int i = 0; i < count; i++) busOriginStop[i] = Short.toUnsignedInt(buffer.getShort());
+        for (int i = 0; i < count; i++) busDestinationStop[i] = Short.toUnsignedInt(buffer.getShort());
         for (int i = 0; i < count; i++) metroLine[i] = Short.toUnsignedInt(buffer.getShort());
         for (int i = 0; i < count; i++) metroStop[i] = Short.toUnsignedInt(buffer.getShort());
         for (int i = 0; i < count; i++) hub[i] = Short.toUnsignedInt(buffer.getShort());
         assertEquals(0, buffer.remaining(), "bin 不得有多余字节（无对齐填充）");
-        return new Decoded(version, count, person, tBoard, sec, dir, busLine, busRoute, busStop,
+        return new Decoded(version, count, person, tBoard, sec, dir, busLine, busRoute, busStop, busOriginStop, busDestinationStop,
                 metroLine, metroStop, hub);
     }
 
@@ -205,6 +211,8 @@ class MatsimTransferCacheTest {
         assertEquals(600, first.transferSec());
         assertEquals(MatsimTransferCache.DIR_BUS_TO_METRO, first.dir());
         assertEquals("bus_B", first.busStopId());
+        assertEquals("bus_A", first.busOriginStopId());
+        assertEquals("bus_B", first.busDestinationStopId());
         assertEquals("metro_1", first.metroStopId());
         assertEquals("busL_1", first.busLineId());
         assertEquals("R1", first.busRouteId());
@@ -215,6 +223,8 @@ class MatsimTransferCacheTest {
         assertEquals(MatsimTransferCache.DIR_METRO_TO_BUS, last.dir());
         assertEquals(200, last.transferSec());
         assertEquals("bus_B", last.busStopId());
+        assertEquals("bus_B", last.busOriginStopId());
+        assertEquals("bus_A", last.busDestinationStopId());
         assertEquals("metro_1", last.metroStopId());
     }
 
@@ -310,10 +320,10 @@ class MatsimTransferCacheTest {
     @Test
     void binLayoutIsColumnarLittleEndianAndRoundTrips() {
         MatsimTransferCache.Artifacts artifacts = fixtureArtifacts();
-        // 字节数 = 头 10 + 23 × 事件数
-        assertEquals(10 + 23 * 4, artifacts.eventsBin.length);
+        // 字节数 = 头 10 + 27 × 事件数
+        assertEquals(10 + 27 * 4, artifacts.eventsBin.length);
         Decoded decoded = decode(artifacts.eventsBin);
-        assertEquals(1, decoded.version());
+        assertEquals(3, decoded.version());
         assertEquals(4, decoded.count());
         // 事件按 tBoard 升序写入
         assertArrayEquals(new long[]{2600, 3450, 6800, 90000}, decoded.tBoard());
@@ -325,8 +335,10 @@ class MatsimTransferCacheTest {
         assertArrayEquals(new int[]{0, 1, 0, 0}, decoded.busLine());
         // busRoute 为线内局部索引：busL_1 的 routes=[R0,R1]→R1=1、R0=0；busL_2 的 R2=0
         assertArrayEquals(new int[]{1, 0, 0, 1}, decoded.busRoute());
-        // busStops=[bus_B,bus_C]；metroStops=[metro_1,metro_2,metro_3]（含未被事件引用的枢纽成员 metro_3）
-        assertArrayEquals(new int[]{0, 1, 0, 0}, decoded.busStop());
+        // busStops=[bus_A,bus_B,bus_C,bus_D]，同时覆盖换乘点与公交整段起终点
+        assertArrayEquals(new int[]{1, 2, 1, 1}, decoded.busStop());
+        assertArrayEquals(new int[]{0, 2, 0, 1}, decoded.busOriginStop());
+        assertArrayEquals(new int[]{1, 3, 1, 0}, decoded.busDestinationStop());
         assertArrayEquals(new int[]{0, 0, 0, 0}, decoded.metroLine());
         assertArrayEquals(new int[]{0, 1, 0, 0}, decoded.metroStop());
         assertArrayEquals(new int[]{0, 1, 0, 0}, decoded.hub());
@@ -337,8 +349,8 @@ class MatsimTransferCacheTest {
     void dictContainsOnlyReferencedObjectsWithStableIdsAndLineFlows() {
         MatsimTransferCache.Artifacts artifacts = fixtureArtifacts();
         Map<String, Object> dict = artifacts.dict;
-        assertEquals("transfer-v1", dict.get("version"));
-        assertEquals(0.1, (Double) dict.get("scale"), 1e-9);
+        assertEquals(MatsimTransferCache.TRANSFER_CACHE_VERSION, dict.get("version"));
+        assertEquals(1.0, (Double) dict.get("scale"), 1e-9);
         Map<String, Object> params = (Map<String, Object>) dict.get("params");
         assertEquals(1800, params.get("windowSec"));
         assertEquals(800, params.get("maxDistM"));
@@ -367,9 +379,9 @@ class MatsimTransferCacheTest {
         assertEquals("metroL_1", metroLines.get(0).get("lineId"));
         assertEquals("1号线", metroLines.get(0).get("name"));
 
-        // busStops 只含事件引用站（bus_A/bus_D 不下发）
+        // busStops 同时覆盖换乘端点与公交整段起终点。
         List<Map<String, Object>> busStops = (List<Map<String, Object>>) dict.get("busStops");
-        assertEquals(List.of("bus_B", "bus_C"), busStops.stream().map(s -> s.get("facilityId")).toList());
+        assertEquals(List.of("bus_A", "bus_B", "bus_C", "bus_D"), busStops.stream().map(s -> s.get("facilityId")).toList());
 
         // metroStops = 事件引用站 + 被引用枢纽全部成员（metro_3 未被事件引用但随枢纽成员并入）
         List<Map<String, Object>> metroStops = (List<Map<String, Object>>) dict.get("metroStops");
@@ -394,9 +406,9 @@ class MatsimTransferCacheTest {
     void summaryTotalsHourlyClampAndTopsAreExact() {
         MatsimTransferCache.Artifacts artifacts = fixtureArtifacts();
         Map<String, Object> summary = artifacts.summary;
-        assertEquals("transfer-v1", summary.get("version"));
+        assertEquals(MatsimTransferCache.TRANSFER_CACHE_VERSION, summary.get("version"));
         assertEquals(0L, ((Number) summary.get("droppedTracks")).longValue());
-        assertEquals(0.1, (Double) summary.get("scale"), 1e-9);
+        assertEquals(1.0, (Double) summary.get("scale"), 1e-9);
 
         Map<String, Object> totals = (Map<String, Object>) summary.get("totals");
         assertEquals(4, totals.get("events"));

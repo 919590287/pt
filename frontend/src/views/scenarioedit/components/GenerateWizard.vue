@@ -206,4 +206,31 @@ async function submit() {
   border-top: 1px dashed var(--app-border, #e2e8f0);
   padding-top: 8px;
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .pipeline-tip {
+  color: #c2cddd;
+  background: rgba(64, 156, 255, 0.1);
+}
+
+html.dark .validate-box.ok {
+  background: rgba(76, 205, 118, 0.12);
+  color: #4ccd76;
+}
+html.dark .validate-box.warn {
+  background: rgba(234, 176, 76, 0.12);
+  color: #eab04c;
+}
+html.dark .validate-box.error {
+  background: rgba(255, 122, 110, 0.12);
+  color: #ff7a6e;
+}
+
+html.dark .derive-tip {
+  color: #94a3b8;
+}
+
+html.dark .resource-tip {
+  color: #94a3b8;
+}
 </style>

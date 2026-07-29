@@ -279,6 +279,7 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useDraggable } from "@vueuse/core";
+import { isDarkTheme } from "@/utils/uiTheme";
 
 const panelRef = ref(null);
 const handleRef = ref(null);
@@ -366,6 +367,27 @@ const COLORS = [
   "#b29b18", "#8f5a2b", "#d0529c", "#6b7280", "#12a6a6",
   "#f46f57", "#6375c9", "#d46aa7", "#80a93f", "#d6a500",
 ];
+
+// 运行图中性 chrome（网格/站线/刻度/轴题）双主题取值，亮色值与原字面量一致；
+// 车辆轨迹色 COLORS、折返虚线灰、发到点蓝底白圈为数据语义标记，不随主题翻转。
+const DIAGRAM_INK = Object.freeze({
+  light: Object.freeze({
+    grid: "#dce7f2",
+    station: "#9eb6cc",
+    tickLine: "#8796a6",
+    tickText: "#5f7083",
+    stationLabel: "#1569de",
+    axisTitle: "#22364c",
+  }),
+  dark: Object.freeze({
+    grid: "rgba(148, 180, 220, 0.12)",
+    station: "rgba(148, 180, 220, 0.28)",
+    tickLine: "rgba(148, 180, 220, 0.28)",
+    tickText: "#94a3b8",
+    stationLabel: "#409cff",
+    axisTitle: "#e7edf6",
+  }),
+});
 
 function toNumber(value, fallback = 0) {
   const number = Number(value);
@@ -740,6 +762,7 @@ function drawVehicleDiagram() {
   const x = (time) => marginLeft + ((time - minTime) / timeRange) * plotWidth;
   const y = (station) => stationY(station, marginTop, plotHeight);
 
+  const ink = isDarkTheme.value ? DIAGRAM_INK.dark : DIAGRAM_INK.light;
   ctx.lineWidth = 0.5;
   for (let index = 0; index <= 10; index += 1) {
     const time = minTime + (index / 10) * timeRange;
@@ -747,11 +770,11 @@ function drawVehicleDiagram() {
     ctx.beginPath();
     ctx.moveTo(xPos, marginTop);
     ctx.lineTo(xPos, height - marginBottom);
-    ctx.strokeStyle = "#dce7f2";
+    ctx.strokeStyle = ink.grid;
     ctx.stroke();
   }
 
-  ctx.strokeStyle = "#9eb6cc";
+  ctx.strokeStyle = ink.station;
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.moveTo(marginLeft, y("A"));
@@ -760,7 +783,7 @@ function drawVehicleDiagram() {
   ctx.lineTo(width - marginRight, y("B"));
   ctx.stroke();
 
-  ctx.fillStyle = "#1569de";
+  ctx.fillStyle = ink.stationLabel;
   ctx.font = "700 18px system-ui, sans-serif";
   ctx.textAlign = "right";
   ctx.textBaseline = "top";
@@ -768,7 +791,7 @@ function drawVehicleDiagram() {
   ctx.textBaseline = "bottom";
   ctx.fillText("末站", marginLeft - 8, y("B"));
 
-  ctx.fillStyle = "#5f7083";
+  ctx.fillStyle = ink.tickText;
   ctx.font = "13px system-ui, sans-serif";
   ctx.textAlign = "center";
   const step = 120;
@@ -780,7 +803,7 @@ function drawVehicleDiagram() {
     ctx.lineTo(xPos, y("A") - 4);
     ctx.moveTo(xPos, y("B") + 10);
     ctx.lineTo(xPos, y("B") + 4);
-    ctx.strokeStyle = "#8796a6";
+    ctx.strokeStyle = ink.tickLine;
     ctx.lineWidth = 1;
     ctx.stroke();
     ctx.textBaseline = "bottom";
@@ -830,7 +853,7 @@ function drawVehicleDiagram() {
     ctx.stroke();
   });
 
-  ctx.fillStyle = "#22364c";
+  ctx.fillStyle = ink.axisTitle;
   ctx.font = "700 15px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.fillText("时间", width / 2, height - 14);
@@ -872,6 +895,9 @@ watch(
   () => result.schedule.vehicleTasks,
   () => nextTick(drawVehicleDiagram),
 );
+
+// 主题切换（html.dark 跟随底图选择）重绘运行图：仅中性 chrome 换色，数据色不变
+watch(isDarkTheme, () => nextTick(drawVehicleDiagram));
 
 onMounted(() => {
   generateTimetable();
@@ -1281,5 +1307,78 @@ canvas {
   .interval-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+/* 仅覆盖上文写死的浅色字面量；var(--app-*) 令牌已在 main.scss 随主题翻转。
+   车辆轨迹图例色块（COLORS）与深底白字 tooltip 保持原样。 */
+html.dark .panel-header {
+  background: rgba(64, 156, 255, 0.11);
+  border-bottom-color: rgba(64, 156, 255, 0.18);
+}
+html.dark .title-mark {
+  box-shadow: 0 4px 10px rgba(64, 156, 255, 0.26);
+}
+html.dark .panel-body {
+  background: rgba(13, 19, 27, 0.78);
+}
+html.dark .summary-strip.error {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.12);
+}
+html.dark .summary-card {
+  border-color: rgba(64, 156, 255, 0.16);
+  background: #151d27;
+}
+html.dark .summary-card.primary {
+  border-color: rgba(64, 156, 255, 0.28);
+  background: rgba(64, 156, 255, 0.1);
+}
+html.dark .error-title {
+  color: #f87171;
+}
+html.dark .error-text {
+  color: rgba(248, 113, 113, 0.82);
+}
+html.dark .form-section,
+html.dark .result-section {
+  border-color: rgba(64, 156, 255, 0.16);
+  background: rgba(20, 27, 37, 0.94);
+}
+html.dark .form-block {
+  border-color: rgba(64, 156, 255, 0.13);
+  background: rgba(16, 22, 30, 0.74);
+}
+html.dark .field-row input {
+  border-color: rgba(64, 156, 255, 0.22);
+  background: #1a2431;
+}
+html.dark .field-row input:focus {
+  border-color: rgba(64, 156, 255, 0.62);
+  box-shadow: 0 0 0 3px rgba(64, 156, 255, 0.16);
+}
+html.dark .interval-grid {
+  border-top-color: rgba(64, 156, 255, 0.2);
+}
+html.dark .table-wrap {
+  border-color: rgba(64, 156, 255, 0.16);
+  background: #151d27;
+}
+html.dark th {
+  background: #1a2431;
+  border-bottom-color: rgba(64, 156, 255, 0.16);
+}
+html.dark td {
+  border-bottom-color: rgba(64, 156, 255, 0.12);
+}
+html.dark tbody tr:hover td {
+  background: rgba(64, 156, 255, 0.08);
+}
+html.dark .small {
+  color: #4ccd76;
+}
+html.dark .diagram-wrap {
+  border-color: rgba(64, 156, 255, 0.16);
+  background: #151d27;
 }
 </style>

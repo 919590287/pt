@@ -1847,4 +1847,68 @@ onUnmounted(() => {
   opacity: 0;
   transform: translateY(-6px);
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .map-edit-status {
+  box-shadow: 0 12px 34px rgba(2, 6, 12, 0.38);
+}
+html.dark .map-edit-status button:hover {
+  background: rgba(64, 156, 255, 0.1);
+}
+html.dark .map-edit-status button.active,
+html.dark .map-edit-status button.primary {
+  border-color: rgba(64, 156, 255, 0.34);
+  background: rgba(64, 156, 255, 0.14);
+}
+
+html.dark .netopt-right-panel .overview-title-row .edit-pending-count {
+  background: rgba(148, 180, 220, 0.1);
+}
+
+html.dark .draft-new-btn:hover {
+  border-color: rgba(64, 156, 255, 0.34);
+}
+
+html.dark .draft-validation-alert:hover {
+  border-color: rgba(255, 122, 110, 0.42);
+  background: rgba(255, 122, 110, 0.16);
+}
+
+html.dark .guide-block {
+  color: #94a3b8;
+}
+
+html.dark .generate-btn:active:not(:disabled) {
+  box-shadow: 0 3px 10px -4px rgba(31, 127, 242, 0.55);
+}
+html.dark .generate-btn:disabled {
+  background: rgba(148, 180, 220, 0.12);
+}
+
+html.dark .route-picker {
+  background: rgba(17, 23, 31, 0.97);
+  box-shadow: 0 10px 32px rgba(2, 6, 12, 0.4);
+}
+html.dark .route-picker .picker-item {
+  color: #e7edf6;
+}
+html.dark .route-picker .picker-item:hover {
+  background: rgba(64, 156, 255, 0.12);
+}
+html.dark .route-picker .picker-cancel {
+  color: #94a3b8;
+}
+
+html.dark .rm-search.is-focused {
+  box-shadow: 0 0 0 3px rgba(64, 156, 255, 0.18), var(--dm2-shadow-pop);
+}
+html.dark .rm-search-clear {
+  background: rgba(148, 180, 220, 0.1);
+}
+html.dark .rm-search-clear:hover {
+  background: rgba(148, 180, 220, 0.16);
+}
+html.dark .rm-search-result:hover {
+  background: rgba(64, 156, 255, 0.12);
+}
 </style>

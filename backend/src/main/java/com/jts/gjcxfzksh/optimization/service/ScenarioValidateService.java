@@ -51,6 +51,11 @@ public class ScenarioValidateService {
         } catch (Exception e) {
             issues.add(ValidationIssue.warning(null, "母本模型未加载，部分引用检查已跳过"));
         }
+        boolean fullRoadNetwork = data != null && data.hasFullRoadNetwork();
+        if (data != null && !fullRoadNetwork) {
+            issues.add(ValidationIssue.error(null,
+                    "大模型当前仅加载公交子路网，不能用于道路优化方案"));
+        }
 
         Set<String> editIds = new HashSet<>();
         Set<String> newStopIds = new HashSet<>();
@@ -162,7 +167,7 @@ public class ScenarioValidateService {
                         issues.add(ValidationIssue.error(edit.getId(), "缺少目标路段"));
                         break;
                     }
-                    if (data != null) {
+                    if (data != null && fullRoadNetwork) {
                         for (int i = 0; i < linkIds.size(); i++) {
                             String lid = linkIds.getString(i);
                             boolean isNew = newLinkPrefixes.stream().anyMatch(lid::startsWith);

@@ -100,7 +100,7 @@
               <div class="t-row t-head">
                 <span>评估指标</span>
                 <span class="col-value">模型统计值</span>
-                <span class="col-standard">规范建议值</span>
+                <span class="col-standard">业务参考值</span>
               </div>
               <template v-for="group in indicatorGroups" :key="group.dimension">
                 <div class="t-dim">
@@ -114,7 +114,11 @@
                   </span>
                   <!-- 达标与否只用红绿呈现（业务要求不加钩叉）；aria-label 里带上达标结论，
                        让读屏用户不依赖颜色也能听到 -->
-                  <span :class="['col-value', ind.display.cls]" :aria-label="ind.display.ariaLabel">
+                  <span
+                    :class="['col-value', ind.display.cls]"
+                    :aria-label="ind.display.ariaLabel"
+                    :title="ind.display.reason || undefined"
+                  >
                     {{ ind.display.text }}
                   </span>
                   <span class="col-standard">{{ ind.standardText }}</span>
@@ -124,8 +128,8 @@
           </section>
 
           <p class="footnote">
-            注：① 模型统计值达到规范建议值时显示绿色，未达到时显示红色；无建议值或暂无统计时中性展示。
-            ② 车均场站面积暂无模型数据，“场站设施”维度模型得分按 0 计，雷达图上已标注。
+            注：① 参考值来自业务配置，不代表国家统一强制标准；达到参考值显示绿色，未达到显示红色；无参考值或暂无统计时中性展示。
+            ② 缺少规范分子或分母的指标显示“无数据/不支持”，不使用替代公式。
             ③ 广州市平均参考值取 2023 年统计口径。
           </p>
         </template>
@@ -138,6 +142,7 @@
 import { ref, computed, onMounted, onUnmounted, inject, watch } from "vue";
 import { Opportunity, Loading, WarningFilled } from "@element-plus/icons-vue";
 import { VChart } from "@/plugins/echarts";
+import { chartInk, isDarkTheme } from "@/utils/chartInk";
 import MCard from "./MCard.vue";
 import { getCachedEvaluation } from "@/utils/modelDataCache.js";
 import {
@@ -150,6 +155,10 @@ import {
 
 const props = defineProps({
   model: String,
+  district: {
+    type: String,
+    default: "全市",
+  },
 });
 
 const selectedScheme = ref("base");
@@ -173,6 +182,7 @@ watch(activeDatavisualizationTab, (newTab) => {
 // 'loading' | 'generating' | 'error' | 'ready'
 const evalStatus = ref("loading");
 const evalValues = ref(null);
+const evalAvailability = ref({});
 const evalError = ref("");
 
 // seq + AbortController 竞态防护（同 XLZL 的选中请求模式）：
@@ -203,24 +213,27 @@ function fetchEvaluation() {
   evalRequestSeq += 1;
   const seq = evalRequestSeq;
   const model = props.model;
+  const district = props.district || "全市";
   // 轮询期间保持 generating 展示，避免每 5 秒闪一次 loading
   if (evalStatus.value !== "generating") {
     evalStatus.value = "loading";
   }
   evalError.value = "";
-  getCachedEvaluation(model)
+  getCachedEvaluation(model, district)
     .then((payload = {}) => {
-      if (seq !== evalRequestSeq || props.model !== model) return;
+      if (seq !== evalRequestSeq || props.model !== model || props.district !== district) return;
       if (payload.status === "generating") {
         evalStatus.value = "generating";
         scheduleEvalRetry();
         return;
       }
       evalValues.value = payload.values || {};
+      evalAvailability.value = payload.availability || {};
       evalStatus.value = "ready";
     })
     .catch((error) => {
-      if (seq !== evalRequestSeq || props.model !== model || isCanceledRequest(error)) return;
+      if (seq !== evalRequestSeq || props.model !== model
+        || props.district !== district || isCanceledRequest(error)) return;
       const message = String(error?.message || "");
       if (/超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message)) {
         evalStatus.value = "generating";
@@ -239,11 +252,12 @@ onMounted(() => {
   fetchEvaluation();
 });
 
-watch(() => props.model, () => {
+watch([() => props.model, () => props.district], () => {
   evalRequestSeq += 1;
   clearTimeout(evalRetryTimer);
   evalAbortController?.abort();
   evalValues.value = null;
+  evalAvailability.value = {};
   evalError.value = "";
   evalStatus.value = "loading";
   fetchEvaluation();
@@ -266,6 +280,12 @@ function modelValueOf(indicator) {
   return value == null ? null : value;
 }
 
+function availabilityOf(indicator) {
+  if (!indicator.modelKey) return null;
+  const item = evalAvailability.value?.[indicator.modelKey];
+  return item && typeof item === "object" ? item : null;
+}
+
 function formatNumber(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return String(value);
@@ -279,7 +299,15 @@ function formatNumber(value) {
 function modelValueDisplay(indicator) {
   const raw = modelValueOf(indicator);
   if (raw == null || !Number.isFinite(Number(raw))) {
-    return { text: "暂无数据", cls: "is-none", ariaLabel: `${indicator.name}：暂无数据` };
+    const availability = availabilityOf(indicator);
+    const text = availability?.status === "unsupported" ? "不支持" : "无数据";
+    const reason = availability?.reason || "";
+    return {
+      text,
+      reason,
+      cls: "is-none",
+      ariaLabel: `${indicator.name}：${text}${reason ? `，${reason}` : ""}`,
+    };
   }
   const formatted = formatNumber(raw);
   const better = isBetterThanStandard(raw, indicator);
@@ -345,6 +373,9 @@ const radarChartOption = computed(() => {
   const gzData = EVALUATION_DIMENSIONS.map((dim) => round3(gzDimScores.value[dim]));
   const noData = modelNoDataDimensions.value;
   const reduceMotion = prefersReducedMotion();
+  // 中性 chrome 随 UI 主题（computed 读 chartInk 即建立依赖，主题切换自动重建 option）
+  const ink = chartInk.value;
+  const dark = isDarkTheme.value;
   return {
     backgroundColor: "transparent",
     animation: !reduceMotion,
@@ -354,11 +385,11 @@ const radarChartOption = computed(() => {
       trigger: "item",
       appendToBody: true,
       padding: [8, 11],
-      extraCssText: "z-index:999;border-radius:10px;box-shadow:0 12px 32px -14px rgba(13,38,76,0.34);",
-      backgroundColor: "rgba(255, 255, 255, 0.98)",
-      borderColor: "rgba(17, 32, 58, 0.1)",
+      extraCssText: `z-index:999;border-radius:10px;box-shadow:${ink.tooltipShadow};`,
+      backgroundColor: ink.tooltipBg,
+      borderColor: ink.tooltipBorder,
       borderWidth: 1,
-      textStyle: { color: "#1c2024", fontSize: 12 },
+      textStyle: { color: ink.tooltipText, fontSize: 12 },
       formatter: (params) => {
         const isModel = params.name === MODEL_SERIES_NAME;
         const rows = EVALUATION_DIMENSIONS.map((dim, index) => {
@@ -374,7 +405,7 @@ const radarChartOption = computed(() => {
       itemWidth: 9,
       itemHeight: 9,
       itemGap: 18,
-      textStyle: { fontSize: 11.5, color: "#667085", fontWeight: 650 },
+      textStyle: { fontSize: 11.5, color: ink.text, fontWeight: 650 },
       data: [MODEL_SERIES_NAME, GZ_SERIES_NAME],
     },
     radar: {
@@ -387,14 +418,18 @@ const radarChartOption = computed(() => {
       splitNumber: 4,
       axisName: {
         rich: {
-          name: { color: "#667085", fontSize: 12, fontWeight: 650 },
-          na: { color: "#98a2b3", fontSize: 10, fontWeight: 500, padding: [3, 0, 0, 0] },
+          name: { color: ink.text, fontSize: 12, fontWeight: 650 },
+          na: { color: ink.textSoft, fontSize: 10, fontWeight: 500, padding: [3, 0, 0, 0] },
         },
       },
-      axisLine: { lineStyle: { color: "rgba(17, 32, 58, 0.1)" } },
-      splitLine: { lineStyle: { color: "rgba(17, 32, 58, 0.08)" } },
+      axisLine: { lineStyle: { color: ink.axisTick } },
+      splitLine: { lineStyle: { color: dark ? "rgba(148, 180, 220, 0.12)" : "rgba(17, 32, 58, 0.08)" } },
       splitArea: {
-        areaStyle: { color: ["rgba(17, 32, 58, 0.015)", "rgba(17, 32, 58, 0.035)"] },
+        areaStyle: {
+          color: dark
+            ? ["rgba(148, 180, 220, 0.02)", "rgba(148, 180, 220, 0.045)"]
+            : ["rgba(17, 32, 58, 0.015)", "rgba(17, 32, 58, 0.035)"],
+        },
       },
     },
     series: [
@@ -865,5 +900,38 @@ export default {
   .eval-retry {
     transition: none;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .search-card {
+  border-color: rgba(64, 156, 255, 0.19) !important;
+}
+html.dark .search-card :deep(.MCard_title_box) {
+  background: rgba(64, 156, 255, 0.085) !important;
+  border-bottom-color: rgba(64, 156, 255, 0.14) !important;
+}
+html.dark .evaluation-form .form-row .custom-select :deep(.el-input__wrapper) {
+  box-shadow: 0 0 0 1px rgba(64, 156, 255, 0.19) inset !important;
+}
+html.dark .eval-card-body {
+  scrollbar-color: rgba(148, 180, 220, 0.28) transparent;
+}
+html.dark .eval-card-body::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.28);
+}
+html.dark .radar-chart-container {
+  border-color: rgba(148, 180, 220, 0.1);
+  background:
+    linear-gradient(180deg, rgba(21, 29, 39, 0.9), rgba(13, 19, 27, 0.78)),
+    var(--dm2-surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+html.dark .indicator-table .t-head {
+  background: #131a23;
+}
+html.dark .eval-sk {
+  background:
+    linear-gradient(90deg, var(--dm2-surface-sunken) 25%, rgba(148, 180, 220, 0.14) 37%, var(--dm2-surface-sunken) 63%)
+    0 0 / 400% 100%;
 }
 </style>

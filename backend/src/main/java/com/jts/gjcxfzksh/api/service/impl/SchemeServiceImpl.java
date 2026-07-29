@@ -50,6 +50,7 @@ public class SchemeServiceImpl implements SchemeService {
                 vo.setLoadStatus(loadStatus.isLoaded());
                 vo.setLoadStage(loadStatus.getStage());
                 vo.setLoadMessage(loadStatus.getMessage());
+                vo.setLoadVersion(Datasource.currentLoadVersion(name));
                 vo.setLoadProgressPercent(loadStatus.getProgressPercent());
                 vo.setLoadProgressMessage(loadStatus.getProgressMessage());
                 vo.setLoadElapsedSeconds(loadStatus.getElapsedSeconds());
@@ -59,13 +60,15 @@ public class SchemeServiceImpl implements SchemeService {
                 vo.setCacheProgressPercent(cacheStatus.getProgressPercent());
                 vo.setCacheProgressMessage(cacheStatus.getProgressMessage());
                 vo.setCacheElapsedSeconds(cacheStatus.getElapsedSeconds());
+                vo.setCacheGeneratedAt(cacheStatus.getGeneratedAt());
                 vo.setCacheEtaSeconds(cacheStatus.getEtaSeconds());
                 vo.setLargeModel(scheme.isLargeModel());
                 vo.setOutputBytes(scheme.getOutputBytes());
                 vo.setDefault(Boolean.TRUE.equals(scheme.getDesc().get_default()));
                 vo.setDetail(scheme.getDesc().getDetail());
-                vo.setScale(scheme.getDesc().getScale());
-                vo.setCuttable(hasOutputPlans(scheme));
+                // 对外契约固定 1:1：模型中有多少人/人次就展示多少，不做 desc.scale 扩样。
+                vo.setScale(1.0);
+                vo.setCuttable(scheme.isCuttable() && !scheme.isLargeModel());
                 vo.setOptimization(scheme.getDesc().getOptimization());
                 modelList.add(vo);
             }
@@ -95,6 +98,10 @@ public class SchemeServiceImpl implements SchemeService {
         if (scheme == null) {
             return false;
         }
+        if (!canMutateRuntime(username, scheme)) {
+            log.warn("用户[{}]无权卸载公共/他人模型[{}]", username, name);
+            return false;
+        }
         Datasource.unload(name);
         return true;
     }
@@ -111,22 +118,12 @@ public class SchemeServiceImpl implements SchemeService {
         if (scheme == null) {
             return false;
         }
-        modelCacheManager.enqueue(scheme);
-        return true;
-    }
-
-    /**
-     * 是否可作为线网优化母本：output 顶层存在 plans 文件（切分依赖 routed output_plans）。
-     */
-    private boolean hasOutputPlans(Scheme scheme) {
-        try {
-            java.io.File output = new java.io.File(scheme.getOutput());
-            java.io.File[] files = output.listFiles(f -> f.isFile() && !f.getName().startsWith(".")
-                    && f.getName().contains("plans"));
-            return files != null && files.length > 0;
-        } catch (Exception e) {
+        if (!canMutateRuntime(username, scheme)) {
+            log.warn("用户[{}]无权重建公共/他人模型缓存[{}]", username, name);
             return false;
         }
+        modelCacheManager.enqueue(scheme);
+        return true;
     }
 
     private Scheme findAccessibleScheme(String username, String name) {
@@ -137,5 +134,10 @@ public class SchemeServiceImpl implements SchemeService {
             return null;
         }
         return scheme;
+    }
+
+    /** 公共模型是平台共享运行态，普通会话只能加载和读取，不能全局卸载或重建。 */
+    private boolean canMutateRuntime(String username, Scheme scheme) {
+        return username != null && username.equals(scheme.getScope());
     }
 }

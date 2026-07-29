@@ -3,7 +3,7 @@
 //   header: magic "PGOD"(4B) + version u16(=1) + count u32 + mercCellSize f64  = 18B
 //   record × count（24B/对）: iO i32, jO i32, iD i32, jD i32, count u32, oStreet u16, dStreet u16
 // 记录按人次降序写入（前端可按前缀取 Top-K）；oStreet/dStreet 为街道要素索引（资源文件序），
-// 0xFFFF = 未命中街道；人次为模型抽样值，展示侧直出不扩样。
+// 0xFFFF = 未命中街道；人次为模型原始值，展示侧不做缩放。
 
 const HEADER_BYTES = 18;
 const RECORD_BYTES = 24;

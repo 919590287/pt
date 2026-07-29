@@ -185,7 +185,20 @@ class PanelStationOdAndTripPurposeTest {
         assertEquals(1, ((Number) hourlyFlow.get(11)).intValue());
         Map<?, ?> groupMetrics = (Map<?, ?>) busGroup.get("metrics");
         assertEquals(4L, ((Number) groupMetrics.get("passenger")).longValue());
-        // v15 契约：组级发车间隔字段随代表方向输出（fixture 每方向仅 1 班 → 无间隔=0）
+        // v20：同一线路有 5 个实际班次——5km 上下行各 1 班、2.5km 短线变体 3 班。
+        // 日运营车公里=5×1+5×1+2.5×3=17.5，客流强度=4/17.5=0.23 人次/车公里。
+        // routeDist 仅保留为班次加权平均的展示长度，不再充当客流强度分母。
+        assertEquals(3500.0, ((Number) groupMetrics.get("routeDist")).doubleValue(), 1e-9);
+        assertEquals(17.5, ((Number) groupMetrics.get("operatingVehicleKm")).doubleValue(), 1e-9);
+        assertEquals(0.23, ((Number) groupMetrics.get("passengerStrength")).doubleValue(), 1e-9);
+        // v20：三个 8 点高峰班次最大站段满载率分别为 1%、1%、0%，
+        // 线路平均高峰满载率=(1%+1%+0%)/3=0.67%，空班次也必须纳入班次均值。
+        assertEquals(1L, ((Number) groupMetrics.get("peakPassengerOnSegments")).longValue());
+        assertEquals(300L, ((Number) groupMetrics.get("peakCapacityOnSegments")).longValue());
+        assertEquals(0.67, ((Number) groupMetrics.get("peakAverageLoadRate")).doubleValue(), 1e-9);
+        assertEquals(3, ((Number) groupMetrics.get("peakDepartureSamples")).intValue());
+        assertEquals(0, ((Number) groupMetrics.get("peakMissingCapacityDepartures")).intValue());
+        // v15 契约：发车间隔仍取最长代表方向；两个 5km 方向各 1 班，因此为 0。
         assertEquals(0.0, ((Number) groupMetrics.get("peakHeadwayMin")).doubleValue(), 1e-9);
         assertEquals(0.0, ((Number) groupMetrics.get("offPeakHeadwayMin")).doubleValue(), 1e-9);
         assertNotNull(busGroup.get("boardingByHour"));
@@ -327,6 +340,9 @@ class PanelStationOdAndTripPurposeTest {
         Link link = networkFactory.createLink(Id.createLinkId("l1"), from, to);
         link.setLength(5000);
         network.addLink(link);
+        Link shortLink = networkFactory.createLink(Id.createLinkId("l2"), from, to);
+        shortLink.setLength(2500);
+        network.addLink(shortLink);
 
         TransitSchedule schedule = scenario.getTransitSchedule();
         TransitScheduleFactory factory = schedule.getFactory();
@@ -342,6 +358,9 @@ class PanelStationOdAndTripPurposeTest {
         TransitRoute down = routeWithDeparture(factory, "down", "bus", "bus-down-1", "dep-down", fa2, fa1);
         busLine.addRoute(up);
         busLine.addRoute(down);
+        // 同方向短线运营变体：3 个班次但无样例乘客，用于验证线路代表长度按班次加权。
+        busLine.addRoute(routeWithDepartures(
+                factory, "short-variant", "bus", "bus-short-1", "dep-short", "l2", 3, fa1, fa2));
         schedule.addTransitLine(busLine);
 
         TransitLine metroLine = factory.createTransitLine(Id.create("metro-line", TransitLine.class));
@@ -359,7 +378,7 @@ class PanelStationOdAndTripPurposeTest {
         vehicleType.getCapacity().setSeats(40);
         vehicleType.getCapacity().setStandingRoom(60);
         scenario.getTransitVehicles().addVehicleType(vehicleType);
-        for (String vehicleId : List.of("bus-up-1", "bus-down-1", "metro-1", "far-1")) {
+        for (String vehicleId : List.of("bus-up-1", "bus-down-1", "bus-short-1", "metro-1", "far-1")) {
             scenario.getTransitVehicles().addVehicle(VehicleUtils.createVehicle(Id.create(vehicleId, Vehicle.class), vehicleType));
         }
 
@@ -449,18 +468,36 @@ class PanelStationOdAndTripPurposeTest {
             TransitStopFacility stop1,
             TransitStopFacility stop2
     ) {
+        return routeWithDepartures(
+                factory, routeId, mode, vehicleId, departureId, "l1", 1, stop1, stop2);
+    }
+
+    private TransitRoute routeWithDepartures(
+            TransitScheduleFactory factory,
+            String routeId,
+            String mode,
+            String vehicleId,
+            String departureId,
+            String linkId,
+            int departureCount,
+            TransitStopFacility stop1,
+            TransitStopFacility stop2
+    ) {
         TransitRoute route = factory.createTransitRoute(
                 Id.create(routeId, TransitRoute.class),
-                RouteUtils.createLinkNetworkRouteImpl(Id.createLinkId("l1"), Id.createLinkId("l1")),
+                RouteUtils.createLinkNetworkRouteImpl(Id.createLinkId(linkId), Id.createLinkId(linkId)),
                 List.of(
                         factory.createTransitRouteStop(stop1, 0.0, 0.0),
                         factory.createTransitRouteStop(stop2, 60.0, 60.0)
                 ),
                 mode
         );
-        Departure departure = factory.createDeparture(Id.create(departureId, Departure.class), 0.0);
-        departure.setVehicleId(Id.create(vehicleId, Vehicle.class));
-        route.addDeparture(departure);
+        for (int index = 0; index < departureCount; index++) {
+            String id = index == 0 ? departureId : departureId + "-" + (index + 1);
+            Departure departure = factory.createDeparture(Id.create(id, Departure.class), H8 + index * 3600.0);
+            departure.setVehicleId(Id.create(vehicleId, Vehicle.class));
+            route.addDeparture(departure);
+        }
         return route;
     }
 

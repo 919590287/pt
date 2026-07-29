@@ -63,7 +63,7 @@ public class ModelRegistryService {
     public void register(RunJob job, OptimizationDraft draft, Path stagingDir) {
         String pairId = job.getJobId();
         Scheme parent = matsimConfig.getSchemes().get(job.getParentModel());
-        double parentScale = parent != null && parent.getDesc() != null ? parent.getDesc().getScale() : 1.0;
+        double parentScale = 1.0;
         double areaKm2 = safeAreaKm2(draft);
 
         Path scopeDir = matsimConfig.simulationPath(job.getAreaName()).resolve(job.getScope());
@@ -97,7 +97,7 @@ public class ModelRegistryService {
             JSONObject desc = new JSONObject();
             desc.put("detail", buildDetail(job, kind));
             desc.put("_default", false);
-            desc.put("scale", parentScale);
+            desc.put("scale", 1.0);
             desc.put("area", Math.max(0.01, areaKm2));
             JSONObject optimization = new JSONObject();
             optimization.put("kind", kind);

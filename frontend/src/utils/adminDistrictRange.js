@@ -4,6 +4,59 @@ export function emptyFeatureCollection() {
   return { type: "FeatureCollection", features: [] };
 }
 
+/** 全平台行政区显示范围的统一黑色虚线样式。 */
+export function adminDistrictOutlineStyle() {
+  return {
+    layout: {
+      "line-join": "round",
+      "line-cap": "round",
+    },
+    paint: {
+      "line-color": "#000000",
+      "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.4, 12, 2.1, 15, 2.8],
+      "line-opacity": 0.86,
+      "line-dasharray": [3.2, 2.4],
+    },
+  };
+}
+
+/** 把选中行政区面转为单独描边数据源，便于保持虚线间隔稳定。 */
+export function districtOutlineFeatureCollection(context) {
+  const geometry = districtOutlineGeometry(context?.feature?.geometry);
+  return geometry
+    ? {
+        type: "FeatureCollection",
+        features: [{
+          type: "Feature",
+          id: context?.feature?.id || "active-display-range",
+          geometry,
+          properties: { ...(context?.feature?.properties || {}) },
+        }],
+      }
+    : emptyFeatureCollection();
+}
+
+export function districtOutlineGeometry(geometry) {
+  if (!geometry) return null;
+  if (geometry.type === "LineString" || geometry.type === "MultiLineString") return geometry;
+  const rings = [];
+  if (geometry.type === "Polygon") {
+    (geometry.coordinates || []).forEach((ring) => {
+      if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
+    });
+  } else if (geometry.type === "MultiPolygon") {
+    (geometry.coordinates || []).forEach((polygon) => {
+      (Array.isArray(polygon) ? polygon : []).forEach((ring) => {
+        if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
+      });
+    });
+  }
+  if (!rings.length) return null;
+  return rings.length === 1
+    ? { type: "LineString", coordinates: rings[0] }
+    : { type: "MultiLineString", coordinates: rings };
+}
+
 export function normalizeAdminDistrictCollection(collection) {
   const features = Array.isArray(collection?.features) ? collection.features : [];
   return {

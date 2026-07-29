@@ -1,4 +1,5 @@
 import request from "@/utils/request";
+import { isRealDatasource, realPassengerFlowRequest } from "@/utils/realPassengerFlow.js";
 
 // 数据总览
 // POST /pt/data/info
@@ -14,11 +15,12 @@ export function dataInfo(data, config = {}) {
 }
 
 
-// 体检评估指标(全市口径)
+// 体检评估指标（全市/行政区缓存口径；district 默认“全市”）
 // POST /pt/data/evaluation
 // 返回 { status: "ready"|"generating", values: { czrkmd, gjxwmd, fgl300, wrbyl, cxfdl, cjrzkl, dbczkl,
-//   rcxcs, xlfzxxs, xlcfxs, xlmzl, xlklqd, yxsdb, pjhcsj, pjhccs, gjjbbl } }，无法统计的指标为 null
+//   rcxcs, xlfzxxs, xlcfxs, xlmzl, xlklqd, yxsdb, pjhcsj, pjhccs, gjjbbl, cjczmj } }，无法统计的指标为 null
 export function dataEvaluation(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) return realPassengerFlowRequest("evaluation", data, config);
   return request({
     url: `/pt/data/evaluation`,
     method: "POST",
@@ -32,6 +34,7 @@ export function dataEvaluation(data, config = {}) {
 // 接口ID：451517425
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-451517425
 export function dataCenter(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) return realPassengerFlowRequest("center", data, config);
   return request({
     url: `/pt/data/center`,
     method: "POST",

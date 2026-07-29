@@ -15,9 +15,13 @@ import org.matsim.api.core.v01.population.Population;
 import org.matsim.api.core.v01.population.PopulationFactory;
 import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.population.PopulationUtils;
+import org.matsim.core.population.routes.RouteUtils;
 import org.matsim.core.scenario.MutableScenario;
 import org.matsim.core.scenario.ScenarioUtils;
 import org.matsim.core.utils.geometry.CoordinateTransformation;
+import org.matsim.pt.transitSchedule.api.TransitLine;
+import org.matsim.pt.transitSchedule.api.TransitRoute;
+import org.matsim.pt.transitSchedule.api.TransitStopFacility;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -191,6 +195,79 @@ class MatsimPopulationCacheTest {
         assertEquals(100.0, MatsimPopulationCache.mercCellSize(null), 1e-12);
     }
 
+    @Test
+    void populationV9PersistsPeakSpeedAndCompleteBusJourneyDenominators() {
+        MatsimPopulationCache.Aggregation aggregation =
+                new MatsimPopulationCache.Aggregation(100.0, null);
+        aggregation.busServiceJourneys = 4;
+        aggregation.busServiceTransitBoardings = 7;
+        aggregation.busServiceTransfers = 3;
+        aggregation.busRailJourneys = 1;
+        aggregation.peakCarDistanceMeters = 36_000;
+        aggregation.peakCarTravelSeconds = 3_600;
+
+        Map<String, Object> summary =
+                MatsimPopulationCache.assemble(aggregation, null, 1.0).summary;
+
+        assertEquals("population-v9", summary.get("cacheVersion"));
+        assertEquals("ready", summary.get("busServiceJourneyStatus"));
+        assertEquals(0.75, ((Number) summary.get("averageBusTransfers")).doubleValue(), 1e-9);
+        assertEquals(25.0, ((Number) summary.get("busRailFeederPercent")).doubleValue(), 1e-9);
+        assertEquals(36.0,
+                ((Number) ((Map<?, ?>) summary.get("speedKmh")).get("carAvg")).doubleValue(), 1e-9);
+        assertNull(((Map<?, ?>) summary.get("speedKmh")).get("ptAvg"),
+                "公交高峰运营速度必须由班次缓存计算，不能写入乘客 leg 加权速度");
+    }
+
+    @Test
+    void coverageUsesAllPersonsWithoutSamplingAndReportsNoDataExplicitly(@TempDir Path tempDir) throws Exception {
+        MutableScenario scenario = (MutableScenario) ScenarioUtils.createScenario(ConfigUtils.createConfig());
+        scenario.getTransitSchedule().getAttributes().putAttribute(
+                "coordinateReferenceSystem", "EPSG:3857");
+        TransitStopFacility stop = scenario.getTransitSchedule().getFactory().createTransitStopFacility(
+                Id.create("stop-1", TransitStopFacility.class), new Coord(1_000.0, 1_000.0), false);
+        scenario.getTransitSchedule().addStopFacility(stop);
+        TransitLine busLine = scenario.getTransitSchedule().getFactory().createTransitLine(
+                Id.create("bus-line", TransitLine.class));
+        busLine.addRoute(scenario.getTransitSchedule().getFactory().createTransitRoute(
+                Id.create("bus-route", TransitRoute.class),
+                RouteUtils.createLinkNetworkRouteImpl(Id.createLinkId("l1"), Id.createLinkId("l1")),
+                List.of(scenario.getTransitSchedule().getFactory().createTransitRouteStop(stop, 0, 0)),
+                "bus"));
+        scenario.getTransitSchedule().addTransitLine(busLine);
+        person(scenario.getPopulation(), "near", "home", new Coord(1_250.0, 1_000.0));
+        person(scenario.getPopulation(), "far", "home", new Coord(2_000.0, 1_000.0));
+
+        Path output = tempDir.resolve("output");
+        java.nio.file.Files.createDirectories(output);
+        new org.matsim.core.config.ConfigWriter(ConfigUtils.createConfig())
+                .write(output.resolve("output_config.xml").toString());
+        MatsimData data = new MatsimData("coverage-unit", output.toString());
+        data.setScenario(scenario);
+        MatsimPopulationCache.CoverageIndex coverage = MatsimPopulationCache.coverageIndex(data);
+        MatsimPopulationCache.Aggregation aggregation =
+                new MatsimPopulationCache.Aggregation(100.0, null, null, coverage);
+        scenario.getPopulation().getPersons().values().forEach(person -> aggregation.acceptPerson(person, null));
+
+        Map<String, Object> summary = MatsimPopulationCache.assemble(aggregation, null, 0.01).summary;
+        assertEquals(2L, ((Number) summary.get("persons")).longValue());
+        assertEquals(1L, ((Number) summary.get("coveredPersons300m")).longValue());
+        assertEquals(50.0, ((Number) summary.get("coverage300Percent")).doubleValue(), 1e-9);
+        assertEquals("ready", summary.get("coverage300Status"));
+        assertEquals(1.0, ((Number) summary.get("scale")).doubleValue(), 0.0,
+                "传入的历史抽样值不得改变统计");
+
+        MatsimPopulationCache.Aggregation noSchedule =
+                new MatsimPopulationCache.Aggregation(100.0, null, null,
+                        MatsimPopulationCache.coverageIndex(null));
+        scenario.getPopulation().getPersons().values().forEach(person -> noSchedule.acceptPerson(person, null));
+        Map<String, Object> noData = MatsimPopulationCache.assemble(noSchedule, null, 1.0).summary;
+        assertNull(noData.get("coveredPersons300m"));
+        assertNull(noData.get("coverage300Percent"));
+        assertEquals("unsupported", noData.get("coverage300Status"),
+                "未声明坐标系时不能把300m地面距离伪装成普通无数据");
+    }
+
     // ---------------------------------------------------------------- grid.bin 契约（§3）
 
     @Test
@@ -341,7 +418,7 @@ class MatsimPopulationCacheTest {
         }
         assertEquals(4, gridHome);
         assertEquals(2, gridWork);
-        assertEquals(0.1, (Double) summary.get("scale"), 1e-9);
+        assertEquals(1.0, (Double) summary.get("scale"), 1e-9);
         assertEquals(100, summary.get("cellSizeMeters"));
         assertEquals(aggregation.mercCellSize, (Double) summary.get("mercCellSize"), 0.0);
     }
@@ -404,11 +481,11 @@ class MatsimPopulationCacheTest {
         assertTrue(MatsimPopulationCache.isReady(data));
         Map<String, Object> summary = MatsimPopulationCache.readPopulationSummary(data);
         assertEquals("ready", summary.get("status"));
-        assertEquals("population-v2", summary.get("cacheVersion"));
+        assertEquals(MatsimPopulationCache.POPULATION_CACHE_VERSION, summary.get("cacheVersion"));
         assertEquals(2, ((Number) summary.get("persons")).intValue());
         assertEquals(2, ((Number) summary.get("homePersons")).intValue());
         assertEquals(1, ((Number) summary.get("workPersons")).intValue());
-        assertEquals(0.1, (Double) summary.get("scale"), 1e-9);
+        assertEquals(1.0, (Double) summary.get("scale"), 1e-9);
         assertEquals(List.of("home"), summary.get("homeTypes"));
         assertEquals(List.of("work"), summary.get("workTypes"));
 

@@ -59,17 +59,27 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MatsimAnalysisCacheLargeStreamTest {
@@ -92,6 +102,7 @@ class MatsimAnalysisCacheLargeStreamTest {
         Files.createDirectories(output);
         new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
         writeEvents(output.resolve("output_events.xml.gz"));
+        writeNetwork(output.resolve("output_network.xml.gz"), false);
 
         MatsimData data = new MatsimData("area/public/model", output.toString(), cache.toString(), true);
         data.setScenario(buildScenario());
@@ -110,7 +121,7 @@ class MatsimAnalysisCacheLargeStreamTest {
 
         assertEquals("ready", manifest.get("status"));
         assertNotNull(chunk);
-        assertEquals(64 + 3 * 8 * Float.BYTES, chunk.length);
+        assertEquals(64 + 3 * 9 * Float.BYTES, chunk.length);
         assertEquals(1, binarySegmentCount(publicFrame));
         assertEquals(2, binarySegmentCount(privateFrame));
         assertEquals(0, binarySegmentCount(outsideFrame));
@@ -124,8 +135,12 @@ class MatsimAnalysisCacheLargeStreamTest {
         Path trajectoryCache = cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION);
         Path fullManifest = trajectoryCache.resolve("manifest.json");
         Path lightManifest = trajectoryCache.resolve("manifest-lite.json");
+        Path spatialContainer = trajectoryCache.resolve("spatial-000000.bin");
+        Path spatialIndex = trajectoryCache.resolve("spatial-000000.idx");
         assertTrue(Files.exists(fullManifest));
         assertTrue(Files.exists(lightManifest));
+        assertTrue(Files.exists(spatialContainer));
+        assertTrue(Files.exists(spatialIndex));
         assertTrue(Files.size(lightManifest) < Files.size(fullManifest));
         Map<String, Object> light = MatsimAnalysisCache.readReadyTrajectoryLightManifest(data);
         assertEquals("ready", light.get("status"));
@@ -154,6 +169,7 @@ class MatsimAnalysisCacheLargeStreamTest {
         Files.createDirectories(output);
         new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
         writeEvents(output.resolve("output_events.xml.gz"));
+        writeNetwork(output.resolve("output_network.xml.gz"), false);
 
         MatsimData data = new MatsimData("area/public/model", output.toString(), cache.toString(), true);
         data.setArea(1);
@@ -191,7 +207,10 @@ class MatsimAnalysisCacheLargeStreamTest {
 
         Map<String, Object> info = MatsimPrecomputedCache.readInfo(data);
         assertNotNull(info);
-        assertEquals(1, ((Number) info.get("rcxcs")).intValue());
+        assertEquals(1, ((Number) info.get("boardings")).intValue());
+        assertNull(info.get("rcxcs"), "日出行次数缺少 plans journeys/人口分母时不得用上车人次冒充");
+        Map<?, ?> availability = (Map<?, ?>) info.get("availability");
+        assertEquals("unsupported", ((Map<?, ?>) availability.get("rcxcs")).get("status"));
     }
 
     @Test
@@ -381,6 +400,396 @@ class MatsimAnalysisCacheLargeStreamTest {
         }
     }
 
+    @Test
+    void largeModelRouteFlowReadsHourlyPanelInsteadOfScanningTrackStore() throws Exception {
+        String datasource = "area/public/large-route-flow";
+        Path output = tempDir.resolve("large-route-flow").resolve("output");
+        Path cache = tempDir.resolve("large-route-flow-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+
+        MatsimData data = new MatsimData(datasource, output.toString(), cache.toString(), true);
+        data.setScenario(buildDuplicateRouteIdScenario());
+        data.setPersonTracks(new LinkedHashSet<>(Set.of(
+                track("person-bus", "bus-line", "shared", "bus1", "bus-dep", "bus-stop-1", true, 8.0),
+                track("person-metro", "metro-line", "shared", "metro1", "metro-dep", "metro-stop-1", true, 9.0)
+        )));
+        MatsimRoutePanelCache.prepareOnModelLoad(data);
+        // 模拟 V6 运行时：面板建好后全量明细不常驻堆内。
+        data.setPersonTracks(new LinkedHashSet<>());
+        registerDatasource(datasource, data);
+        try {
+            RouteChartParam param = new RouteChartParam();
+            param.setDatasource(datasource);
+            param.setLineId("metro-line");
+            param.setRouteId("shared");
+            param.setBeginSecond(0);
+            param.setEndSecond(3600);
+
+            List<FacilityFlowVO> flow = new RouteServiceImpl().routeFlow(param);
+
+            assertEquals(2, flow.size());
+            assertEquals("metro-stop-1", flow.getFirst().getId());
+            assertEquals(1L, flow.getFirst().getUp());
+        } finally {
+            Datasource.remove(datasource);
+        }
+    }
+
+    @Test
+    void largeTrajectoryUsesCompleteSourceNetworkForPrivateCarLinksOutsideTransitSubnetwork() throws Exception {
+        System.setProperty("gjcxfzksh.events.workers", "2");
+        System.setProperty("gjcxfzksh.events.pigz.enabled", "false");
+        Path output = tempDir.resolve("full-network-car").resolve("output");
+        Path cache = tempDir.resolve("full-network-car-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeNetwork(output.resolve("output_network.xml.gz"), true);
+        writeEvents(output.resolve("output_events.xml.gz"), List.of(
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"bus1\" link=\"l1\" />",
+                "<event time=\"30.0\" type=\"left link\" vehicle=\"bus1\" link=\"l1\" />",
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"car1\" link=\"car-link\" />",
+                "<event time=\"30.0\" type=\"left link\" vehicle=\"car1\" link=\"car-link\" />"
+        ));
+
+        MatsimData data = new MatsimData("area/public/full-network-car", output.toString(), cache.toString(), true);
+        // 运行态只注入公交子网 l1；car-link 只存在于原始完整 network。
+        data.setScenario(buildScenario());
+
+        Map<String, Object> manifest = MatsimAnalysisCache.ensureTrajectoryCache(data);
+        byte[] privateFrame = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data, 15, 1, "private", 900.0, -10.0, 1210.0, 10.0
+        );
+
+        Map<?, ?> summary = (Map<?, ?>) manifest.get("summary");
+        Map<?, ?> counts = (Map<?, ?>) summary.get("vehicleCountByMode");
+        Map<?, ?> distance = (Map<?, ?>) summary.get("distanceKmByMode");
+        Map<?, ?> quality = (Map<?, ?>) manifest.get("quality");
+        assertEquals(1L, ((Number) counts.get("car")).longValue());
+        assertEquals(0.2, ((Number) distance.get("car")).doubleValue(), 1e-9);
+        assertEquals(1, binarySegmentCount(privateFrame));
+        assertEquals(0L, ((Number) quality.get("missingLinkEvents")).longValue());
+        assertEquals(2, ((Number) quality.get("fullNetworkLinks")).intValue());
+        double[] endpoints = binaryFirstSegmentAbsoluteEndpoints(privateFrame);
+        assertEquals(1000.0, endpoints[0], 0.1);
+        assertEquals(1200.0, endpoints[2], 0.1);
+
+        Map<?, ?> sources = (Map<?, ?>) manifest.get("sources");
+        assertEquals(Set.of("events", "network", "schedule", "transitVehicles", "config", "plans"), sources.keySet());
+        assertFalse(String.valueOf(manifest.get("cacheGeneration")).isBlank());
+
+        // events 未变但完整 network 变化时，旧轨迹不得继续被判定为可用。
+        writeNetwork(output.resolve("output_network.xml.gz"), false);
+        assertNull(MatsimAnalysisCache.readReadyTrajectoryLightManifest(data));
+    }
+
+    @Test
+    void spatialViewportCropsSeparatedCarsButKeepsCitywideStatsAndTwoArtifactsPerStorageChunk() throws Exception {
+        System.setProperty("gjcxfzksh.events.workers", "2");
+        System.setProperty("gjcxfzksh.events.pigz.enabled", "false");
+        Path output = tempDir.resolve("spatial-cars").resolve("output");
+        Path cache = tempDir.resolve("spatial-cars-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeSeparatedPrivateCarNetwork(output.resolve("output_network.xml.gz"));
+        writeEvents(output.resolve("output_events.xml.gz"), List.of(
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"near-car\" link=\"near-link\" />",
+                "<event time=\"30.0\" type=\"left link\" vehicle=\"near-car\" link=\"near-link\" />",
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"far-car\" link=\"far-link\" />",
+                "<event time=\"30.0\" type=\"left link\" vehicle=\"far-car\" link=\"far-link\" />"
+        ));
+
+        MatsimData data = new MatsimData("area/public/spatial-cars", output.toString(), cache.toString(), true);
+        data.setScenario(buildScenario());
+
+        Map<String, Object> manifest = MatsimAnalysisCache.ensureTrajectoryCache(data);
+        byte[] firstWindow = MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
+        );
+        byte[] secondWindow = MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 10, 10, "private", 900.0, -100.0, 1300.0, 100.0
+        );
+
+        assertEquals(1, binarySegmentCount(firstWindow), "视口不得携带 9km 外的另一辆车");
+        assertEquals(1, binarySegmentCount(secondWindow));
+        assertEquals(List.of(0.0, 30.0, 1000.0, 1200.0), binaryTimeAndX(firstWindow));
+        assertEquals(binaryTimeAndX(firstWindow), binaryTimeAndX(secondWindow),
+                "跨 10s 播放窗应复用完整原始段，保证边界插值连续");
+        assertEquals(List.of(0, 9, 10), binaryWindowHeader(firstWindow));
+        assertEquals(List.of(10, 19, 10), binaryWindowHeader(secondWindow));
+
+        Map<?, ?> summary = (Map<?, ?>) manifest.get("summary");
+        Map<?, ?> firstChunk = (Map<?, ?>) ((List<?>) summary.get("chunks")).getFirst();
+        assertEquals(2, ((Number) firstChunk.get("tileCount")).intValue());
+        assertEquals(2, ((Number) firstChunk.get("artifactFiles")).intValue());
+        List<?> globalSecond15 = (List<?>) ((List<?>) firstChunk.get("globalStats")).get(15);
+        assertEquals(15, ((Number) globalSecond15.get(0)).intValue());
+        assertEquals(2, ((Number) globalSecond15.get(3)).intValue(),
+                "视口裁剪不能把全市活跃小汽车数裁成 1");
+
+        Path trajectoryDir = cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION);
+        Set<String> storageArtifacts;
+        try (Stream<Path> paths = Files.list(trajectoryDir)) {
+            storageArtifacts = paths
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.startsWith("spatial-000000"))
+                    .collect(java.util.stream.Collectors.toSet());
+        }
+        assertEquals(Set.of("spatial-000000.bin", "spatial-000000.idx"), storageArtifacts,
+                "每个 30s 存储块只允许一个容器和一个偏移索引，禁止生成 tile 小文件");
+
+        String firstGeneration = String.valueOf(manifest.get("cacheGeneration"));
+        Path spatialIndex = trajectoryDir.resolve("spatial-000000.idx");
+        Files.delete(spatialIndex);
+        assertNull(MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
+        ));
+        assertTrue(MatsimAnalysisCache.isTrajectoryRepairRequired(data));
+        assertNull(MatsimAnalysisCache.readReadyTrajectoryLightManifest(data),
+                "缺失声明工件后当前 generation 不得继续保持 ready");
+
+        ExecutorService repairPool = Executors.newFixedThreadPool(4);
+        Set<String> repairedGenerations = new LinkedHashSet<>();
+        try {
+            List<Callable<Map<String, Object>>> repairs = List.of(
+                    () -> MatsimAnalysisCache.ensureTrajectoryCache(data),
+                    () -> MatsimAnalysisCache.ensureTrajectoryCache(data),
+                    () -> MatsimAnalysisCache.ensureTrajectoryCache(data),
+                    () -> MatsimAnalysisCache.ensureTrajectoryCache(data)
+            );
+            for (Future<Map<String, Object>> repair : repairPool.invokeAll(repairs)) {
+                repairedGenerations.add(String.valueOf(repair.get().get("cacheGeneration")));
+            }
+        } finally {
+            repairPool.shutdownNow();
+        }
+        assertEquals(1, repairedGenerations.size(), "并发请求只能发布一个修复 generation");
+        String repairedGeneration = repairedGenerations.iterator().next();
+        assertNotEquals(firstGeneration, repairedGeneration);
+        assertFalse(MatsimAnalysisCache.isTrajectoryRepairRequired(data));
+        assertEquals(1, binarySegmentCount(MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
+        )));
+
+        Path spatialContainer = trajectoryDir.resolve("spatial-000000.bin");
+        Files.write(spatialContainer, new byte[]{'B', 'A', 'D'}, StandardOpenOption.TRUNCATE_EXISTING);
+        assertNull(MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
+        ));
+        assertTrue(MatsimAnalysisCache.isTrajectoryRepairRequired(data));
+        Map<String, Object> repairedCorruption = MatsimAnalysisCache.ensureTrajectoryCache(data);
+        assertNotEquals(repairedGeneration, String.valueOf(repairedCorruption.get("cacheGeneration")));
+        assertFalse(MatsimAnalysisCache.isTrajectoryRepairRequired(data));
+        assertEquals(1, binarySegmentCount(MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
+        )));
+    }
+
+    @Test
+    void perTileEnvelopePreventsOneLongLinkFromPullingUnrelatedTilesIntoViewportRead() throws Exception {
+        System.setProperty("gjcxfzksh.events.workers", "2");
+        System.setProperty("gjcxfzksh.events.pigz.enabled", "false");
+        Path output = tempDir.resolve("long-link-envelope").resolve("output");
+        Path cache = tempDir.resolve("long-link-envelope-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeLongAndFarPrivateCarNetwork(output.resolve("output_network.xml.gz"));
+        writeEvents(output.resolve("output_events.xml.gz"), List.of(
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"long-car\" link=\"long-link\" />",
+                "<event time=\"30.0\" type=\"left link\" vehicle=\"long-car\" link=\"long-link\" />",
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"far-car\" link=\"far-short-link\" />",
+                "<event time=\"30.0\" type=\"left link\" vehicle=\"far-car\" link=\"far-short-link\" />"
+        ));
+        MatsimData data = new MatsimData("area/public/long-link-envelope", output.toString(), cache.toString(), true);
+        data.setScenario(buildScenario());
+
+        Map<String, Object> manifest = MatsimAnalysisCache.ensureTrajectoryCache(data);
+        byte[] local = MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "private", -10.0, -10.0, 100.0, 10.0
+        );
+
+        assertEquals(1, MatsimAnalysisCache.trajectorySpatialCandidateCount(
+                data, 0, -10.0, -10.0, 100.0, 10.0
+        ), "超长段的 envelope 可命中视口，但不得把相邻远处短段 tile 一并读入");
+        assertEquals(1, binarySegmentCount(local));
+        assertEquals(List.of(0.0, 30.0, 0.0, 20000.0), binaryTimeAndX(local));
+        Map<?, ?> firstChunk = (Map<?, ?>) ((List<?>) ((Map<?, ?>) manifest.get("summary")).get("chunks")).getFirst();
+        assertEquals(2, ((Number) firstChunk.get("tileCount")).intValue());
+        List<?> globalSecond15 = (List<?>) ((List<?>) firstChunk.get("globalStats")).get(15);
+        assertEquals(2, ((Number) globalSecond15.get(3)).intValue());
+        Map<?, ?> spatial = (Map<?, ?>) manifest.get("spatial");
+        assertEquals(2, ((Number) spatial.get("indexVersion")).intValue());
+        assertEquals(32, ((Number) spatial.get("indexEntryBytes")).intValue());
+    }
+
+    @Test
+    void completeNetworkGeometryIndexTransformsDeclaredSourceCrsToWebMercator() throws Exception {
+        Path output = tempDir.resolve("geometry-crs").resolve("output");
+        Path cache = tempDir.resolve("geometry-crs-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeWgs84Network(output.resolve("output_network.xml.gz"));
+
+        MatsimData data = new MatsimData("area/public/geometry-crs", output.toString(), cache.toString(), true);
+        data.setScenario(buildScenario());
+        MatsimLinkGeometryIndex index = MatsimLinkGeometryIndex.load(data);
+        int link = index.find("geo-link");
+
+        assertTrue(link >= 0);
+        assertEquals("EPSG:4326", index.sourceCrs());
+        assertEquals(111.319, index.toX(link) - index.fromX(link), 0.5);
+        assertEquals(0.0, index.toY(link) - index.fromY(link), 0.5);
+    }
+
+    @Test
+    void largeTrajectoryFailsInsteadOfPublishingWhenEventsReferenceUnknownLink() throws Exception {
+        System.setProperty("gjcxfzksh.events.workers", "1");
+        System.setProperty("gjcxfzksh.events.pigz.enabled", "false");
+        Path output = tempDir.resolve("unknown-link").resolve("output");
+        Path cache = tempDir.resolve("unknown-link-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeNetwork(output.resolve("output_network.xml.gz"), false);
+        writeEvents(output.resolve("output_events.xml.gz"), List.of(
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"car1\" link=\"missing-link\" />",
+                "<event time=\"10.0\" type=\"left link\" vehicle=\"car1\" link=\"missing-link\" />"
+        ));
+        MatsimData data = new MatsimData("area/public/unknown-link", output.toString(), cache.toString(), true);
+        data.setScenario(buildScenario());
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> MatsimAnalysisCache.ensureTrajectoryCache(data)
+        );
+        assertTrue(error.getMessage().contains("不存在的 link"));
+        assertFalse(Files.exists(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION).resolve("manifest.json")));
+        assertFalse(Files.exists(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION).resolve("manifest-lite.json")));
+    }
+
+    @Test
+    void smallTrajectoryAlsoFailsInsteadOfPublishingPartialCacheForUnknownLinks() throws Exception {
+        Path output = tempDir.resolve("small-unknown-link").resolve("output");
+        Path cache = tempDir.resolve("small-unknown-link-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeEvents(output.resolve("output_events.xml.gz"), List.of(
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"car1\" link=\"missing-link\" />",
+                "<event time=\"10.0\" type=\"left link\" vehicle=\"car1\" link=\"missing-link\" />"
+        ));
+        MatsimData data = new MatsimData("area/public/small-unknown-link", output.toString(), cache.toString(), false);
+        data.setScenario(buildScenario());
+
+        IllegalStateException error = assertThrows(
+                IllegalStateException.class,
+                () -> MatsimAnalysisCache.ensureTrajectoryCache(data)
+        );
+
+        assertTrue(error.getMessage().contains("不存在的 link"));
+        assertFalse(Files.exists(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION).resolve("manifest.json")));
+        assertFalse(Files.exists(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION).resolve("manifest-lite.json")));
+    }
+
+    @Test
+    void thirtySecondChunksClipCrossBoundarySegmentsAndPublishNewGenerationInPlace() throws Exception {
+        System.setProperty("gjcxfzksh.events.workers", "1");
+        System.setProperty("gjcxfzksh.events.pigz.enabled", "false");
+        Path output = tempDir.resolve("chunk-clipping").resolve("output");
+        Path cache = tempDir.resolve("chunk-clipping-cache");
+        Files.createDirectories(output);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        writeNetwork(output.resolve("output_network.xml.gz"), false);
+        writeEvents(output.resolve("output_events.xml.gz"), List.of(
+                "<event time=\"0.0\" type=\"entered link\" vehicle=\"car1\" link=\"l1\" />",
+                "<event time=\"60.0\" type=\"left link\" vehicle=\"car1\" link=\"l1\" />"
+        ));
+        Path oldVersion = cache.resolve("trajectory-v9");
+        Files.createDirectories(oldVersion);
+        Files.writeString(oldVersion.resolve("sentinel"), "old", StandardCharsets.UTF_8);
+        Path oldPersonTrackVersion = cache.resolve("pt-events-v2");
+        Files.createDirectories(oldPersonTrackVersion);
+        Files.writeString(oldPersonTrackVersion.resolve("sentinel"), "old", StandardCharsets.UTF_8);
+
+        MatsimData data = new MatsimData("area/public/chunk-clipping", output.toString(), cache.toString(), true);
+        data.setScenario(buildScenario());
+        Map<String, Object> firstManifest = MatsimAnalysisCache.ensureTrajectoryCache(data);
+        Map<String, Object> firstCachedManifest = MatsimAnalysisCache.readReadyTrajectoryLightManifest(data);
+        assertSame(firstCachedManifest, MatsimAnalysisCache.readReadyTrajectoryLightManifest(data),
+                "连续播放的 ETag/body 读取必须复用同一已解析 manifest");
+        byte[] first = MatsimAnalysisCache.readTrajectoryBinaryChunk(data, 0);
+        byte[] second = MatsimAnalysisCache.readTrajectoryBinaryChunk(data, 30);
+        byte[] after = MatsimAnalysisCache.readTrajectoryBinaryChunk(data, 60);
+        byte[] deliveryBeforeBoundary = MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "all", -10.0, -10.0, 110.0, 10.0
+        );
+        byte[] deliveryAfterBoundary = MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 10, 10, "all", -10.0, -10.0, 110.0, 10.0
+        );
+        byte[] arbitraryViewport = MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 28, 7, "all", -10.0, -10.0, 110.0, 10.0
+        );
+        byte[] arbitraryFrameBeforeBoundary = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data, 29, 7, "all", -10.0, -10.0, 110.0, 10.0
+        );
+        byte[] arbitraryFrameAfterBoundary = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data, 30, 7, "all", -10.0, -10.0, 110.0, 10.0
+        );
+
+        assertEquals(10, ((Number) firstManifest.get("chunkSeconds")).intValue());
+        assertEquals(30, ((Number) firstManifest.get("storageChunkSeconds")).intValue());
+        assertEquals(1, binarySegmentCount(first));
+        assertEquals(1, binarySegmentCount(second));
+        assertEquals(0, binarySegmentCount(after));
+        assertEquals(List.of(0.0, 30.0, 0.0, 50.0), binaryTimeAndX(first));
+        assertEquals(List.of(30.0, 60.0, 50.0, 100.0), binaryTimeAndX(second));
+        assertEquals(1, binarySegmentCount(deliveryBeforeBoundary));
+        assertEquals(1, binarySegmentCount(deliveryAfterBoundary));
+        assertEquals(List.of(0.0, 30.0, 0.0, 50.0), binaryTimeAndX(deliveryBeforeBoundary));
+        assertEquals(List.of(0.0, 30.0, 0.0, 50.0), binaryTimeAndX(deliveryAfterBoundary));
+        assertEquals(10, ByteBuffer.wrap(deliveryAfterBoundary).order(ByteOrder.LITTLE_ENDIAN).getInt(48));
+        assertEquals(1, binarySegmentCount(arbitraryViewport));
+        assertEquals(List.of(20, 29, 10), binaryWindowHeader(arbitraryViewport),
+                "任意 viewport 参数必须规范化为不会跨 30s 容器的固定 10s 窗");
+        assertEquals(1, binarySegmentCount(arbitraryFrameBeforeBoundary));
+        assertEquals(1, binarySegmentCount(arbitraryFrameAfterBoundary));
+        assertEquals(List.of(28, 29, 2), binaryWindowHeader(arbitraryFrameBeforeBoundary));
+        assertEquals(List.of(30, 31, 2), binaryWindowHeader(arbitraryFrameAfterBoundary));
+        assertEquals(
+                MatsimAnalysisCache.trajectoryViewportETag(
+                        data, 20, 10, "all", -10.0, -10.0, 110.0, 10.0
+                ),
+                MatsimAnalysisCache.trajectoryViewportETag(
+                        data, 28, 7, "unexpected", -10.0, -10.0, 110.0, 10.0
+                ),
+                "ETag 必须按实际规范化后的窗口与可见模式生成"
+        );
+        Map<?, ?> firstChunk = (Map<?, ?>) ((List<?>) ((Map<?, ?>) firstManifest.get("summary")).get("chunks")).get(0);
+        assertEquals(2, ((Number) firstChunk.get("artifactFiles")).intValue());
+        assertEquals(30, ((List<?>) firstChunk.get("globalStats")).size());
+        assertFalse(Files.exists(oldVersion));
+        assertFalse(Files.exists(oldPersonTrackVersion));
+
+        String firstGeneration = String.valueOf(firstManifest.get("cacheGeneration"));
+        String firstEtag = MatsimAnalysisCache.trajectoryChunkETag(data, 0);
+        Path trajectoryDir = cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION);
+        Path staleArtifact = trajectoryDir.resolve("stale-from-previous-generation.bin");
+        Files.writeString(staleArtifact, "stale", StandardCharsets.UTF_8);
+        Files.delete(trajectoryDir.resolve("manifest.json"));
+        Files.delete(trajectoryDir.resolve("manifest-lite.json"));
+        Map<String, Object> secondManifest = MatsimAnalysisCache.ensureTrajectoryCache(data);
+        Map<String, Object> secondCachedManifest = MatsimAnalysisCache.readReadyTrajectoryLightManifest(data);
+        String secondGeneration = String.valueOf(secondManifest.get("cacheGeneration"));
+        String secondEtag = MatsimAnalysisCache.trajectoryChunkETag(data, 0);
+        assertNotSame(firstCachedManifest, secondCachedManifest, "原位重建后不得复用上一代 manifest 对象");
+        assertEquals(secondGeneration, secondCachedManifest.get("cacheGeneration"));
+        assertSame(secondCachedManifest, MatsimAnalysisCache.readReadyTrajectoryLightManifest(data));
+        assertNotEquals(firstGeneration, secondGeneration);
+        assertNotEquals(firstEtag, secondEtag);
+        assertFalse(Files.exists(staleArtifact));
+        try (Stream<Path> paths = Files.list(trajectoryDir)) {
+            assertFalse(paths.anyMatch(path -> path.getFileName().toString().endsWith(".tmp")));
+        }
+    }
+
     private void writeEvents(Path path) throws Exception {
         try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
             writer.write("<events version=\"1.0\">\n");
@@ -399,9 +808,132 @@ class MatsimAnalysisCacheLargeStreamTest {
         }
     }
 
+    private void writeEvents(Path path, List<String> events) throws Exception {
+        try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
+            writer.write("<events version=\"1.0\">\n");
+            for (String event : events) {
+                writer.write(event);
+                writer.write('\n');
+            }
+            writer.write("</events>\n");
+        }
+    }
+
+    private void writeNetwork(Path path, boolean includePrivateCarLink) throws Exception {
+        String privateNodes = includePrivateCarLink
+                ? "<node id=\"car-from\" x=\"1000\" y=\"0\"/><node id=\"car-to\" x=\"1200\" y=\"0\"/>"
+                : "";
+        String privateLink = includePrivateCarLink
+                ? "<link id=\"car-link\" from=\"car-from\" to=\"car-to\" length=\"200\" freespeed=\"20\" capacity=\"1000\" permlanes=\"1\" modes=\"car\"/>"
+                : "";
+        try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
+            writer.write("""
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <!DOCTYPE network SYSTEM "http://www.matsim.org/files/dtd/network_v2.dtd">
+                    <network>
+                      <attributes><attribute name="coordinateReferenceSystem" class="java.lang.String">EPSG:3857</attribute></attributes>
+                      <nodes><node id="n1" x="0" y="0"/><node id="n2" x="100" y="0"/>%s</nodes>
+                      <links capperiod="01:00:00">
+                        <link id="l1" from="n1" to="n2" length="100" freespeed="10" capacity="1000" permlanes="1" modes="car,bus"/>%s
+                      </links>
+                    </network>
+                    """.formatted(privateNodes, privateLink));
+        }
+    }
+
+    private void writeSeparatedPrivateCarNetwork(Path path) throws Exception {
+        try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
+            writer.write("""
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <!DOCTYPE network SYSTEM "http://www.matsim.org/files/dtd/network_v2.dtd">
+                    <network>
+                      <attributes><attribute name="coordinateReferenceSystem" class="java.lang.String">EPSG:3857</attribute></attributes>
+                      <nodes>
+                        <node id="n1" x="0" y="0"/><node id="n2" x="100" y="0"/>
+                        <node id="near-from" x="1000" y="0"/><node id="near-to" x="1200" y="0"/>
+                        <node id="far-from" x="10000" y="0"/><node id="far-to" x="10200" y="0"/>
+                      </nodes>
+                      <links capperiod="01:00:00">
+                        <link id="l1" from="n1" to="n2" length="100" freespeed="10" capacity="1000" permlanes="1" modes="car,bus"/>
+                        <link id="near-link" from="near-from" to="near-to" length="200" freespeed="20" capacity="1000" permlanes="1" modes="car"/>
+                        <link id="far-link" from="far-from" to="far-to" length="200" freespeed="20" capacity="1000" permlanes="1" modes="car"/>
+                      </links>
+                    </network>
+                    """);
+        }
+    }
+
+    private void writeLongAndFarPrivateCarNetwork(Path path) throws Exception {
+        try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
+            writer.write("""
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <!DOCTYPE network SYSTEM "http://www.matsim.org/files/dtd/network_v2.dtd">
+                    <network>
+                      <attributes><attribute name="coordinateReferenceSystem" class="java.lang.String">EPSG:3857</attribute></attributes>
+                      <nodes>
+                        <node id="n1" x="0" y="0"/><node id="n2" x="100" y="0"/>
+                        <node id="long-from" x="0" y="0"/><node id="long-to" x="20000" y="0"/>
+                        <node id="far-from" x="15000" y="0"/><node id="far-to" x="15100" y="0"/>
+                      </nodes>
+                      <links capperiod="01:00:00">
+                        <link id="l1" from="n1" to="n2" length="100" freespeed="10" capacity="1000" permlanes="1" modes="car,bus"/>
+                        <link id="long-link" from="long-from" to="long-to" length="20000" freespeed="30" capacity="1000" permlanes="1" modes="car"/>
+                        <link id="far-short-link" from="far-from" to="far-to" length="100" freespeed="20" capacity="1000" permlanes="1" modes="car"/>
+                      </links>
+                    </network>
+                    """);
+        }
+    }
+
+    private void writeWgs84Network(Path path) throws Exception {
+        try (OutputStreamWriter writer = new OutputStreamWriter(new GZIPOutputStream(Files.newOutputStream(path)), StandardCharsets.UTF_8)) {
+            writer.write("""
+                    <?xml version="1.0" encoding="UTF-8"?>
+                    <!DOCTYPE network SYSTEM "http://www.matsim.org/files/dtd/network_v2.dtd">
+                    <network>
+                      <attributes><attribute name="coordinateReferenceSystem" class="java.lang.String">EPSG:4326</attribute></attributes>
+                      <nodes><node id="from" x="121.0" y="31.0"/><node id="to" x="121.001" y="31.0"/></nodes>
+                      <links capperiod="01:00:00">
+                        <link id="geo-link" from="from" to="to" length="100" freespeed="10" capacity="1000" permlanes="1" modes="car"/>
+                      </links>
+                    </network>
+                    """);
+        }
+    }
+
     private int binarySegmentCount(byte[] bytes) {
         assertNotNull(bytes);
         return ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).getInt(16);
+    }
+
+    private double[] binaryFirstSegmentAbsoluteEndpoints(byte[] bytes) {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        double originX = buffer.getDouble(32);
+        double originY = buffer.getDouble(40);
+        int headerBytes = Short.toUnsignedInt(buffer.getShort(6));
+        return new double[]{
+                originX + buffer.getFloat(headerBytes + 2 * Float.BYTES),
+                originY + buffer.getFloat(headerBytes + 3 * Float.BYTES),
+                originX + buffer.getFloat(headerBytes + 4 * Float.BYTES),
+                originY + buffer.getFloat(headerBytes + 5 * Float.BYTES)
+        };
+    }
+
+    private List<Double> binaryTimeAndX(byte[] bytes) {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        double originX = buffer.getDouble(32);
+        int headerBytes = Short.toUnsignedInt(buffer.getShort(6));
+        return List.of(
+                (double) buffer.getFloat(headerBytes),
+                (double) buffer.getFloat(headerBytes + Float.BYTES),
+                originX + buffer.getFloat(headerBytes + 2 * Float.BYTES),
+                originX + buffer.getFloat(headerBytes + 4 * Float.BYTES)
+        );
+    }
+
+    private List<Integer> binaryWindowHeader(byte[] bytes) {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        return List.of(buffer.getInt(8), buffer.getInt(12), buffer.getInt(48));
     }
 
     private MutableScenario buildScenario() {

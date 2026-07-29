@@ -11,7 +11,7 @@ export function getPopulationSummary(data, config = {}) {
   });
 }
 
-// 人口分布监测：按街道聚合（176 街道全量抽样人数 + totals；未就绪返回 generating）
+// 人口分布监测：按街道聚合（176 街道的模型原始人数 + totals；未就绪返回 generating）
 // POST /pt/population/streets
 export function getPopulationStreets(data, config = {}) {
   return request({

@@ -1,4 +1,11 @@
 import request from "@/utils/request";
+import {
+  getRealLineAll,
+  getRealRouteDetail,
+  isRealDatasource,
+  realLocalResponse,
+  realPassengerFlowRequest,
+} from "@/utils/realPassengerFlow.js";
 // 线路列表
 // POST /pt/route/routeList
 // 接口ID：450702181
@@ -30,6 +37,9 @@ export function getRouteInfo(data, config = {}) {
 // 接口ID：450702183
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-450702183
 export function getRouteDetail(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) {
+    return realLocalResponse(() => getRealRouteDetail(data.datasource, data.lineId, data.routeId));
+  }
   return request({
     url: `/pt/route/routeDetail`,
     method: 'POST',
@@ -43,6 +53,9 @@ export function getRouteDetail(data, config = {}) {
 // 接口ID：450702184
 // 接口地址：https://app.apifox.com/link/project/8164431/apis/api-450702184
 export function getLineAll(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) {
+    return realLocalResponse(() => getRealLineAll(data.datasource));
+  }
   return request({
     url: `/pt/route/lineAll`,
     method: 'POST',
@@ -52,6 +65,7 @@ export function getLineAll(data, config = {}) {
 }
 
 export function getRoutePanel(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) return realPassengerFlowRequest("routePanel", data, config);
   return request({
     url: `/pt/route/routePanel`,
     method: 'POST',
@@ -64,6 +78,7 @@ export function getRoutePanel(data, config = {}) {
 // POST /pt/route/overallFlow
 // data = { status: "ready"|"generating", hourlyByMode: { bus: number[24], metro: number[24] } }
 export function getOverallFlow(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) return realPassengerFlowRequest("overallFlow", data, config);
   return request({
     url: `/pt/route/overallFlow`,
     method: 'POST',
@@ -73,6 +88,7 @@ export function getOverallFlow(data, config = {}) {
 }
 
 export function getRoutePanelDetail(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) return realPassengerFlowRequest("routePanelDetail", data, config);
   return request({
     url: `/pt/route/routePanelDetail`,
     method: 'POST',
@@ -82,6 +98,7 @@ export function getRoutePanelDetail(data, config = {}) {
 }
 
 export function getRouteCandidates(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) return Promise.resolve({ data: [] });
   return request({
     url: `/pt/route/routeCandidates`,
     method: 'POST',

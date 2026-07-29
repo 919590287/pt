@@ -100,7 +100,6 @@ public class AuthServiceImpl implements AuthService {
             user.lastLoginAt = now;
             users.put(normalizedUsername, user);
             ensureUserFolder(normalizedUsername);
-            matsimConfig.init();
             AuthVO auth = createSession(normalizedUsername, now);
             persist();
             return auth;
@@ -135,7 +134,6 @@ public class AuthServiceImpl implements AuthService {
                 user.lastLoginAt = now;
                 user.updatedAt = now;
                 ensureUserFolder(normalizedUsername);
-                matsimConfig.init();
                 AuthVO auth = createSession(normalizedUsername, now);
                 persist();
                 return auth;
@@ -174,7 +172,6 @@ public class AuthServiceImpl implements AuthService {
                 // 改密后撤销该账户的全部旧会话，防止泄漏 token 继续有效。
                 sessions.values().removeIf(session -> normalizedUsername.equals(session.username));
                 ensureUserFolder(normalizedUsername);
-                matsimConfig.init();
                 AuthVO auth = createSession(normalizedUsername, now);
                 persist();
                 return auth;

@@ -572,4 +572,44 @@ function coverageWidth(value) {
   font-weight: 600;
   white-space: nowrap;
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .overview-metric-list {
+  scrollbar-color: rgba(148, 180, 220, 0.28) transparent;
+}
+
+html.dark .overview-metric-list::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.28);
+}
+
+html.dark .hero-card {
+  background:
+    radial-gradient(90% 140% at 2% 50%, rgba(64, 156, 255, 0.11), transparent 60%),
+    var(--dm2-surface-sunken);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html.dark .coverage-track {
+  background: rgba(148, 180, 220, 0.12);
+}
+
+html.dark .fill-300 {
+  background: linear-gradient(90deg, rgba(64, 156, 255, 0.9), rgba(96, 175, 255, 0.98));
+}
+
+html.dark .fill-500 {
+  background: linear-gradient(90deg, rgba(64, 156, 255, 0.42), rgba(96, 175, 255, 0.52));
+}
+
+html.dark .operator-table {
+  scrollbar-color: rgba(148, 180, 220, 0.28) transparent;
+}
+
+html.dark .operator-table::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.28);
+}
+
+html.dark .operator-table-row:not(.operator-table-head):hover {
+  background: rgba(64, 156, 255, 0.09);
+}
 </style>

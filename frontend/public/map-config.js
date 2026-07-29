@@ -47,6 +47,8 @@ window.BASEMAP_OPTIONS = [
     label: "Dark",
     description: "Dark",
     style_name: "carto-dark-2x",
+    // 暗底图：UI 随之切换暗色模式（utils/uiTheme.js 消费；未标记时按 background 亮度推断）
+    dark: true,
     background: 0x12161d,
     min_zoom: 0,
     max_zoom: 18,

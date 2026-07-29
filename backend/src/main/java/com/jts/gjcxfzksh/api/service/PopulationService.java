@@ -15,4 +15,10 @@ public interface PopulationService {
 
     /** 176 街道全量人口统计 + totals（population-streets.json；未就绪返回 status=generating）。 */
     Map<String, Object> streets(DatasourceParam param);
+
+    /** 仿真/真实模式统一的人口栅格字节；源数据不可用时返回 null。 */
+    byte[] gridBytes(String datasource);
+
+    /** 人口栅格强校验标签；源数据不可用时返回 null。 */
+    String gridTag(String datasource);
 }

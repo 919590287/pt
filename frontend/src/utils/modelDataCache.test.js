@@ -9,8 +9,14 @@ vi.mock("@/api/route.js", () => ({
   getLineAll: vi.fn(() => Promise.resolve({ data: [{ lineName: "1路", routes: [] }] })),
   getRoutePanel: vi.fn(() => Promise.resolve({ data: { status: "ready", routes: [] } })),
 }));
+vi.mock("@/api/data.js", () => ({
+  dataEvaluation: vi.fn(() => Promise.resolve({
+    data: { status: "ready", values: { czrkmd: 1 } },
+  })),
+}));
 
 import {
+  getCachedEvaluation,
   getCachedLineAll,
   getModelDerived,
   invalidateModelDerived,
@@ -21,6 +27,7 @@ import {
   __modelCacheKeys,
 } from "./modelDataCache.js";
 import { getLineAll } from "@/api/route.js";
+import { dataEvaluation } from "@/api/data.js";
 
 beforeEach(() => {
   for (const key of __modelCacheKeys()) clearModelDataCache(key);
@@ -88,6 +95,16 @@ describe("modelDataCache 模型作用域 Map 与 LRU", () => {
 });
 
 describe("modelDataCache 请求缓存 markRaw", () => {
+  it("真实模式评估不复用旧结果，仿真模式仍按行政区缓存", async () => {
+    await getCachedEvaluation("real::广州市", "南沙区");
+    await getCachedEvaluation("real::广州市", "南沙区");
+    expect(dataEvaluation).toHaveBeenCalledTimes(2);
+
+    await getCachedEvaluation("simulation-model", "南沙区");
+    await getCachedEvaluation("simulation-model", "南沙区");
+    expect(dataEvaluation).toHaveBeenCalledTimes(3);
+  });
+
   it("getCachedLineAll 结果不可被深代理，且并发去重", async () => {
     const [a, b] = await Promise.all([getCachedLineAll("m1"), getCachedLineAll("m1")]);
     expect(getLineAll).toHaveBeenCalledTimes(1);

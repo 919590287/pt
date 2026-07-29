@@ -1,32 +1,38 @@
-<!-- 接驳公交线路：单线的地铁接驳贡献 / 服务枢纽 / Route 差异 / 分时需求 -->
+<!-- 换乘线路分析：以地铁线路为分析对象，查看整线接驳公交表现。 -->
 <template>
   <div class="ta-section">
-    <div class="ta-filters">
-      <div class="ta-filter-row">
-        <span class="ta-filter-label">公交线</span>
-        <el-select v-model="lineModel" size="small" filterable clearable placeholder="选择公交线路（按换乘量排序）" class="ta-filter-sel">
-          <el-option v-for="l in ctx.lineOptions.value" :key="l.idx" :label="`${l.name}（${fmtCount(ctx.expand(l.flow))}人次）`" :value="l.idx" />
-        </el-select>
+    <template v-if="ctx.selection.metroLineId < 0">
+      <div class="ta-card">
+        <div class="ta-card-head ta-rank-head">
+          <span class="ta-card-title">换乘地铁线路 Top {{ ctx.filters.topN }}</span>
+          <el-select v-model="rankMetric" size="small" class="ta-rank-metric" aria-label="地铁线路排名口径">
+            <el-option label="换乘客流量" value="flow" />
+            <el-option label="平均换乘时间" value="avgSec" />
+          </el-select>
+        </div>
+        <VChart class="ta-chart ta-chart-rank" :option="rankOpt" autoresize :update-options="UPD" @click="onRankClick" />
       </div>
-      <div v-if="ctx.selection.busLineId >= 0 && routeChoices.length > 1" class="ta-filter-row">
-        <span class="ta-filter-label">方向</span>
-        <el-radio-group v-model="routeModel" size="small" class="ta-pills">
-          <el-radio-button :value="-1">全部</el-radio-button>
-          <el-radio-button v-for="r in routeChoices" :key="r.idx" :value="r.idx">{{ r.name }}</el-radio-button>
-        </el-radio-group>
-      </div>
-      <div v-if="ctx.selection.busLineId >= 0" class="ta-filter-row">
-        <span class="ta-filter-label">枢纽</span>
-        <el-select v-model="hubsModel" size="small" multiple collapse-tags :max-collapse-tags="2" clearable placeholder="全部服务枢纽" class="ta-filter-sel">
-          <el-option v-for="h in hubChoices" :key="h.idx" :label="h.name" :value="h.idx" />
-        </el-select>
-      </div>
-    </div>
 
-    <div v-if="ctx.selection.busLineId < 0" class="ta-blank">
-      <p class="ta-blank-title">请选择一条公交线路</p>
-      <p class="ta-blank-sub">可在上方下拉选择，或在枢纽模块的接驳线路排名中点击进入。</p>
-    </div>
+      <div class="ta-card">
+        <div class="ta-card-head">
+          <span class="ta-card-title">地铁线路换乘明细</span>
+          <button type="button" class="ta-export" @click="exportRankDetail">导出 CSV</button>
+        </div>
+        <div class="ta-table">
+          <div class="ta-table-row ta-table-head">
+            <span class="c-name">地铁线路</span><span class="c-num">人次</span><span class="c-num">公→地</span><span class="c-num">地→公</span><span class="c-num">均时</span>
+          </div>
+          <button v-for="row in detailRows" :key="row.idx" type="button" class="ta-table-row ta-row-click ta-table-button" @click="selectLine(row.idx)">
+            <span class="c-name" :title="row.name">{{ row.name }}</span>
+            <span class="c-num">{{ fmtCount(row.flow) }}</span>
+            <span class="c-num">{{ fmtCount(row.b2m) }}</span>
+            <span class="c-num">{{ fmtCount(row.m2b) }}</span>
+            <span class="c-num">{{ fmtMin(row.avgSec) }}</span>
+          </button>
+          <div v-if="!detailRows.length" class="ta-empty-row">当前时段无换乘事件</div>
+        </div>
+      </div>
+    </template>
 
     <template v-else>
       <div class="ta-kpis">
@@ -36,254 +42,127 @@
         </div>
       </div>
 
-      <!-- 接驳率：分母固定并写进展示名（设计方案 v2 §6.3），分母数据缺失时显示占位 -->
-      <div class="ta-ratio-card">
-        <div class="ta-ratio-row">
-          <span class="ta-ratio-name">公交→地铁接驳率<i class="ta-ratio-cal">占全线下车人次比例</i></span>
-          <span class="ta-ratio-value">{{ feederRatioText }}</span>
-        </div>
-        <div class="ta-ratio-row">
-          <span class="ta-ratio-name">地铁→公交承接率<i class="ta-ratio-cal">占全线上车人次比例</i></span>
-          <span class="ta-ratio-value">{{ receiveRatioText }}</span>
-        </div>
+      <div class="ta-card">
+        <div class="ta-card-head"><span class="ta-card-title">接驳公交线路客流量排名</span></div>
+        <VChart class="ta-chart ta-chart-rank" :option="busLineRankOpt" autoresize :update-options="UPD" />
       </div>
 
       <div class="ta-card">
-        <div class="ta-card-head"><span class="ta-card-title">服务枢纽换乘量排名</span><span class="ta-card-hint">点击查看枢纽</span></div>
-        <VChart class="ta-chart ta-chart-rank" :option="hubRankOpt" autoresize :update-options="UPD" @click="onHubRankClick" />
-      </div>
-
-      <div class="ta-card">
-        <div class="ta-card-head"><span class="ta-card-title">接驳地铁线路构成</span></div>
-        <VChart class="ta-chart ta-chart-sm" :option="metroPieOpt" autoresize :update-options="UPD" />
-      </div>
-
-      <div v-if="routeChoices.length > 1" class="ta-card">
-        <div class="ta-card-head"><span class="ta-card-title">Route / 方向换乘对比</span></div>
-        <VChart class="ta-chart ta-chart-sm" :option="routeBarOpt" autoresize :update-options="UPD" />
-      </div>
-
-      <div class="ta-card">
-        <div class="ta-card-head"><span class="ta-card-title">分时接驳需求</span><span class="ta-card-hint">按后序上车时刻</span></div>
+        <div class="ta-card-head"><span class="ta-card-title">分时换乘量</span><span class="ta-card-hint">按后序上车时刻</span></div>
         <VChart class="ta-chart" :option="seriesOpt" autoresize :update-options="UPD" />
       </div>
 
       <div class="ta-card">
-        <div class="ta-card-head"><span class="ta-card-title">枢纽换乘量 vs 平均换乘时间</span></div>
-        <VChart class="ta-chart ta-chart-sm" :option="scatterOpt" autoresize :update-options="UPD" />
-      </div>
-
-      <div class="ta-card">
-        <div class="ta-card-head">
-          <span class="ta-card-title">服务枢纽明细</span>
-          <button type="button" class="ta-export" @click="exportDetail">导出 CSV</button>
-        </div>
-        <div class="ta-table">
-          <div class="ta-table-row ta-table-head">
-            <span class="c-name">枢纽</span><span class="c-num">人次</span><span class="c-num">公→地</span><span class="c-num">地→公</span><span class="c-num">均时</span><span class="c-num">P90</span>
-          </div>
-          <div v-for="row in detailRows" :key="row.idx" class="ta-table-row ta-row-click" @click="ctx.goHub(row.idx)">
-            <span class="c-name" :title="row.name">{{ row.name }}</span>
-            <span class="c-num">{{ fmtCount(row.flow) }}</span>
-            <span class="c-num">{{ fmtCount(row.b2m) }}</span>
-            <span class="c-num">{{ fmtCount(row.m2b) }}</span>
-            <span class="c-num">{{ fmtMin(row.avgSec) }}</span>
-            <span class="c-num">{{ fmtMin(row.p90Sec) }}</span>
-          </div>
-          <div v-if="!detailRows.length" class="ta-empty-row">当前筛选下无换乘事件</div>
-        </div>
+        <div class="ta-card-head"><span class="ta-card-title">换乘时间区间分布</span></div>
+        <VChart class="ta-chart ta-chart-sm" :option="histOpt" autoresize :update-options="UPD" />
       </div>
     </template>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, ref, watch } from "vue";
+import { computed, inject, ref } from "vue";
 import { VChart } from "@/plugins/echarts";
 import {
-  directionPieOption,
+  directionStackRankOption,
   dualDirectionLineOption,
   fmtCount,
   fmtMin,
-  hubScatterOption,
+  histogramBarOption,
+  minuteHistToSegments,
   rankBarOption,
-  routeGroupBarOption,
 } from "../chartOptions.js";
 
 const ctx = inject("taCtx");
 const UPD = { notMerge: true, lazyUpdate: true };
 const agg = computed(() => ctx.agg.value);
+const rankMetric = ref("flow");
 
-/* ---------- 筛选 ---------- */
+function selectLine(idx) {
+  if (idx == null || idx < 0) return;
+  ctx.selection.metroLineId = idx;
+}
 
-const lineModel = computed({
-  get: () => (ctx.selection.busLineId >= 0 ? ctx.selection.busLineId : ""),
-  set: (v) => {
-    ctx.selection.busLineId = v === "" || v == null ? -1 : v;
-    ctx.selection.routeIdx = -1;
-    ctx.selection.hubIds = [];
-  },
-});
-const routeModel = computed({
-  get: () => ctx.selection.routeIdx,
-  set: (v) => {
-    ctx.selection.routeIdx = v;
-  },
-});
-const hubsModel = computed({
-  get: () => ctx.selection.hubIds,
-  set: (v) => {
-    ctx.selection.hubIds = Array.isArray(v) ? v : [];
-  },
-});
-
-const routeChoices = computed(() => {
-  const line = ctx.dict.value?.busLines?.[ctx.selection.busLineId];
-  return (line?.routes || []).map((r, idx) => ({ idx, name: r.name || `Route ${idx + 1}` }));
-});
-
-/** 服务枢纽多选候选：取"未套用多选"时的完整枢纽列表并缓存 */
-const hubChoiceCache = ref([]);
-watch(
-  () => [agg.value, ctx.selection.busLineId],
-  () => {
-    if (ctx.selection.busLineId < 0) {
-      hubChoiceCache.value = [];
-      return;
-    }
-    if (!ctx.selection.hubIds.length) {
-      const list = agg.value?.hubs || [];
-      if (list.length || !hubChoiceCache.value.length) {
-        hubChoiceCache.value = list.map((h) => ({ idx: h.idx, name: ctx.hubName(h.idx) }));
-      }
-    }
-  },
-  { immediate: true },
+const topMetroLines = computed(() =>
+  (agg.value?.metroLines || [])
+    .slice()
+    .sort((a, b) => (rankMetric.value === "avgSec" ? b.avgSec - a.avgSec : b.flow - a.flow))
+    .slice(0, ctx.filters.topN),
 );
-const hubChoices = computed(() => hubChoiceCache.value);
+const rankOpt = computed(() =>
+  directionStackRankOption(
+    topMetroLines.value.map((line) => ({ ...line, name: ctx.metroLineName(line.idx), flow: ctx.expand(line.flow), b2m: ctx.expand(line.b2m), m2b: ctx.expand(line.m2b) })),
+    ctx.chartTheme,
+    ctx.animation,
+    { metric: rankMetric.value },
+  ),
+);
+function onRankClick(p) {
+  const items = topMetroLines.value
+    .slice()
+    .sort((a, b) => (rankMetric.value === "avgSec" ? b.avgSec - a.avgSec : b.flow - a.flow));
+  const item = items[items.length - 1 - p.dataIndex];
+  if (item) selectLine(item.idx);
+}
 
-/* ---------- KPI 与接驳率 ---------- */
+const detailRows = computed(() =>
+  (agg.value?.metroLines || []).slice(0, 20).map((line) => ({
+    ...line,
+    name: ctx.metroLineName(line.idx),
+    flow: ctx.expand(line.flow),
+    b2m: ctx.expand(line.b2m),
+    m2b: ctx.expand(line.m2b),
+  })),
+);
+function exportRankDetail() {
+  const rows = [["地铁线路", "换乘人次(模型原值)", "公交→地铁", "地铁→公交", "平均换乘时间(分)"]];
+  (agg.value?.metroLines || []).forEach((line) => {
+    rows.push([
+      ctx.metroLineName(line.idx),
+      ctx.expand(line.flow),
+      ctx.expand(line.b2m),
+      ctx.expand(line.m2b),
+      (line.avgSec / 60).toFixed(1),
+    ]);
+  });
+  ctx.exportCsv(rows, "换乘线路分析-地铁线路换乘明细.csv");
+}
 
 const kpiCards = computed(() => {
-  const k = agg.value?.kpi;
-  const d = agg.value?.feederDetail;
-  if (!k) return [];
+  const kpi = agg.value?.kpi;
+  if (!kpi) return [];
   return [
-    { label: "线路换乘人次", value: fmtCount(ctx.expand(k.events)), unit: "人次" },
-    { label: "公交→地铁", value: fmtCount(ctx.expand(k.busToMetro)), unit: "人次" },
-    { label: "地铁→公交", value: fmtCount(ctx.expand(k.metroToBus)), unit: "人次" },
-    { label: "服务枢纽", value: fmtCount(agg.value?.hubs?.length || 0), unit: "个" },
-    { label: "关联地铁线", value: fmtCount(d?.metroLines?.length || 0), unit: "条" },
-    { label: "平均换乘时间", value: fmtMin(k.avgSec) },
+    { label: "整线换乘人次", value: fmtCount(ctx.expand(kpi.events)), unit: "人次" },
+    { label: "公交→地铁", value: fmtCount(ctx.expand(kpi.busToMetro)), unit: "人次" },
+    { label: "地铁→公交", value: fmtCount(ctx.expand(kpi.metroToBus)), unit: "人次" },
+    { label: "接驳公交线路", value: fmtCount(agg.value?.feederDetail?.busLines?.length || 0), unit: "条" },
+    { label: "平均换乘时间", value: fmtMin(kpi.avgSec) },
   ];
 });
 
-// 分母 = 该线全线全日上/下车人次（抽样口径，与分子同尺度，比率无需扩样）——由 transfer-dict 下发
-const lineMeta = computed(() => ctx.dict.value?.busLines?.[ctx.selection.busLineId] || null);
-const feederRatioText = computed(() => {
-  const k = agg.value?.kpi;
-  const den = Number(lineMeta.value?.alightings);
-  if (!k || !Number.isFinite(den) || den <= 0) return "—";
-  return `${((k.busToMetro / den) * 100).toFixed(1)}%`;
-});
-const receiveRatioText = computed(() => {
-  const k = agg.value?.kpi;
-  const den = Number(lineMeta.value?.boardings);
-  if (!k || !Number.isFinite(den) || den <= 0) return "—";
-  return `${((k.metroToBus / den) * 100).toFixed(1)}%`;
-});
-
-/* ---------- 图表 ---------- */
-
-const topHubs = computed(() => (agg.value?.hubs || []).slice(0, ctx.filters.topN));
-const hubRankOpt = computed(() =>
+const topBusLines = computed(() => (agg.value?.feederDetail?.busLines || []).slice(0, ctx.filters.topN));
+const busLineRankOpt = computed(() =>
   rankBarOption(
-    topHubs.value.map((h) => ({ name: ctx.hubName(h.idx), value: ctx.expand(h.flow), avgSec: h.avgSec })),
+    topBusLines.value.map((line) => ({ name: ctx.busLineName(line.idx), value: ctx.expand(line.flow), avgSec: line.avgSec })),
     ctx.chartTheme,
     ctx.animation,
     { secondary: { key: "avgSec", label: "平均换乘时间", fmt: fmtMin } },
   ),
 );
-function onHubRankClick(p) {
-  const items = topHubs.value;
-  const it = items[items.length - 1 - p.dataIndex];
-  if (it) ctx.goHub(it.idx);
-}
-
-const metroPieOpt = computed(() => {
-  const list = agg.value?.feederDetail?.metroLines || [];
-  if (!list.length) return {};
-  const theme = ctx.chartTheme;
-  const base = directionPieOption({ busToMetro: 0, metroToBus: 0 }, theme, ctx.animation);
-  base.series[0].data = list.map((m, i) => ({
-    name: ctx.metroLineName(m.idx),
-    value: ctx.expand(m.flow),
-    itemStyle: { color: theme.pieColors[i % theme.pieColors.length] },
-  }));
-  base.tooltip.formatter = (p) => `${p.marker}${p.name}：${fmtCount(p.value)}人次（${p.percent}%）`;
-  return base;
-});
-
-const routeBarOpt = computed(() => {
-  const routes = agg.value?.feederDetail?.routes || [];
-  if (!routes.length) return {};
-  return routeGroupBarOption(
-    routes.map((r) => ({
-      name: routeChoices.value[r.routeIdx]?.name || `Route ${r.routeIdx + 1}`,
-      b2m: ctx.expand(r.b2m),
-      m2b: ctx.expand(r.m2b),
-    })),
-    ctx.chartTheme,
-    ctx.animation,
-  );
-});
 
 const seriesOpt = computed(() => {
-  const s = agg.value?.series;
-  if (!s) return {};
+  const series = agg.value?.series;
+  if (!series) return {};
   return dualDirectionLineOption(
-    { labels: s.labels, busToMetro: s.busToMetro.map(ctx.expand), metroToBus: s.metroToBus.map(ctx.expand) },
+    { labels: series.labels, busToMetro: series.busToMetro.map(ctx.expand), metroToBus: series.metroToBus.map(ctx.expand) },
     ctx.chartTheme,
     ctx.animation,
   );
 });
 
-const scatterOpt = computed(() =>
-  hubScatterOption(
-    (agg.value?.hubs || []).map((h) => ({ name: ctx.hubName(h.idx), flow: ctx.expand(h.flow), avgSec: h.avgSec })),
-    ctx.chartTheme,
-    ctx.animation,
-  ),
-);
-
-/* ---------- 明细 ---------- */
-
-const detailRows = computed(() =>
-  (agg.value?.hubs || []).slice(0, 20).map((h) => ({
-    idx: h.idx,
-    name: ctx.hubName(h.idx),
-    flow: ctx.expand(h.flow),
-    b2m: ctx.expand(h.b2m),
-    m2b: ctx.expand(h.m2b),
-    avgSec: h.avgSec,
-    p90Sec: h.p90Sec,
-  })),
-);
-
-function exportDetail() {
-  const lineName = ctx.busLineName(ctx.selection.busLineId);
-  const rows = [["公交线", "枢纽", "换乘人次(扩样)", "公交→地铁", "地铁→公交", "平均换乘时间(分)", "P90换乘时间(分)"]];
-  (agg.value?.hubs || []).forEach((h) => {
-    rows.push([
-      lineName,
-      ctx.hubName(h.idx),
-      ctx.expand(h.flow),
-      ctx.expand(h.b2m),
-      ctx.expand(h.m2b),
-      (h.avgSec / 60).toFixed(1),
-      (h.p90Sec / 60).toFixed(1),
-    ]);
-  });
-  ctx.exportCsv(rows, `接驳线路-${lineName}-明细.csv`);
-}
+const histOpt = computed(() => {
+  const histogram = agg.value?.histogramMin;
+  if (!histogram) return {};
+  return histogramBarOption(minuteHistToSegments(histogram).map(ctx.expand), ctx.chartTheme, ctx.animation, { longMin: ctx.filters.longMin });
+});
 </script>

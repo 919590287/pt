@@ -182,7 +182,7 @@ public class RealDataServiceImpl implements RealDataService {
         TargetVersion target = safeText(versionId).isBlank() ? activeTargetVersion(state) : targetVersion(versionId, mutableMapList(state.get("versions")));
         Path dataRoot = dataRootForVersion(root, target);
         String cacheKey = realDataCacheKey(areaName, target.id());
-        String signature = realDataSignature(root, dataRoot);
+        String signature = realDataSignature(areaName, root, dataRoot);
         long signatureComputed = System.nanoTime();
         CachedRealData cached = realDataCache.get(cacheKey);
         if (cached != null && cached.signature().equals(signature)) {
@@ -674,7 +674,8 @@ public class RealDataServiceImpl implements RealDataService {
         Path lineFolder = root.resolve(BUS_LINE_FOLDER);
         Path stationFolder = root.resolve(BUS_STATION_FOLDER);
         Path adminFolder = root.resolve(ADMIN_AREA_FOLDER);
-        String signature = overviewSignature(lineFolder, stationFolder, adminFolder, editFile);
+        String signature = overviewSignature(lineFolder, stationFolder, editFile)
+                + adminBoundarySignature(adminFolder);
         CachedOverview cached = overviewCache.get(areaName);
         if (cached != null && cached.signature().equals(signature)) {
             return new LinkedHashMap<>(cached.overview());
@@ -4100,15 +4101,21 @@ public class RealDataServiceImpl implements RealDataService {
         return builder.toString();
     }
 
-    private String realDataSignature(Path root, Path dataRoot) {
-        String key = "real@" + dataRoot.toAbsolutePath().normalize() + "@" + root.toAbsolutePath().normalize();
+    private String realDataSignature(String areaName, Path root, Path dataRoot) {
+        Path adminFolder = root.resolve(ADMIN_AREA_FOLDER);
+        String boundarySignature = adminBoundarySignature(adminFolder);
+        String key = "real@" + dataRoot.toAbsolutePath().normalize() + "@" + root.toAbsolutePath().normalize()
+                + "@" + boundarySignature;
         return cachedSignature(key, () -> overviewSignature(
                 dataRoot.resolve(BUS_LINE_FOLDER),
                 dataRoot.resolve(BUS_STATION_FOLDER),
                 dataRoot.resolve(BUS_DEPOT_FOLDER),
-                root.resolve(ADMIN_AREA_FOLDER),
                 stateFile(root)
-        ));
+        ) + boundarySignature);
+    }
+
+    private String adminBoundarySignature(Path adminFolder) {
+        return overviewSignature(adminFolder);
     }
 
     // 目录签名的短 TTL 缓存：签名本身就是"变更探测器"，TTL 内复用只是把外部文件变动的
@@ -4289,9 +4296,11 @@ public class RealDataServiceImpl implements RealDataService {
 
     /**
      * 站点只缓冲一次，300/500m 缓冲面分别与全市及各行政区几何相交，得到全市 + 分区覆盖面积。
-     * 分区几何取自「行政区范围」SHP，投影与 adminArea 一致，保证面积口径统一；同名多要素先按名称聚合。
+     * 分区几何读取「行政区范围」SHP（与前端显示范围同一接口来源）。
+     * 所有几何使用与 adminArea 一致的投影。
      */
-    private CoverageResult coverageFromStationCollection(Map<String, Object> stationCollection, Path adminFolder, AdminArea adminArea) {
+    private CoverageResult coverageFromStationCollection(Map<String, Object> stationCollection,
+                                                         Path adminFolder, AdminArea adminArea) {
         if (adminArea.areaKm2() <= 0 || adminArea.geometry().isEmpty()) {
             return new CoverageResult(new CoverageStats(0, 0), new LinkedHashMap<>());
         }
@@ -4311,7 +4320,8 @@ public class RealDataServiceImpl implements RealDataService {
                 clippedAreaKm2(buffer300, adminArea.geometry()),
                 clippedAreaKm2(buffer500, adminArea.geometry()));
         long cityBuilt = System.nanoTime();
-        Map<String, Object> districts = districtCoverage(buffer300, buffer500, adminFolder, adminArea.projection());
+        Map<String, Object> districts = districtCoverage(
+                buffer300, buffer500, adminFolder, adminArea.projection());
         long districtsBuilt = System.nanoTime();
         log.info("真实数据站点覆盖计算 stations={} buffer300={}ms buffer500={}ms city={}ms districts={}ms total={}ms",
                 stations.getNumGeometries(), elapsedMs(started, buffer300Built), elapsedMs(buffer300Built, buffer500Built),
@@ -4319,7 +4329,8 @@ public class RealDataServiceImpl implements RealDataService {
         return new CoverageResult(city, districts);
     }
 
-    private Map<String, Object> districtCoverage(Geometry buffer300, Geometry buffer500, Path adminFolder, LocalProjection projection) {
+    private Map<String, Object> districtCoverage(Geometry buffer300, Geometry buffer500,
+                                                 Path adminFolder, LocalProjection projection) {
         Map<String, Object> result = new LinkedHashMap<>();
         List<NamedGeometry> districts = readNamedGeometries(adminFolder);
         if (districts.isEmpty()) {

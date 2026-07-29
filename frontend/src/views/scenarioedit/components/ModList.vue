@@ -338,4 +338,32 @@ async function clearAll() {
   opacity: 0;
   transform: translateX(8px);
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .edit-empty {
+  background: rgba(148, 180, 220, 0.06);
+}
+
+html.dark .edit-operation-list {
+  scrollbar-color: rgba(148, 180, 220, 0.3) transparent;
+}
+html.dark .edit-operation-list::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.26);
+}
+
+html.dark .edit-operation-item:hover {
+  background: rgba(148, 180, 220, 0.06);
+}
+
+html.dark .edit-operation-item .op-undo {
+  background: #1a2431;
+}
+html.dark .edit-operation-item .op-undo:hover {
+  border-color: rgba(255, 122, 110, 0.45);
+}
+
+html.dark .edit-operation-item .op-edit:hover {
+  border-color: rgba(64, 156, 255, 0.34);
+  background: rgba(64, 156, 255, 0.1);
+}
 </style>

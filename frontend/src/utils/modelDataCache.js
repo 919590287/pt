@@ -1,5 +1,6 @@
 import { markRaw } from "vue";
 import { dataEvaluation } from "@/api/data.js";
+import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 import { getFacilityAll, getStationPanel } from "@/api/facility.js";
 import { getLineAll, getRoutePanel } from "@/api/route.js";
 import { getTransferDict, getTransferEventsBinary, getTransferSummary } from "@/api/transfer.js";
@@ -183,8 +184,21 @@ export function getCachedStationPanel(model) {
   return sharedModelPanelRequest(model, "stationPanel", getStationPanel);
 }
 
-export function getCachedEvaluation(model) {
-  return sharedModelPanelRequest(model, "evaluation", dataEvaluation);
+export function getCachedEvaluation(model, district = "全市") {
+  const scope = String(district || "").trim() || "全市";
+  if (isRealDatasource(model)) {
+    return dataEvaluation(
+      { datasource: model, district: scope },
+      { silentError: true, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+    ).then((res) => (
+      res?.data && typeof res.data === "object" ? markRawDeepEnough(res.data) : null
+    ));
+  }
+  return sharedModelPanelRequest(
+    model,
+    `evaluation@${scope}`,
+    (data, config) => dataEvaluation({ ...data, district: scope }, config),
+  );
 }
 
 export function getCachedTransferSummary(model) {

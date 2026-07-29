@@ -1,7 +1,6 @@
 package com.jts.gjcxfzksh.utils;
 
 import org.matsim.api.core.v01.Coord;
-import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.api.core.v01.network.Network;
 import org.matsim.core.network.NetworkUtils;
@@ -10,20 +9,12 @@ import org.matsim.core.population.routes.NetworkRoute;
 public class DistanceUtil {
 
     public static double distance(Link link) {
-        return distance(link.getFromNode().getCoord(), link.getToNode().getCoord());
+        return link == null || !Double.isFinite(link.getLength()) || link.getLength() <= 0
+                ? 0.0 : link.getLength();
     }
 
     public static double distance(NetworkRoute networkRoute, Network network) {
-        double distance = 0;
-        Link start = network.getLinks().get(networkRoute.getStartLinkId());
-        distance += NetworkUtils.getEuclideanDistance(start.getFromNode().getCoord(), start.getToNode().getCoord());
-        for (Id<Link> linkId : networkRoute.getLinkIds()) {
-            Link link = network.getLinks().get(linkId);
-            distance += NetworkUtils.getEuclideanDistance(link.getFromNode().getCoord(), link.getToNode().getCoord());
-        }
-        Link end = network.getLinks().get(networkRoute.getEndLinkId());
-        distance += NetworkUtils.getEuclideanDistance(end.getFromNode().getCoord(), end.getToNode().getCoord());
-        return distance;
+        return TransitMetrics.routeLengthMeters(networkRoute, network);
     }
 
     public static double distance(Coord c1, Coord c2) {

@@ -29,6 +29,23 @@ export function isCanceledRequest(error) {
   );
 }
 
+// 按 key 复用在途请求，但绝不复用已被 AbortSignal 取消的 Promise。
+// 同一条线可能被“排名点击 + 选择器同步”连续选中：旧请求被取消后，
+// 新选择必须新建请求，否则会一直得到旧 Promise 的空结果。
+export function getOrCreateAbortAwareRequest(pending, key, signal, requestFactory) {
+  const existing = pending.get(key);
+  if (existing && !existing.signal?.aborted) return existing.promise;
+  if (existing) pending.delete(key);
+
+  const entry = { signal, promise: null };
+  entry.promise = Promise.resolve().then(requestFactory).finally(() => {
+    // 旧的已取消 Promise 可能比新请求更晚结束，不得删掉新 entry。
+    if (pending.get(key) === entry) pending.delete(key);
+  });
+  pending.set(key, entry);
+  return entry.promise;
+}
+
 // 高频交互（滑块拖动等）派生防抖 ref：写入 source 即返回，经 delay 后同步到 debounced。
 // 用法：const { debounced } = createDebouncedMirror(sourceRef, 180)
 export function createDebouncedMirror(source, delay = 180) {

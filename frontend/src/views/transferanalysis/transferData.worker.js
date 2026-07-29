@@ -4,13 +4,14 @@
  * 契约（与后端 MatsimTransferCache 严格一致，勿单独改动）：
  *   bin = magic "TFEV"(4B) + version u16 + count u32，随后列式小端、无对齐填充：
  *   personIndex u32 | tBoard u32 | transferSec u16 | dir u8 | busLine u16 |
- *   busRoute u16 | busStop u16 | metroLine u16 | metroStop u16 | hub u16
- *   共 23B/事件；dir 0=公交→地铁 1=地铁→公交；busRoute 为线内局部索引。
+ *   busRoute u16 | busStop u16 | busOriginStop u16 | busDestinationStop u16 |
+ *   metroLine u16 | metroStop u16 | hub u16
+ *   共 27B/事件；dir 0=公交→地铁 1=地铁→公交；busRoute 为线内局部索引。
  *
  * 口径（设计方案 v2 §3）：
  *   - 时段 [start,end) 小时；end=24 视为 +∞（收纳 tBoard≥86400 的跨午夜事件），
  *     分桶索引夹逼到最后一桶，与后端 summary 的 min(hour,23) 一致。
- *   - 人数 = personIndex 去重；人次 = 事件数；扩样由主线程 ÷scale 展示。
+ *   - 人数 = personIndex 去重；人次 = 事件数；全部按模型原始数量展示，不扩样。
  *   - transferSec ≤ 1800，分位数用 1801 槽秒级计数排序精确计算。
  */
 
@@ -24,6 +25,8 @@ let dir = null; // Uint8Array
 let busLine = null; // Uint16Array
 let busRoute = null; // Uint16Array
 let busStop = null; // Uint16Array
+let busOriginStop = null; // Uint16Array（整段公交乘车起点）
+let busDestinationStop = null; // Uint16Array（整段公交乘车终点）
 let metroLine = null; // Uint16Array
 let metroStop = null; // Uint16Array
 let hub = null; // Uint16Array
@@ -43,11 +46,11 @@ function decode(buffer) {
     throw new Error("transfer-events.bin magic 不匹配");
   }
   const version = view.getUint16(4, true);
-  if (version !== 1) {
+  if (version !== 3) {
     throw new Error(`transfer-events.bin 版本不支持: ${version}`);
   }
   const count = view.getUint32(6, true);
-  const expected = 10 + count * 23;
+  const expected = 10 + count * 27;
   if (buffer.byteLength < expected) {
     throw new Error(`transfer-events.bin 长度不足: ${buffer.byteLength} < ${expected}`);
   }
@@ -59,6 +62,8 @@ function decode(buffer) {
   busLine = new Uint16Array(count);
   busRoute = new Uint16Array(count);
   busStop = new Uint16Array(count);
+  busOriginStop = new Uint16Array(count);
+  busDestinationStop = new Uint16Array(count);
   metroLine = new Uint16Array(count);
   metroStop = new Uint16Array(count);
   hub = new Uint16Array(count);
@@ -71,6 +76,8 @@ function decode(buffer) {
   for (let i = 0; i < count; i++, off += 2) busLine[i] = view.getUint16(off, true);
   for (let i = 0; i < count; i++, off += 2) busRoute[i] = view.getUint16(off, true);
   for (let i = 0; i < count; i++, off += 2) busStop[i] = view.getUint16(off, true);
+  for (let i = 0; i < count; i++, off += 2) busOriginStop[i] = view.getUint16(off, true);
+  for (let i = 0; i < count; i++, off += 2) busDestinationStop[i] = view.getUint16(off, true);
   for (let i = 0; i < count; i++, off += 2) metroLine[i] = view.getUint16(off, true);
   for (let i = 0; i < count; i++, off += 2) metroStop[i] = view.getUint16(off, true);
   for (let i = 0; i < count; i++, off += 2) hub[i] = view.getUint16(off, true);
@@ -156,21 +163,13 @@ function cachePut(key, payload) {
 /* ---------------- 主聚合 ----------------
  * filters: { dirSel: -1|0|1, startHour, endHour, unitMin, topN,
  *            longMin, hubId: -1|idx, busLineId: -1|idx, routeIdx: -1|n,
- *            metroLineId: -1|idx, busLineIds: [idx]|null, hubIds: [idx]|null,
- *            hubKind: "metro"(默认)|"bus" }
+ *            metroLineId: -1|idx, busLineIds: [idx]|null, hubIds: [idx]|null }
  * module: overview | hub | feeder | timing
- *
- * hubKind=bus：枢纽维度改按公交站分组（payload.hubs 的 idx 为 busStop 索引），
- * 统计口径与地铁枢纽完全一致（人次/方向/均时/P50/P90/长换乘）；hubId 过滤同样
- * 作用于该分组键。总览"公交站作枢纽"视角使用；hub/feeder/timing 模块由主线程
- * 固定传 metro。
  */
 
 function aggregate(module, f) {
   const inTime = makeTimePredicate(f.startHour, f.endHour);
   const bucket = makeBucketIndexer(f.startHour, f.endHour, f.unitMin);
-  // 枢纽维度分组列：默认地铁枢纽，hubKind=bus 时按公交站聚合（逻辑完全同构）
-  const hubKeyCol = f.hubKind === "bus" ? busStop : hub;
   const wantDir = f.dirSel;
   const wantHub = f.hubId;
   const wantLine = f.busLineId;
@@ -201,11 +200,12 @@ function aggregate(module, f) {
   const byRoute = new Map();
   const byStopHub = new Map(); // 公交站→枢纽 连线（含方向）
   const byStopMetroStop = new Map(); // 枢纽详情：公交站→地铁站连线
+  const byBusTripLink = new Map(); // 枢纽详情：整段公交起点→终点（两个方向统一）
 
   const hubAcc = (h) => {
     let a = byHub.get(h);
     if (!a) {
-      a = { idx: h, flow: 0, b2m: 0, m2b: 0, sumSec: 0, longCount: 0, secHist: new Uint32Array(1801) };
+      a = { idx: h, flow: 0, b2m: 0, m2b: 0, sumSec: 0, b2mSumSec: 0, m2bSumSec: 0, longCount: 0, secHist: new Uint32Array(1801) };
       byHub.set(h, a);
     }
     return a;
@@ -216,7 +216,7 @@ function aggregate(module, f) {
     if (!inTime(t)) continue;
     const d = dir[i];
     if (wantDir >= 0 && d !== wantDir) continue;
-    const h = hubKeyCol[i];
+    const h = hub[i];
     if (wantHub >= 0 && h !== wantHub) continue;
     if (wantHubSet && !wantHubSet.has(h)) continue;
     const bl = busLine[i];
@@ -251,6 +251,8 @@ function aggregate(module, f) {
     if (d === 0) ha.b2m++;
     else ha.m2b++;
     ha.sumSec += sec;
+    if (d === 0) ha.b2mSumSec += sec;
+    else ha.m2bSumSec += sec;
     ha.secHist[sec]++;
     if (sec > longSec) ha.longCount++;
 
@@ -290,11 +292,18 @@ function aggregate(module, f) {
     // 地铁线维度
     let ma = byMetroLine.get(ml);
     if (!ma) {
-      ma = { idx: ml, flow: 0, sumSec: 0 };
+      ma = { idx: ml, flow: 0, b2m: 0, m2b: 0, sumSec: 0, b2mSumSec: 0, m2bSumSec: 0 };
       byMetroLine.set(ml, ma);
     }
     ma.flow++;
     ma.sumSec += sec;
+    if (d === 0) {
+      ma.b2m++;
+      ma.b2mSumSec += sec;
+    } else {
+      ma.m2b++;
+      ma.m2bSumSec += sec;
+    }
 
     // Route 维度（接驳线路模块用；busRoute 为线内局部索引，需带 busLine）
     const rKey = bl * 256 + busRoute[i];
@@ -323,11 +332,25 @@ function aggregate(module, f) {
       const smKey = busStop[i] * 65536 + metroStop[i];
       let sm = byStopMetroStop.get(smKey);
       if (!sm) {
-        sm = { busStop: busStop[i], metroStop: metroStop[i], flow: 0, sumSec: 0 };
+        sm = { busStop: busStop[i], metroStop: metroStop[i], flow: 0, b2m: 0, m2b: 0, sumSec: 0 };
         byStopMetroStop.set(smKey, sm);
       }
       sm.flow++;
+      if (d === 0) sm.b2m++;
+      else sm.m2b++;
       sm.sumSec += sec;
+
+      const origin = busOriginStop[i];
+      const destination = busDestinationStop[i];
+      const tripKey = origin * 65536 + destination;
+      let trip = byBusTripLink.get(tripKey);
+      if (!trip) {
+        trip = { originBusStop: origin, destinationBusStop: destination, flow: 0, b2m: 0, m2b: 0 };
+        byBusTripLink.set(tripKey, trip);
+      }
+      trip.flow++;
+      if (d === 0) trip.b2m++;
+      else trip.m2b++;
     }
   }
 
@@ -348,6 +371,8 @@ function aggregate(module, f) {
     flow: a.flow,
     b2m: a.b2m,
     m2b: a.m2b,
+    b2mAvgSec: a.b2m ? Math.round(a.b2mSumSec / a.b2m) : 0,
+    m2bAvgSec: a.m2b ? Math.round(a.m2bSumSec / a.m2b) : 0,
     longCount: a.longCount,
     longShare: a.flow ? a.longCount / a.flow : 0,
     ...statsFromSecHist(a.secHist, a.flow, a.sumSec),
@@ -403,6 +428,15 @@ function aggregate(module, f) {
       m2b: a.m2b,
       avgSec: a.flow ? Math.round(a.sumSec / a.flow) : 0,
     })),
+    metroLines: topEntries(byMetroLine, 0, (a, b) => b.flow - a.flow).map((a) => ({
+      idx: a.idx,
+      flow: a.flow,
+      b2m: a.b2m,
+      m2b: a.m2b,
+      avgSec: a.flow ? Math.round(a.sumSec / a.flow) : 0,
+      b2mAvgSec: a.b2m ? Math.round(a.b2mSumSec / a.b2m) : 0,
+      m2bAvgSec: a.m2b ? Math.round(a.m2bSumSec / a.m2b) : 0,
+    })),
   };
 
   if (module === "hub" && wantHub >= 0) {
@@ -425,22 +459,30 @@ function aggregate(module, f) {
           busStop: a.busStop,
           metroStop: a.metroStop,
           flow: a.flow,
+          b2m: a.b2m,
+          m2b: a.m2b,
           avgSec: a.flow ? Math.round(a.sumSec / a.flow) : 0,
+        })),
+      busTripLinks: topEntries(byBusTripLink, 0, (a, b) => b.flow - a.flow)
+        .slice(0, 200)
+        .map((a) => ({
+          originBusStop: a.originBusStop,
+          destinationBusStop: a.destinationBusStop,
+          flow: a.flow,
+          b2m: a.b2m,
+          m2b: a.m2b,
         })),
     };
   }
 
-  if (module === "feeder" && wantLine >= 0) {
+  if (module === "feeder" && wantMetroLine >= 0) {
     payload.feederDetail = {
-      routes: topEntries(byRoute, 0, (a, b) => a.routeIdx - b.routeIdx).map((a) => ({
-        routeIdx: a.routeIdx,
+      busLines: topEntries(byBusLine, 0, (a, b) => b.flow - a.flow).map((a) => ({
+        idx: a.idx,
         flow: a.flow,
         b2m: a.b2m,
         m2b: a.m2b,
-      })),
-      metroLines: topEntries(byMetroLine, 0, (a, b) => b.flow - a.flow).map((a) => ({
-        idx: a.idx,
-        flow: a.flow,
+        avgSec: a.flow ? Math.round(a.sumSec / a.flow) : 0,
       })),
     };
   }
@@ -499,11 +541,11 @@ function aggregate(module, f) {
 function buildGlobalIndex() {
   const hubFlow = new Map();
   const lineFlow = new Map();
-  const stopFlow = new Map();
+  const metroLineFlow = new Map();
   for (let i = 0; i < COUNT; i++) {
     hubFlow.set(hub[i], (hubFlow.get(hub[i]) || 0) + 1);
     lineFlow.set(busLine[i], (lineFlow.get(busLine[i]) || 0) + 1);
-    stopFlow.set(busStop[i], (stopFlow.get(busStop[i]) || 0) + 1);
+    metroLineFlow.set(metroLine[i], (metroLineFlow.get(metroLine[i]) || 0) + 1);
   }
   const byFlowDesc = (a, b) => b.flow - a.flow;
   const hubsSorted = Array.from(hubFlow.entries())
@@ -512,11 +554,10 @@ function buildGlobalIndex() {
   const linesSorted = Array.from(lineFlow.entries())
     .map(([idx, flow]) => ({ idx, flow }))
     .sort(byFlowDesc);
-  // 公交站候选（换乘站点分析的公交口径下拉用），口径与 hubsSorted 同构
-  const busStopsSorted = Array.from(stopFlow.entries())
+  const metroLinesSorted = Array.from(metroLineFlow.entries())
     .map(([idx, flow]) => ({ idx, flow }))
     .sort(byFlowDesc);
-  return { hubsSorted, linesSorted, busStopsSorted };
+  return { hubsSorted, linesSorted, metroLinesSorted };
 }
 
 /* ---------------- 消息协议 ---------------- */
@@ -549,7 +590,7 @@ const handleMessage = (ev) => {
       resultCache.clear();
       COUNT = 0;
       personIdx = tBoard = transferSec = dir = null;
-      busLine = busRoute = busStop = metroLine = metroStop = hub = null;
+      busLine = busRoute = busStop = busOriginStop = busDestinationStop = metroLine = metroStop = hub = null;
       DICT = null;
       self.postMessage({ type: "resetDone", requestId: msg.requestId });
       return;

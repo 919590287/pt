@@ -348,4 +348,48 @@ function onPillClick() {
   justify-content: flex-end;
   margin-top: -2px;
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .model-progress-bubble {
+  border-color: rgba(64, 156, 255, 0.28);
+  background: rgba(17, 23, 31, 0.96);
+  box-shadow: 0 10px 30px rgba(2, 6, 12, 0.55);
+
+  &.is-dragging {
+    box-shadow: 0 16px 40px rgba(2, 6, 12, 0.68);
+  }
+
+  &.is-collapsed {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+html.dark .bubble-pill {
+  border-color: rgba(64, 156, 255, 0.32);
+  background: rgba(17, 23, 31, 0.97);
+  box-shadow: 0 8px 24px rgba(2, 6, 12, 0.6);
+
+  .pill-ring .ring-bg {
+    stroke: rgba(64, 156, 255, 0.2);
+  }
+
+  .pill-ring .ring-val.is-failed {
+    stroke: #f87171;
+  }
+
+  .pill-text.is-failed {
+    color: #f87171;
+  }
+}
+
+html.dark .bubble-dot.is-failed {
+  background: #f87171;
+  box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.16);
+}
+
+html.dark .bubble-icon-btn:hover {
+  background: rgba(64, 156, 255, 0.16);
+}
 </style>

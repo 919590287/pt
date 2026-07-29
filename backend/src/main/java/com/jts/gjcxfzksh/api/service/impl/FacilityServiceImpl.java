@@ -41,11 +41,12 @@ public class FacilityServiceImpl extends DatasourceService implements FacilitySe
 
     @Override
     public Map<String, Object> stationPanel(DatasourceParam param) {
-        return MatsimStationPanelCache.readStationPanel(matsim_data(param));
+        return MatsimStationPanelCache.readStationPanelIndex(matsim_data(param));
     }
 
     @Override
     public Map<String, Object> stationPanelDetail(StationInfoParam param) {
-        return MatsimStationPanelCache.readStationPanelDetail(matsim_data(param), param.getStationName());
+        return MatsimStationPanelCache.readStationPanelDetail(
+                matsim_data(param), param.getStationName(), param.getFacilityId());
     }
 }

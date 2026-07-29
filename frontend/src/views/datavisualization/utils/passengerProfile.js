@@ -1,27 +1,18 @@
-const ACTIVITY_COLORS = [
-  "#0071e3",
-  "#1a8a3f",
-  "#7c3aed",
-  "#b06a00",
-  "#0b91b7",
-  "#d12c59",
-  "#475569",
-  "#0f766e",
-  "#4f46e5",
-  "#a85512",
+// MATSim 的 activity type 是模型自定义自由文本。前端把常见中英文同义词归并成
+// 中文出行目的；未识别值统一进入“其他”，不把原始英文直接混排到业务界面。
+// home 表示本次行程的终点活动是回家，并非“居住”这种人口属性。
+const ACTIVITY_CATEGORIES = [
+  { key: "return-home", pattern: /^home(?:[_-].*)?$|residential|住宅|回家|返家|回住所|家$/i, label: "返家", color: "#0b91b7" },
+  { key: "commute", pattern: /^work(?:[_-].*)?$|workplace|office|job|business|工作|上班|就业|通勤/i, label: "通勤", color: "#0071e3" },
+  { key: "education", pattern: /school|educ|university|college|小学|中学|学校|教育|大学/i, label: "教育", color: "#2f75d6" },
+  { key: "shopping", pattern: /shop|mall|market|购物|买|商场|市场/i, label: "购物", color: "#7c3aed" },
+  { key: "leisure", pattern: /leisure|recreation|social|sport|entertain|gym|fitness|休闲|娱乐|运动|健身|社交/i, label: "休闲", color: "#1a8a3f" },
+  { key: "dining", pattern: /eat|dining|restaurant|餐|饭|food/i, label: "餐饮", color: "#b06a00" },
+  { key: "medical", pattern: /medical|hospital|clinic|health|医院|医疗|就医/i, label: "医疗", color: "#d12c59" },
+  { key: "transfer", pattern: /airport|railway|station|transport|terminal|枢纽|机场|火车|高铁|客运/i, label: "交通接驳", color: "#0f766e" },
+  { key: "escort", pattern: /pickup|dropoff|escort|接送/i, label: "接送", color: "#4f46e5" },
 ];
-
-const ACTIVITY_LABELS = [
-  [/^home$|residential|居住|住宅|回家|家/i, "居住"],
-  [/^work$|workplace|office|job|business|工作|上班|就业|通勤/i, "工作"],
-  [/school|educ|university|college|小学|中学|学校|教育|大学/i, "教育"],
-  [/shop|mall|market|购物|买|商场|市场/i, "购物"],
-  [/leisure|recreation|social|sport|entertain|休闲|娱乐|运动|社交/i, "休闲"],
-  [/eat|dining|餐|饭|food/i, "餐饮"],
-  [/medical|hospital|clinic|health|医院|医疗|就医/i, "医疗"],
-  [/airport|railway|station|transport|枢纽|机场|火车|高铁|客运/i, "交通接驳"],
-  [/pickup|dropoff|接送/i, "接送"],
-];
+const UNKNOWN_ACTIVITY = { key: "other-purpose", label: "其他", color: "#94a3b8" };
 
 const PURPOSE_ITEMS = [
   { key: "commuter", label: "通勤", color: "#0071e3" },
@@ -33,6 +24,13 @@ const ATTRIBUTE_ITEMS = [
   { key: "student", label: "学生", color: "#2f75d6" },
   { key: "elderly", label: "老人", color: "#b06a00" },
 ];
+
+const CARD_GROUP_META = {
+  student: { label: "学生票卡", color: "#2f75d6" },
+  elderly: { label: "老年票卡", color: "#b06a00" },
+  disability_or_concession: { label: "优抚/残疾票卡", color: "#d12c59" },
+  general_or_unknown: { label: "一般/未知票卡", color: "#64748b" },
+};
 
 const OTHER_ITEM = { label: "其他", color: "#94a3b8" };
 
@@ -49,53 +47,46 @@ function normalizeText(value) {
   return String(value ?? "").trim();
 }
 
-function displayActivityLabel(key, fallback = "") {
+function activityCategory(key, fallback = "") {
   const raw = normalizeText(fallback || key);
-  if (!raw) return "未知活动";
-  for (const [pattern, label] of ACTIVITY_LABELS) {
-    pattern.lastIndex = 0;
-    if (pattern.test(raw)) return label;
+  if (!raw) return UNKNOWN_ACTIVITY;
+  for (const category of ACTIVITY_CATEGORIES) {
+    category.pattern.lastIndex = 0;
+    if (category.pattern.test(raw)) return category;
   }
-  return raw.replace(/[_-]+/g, " ");
+  return UNKNOWN_ACTIVITY;
 }
 
-function colorForKey(key, index = 0) {
-  const text = normalizeText(key);
-  let hash = 0;
-  for (let i = 0; i < text.length; i += 1) {
-    hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-  }
-  return ACTIVITY_COLORS[(hash + index) % ACTIVITY_COLORS.length];
-}
-
-function entryFromActivityItem(item, index, total) {
+function entryFromActivityItem(item, total) {
   if (typeof item === "string") {
-    const key = normalizeText(item).toLowerCase();
-    return key
-      ? { key, label: displayActivityLabel(key), count: 1, value: total > 0 ? 100 / total : 0, color: colorForKey(key, index) }
+    const rawKey = normalizeText(item).toLowerCase();
+    const category = activityCategory(rawKey);
+    return rawKey
+      ? { key: category.key, label: category.label, count: 1, value: total > 0 ? 100 / total : 0, color: category.color }
       : null;
   }
   if (!item || typeof item !== "object") return null;
-  const key = normalizeText(item.key ?? item.type ?? item.name ?? item.label).toLowerCase();
-  if (!key) return null;
+  const rawKey = normalizeText(item.key ?? item.type ?? item.name ?? item.label).toLowerCase();
+  if (!rawKey) return null;
+  const category = activityCategory(rawKey, item.label);
   const count = Number.isFinite(Number(item.count)) ? Number(item.count) : null;
   const ratioSource = item.ratio ?? item.percent ?? item.value;
   const ratio = Number.isFinite(Number(ratioSource))
     ? Number(ratioSource)
     : count !== null && total > 0 ? (count * 100) / total : 0;
   return {
-    key,
-    label: normalizeText(item.label) || displayActivityLabel(key),
+    key: category.key,
+    label: category.label,
     count,
     value: clampPercent(ratio),
-    color: item.color || colorForKey(key, index),
+    color: item.color || category.color,
   };
 }
 
 function activityEntriesFromObject(activityMap, total, valueMode = "count") {
-  return Object.entries(activityMap || {}).map(([key, rawValue], index) => {
+  return Object.entries(activityMap || {}).map(([key, rawValue]) => {
     if (rawValue && typeof rawValue === "object") {
-      return entryFromActivityItem({ key, ...rawValue }, index, total);
+      return entryFromActivityItem({ key, ...rawValue }, total);
     }
     const count = Number(rawValue);
     const value = valueMode === "ratio"
@@ -105,7 +96,7 @@ function activityEntriesFromObject(activityMap, total, valueMode = "count") {
       key,
       count: valueMode === "count" && Number.isFinite(count) ? count : null,
       ratio: value,
-    }, index, total);
+    }, total);
   });
 }
 
@@ -115,7 +106,7 @@ function activityItemsFromDemographics(demo, total) {
   const countSource = demo.activityCounts;
   const entries = [
     ...(Array.isArray(source)
-      ? source.map((item, index) => entryFromActivityItem(item, index, total))
+      ? source.map((item) => entryFromActivityItem(item, total))
       : source && typeof source === "object" ? activityEntriesFromObject(source, total, "count") : []),
     ...(ratioSource && typeof ratioSource === "object" ? activityEntriesFromObject(ratioSource, total, "ratio") : []),
     ...(countSource && typeof countSource === "object" ? activityEntriesFromObject(countSource, total, "count") : []),
@@ -191,6 +182,31 @@ function activityCountSum(demographics = {}) {
   return 0;
 }
 
+function cardPassengerGroup(demographics = {}, total = 0) {
+  const source = demographics?.passengerGroups;
+  if (!Array.isArray(source) || !source.length) return null;
+  const items = source.map((item, index) => {
+    const key = normalizeText(item?.key || `card-group-${index}`);
+    const meta = CARD_GROUP_META[key] || {};
+    const count = Math.max(0, toFiniteNumber(item?.count, 0));
+    const ratio = item?.ratio ?? item?.percent ?? item?.value;
+    return {
+      key,
+      label: normalizeText(item?.label) || meta.label || key,
+      color: item?.color || meta.color || "#94a3b8",
+      count,
+      value: Number.isFinite(Number(ratio)) ? clampPercent(ratio) : total > 0 ? (count * 100) / total : 0,
+    };
+  }).filter((item) => item.count > 0 || item.value > 0);
+  if (!items.length) return null;
+  return {
+    key: "card-passenger-groups",
+    title: "票卡客群",
+    sumLabel: "合计 100%",
+    items: normalizeDisplayPercents(items),
+  };
+}
+
 export function passengerProfileRiderCount(demographics = {}) {
   const direct = toFiniteNumber(demographics?.riderCount, 0);
   if (direct > 0) return direct;
@@ -202,7 +218,9 @@ export function buildPassengerProfileGroups(demographics = {}) {
   if (total <= 0) return [];
 
   const groups = [];
-  // 出行活动按“各类活动占全部活动的份额”统计（优先按 count，无 count 按占比值归一化），
+  const cardGroup = cardPassengerGroup(demographics, total);
+  if (cardGroup) groups.push(cardGroup);
+  // 出行目的按“各类终点活动占全部目的活动的份额”统计（优先按 count，无 count 按占比值归一化），
   // 保证各类相加恰为 100%，而不是逐类除以样本人数的“出现率”（一人多活动会使总和超 100%）
   let activityItems = activityItemsFromDemographics(demographics, total);
   if (activityItems.length) {
@@ -218,7 +236,7 @@ export function buildPassengerProfileGroups(demographics = {}) {
     }
     groups.push({
       key: "activity-types",
-      title: "出行活动",
+      title: demographics.activitySource === "all-activities-fallback" ? "活动类型（回退口径）" : "出行目的",
       sumLabel: "合计 100%",
       items: activityItems,
     });
@@ -227,7 +245,9 @@ export function buildPassengerProfileGroups(demographics = {}) {
     if (purpose) groups.push(purpose);
   }
 
-  const attribute = fixedPercentGroup(demographics, "attribute", "出行者属性", ATTRIBUTE_ITEMS);
-  if (attribute) groups.push(attribute);
+  if (!cardGroup) {
+    const attribute = fixedPercentGroup(demographics, "attribute", "出行者属性", ATTRIBUTE_ITEMS);
+    if (attribute) groups.push(attribute);
+  }
   return groups;
 }

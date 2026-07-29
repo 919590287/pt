@@ -37,7 +37,7 @@ public class PTDataController {
         return AjaxResult.ok(service.info(param));
     }
 
-    @Operation(summary = "体检评估指标(全市口径)")
+    @Operation(summary = "体检评估指标（全市/行政区缓存口径）")
     @PostMapping("/evaluation")
     public AjaxResult evaluation(@RequestBody DatasourceParam param) {
         return AjaxResult.ok(service.evaluation(param));
@@ -127,6 +127,47 @@ public class PTDataController {
             builder = builder.eTag(etag);
         }
         return builder.body(chunk);
+    }
+
+    @Operation(summary = "轨迹时间×视口空间块(GET 可缓存)")
+    @GetMapping(value = "/trajectory/viewport.bin", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> trajectoryViewportBinaryGet(
+            @RequestParam("datasource") String datasource,
+            @RequestParam(value = "start", defaultValue = "0") int start,
+            @RequestParam(value = "windowSeconds", defaultValue = "10") int windowSeconds,
+            @RequestParam(value = "visibilityMode", defaultValue = "all") String visibilityMode,
+            @RequestParam("minX") Double minX,
+            @RequestParam("minY") Double minY,
+            @RequestParam("maxX") Double maxX,
+            @RequestParam("maxY") Double maxY,
+            @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
+        DatasourceParam param = new DatasourceParam();
+        param.setDatasource(datasource);
+        String etag = service.trajectoryViewportTag(
+                param, start, windowSeconds, visibilityMode, minX, minY, maxX, maxY
+        );
+        CacheControl immutableCache = CacheControl.maxAge(365, TimeUnit.DAYS).cachePrivate().immutable();
+        if (etagMatches(etag, ifNoneMatch)) {
+            return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
+                    .eTag(etag)
+                    .cacheControl(immutableCache)
+                    .build();
+        }
+        byte[] chunk = service.trajectoryViewportBinary(
+                param, start, windowSeconds, visibilityMode, minX, minY, maxX, maxY
+        );
+        if (chunk == null) {
+            return ResponseEntity.status(HttpStatus.ACCEPTED)
+                    .cacheControl(CacheControl.noStore())
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .body(new byte[0]);
+        }
+        return ResponseEntity.ok()
+                .eTag(etag)
+                .cacheControl(immutableCache)
+                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .contentLength(chunk.length)
+                .body(chunk);
     }
 
     @Operation(summary = "轨迹任意时刻视口快照(GET，供时间轴秒级跳转)")

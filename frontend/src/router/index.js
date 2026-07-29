@@ -1,5 +1,6 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 import { isAuthenticated } from "@/utils/auth";
+import { ensureBusinessElementPlus } from "@/plugins/element-plus";
 
 const routeComponentLoaders = {
   auth: () => import("@/views/auth/AuthView.vue"),
@@ -46,50 +47,72 @@ const router = createRouter({
           path: "/datamanagement",
           name: "datamanagement",
           component: routeComponentLoaders.datamanagement,
+          meta: { requiresModel: false },
         },
         {
           path: "/datavisualization",
           name: "datavisualization",
           component: routeComponentLoaders.datavisualization,
+          meta: { requiresModel: true },
         },
         {
           path: "/passengerflowanalysis",
           name: "passengerflowanalysis",
           component: routeComponentLoaders.passengerflowanalysis,
           props: { mode: "pfa" },
+          meta: { requiresModel: true },
         },
         {
           path: "/transferanalysis",
           name: "transferanalysis",
           component: routeComponentLoaders.transferanalysis,
+          meta: { requiresModel: true },
         },
         {
           path: "/scenariocomparison",
           name: "scenariocomparison",
           component: routeComponentLoaders.scenariocomparison,
+          meta: { requiresModel: true },
         },
         {
           path: "/scenarioedit",
           name: "scenarioedit",
           component: routeComponentLoaders.scenarioedit,
+          meta: { requiresModel: true },
         },
         {
           path: "/vehiclecalculation",
           name: "vehiclecalculation",
           component: routeComponentLoaders.vehiclecalculation,
+          meta: { requiresModel: true },
         },
       ],
     },
   ],
 });
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const authed = isAuthenticated();
   if (!to.meta?.public && !authed) {
     return { name: "login", query: { redirect: to.fullPath } };
   }
   if (to.meta?.public && authed) {
     return { name: "datavisualization" };
+  }
+  if (!to.meta?.public && authed) {
+    // 只有依赖模型的页面才启动模型目录与后台加载。
+    // 数据管理页必须在没有任何就绪模型时也能独立打开。
+    if (to.meta?.requiresModel !== false) {
+      import("@/stores/modelRuntime.js")
+        .then(({ useModelRuntimeStore }) => useModelRuntimeStore().bootstrap())
+        .catch(() => {});
+    }
+    const pageLoader = routeComponentLoaders[to.name];
+    await Promise.all([
+      ensureBusinessElementPlus(),
+      routeComponentLoaders.layout(),
+      pageLoader && pageLoader !== routeComponentLoaders.layout ? pageLoader() : Promise.resolve(),
+    ]);
   }
   return true;
 });

@@ -1,19 +1,13 @@
 
 @use "./element.variables.scss" as *;
 
-/* Element Plus 按需样式：只引入平台实际使用的控件，避免整套组件 CSS 进入首屏包。 */
-@use "element-plus/theme-chalk/src/base.scss" as *;
-@use "element-plus/theme-chalk/src/button.scss" as *;
+/* 登录后业务控件样式：由路由守卫按需加载，不进入登录首屏。 */
 @use "element-plus/theme-chalk/src/button-group.scss" as *;
 @use "element-plus/theme-chalk/src/checkbox.scss" as *;
 @use "element-plus/theme-chalk/src/checkbox-group.scss" as *;
 @use "element-plus/theme-chalk/src/dialog.scss" as *;
 @use "element-plus/theme-chalk/src/empty.scss" as *;
-@use "element-plus/theme-chalk/src/form.scss" as *;
-@use "element-plus/theme-chalk/src/form-item.scss" as *;
-@use "element-plus/theme-chalk/src/input.scss" as *;
 @use "element-plus/theme-chalk/src/input-number.scss" as *;
-@use "element-plus/theme-chalk/src/message.scss" as *;
 @use "element-plus/theme-chalk/src/message-box.scss" as *;
 @use "element-plus/theme-chalk/src/notification.scss" as *;
 @use "element-plus/theme-chalk/src/dropdown.scss" as *;

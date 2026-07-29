@@ -2,9 +2,9 @@
      地图：模型里被公交线路经过的路网路段（deck.gl LineLayer，rm-corridor-links），无线路经过的路段不画；
      按重复系数五级分色加粗（mapTheme.corridor 固定断点，对齐业务阻抗线样张）；
      双向路网已在后端按无向节点对合并，同一线路上下行走同一路段只计一次。
-     右侧：重复系数排名前十的道路（路网名称字段）+ 系数，teleport 到 index.vue 右侧容器（同 RKFB 模式）；
+     右侧：仿真模式展示重复系数排名前十的道路（路网名称字段）+ 系数，真实模式仅展示摘要；
      图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
-     系数=经过的不同公交线路数（仅 bus 制式），与抽样比例无关。 -->
+     系数=经过的不同公交线路数（仅 bus 制式），不涉及人口或客流缩放。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
     <div class="cfx-card" aria-label="线路重复系数面板">
@@ -40,7 +40,9 @@
 
       <div v-else-if="status === 'loading'" class="cfx-skeleton" aria-hidden="true">
         <div class="cfx-sk cfx-sk-hero"></div>
-        <div class="cfx-sk cfx-sk-row" v-for="n in 8" :key="n"></div>
+        <template v-if="!isRealMode">
+          <div class="cfx-sk cfx-sk-row" v-for="n in 8" :key="n"></div>
+        </template>
       </div>
 
       <template v-else>
@@ -55,44 +57,46 @@
           <p class="cfx-hero-sub">{{ scopeLabel }}内公交经过路段 {{ formatInt(scopeSegmentCount) }} 段</p>
         </div>
 
-        <div v-if="!rankRows.length" class="cfx-status" role="status">
-          <span class="cfx-status-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11Z"></path>
-              <circle cx="12" cy="10" r="2.5"></circle>
-            </svg>
-          </span>
-          <p class="cfx-status-title">{{ scopeLabel }}范围内暂无命名道路</p>
-          <p class="cfx-status-desc">该范围内公交经过的路段没有可用的道路名称，可切换显示范围。</p>
-        </div>
-
-        <div v-else class="cfx-road-rank">
-          <div class="cfx-rank-head" aria-hidden="true">
-            <span class="cfx-rank-head-name">道路</span>
-            <span class="cfx-rank-head-value">重复系数</span>
+        <template v-if="!isRealMode">
+          <div v-if="!rankRows.length" class="cfx-status" role="status">
+            <span class="cfx-status-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11Z"></path>
+                <circle cx="12" cy="10" r="2.5"></circle>
+              </svg>
+            </span>
+            <p class="cfx-status-title">{{ scopeLabel }}范围内暂无{{ corridorUnitLabel }}</p>
+            <p class="cfx-status-desc">该范围内没有可用于排名的公交{{ corridorUnitLabel }}，可切换显示范围。</p>
           </div>
-          <ol class="cfx-rank-list">
-            <li v-for="row in rankRows" :key="row.nameIdx">
-              <button
-                type="button"
-                class="cfx-rank-row"
-                :title="`${row.name}：最高线路重复系数 ${row.coeff}（${scopeLabel}内 ${row.segments} 段公交路段）`"
-                @click="focusRoad(row.nameIdx)"
-              >
-                <span class="cfx-rank-main">
-                  <span class="cfx-rank-name">{{ row.name }}</span>
-                  <span class="cfx-rank-value">{{ row.coeff }}</span>
-                </span>
-                <span class="cfx-rank-bar" aria-hidden="true">
-                  <span class="cfx-rank-bar-fill" :style="{ width: row.barWidth }"></span>
-                </span>
-              </button>
-            </li>
-          </ol>
-          <p class="cfx-rank-footnote">
-            按道路最高重复系数排序，显示前 {{ rankRows.length }} 名（{{ scopeLabel }}内共 {{ namedRoadCount }} 条命名道路）
-          </p>
-        </div>
+
+          <div v-else class="cfx-road-rank">
+            <div class="cfx-rank-head" aria-hidden="true">
+              <span class="cfx-rank-head-name">{{ corridorUnitLabel }}</span>
+              <span class="cfx-rank-head-value">重复系数</span>
+            </div>
+            <ol class="cfx-rank-list">
+              <li v-for="row in rankRows" :key="row.nameIdx">
+                <button
+                  type="button"
+                  class="cfx-rank-row"
+                  :title="`${row.name}：最高线路重复系数 ${row.coeff}（${scopeLabel}内 ${row.segments} 段公交路段）`"
+                  @click="focusRoad(row.nameIdx)"
+                >
+                  <span class="cfx-rank-main">
+                    <span class="cfx-rank-name">{{ row.name }}</span>
+                    <span class="cfx-rank-value">{{ row.coeff }}</span>
+                  </span>
+                  <span class="cfx-rank-bar" aria-hidden="true">
+                    <span class="cfx-rank-bar-fill" :style="{ width: row.barWidth }"></span>
+                  </span>
+                </button>
+              </li>
+            </ol>
+            <p class="cfx-rank-footnote">
+              按{{ corridorUnitLabel }}最高重复系数排序，显示前 {{ rankRows.length }} 名（{{ scopeLabel }}内共 {{ namedRoadCount }} 个{{ corridorUnitLabel }}）
+            </p>
+          </div>
+        </template>
       </template>
     </div>
   </teleport>
@@ -135,15 +139,16 @@ import {
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import { mercatorToLngLat, densityClassIndex } from "../utils/populationGrid.js";
 import { CORRIDOR_U16_SENTINEL, parseCorridorLinks } from "../utils/corridorLinks.js";
+import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 
 const props = defineProps({
   model: String,
 });
 
 const MapRef = inject("MapRef", ref(null));
+const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
 
 const LINKS_LAYER_KEY = "rm-corridor-links";
-const RANK_LIMIT = 10;
 const GENERATING_POLL_MS = 8000;
 
 const status = ref("loading"); // loading | generating | error | ready
@@ -154,6 +159,8 @@ const links = shallowRef(null); // parseCorridorLinks 结果（markRaw，系数�
 
 const displayRange = useDisplayRangeStore();
 const scopeLabel = computed(() => displayRange.selected || DISPLAY_RANGE_ALL);
+const isRealMode = computed(() => isRealDatasource(props.model));
+const corridorUnitLabel = computed(() => isRealMode.value ? "站间区间" : "道路");
 
 function formatInt(value) {
   if (!Number.isFinite(value)) return "--";
@@ -296,7 +303,7 @@ const rankRows = computed(() => {
     rows.push({ nameIdx, name: roadNames.value[nameIdx] || `道路${nameIdx}`, coeff: agg.coeff, segments: agg.segments });
   }
   rows.sort((a, b) => b.coeff - a.coeff || b.segments - a.segments || a.name.localeCompare(b.name, "zh-CN"));
-  const top = rows.slice(0, RANK_LIMIT);
+  const top = rows.slice(0, rightPanelRankLimit);
   const maxCoeff = top.length ? top[0].coeff : 0;
   return top.map((row) => ({
     ...row,
@@ -305,7 +312,8 @@ const rankRows = computed(() => {
 });
 
 // ---------------------------------------------------------------------------
-// 地图图层：deck LineLayer（bin 已按系数升序，直接作为绘制序）
+// 地图图层：每个重复系数等级一个 deck LineLayer。图层按低→高注册，且关闭同平面
+// 深度测试，明确使用画家顺序，保证交叉/重叠处高等级颜色始终覆盖低等级。
 // ---------------------------------------------------------------------------
 
 const legendItems = computed(() => {
@@ -314,50 +322,59 @@ const legendItems = computed(() => {
   return labels.map((label, index) => ({ label, color: theme.ramp[index], width: theme.widths[index] }));
 });
 
-function corridorLayerInstance() {
+function corridorLayerInstances() {
   const data = links.value;
   const indexes = scopeSegmentIndexes.value;
-  if (!data || !indexes.length) return null;
+  if (!data || !indexes.length) return [];
   const theme = MAP_THEME.corridor;
   const rgb = theme.ramp.map((hex) => {
     const value = Number.parseInt(hex.replace("#", ""), 16);
     return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
   });
-  const count = indexes.length;
-  const source = new Float64Array(count * 2);
-  const target = new Float64Array(count * 2);
-  const colors = new Uint8Array(count * 4);
-  const widths = new Float32Array(count);
-  for (let i = 0; i < count; i++) {
-    const k = indexes[i];
-    const [lng1, lat1] = mercatorToLngLat(data.x1[k], data.y1[k]);
-    const [lng2, lat2] = mercatorToLngLat(data.x2[k], data.y2[k]);
-    source[i * 2] = lng1;
-    source[i * 2 + 1] = lat1;
-    target[i * 2] = lng2;
-    target[i * 2 + 1] = lat2;
+  const classIndexes = Array.from({ length: rgb.length }, () => []);
+  indexes.forEach((k) => {
     const cls = Math.min(densityClassIndex(data.coeff[k], theme.breaks), rgb.length - 1);
+    classIndexes[cls].push(k);
+  });
+
+  return classIndexes.flatMap((bucket, cls) => {
+    const count = bucket.length;
+    if (!count) return [];
+    const source = new Float64Array(count * 2);
+    const target = new Float64Array(count * 2);
+    const colors = new Uint8Array(count * 4);
+    const widths = new Float32Array(count);
     const [r, g, b] = rgb[cls];
-    colors[i * 4] = r;
-    colors[i * 4 + 1] = g;
-    colors[i * 4 + 2] = b;
-    colors[i * 4 + 3] = theme.alpha;
-    widths[i] = theme.widths[cls];
-  }
-  return new LineLayer({
-    id: LINKS_LAYER_KEY,
-    data: {
-      length: count,
-      attributes: {
-        getSourcePosition: { value: source, size: 2 },
-        getTargetPosition: { value: target, size: 2 },
-        getColor: { value: colors, size: 4 },
-        getWidth: { value: widths, size: 1 },
+    for (let i = 0; i < count; i++) {
+      const k = bucket[i];
+      const [lng1, lat1] = mercatorToLngLat(data.x1[k], data.y1[k]);
+      const [lng2, lat2] = mercatorToLngLat(data.x2[k], data.y2[k]);
+      source[i * 2] = lng1;
+      source[i * 2 + 1] = lat1;
+      target[i * 2] = lng2;
+      target[i * 2 + 1] = lat2;
+      colors[i * 4] = r;
+      colors[i * 4 + 1] = g;
+      colors[i * 4 + 2] = b;
+      colors[i * 4 + 3] = theme.alpha;
+      widths[i] = theme.widths[cls];
+    }
+    return [new LineLayer({
+      id: `${LINKS_LAYER_KEY}-${cls}`,
+      data: {
+        length: count,
+        attributes: {
+          getSourcePosition: { value: source, size: 2 },
+          getTargetPosition: { value: target, size: 2 },
+          getColor: { value: colors, size: 4 },
+          getWidth: { value: widths, size: 1 },
+        },
       },
-    },
-    widthUnits: "pixels",
-    widthMinPixels: 1,
-    pickable: false,
+      parameters: { depthTest: false },
+      widthUnits: "pixels",
+      widthMinPixels: 1,
+      pickable: false,
+    })];
   });
 }
 
@@ -372,8 +389,8 @@ function refreshMapLayers() {
   const map = wrapper?.map;
   if (!map || !map.getStyle) return;
   try {
-    const layer = corridorLayerInstance();
-    if (layer) setSharedDeckLayer(wrapper, LINKS_LAYER_KEY, layer, 0);
+    const layers = corridorLayerInstances();
+    if (layers.length) setSharedDeckLayer(wrapper, LINKS_LAYER_KEY, layers, 0);
     else removeSharedDeckLayer(wrapper, LINKS_LAYER_KEY);
     pendingLayerRefresh = false;
   } catch (error) {
@@ -786,5 +803,27 @@ onUnmounted(() => {
   .cfx-rank-bar-fill {
     transition: none;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .cfx-rank-row:hover {
+  background: rgba(64, 156, 255, 0.09);
+}
+html.dark .cfx-rank-bar {
+  background: rgba(148, 180, 220, 0.16);
+}
+html.dark .cfx-map-legend {
+  /* --app-ink-soft 未定义，浅色落在 fallback #475467，暗色需显式提亮 */
+  color: #c2cddd;
+}
+html.dark .cfx-status-icon.is-error {
+  color: #f87171;
+}
+html.dark .cfx-retry {
+  background: #1a2431;
+}
+html.dark .cfx-sk {
+  background: linear-gradient(90deg, rgba(148, 180, 220, 0.08) 25%, rgba(148, 180, 220, 0.14) 42%, rgba(148, 180, 220, 0.08) 60%);
+  background-size: 240% 100%;
 }
 </style>

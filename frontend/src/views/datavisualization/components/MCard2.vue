@@ -87,4 +87,15 @@ function handleSetOpen(open) {
     border-top: 1px solid var(--border-color);
   }
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .MCard2 {
+  --border-color: rgba(64, 156, 255, 0.16);
+}
+html.dark .MCard2 .MCard2_title_box {
+  background: rgba(64, 156, 255, 0.11);
+}
+html.dark .MCard2 .MCard2_title_box:hover {
+  background: rgba(64, 156, 255, 0.125);
+}
 </style>

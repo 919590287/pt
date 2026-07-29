@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MatsimPlansDerivedCacheTest {
@@ -95,6 +97,38 @@ class MatsimPlansDerivedCacheTest {
         assertTrue(MatsimTripEndsCache.isReady(data));
         assertEquals(5_000, ((Number) MatsimPopulationCache.readPopulationSummary(data).get("persons")).intValue());
         assertEquals(5_000, ((Number) MatsimTripEndsCache.readTripEndsSummary(data).get("journeys")).intValue());
+    }
+
+    @Test
+    void missingLargeModelPlansPublishesUnsupportedInsteadOfReadyZero(@TempDir Path tempDir) throws Exception {
+        Path output = tempDir.resolve("output");
+        Path cache = tempDir.resolve("cache");
+        Files.createDirectories(output);
+        Files.createDirectories(cache);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+
+        MatsimData data = new MatsimData("plans-missing-large", output.toString(), cache.toString(), true);
+        Files.createDirectories(cache.resolve("population-v1"));
+        Files.createDirectories(cache.resolve("trip-distribution-v1"));
+        Files.createDirectories(cache.resolve("passenger-profile-v1"));
+        MatsimPlansDerivedCache.prepareAllOnModelLoad(data);
+
+        Map<String, Object> population = MatsimPopulationCache.readPopulationSummary(data);
+        assertEquals("unsupported", population.get("status"));
+        assertTrue(String.valueOf(population.get("reason")).contains("plans"));
+        assertNull(MatsimPopulationCache.readGridBytes(data));
+
+        Map<String, Object> tripEnds = MatsimTripEndsCache.readTripEndsSummary(data);
+        assertEquals("unsupported", tripEnds.get("status"));
+        assertNull(MatsimTripEndsCache.readGridBytes(data));
+
+        assertTrue(MatsimPassengerProfileCache.isReady(data), "unsupported 是终态，不应重复排队");
+        Path profileDir = MatsimCachePaths.versionDir(data, MatsimPassengerProfileCache.PROFILE_CACHE_VERSION);
+        assertTrue(Files.isRegularFile(profileDir.resolve("manifest.json")));
+        assertFalse(Files.exists(profileDir.resolve("profiles.json.gz")));
+        assertFalse(Files.exists(cache.resolve("population-v1")), "unsupported 重建也必须清理同族历史版本");
+        assertFalse(Files.exists(cache.resolve("trip-distribution-v1")));
+        assertFalse(Files.exists(cache.resolve("passenger-profile-v1")));
     }
 
     private static void addPtPerson(Population population, String id, Coord home, Coord work) {

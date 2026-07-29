@@ -39,7 +39,13 @@ public class MatsimConfig {
     private String cacheFolder;
 
     @Value("${matsim.large-model-threshold-bytes:21474836480}")
-    private long largeModelThresholdBytes;
+    private long largeModelThresholdBytes = 20L * 1024 * 1024 * 1024;
+
+    @Value("${matsim.large-model-plans-threshold-bytes:8589934592}")
+    private long largeModelPlansThresholdBytes = 8L * 1024 * 1024 * 1024;
+
+    @Value("${matsim.large-model-events-threshold-bytes:8589934592}")
+    private long largeModelEventsThresholdBytes = 8L * 1024 * 1024 * 1024;
 
     /**
      * 全部方案
@@ -231,10 +237,21 @@ public class MatsimConfig {
         scheme.setInput(data.getAbsolutePath() + "/input");
         scheme.setOutput(output);
         scheme.setCache(cachePath(areaName, scope, modelName).toString());
-        long outputBytes = estimateOutputBytes(new File(output));
-        scheme.setOutputBytes(outputBytes);
-        scheme.setLargeModel(outputBytes >= largeModelThresholdBytes);
-        scheme.setDesc(readDesc(key, data));
+        OutputSummary outputSummary = summarizeOutput(new File(output));
+        scheme.setOutputBytes(outputSummary.bytes());
+        Scheme.Desc desc = readDesc(key, data);
+        boolean detectedLargeModel = outputSummary.bytes() >= Math.max(1L, largeModelThresholdBytes)
+                || outputSummary.plansBytes() >= Math.max(1L, largeModelPlansThresholdBytes)
+                || outputSummary.eventsBytes() >= Math.max(1L, largeModelEventsThresholdBytes);
+        boolean largeModel = detectedLargeModel || Boolean.TRUE.equals(desc.getLargeModel());
+        if (detectedLargeModel && Boolean.FALSE.equals(desc.getLargeModel())) {
+            log.warn("[{}] desc.largeModel=false 不能降级自动识别的大模型，继续使用低内存模式", key);
+        }
+        scheme.setLargeModel(largeModel);
+        // cuttable 保持“存在 output plans”的文件能力语义；API 展示与切分入口另行叠加 !largeModel，
+        // 防止大模型公交精简网被道路优化误用。
+        scheme.setCuttable(outputSummary.cuttable());
+        scheme.setDesc(desc);
         scheme.setName(key);
         scheme.setScope(scope);
         scheme.setSchemeName(areaName);
@@ -268,16 +285,31 @@ public class MatsimConfig {
         }
     }
 
-    private long estimateOutputBytes(File output) {
+    private OutputSummary summarizeOutput(File output) {
         File[] files = output.listFiles(file -> file.isFile() && !file.getName().startsWith(".") && !file.getName().startsWith("._"));
         if (files == null) {
-            return 0L;
+            return new OutputSummary(0L, 0L, 0L, false);
         }
         long total = 0L;
+        long plansBytes = 0L;
+        long eventsBytes = 0L;
+        boolean cuttable = false;
         for (File file : files) {
-            total += Math.max(0L, file.length());
+            long length = Math.max(0L, file.length());
+            total = total > Long.MAX_VALUE - length ? Long.MAX_VALUE : total + length;
+            String lower = file.getName().toLowerCase(java.util.Locale.ROOT);
+            if (lower.contains("plans")) {
+                cuttable = true;
+                plansBytes = plansBytes > Long.MAX_VALUE - length ? Long.MAX_VALUE : plansBytes + length;
+            }
+            if (lower.contains("events")) {
+                eventsBytes = eventsBytes > Long.MAX_VALUE - length ? Long.MAX_VALUE : eventsBytes + length;
+            }
         }
-        return total;
+        return new OutputSummary(total, plansBytes, eventsBytes, cuttable);
+    }
+
+    private record OutputSummary(long bytes, long plansBytes, long eventsBytes, boolean cuttable) {
     }
 
     private Set<String> loadKnownUsernames() {
@@ -323,7 +355,7 @@ public class MatsimConfig {
         d.set_default(false);
         d.setDetail("");
         d.setScale(1);
-        d.setArea(1);
+        d.setArea(0);
         return d;
     }
 

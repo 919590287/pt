@@ -44,6 +44,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
@@ -84,7 +85,14 @@ public final class MatsimRoutePanelCache {
     //      lineGroup 取“有班次的最长单向”代表方向。需重算缓存。
     // v16: stationOd 新增 flowByHour（24 小时分桶，按上车时刻，与断面客流同口径），
     //      支撑前端站间 OD 期望线随时段筛选；Top500 截断仍按全天总量排序。需重算缓存。
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v16";
+    // v17: 历史版本曾以代表线路长度计算客流强度（已由 v20 的运营车公里口径替代）。
+    // v18: “高峰满载率”改为“平均高峰满载率”：只统计系统早晚高峰窗，并将每个方向、
+    //      小时的投入运力展开到该方向全部有效断面后做运力加权平均。需重算缓存。
+    // v19: 车辆效率指标统一按统计范围内 vehicleId 去重；overallFlow 使用与体检评估相同的
+    //      全网运营车辆清单，并下发标台数与统一口径标识。
+    // v20: 平均高峰满载率按 DB4401/T 180—2022 改为“每班最大站段满载率”的班次均值；
+    //      线路客流强度统一改为日上车人次/计划运营车公里。
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v20";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
@@ -132,14 +140,19 @@ public final class MatsimRoutePanelCache {
     }
 
     public static void prepareOnModelLoad(MatsimData data) {
-        ensureRoutePanelCache(data);
+        prepareOnModelLoad(data, null);
+    }
+
+    public static void prepareOnModelLoad(MatsimData data,
+                                          BiConsumer<Integer, Integer> partitionProgress) {
+        ensureRoutePanelCache(data, partitionProgress);
     }
 
     /** Load an existing panel into memory while the model starts, without generating an incomplete cache. */
     public static void preloadIfReady(MatsimData data) {
         if (isReady(data)) {
             try {
-                loadPanel(data);
+                readRoutePanelIndex(data);
             } catch (RuntimeException e) {
                 log.warn("预热线路客流面板缓存失败，将在首次请求时重试: model={}", data.getName(), e);
             }
@@ -162,6 +175,18 @@ public final class MatsimRoutePanelCache {
         }
     }
 
+    /** 全局着色/排行所需的轻量索引；详细 OD、换乘、画像改走 routePanelDetail 分片。 */
+    public static Map<String, Object> readRoutePanelIndex(MatsimData data) {
+        if (!isReady(data)) {
+            return Map.of(
+                    "status", "generating",
+                    "cacheVersion", ROUTE_PANEL_CACHE_VERSION,
+                    "message", "线路客流缓存正在后台生成"
+            );
+        }
+        return MatsimPanelReadCache.readRouteIndex(data, panelPath(data));
+    }
+
     // 与前端 index.vue 的 routeModeKey() 保持一致的地铁判定口径
     private static final Pattern OVERALL_METRO_TEXT_PATTERN =
             Pattern.compile("(metro|subway|rail|地铁|轨道)", Pattern.CASE_INSENSITIVE);
@@ -171,7 +196,19 @@ public final class MatsimRoutePanelCache {
      * 避免前端为 48 个数字下载并解析整个 routePanel 大 JSON。
      */
     public static Map<String, Object> readOverallFlow(MatsimData data) {
-        return overallFlowFromPanel(readRoutePanel(data));
+        Map<String, Object> result = overallFlowFromPanel(readRoutePanelIndex(data));
+        if (!"ready".equals(result.get("status"))) return result;
+        TransitMetrics.RoadFleetInventoryStats fleet =
+                TransitMetrics.roadFleetInventory(data.getSchedule(), data.getTv());
+        if (result.get("busOperation") instanceof Map<?, ?> raw) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> operation = (Map<String, Object>) raw;
+            operation.put("vehicles", fleet.operatingVehicles() == null ? 0L : fleet.operatingVehicles());
+            operation.put("standardVehicles", fleet.standardVehicles());
+            operation.put("vehiclePolicy", TransitMetrics.BUS_FLEET_POLICY);
+            operation.put("standardVehiclePolicy", TransitMetrics.BUS_STANDARD_VEHICLE_POLICY);
+        }
+        return result;
     }
 
     static Map<String, Object> overallFlowFromPanel(Map<String, Object> panel) {
@@ -183,11 +220,13 @@ public final class MatsimRoutePanelCache {
         double[] bus = new double[HOURS];
         double[] metro = new double[HOURS];
         // 常规公交运营效率分母（车辆/班次/日运营车公里=Σ班次×线长）：
-        // 供总体客流卡片算车均/单班次日载客量与客流强度。轨道车辆班次与公交不可比，不计入；
+        // 供总体客流卡片算车均日载客量、单班次载客量与客流强度。轨道车辆班次与公交不可比，不计入；
         // 车辆/班次为 Σ各方向计数，须与前端行政区筛选时对整包面板的本地聚合保持同一口径。
         double busVehicles = 0;
         double busDepartures = 0;
         double busOperatedKm = 0;
+        Set<String> busVehicleIds = new LinkedHashSet<>();
+        boolean hasVehicleIds = false;
         for (Object value : routes.values()) {
             if (!(value instanceof Map<?, ?> route)) {
                 continue;
@@ -198,6 +237,11 @@ public final class MatsimRoutePanelCache {
                 busVehicles += metricNumber(metrics, "vehicles");
                 busDepartures += departures;
                 busOperatedKm += departures * metricNumber(metrics, "routeDist") / 1000.0;
+                if (metrics.get("vehicleIds") instanceof Collection<?> ids) {
+                    hasVehicleIds = true;
+                    ids.stream().filter(java.util.Objects::nonNull)
+                            .map(String::valueOf).forEach(busVehicleIds::add);
+                }
             }
             Object hourly = route.get("hourlyFlow");
             if (!(hourly instanceof List<?> values)) {
@@ -215,7 +259,7 @@ public final class MatsimRoutePanelCache {
         hourlyByMode.put("bus", toDoubleList(bus));
         hourlyByMode.put("metro", toDoubleList(metro));
         Map<String, Object> busOperation = new LinkedHashMap<>();
-        busOperation.put("vehicles", Math.round(busVehicles));
+        busOperation.put("vehicles", hasVehicleIds ? (long) busVehicleIds.size() : Math.round(busVehicles));
         busOperation.put("departures", Math.round(busDepartures));
         busOperation.put("operatedKm", round2(busOperatedKm));
         Map<String, Object> result = new LinkedHashMap<>();
@@ -252,28 +296,29 @@ public final class MatsimRoutePanelCache {
 
     public static Map<String, Object> readRoutePanelDetail(MatsimData data, String lineId, String routeId) {
         if (routeId == null || routeId.isBlank()) return Map.of();
-        Map<String, Object> panel = readRoutePanel(data);
-        Object routesValue = panel.get("routes");
-        if (!(routesValue instanceof Map<?, ?> routes)) return Map.of();
-        Object routeValue = null;
+        if (!isReady(data)) {
+            return Map.of("status", "generating", "cacheVersion", ROUTE_PANEL_CACHE_VERSION);
+        }
+        if (routeId.startsWith("bus::") || routeId.startsWith("metro::")) {
+            Map<String, Object> detail = MatsimPanelReadCache.readDetail(
+                    data, panelPath(data), "route", "lineGroups", routeId);
+            return MatsimPassengerProfileCache.applyRouteProfile(data, detail);
+        }
+        String key = routeId;
         if (lineId != null && !lineId.isBlank()) {
-            routeValue = routes.get(routeKey(lineId, routeId));
+            key = routeKey(lineId, routeId);
         }
-        if (routeValue == null) {
-            routeValue = routes.get(routeId);
-            // 裸键命中时校验 lineId：请求带了错误 lineId 时不能把别的线路数据当详情返回
-            if (routeValue instanceof Map<?, ?> bare && lineId != null && !lineId.isBlank()
-                    && !lineId.equals(String.valueOf(bare.get("lineId")))) {
-                routeValue = null;
-            }
+        Map<String, Object> detail = MatsimPanelReadCache.readDetail(
+                data, panelPath(data), "route", "routes", key);
+        if (!detail.isEmpty()) return MatsimPassengerProfileCache.applyRouteProfile(data, detail);
+        // 旧缓存可能在 routeId 全局唯一时使用裸键。
+        detail = MatsimPanelReadCache.readDetail(
+                data, panelPath(data), "route", "routes", routeId);
+        if (!detail.isEmpty() && (lineId == null || lineId.isBlank()
+                || lineId.equals(String.valueOf(detail.get("lineId"))))) {
+            return MatsimPassengerProfileCache.applyRouteProfile(data, detail);
         }
-        if (routeValue == null) {
-            routeValue = findRoutePayload(routes, lineId, routeId);
-        }
-        if (!(routeValue instanceof Map<?, ?> route)) return Map.of();
-        Map<String, Object> result = new LinkedHashMap<>();
-        route.forEach((key, value) -> result.put(String.valueOf(key), value));
-        return result;
+        return Map.of();
     }
 
     private static Object findRoutePayload(Map<?, ?> routes, String lineId, String routeId) {
@@ -314,22 +359,25 @@ public final class MatsimRoutePanelCache {
         }
     }
 
-    private static void ensureRoutePanelCache(MatsimData data) {
+    private static void ensureRoutePanelCache(MatsimData data,
+                                              BiConsumer<Integer, Integer> partitionProgress) {
         // per-model 锁：模型 A 构建期间不阻塞模型 B（原为类级 synchronized 全局锁）
         synchronized (ModelBuildLocks.lockFor("route-panel", data)) {
-            ensureRoutePanelCacheLocked(data);
+            ensureRoutePanelCacheLocked(data, partitionProgress);
         }
     }
 
-    private static void ensureRoutePanelCacheLocked(MatsimData data) {
+    private static void ensureRoutePanelCacheLocked(MatsimData data,
+                                                    BiConsumer<Integer, Integer> partitionProgress) {
         if (isReady(data)) {
             return;
         }
         try {
-            Files.createDirectories(cacheDir(data));
-            Map<String, Object> payload = buildPanel(data);
+            Map<String, Object> payload = buildPanel(data, partitionProgress);
+            MatsimCachePaths.recreateVersionDir(data, ROUTE_PANEL_CACHE_VERSION);
             writeGzipJson(panelPath(data), payload);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "route-panel-v", ROUTE_PANEL_CACHE_VERSION);
             // 源数据变更触发的重建必须踢掉旧内存条目，否则 loadPanel 继续命中重建前的旧统计
             MEMORY_CACHE.remove(panelPath(data).toAbsolutePath().normalize().toString());
             log.info("线路客流面板缓存生成完成: model={}, routes={}",
@@ -359,13 +407,12 @@ public final class MatsimRoutePanelCache {
         }
     }
 
-    private static Map<String, Object> buildPanel(MatsimData data) {
+    private static Map<String, Object> buildPanel(MatsimData data,
+                                                  BiConsumer<Integer, Integer> partitionProgress) {
         Map<String, RoutePanelAccumulator> routes = buildRouteAccumulators(data);
         // 换乘/OD 都是“人×记录”级热路径：facility 坐标与名称统一预建 map，避免逐条回查 schedule。
         Map<String, FacilityGeo> facilityGeo = buildFacilityGeo(data);
-        indexPassengerTracks(data.getPersonTracks(), routes);
-        indexTransfers(data.getPersonTracks(), routes, facilityGeo);
-        indexStationOd(data.getPersonTracks(), routes);
+        indexPassengerActivity(data, routes, facilityGeo, partitionProgress);
         Population population = data.getPopulation();
         Map<String, Map<String, Integer>> tripPurposeByRoute = buildTripPurposeByRoute(population);
 
@@ -489,22 +536,77 @@ public final class MatsimRoutePanelCache {
         return result;
     }
 
-    private static void indexPassengerTracks(Collection<PTPersonTrack> tracks, Map<String, RoutePanelAccumulator> routes) {
-        if (tracks == null || tracks.isEmpty()) {
-            return;
+    /**
+     * 客流、换乘与站间 OD 共用一次按人分区扫描和一次排序。旧实现分别扫描磁盘工件三次，
+     * 大模型会重复解压约 2GB 分区文件，是“线路面板”长时间看似卡住的主要原因。
+     */
+    private static void indexPassengerActivity(
+            MatsimData data,
+            Map<String, RoutePanelAccumulator> routes,
+            Map<String, FacilityGeo> facilityGeo,
+            BiConsumer<Integer, Integer> partitionProgress
+    ) {
+        long[] dropped = {0};
+        MatsimPersonTrackStore.forEachPerson(data, (personId, personTracks) -> {
+            for (PTPersonTrack track : personTracks) {
+                RoutePanelAccumulator route = routeForTrack(routes, track);
+                if (route != null) route.addTrack(track);
+                else dropped[0]++;
+            }
+
+            personTracks.sort(TRACK_TIME_ORDER);
+            for (int i = 0; i + 1 < personTracks.size(); i++) {
+                PTPersonTrack leave = personTracks.get(i);
+                PTPersonTrack enter = personTracks.get(i + 1);
+                if (Boolean.TRUE.equals(leave.getEnter()) || !Boolean.TRUE.equals(enter.getEnter())) continue;
+                double delta = safeTime(enter) - safeTime(leave);
+                if (delta < 0 || delta > TRANSFER_WINDOW_SECONDS) continue;
+                RoutePanelAccumulator fromRoute = routeForTrack(routes, leave);
+                RoutePanelAccumulator toRoute = routeForTrack(routes, enter);
+                if (fromRoute == null || toRoute == null || fromRoute.lineId.equals(toRoute.lineId)) continue;
+                if (!sameTransferStation(fromRoute, leave, toRoute, enter, facilityGeo)) continue;
+                int hour = hourOf(safeTime(enter));
+                fromRoute.addTransfer(toRoute, idString(leave.getFacilityId()), hour);
+                toRoute.addTransfer(fromRoute, idString(enter.getFacilityId()), hour);
+            }
+
+            PTPersonTrack boarding = null;
+            for (PTPersonTrack track : personTracks) {
+                if (Boolean.TRUE.equals(track.getEnter())) {
+                    boarding = track;
+                    continue;
+                }
+                if (boarding != null && sameRide(boarding, track)) {
+                    RoutePanelAccumulator route = routeForTrack(routes, boarding);
+                    if (route != null) {
+                        int hour = hourOf(safeTime(boarding));
+                        String fromFacilityId = idString(boarding.getFacilityId());
+                        String toFacilityId = idString(track.getFacilityId());
+                        route.addStationOd(fromFacilityId, toFacilityId, hour);
+                        route.addRideSegments(fromFacilityId, toFacilityId, hour);
+                    }
+                }
+                boarding = null;
+            }
+        }, partitionProgress);
+        if (dropped[0] > 0) {
+            log.warn("线路客流面板: {} 条上下车记录无法唯一定位到 schedule 线路（lineId/routeId 不匹配或跨线路歧义），已弃计", dropped[0]);
         }
-        long dropped = 0;
-        for (PTPersonTrack track : tracks) {
+    }
+
+    private static void indexPassengerTracks(MatsimData data, Map<String, RoutePanelAccumulator> routes) {
+        long[] dropped = {0};
+        MatsimPersonTrackStore.forEachTrack(data, track -> {
             RoutePanelAccumulator route = routeForTrack(routes, track);
             if (route != null) {
                 route.addTrack(track);
             } else {
-                dropped++;
+                dropped[0]++;
             }
-        }
-        if (dropped > 0) {
+        });
+        if (dropped[0] > 0) {
             // 静默丢弃会让总客流无解释地偏低，至少要能在日志里对账
-            log.warn("线路客流面板: {} 条上下车记录无法唯一定位到 schedule 线路（lineId/routeId 不匹配或跨线路歧义），已弃计", dropped);
+            log.warn("线路客流面板: {} 条上下车记录无法唯一定位到 schedule 线路（lineId/routeId 不匹配或跨线路歧义），已弃计", dropped[0]);
         }
     }
 
@@ -519,16 +621,11 @@ public final class MatsimRoutePanelCache {
                     .thenComparing(track -> String.valueOf(track.getVehicleId()));
 
     private static void indexTransfers(
-            Collection<PTPersonTrack> tracks,
+            MatsimData data,
             Map<String, RoutePanelAccumulator> routes,
             Map<String, FacilityGeo> facilityGeo
     ) {
-        if (tracks == null || tracks.isEmpty()) {
-            return;
-        }
-        Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
-
-        ModelProcessingPool.forEach(byPerson.values(), personTracks -> {
+        MatsimPersonTrackStore.forEachPerson(data, (personId, personTracks) -> {
             personTracks.sort(TRACK_TIME_ORDER);
             for (int i = 0; i + 1 < personTracks.size(); i++) {
                 PTPersonTrack leave = personTracks.get(i);
@@ -570,12 +667,8 @@ public final class MatsimRoutePanelCache {
      * 任务A：线路站间 OD。track 按人分组按时间排序，enter=true 记为“开口”，
      * 其后同 route（优先同 departureId）的 enter=false 记录闭合为一次乘坐 fromFacility→toFacility。
      */
-    private static void indexStationOd(Collection<PTPersonTrack> tracks, Map<String, RoutePanelAccumulator> routes) {
-        if (tracks == null || tracks.isEmpty()) {
-            return;
-        }
-        Map<String, List<PTPersonTrack>> byPerson = groupTracksByPerson(tracks);
-        ModelProcessingPool.forEach(byPerson.values(), personTracks -> {
+    private static void indexStationOd(MatsimData data, Map<String, RoutePanelAccumulator> routes) {
+        MatsimPersonTrackStore.forEachPerson(data, (personId, personTracks) -> {
             personTracks.sort(TRACK_TIME_ORDER);
             PTPersonTrack boarding = null;
             for (PTPersonTrack track : personTracks) {
@@ -764,22 +857,13 @@ public final class MatsimRoutePanelCache {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static void writeJsonAtomic(Path path, Map<String, Object> payload) throws Exception {
@@ -1038,6 +1122,68 @@ public final class MatsimRoutePanelCache {
         }
         // 不封顶：满载率 >100% 是真实的超载信号，封顶会把“严重超载”抹成“正好满载”
         return round2(numerator * 100.0 / denominator);
+    }
+
+    /**
+     * 高峰断面汇总量。每个有效断面在每个高峰小时贡献一次对应方向小时运力，
+     * 因而 percent() 等价于对各断面满载率按运力加权平均。
+     */
+    static PeakLoadTotals peakLoadTotals(Collection<int[]> segmentFlows, int[] capacityByHour) {
+        long passenger = 0;
+        long capacity = 0;
+        if (segmentFlows == null || capacityByHour == null) {
+            return new PeakLoadTotals(0, 0);
+        }
+        for (int[] flowByHour : segmentFlows) {
+            if (flowByHour == null) continue;
+            int limit = Math.min(HOURS, Math.min(flowByHour.length, capacityByHour.length));
+            for (int hour = 0; hour < limit; hour++) {
+                int hourlyCapacity = Math.max(0, capacityByHour[hour]);
+                if (!TransitMetrics.isPeakHour(hour) || hourlyCapacity == 0) continue;
+                passenger += Math.max(0, flowByHour[hour]);
+                capacity += hourlyCapacity;
+            }
+        }
+        return new PeakLoadTotals(passenger, capacity);
+    }
+
+    record PeakLoadTotals(long passenger, long capacity) {
+        double percent() {
+            return MatsimRoutePanelCache.percent(passenger, capacity);
+        }
+    }
+
+    /** 每个高峰班次最大站段满载率的等权平均；任一班次容量缺失时不下发部分真值。 */
+    private record PeakDepartureAverage(
+            double rateSum, int validDepartures, int missingCapacityDepartures) {
+        Double percent() {
+            if (missingCapacityDepartures > 0 || validDepartures == 0) return null;
+            return round2(rateSum * 100.0 / validDepartures);
+        }
+    }
+
+    /** 同一时刻上下车按净变化处理，最大在车人数对应班次最大载客站段。 */
+    private static final class PeakDepartureState {
+        private final int capacity;
+        private final java.util.NavigableMap<Double, Integer> deltas = new java.util.TreeMap<>();
+
+        private PeakDepartureState(int capacity) {
+            this.capacity = capacity;
+        }
+
+        private void accept(double time, int delta) {
+            deltas.merge(time, delta, Integer::sum);
+        }
+
+        private double rate() {
+            int current = 0;
+            int peak = 0;
+            for (int delta : deltas.values()) {
+                current = Math.max(0, current + delta);
+                peak = Math.max(peak, current);
+            }
+            return peak / (double) capacity;
+        }
     }
 
     private static int intSum(int[] values) {
@@ -1333,6 +1479,8 @@ public final class MatsimRoutePanelCache {
         private final int[] hourlyBoardings = new int[HOURS];
         private final int[] hourlyAlightings = new int[HOURS];
         private final int[] capacityByHour = new int[HOURS];
+        private final Map<String, PeakDepartureState> peakDepartures = new HashMap<>();
+        private int peakMissingCapacityDepartures = 0;
         private final List<SegmentFlowAccumulator> segments = new ArrayList<>();
         // 任务A：本 route 的站间 OD（key=fromFacilityId + '\u0001' + toFacilityId）。
         private final Map<String, StationOdAccumulator> stationOd = new HashMap<>();
@@ -1408,6 +1556,11 @@ public final class MatsimRoutePanelCache {
                 hourlyAlightings[hour]++;
                 station.alightingByHour[hour]++;
                 totalAlightings++;
+            }
+            String departureId = idString(track.getDepartureId());
+            PeakDepartureState peakDeparture = departureId == null ? null : peakDepartures.get(departureId);
+            if (peakDeparture != null) {
+                peakDeparture.accept(safeTime(track), Boolean.TRUE.equals(track.getEnter()) ? 1 : -1);
             }
         }
 
@@ -1534,12 +1687,29 @@ public final class MatsimRoutePanelCache {
             metrics.put("lc", round2(directness));
             metrics.put("passenger", totalBoardings);
             metrics.put("loadRate", percent(totalBoardings, capacityTotal));
-            metrics.put("passengerStrength", routeDistance <= 0 ? 0.0 : round2(totalBoardings / (routeDistance / 1000.0)));
+            double operatingVehicleKm = routeDistance > 0
+                    ? routeDistance / 1000.0 * departureCount : 0.0;
+            metrics.put("passengerStrength", operatingVehicleKm <= 0
+                    ? null : round2(totalBoardings / operatingVehicleKm));
+            metrics.put("operatingVehicleKm", round2(operatingVehicleKm));
+            PeakLoadTotals peakLoad = MatsimRoutePanelCache.peakLoadTotals(
+                    segments.stream().map(segment -> segment.flowByHour).toList(), capacityByHour);
+            metrics.put("peakPassengerOnSegments", peakLoad.passenger());
+            metrics.put("peakCapacityOnSegments", peakLoad.capacity());
+            PeakDepartureAverage averagePeakLoad = peakDepartureAverage();
+            metrics.put("peakAverageLoadRate", averagePeakLoad.percent());
+            metrics.put("peakDepartureSamples", averagePeakLoad.validDepartures());
+            metrics.put("peakMissingCapacityDepartures", averagePeakLoad.missingCapacityDepartures());
             int vehicles = vehicleIds.size();
+            TransitMetrics.BusOperatingEfficiency efficiency =
+                    TransitMetrics.busOperatingEfficiency(totalBoardings, vehicles, departureCount);
             metrics.put("departures", departureCount);
             metrics.put("vehicles", vehicles);
-            metrics.put("perTripFlow", departureCount > 0 ? round2(totalBoardings / (double) departureCount) : 0.0);
-            metrics.put("perVehicleFlow", vehicles > 0 ? round2(totalBoardings / (double) vehicles) : 0.0);
+            metrics.put("vehicleIds", new ArrayList<>(vehicleIds));
+            metrics.put("perTripFlow", efficiency.perDeparture() == null
+                    ? 0.0 : round2(efficiency.perDeparture()));
+            metrics.put("perVehicleFlow", efficiency.perVehicleDaily() == null
+                    ? 0.0 : round2(efficiency.perVehicleDaily()));
             metrics.put("peakHeadwayMin", round2(peakHeadwayMin));
             metrics.put("offPeakHeadwayMin", round2(offPeakHeadwayMin));
             payload.put("metrics", metrics);
@@ -1563,6 +1733,14 @@ public final class MatsimRoutePanelCache {
                 int capacity = vehicleCapacity(data, departure.getVehicleId());
                 capacityTotal += capacity;
                 capacityByHour[hourOf(departure.getDepartureTime())] += capacity;
+                if (TransitMetrics.isPeakHour(hourOf(departure.getDepartureTime()))) {
+                    if (capacity > 0) {
+                        peakDepartures.put(departure.getId().toString(),
+                                new PeakDepartureState(capacity));
+                    } else {
+                        peakMissingCapacityDepartures++;
+                    }
+                }
             }
         }
 
@@ -1572,6 +1750,19 @@ public final class MatsimRoutePanelCache {
             }
             StationFlowAccumulator station = stationFlows.get(facilityId);
             return station == null ? facilityId : station.facilityName;
+        }
+
+        private PeakLoadTotals peakLoadTotals() {
+            return MatsimRoutePanelCache.peakLoadTotals(
+                    segments.stream().map(segment -> segment.flowByHour).toList(), capacityByHour);
+        }
+
+        private PeakDepartureAverage peakDepartureAverage() {
+            double rateSum = peakDepartures.values().stream()
+                    .mapToDouble(PeakDepartureState::rate)
+                    .sum();
+            return new PeakDepartureAverage(
+                    rateSum, peakDepartures.size(), peakMissingCapacityDepartures);
         }
 
         private static double routeDistance(TransitRoute route, Network network) {
@@ -1617,7 +1808,6 @@ public final class MatsimRoutePanelCache {
         private final List<String> routeKeys = new ArrayList<>();
         private final Set<String> facilityIds = new LinkedHashSet<>();
         private final Map<String, StationFlowAccumulator> stationFlows = new LinkedHashMap<>();
-        private final Map<String, Double> routeDistanceByLine = new LinkedHashMap<>();
         private final int[] hourlyBoardings = new int[HOURS];
         private final int[] hourlyAlightings = new int[HOURS];
         private final int[] capacityByHour = new int[HOURS];
@@ -1634,6 +1824,13 @@ public final class MatsimRoutePanelCache {
         private long totalAlightings = 0;
         private double capacityTotal = 0.0;
         private int departureCount = 0;
+        private long peakPassengerOnSegments = 0;
+        private long peakCapacityOnSegments = 0;
+        private double peakDepartureLoadRateSum = 0.0;
+        private int peakDepartureSamples = 0;
+        private int peakMissingCapacityDepartures = 0;
+        // 分母累计量：Σ(各运行路径长度 × 该路径实际发车班次)，即运营车公里的米制原值。
+        private double departureWeightedRouteDistance = 0.0;
         private double firstTime = Double.MAX_VALUE;
         private double lastTime = 0.0;
         // 代表方向（组内最长的单向 route），平均站距按该方向计算——
@@ -1660,6 +1857,14 @@ public final class MatsimRoutePanelCache {
             totalAlightings += route.totalAlightings;
             capacityTotal += route.capacityTotal;
             departureCount += route.departureCount;
+            departureWeightedRouteDistance += route.routeDistance * route.departureCount;
+            PeakLoadTotals routePeakLoad = route.peakLoadTotals();
+            peakPassengerOnSegments += routePeakLoad.passenger();
+            peakCapacityOnSegments += routePeakLoad.capacity();
+            PeakDepartureAverage routeAveragePeakLoad = route.peakDepartureAverage();
+            peakDepartureLoadRateSum += routeAveragePeakLoad.rateSum();
+            peakDepartureSamples += routeAveragePeakLoad.validDepartures();
+            peakMissingCapacityDepartures += routeAveragePeakLoad.missingCapacityDepartures();
             if (route.departureCount > 0) {
                 // 无班次的 route 首末班是 0.0 占位，不能参与 min/max（否则首班恒 00:00）
                 firstTime = Math.min(firstTime, route.firstTime);
@@ -1676,7 +1881,6 @@ public final class MatsimRoutePanelCache {
             }
             vehicleIds.addAll(route.vehicleIds);
             riderIds.addAll(route.riderIds);
-            routeDistanceByLine.merge(route.lineId, route.routeDistance, Math::max);
             for (StopMeta stop : route.stops) {
                 facilityIds.add(stop.facilityId);
             }
@@ -1729,7 +1933,9 @@ public final class MatsimRoutePanelCache {
         }
 
         private Map<String, Object> toPayload() {
-            double routeDistance = routeDistanceByLine.values().stream().mapToDouble(Double::doubleValue).sum();
+            double representativeRouteDistance = departureCount > 0
+                    ? departureWeightedRouteDistance / departureCount
+                    : 0.0;
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("lineGroup", true);
             payload.put("routeKey", lineId);
@@ -1754,7 +1960,7 @@ public final class MatsimRoutePanelCache {
             payload.put("stationOd", stationOdPayload);
 
             Map<String, Object> metrics = new LinkedHashMap<>();
-            metrics.put("routeDist", round2(routeDistance));
+            metrics.put("routeDist", round2(representativeRouteDistance));
             metrics.put("firstTime", firstTime == Double.MAX_VALUE ? 0.0 : firstTime);
             metrics.put("lastTime", lastTime);
             metrics.put("facNum", facilityIds.size());
@@ -1764,12 +1970,28 @@ public final class MatsimRoutePanelCache {
             metrics.put("lc", null);
             metrics.put("passenger", totalBoardings);
             metrics.put("loadRate", percent(totalBoardings, capacityTotal));
-            metrics.put("passengerStrength", routeDistance <= 0 ? 0.0 : round2(totalBoardings / (routeDistance / 1000.0)));
+            double operatingVehicleKm = departureWeightedRouteDistance / 1000.0;
+            metrics.put("passengerStrength", operatingVehicleKm <= 0
+                    ? null : round2(totalBoardings / operatingVehicleKm));
+            metrics.put("operatingVehicleKm", round2(operatingVehicleKm));
+            PeakLoadTotals peakLoad = new PeakLoadTotals(peakPassengerOnSegments, peakCapacityOnSegments);
+            metrics.put("peakPassengerOnSegments", peakLoad.passenger());
+            metrics.put("peakCapacityOnSegments", peakLoad.capacity());
+            PeakDepartureAverage averagePeakLoad = new PeakDepartureAverage(
+                    peakDepartureLoadRateSum, peakDepartureSamples, peakMissingCapacityDepartures);
+            metrics.put("peakAverageLoadRate", averagePeakLoad.percent());
+            metrics.put("peakDepartureSamples", averagePeakLoad.validDepartures());
+            metrics.put("peakMissingCapacityDepartures", averagePeakLoad.missingCapacityDepartures());
             int vehicles = vehicleIds.size();
+            TransitMetrics.BusOperatingEfficiency efficiency =
+                    TransitMetrics.busOperatingEfficiency(totalBoardings, vehicles, departureCount);
             metrics.put("departures", departureCount);
             metrics.put("vehicles", vehicles);
-            metrics.put("perTripFlow", departureCount > 0 ? round2(totalBoardings / (double) departureCount) : 0.0);
-            metrics.put("perVehicleFlow", vehicles > 0 ? round2(totalBoardings / (double) vehicles) : 0.0);
+            metrics.put("vehicleIds", new ArrayList<>(vehicleIds));
+            metrics.put("perTripFlow", efficiency.perDeparture() == null
+                    ? 0.0 : round2(efficiency.perDeparture()));
+            metrics.put("perVehicleFlow", efficiency.perVehicleDaily() == null
+                    ? 0.0 : round2(efficiency.perVehicleDaily()));
             metrics.put("peakHeadwayMin", round2(repPeakHeadwayMin));
             metrics.put("offPeakHeadwayMin", round2(repOffPeakHeadwayMin));
             payload.put("metrics", metrics);

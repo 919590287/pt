@@ -1,13 +1,13 @@
-<!-- 全局模型加载门禁：任一模型就绪之前，所有业务页面统一显示本页（图1 的合并版单窗口） -->
+<!-- 模型依赖页门禁：只等待用户当前选中的目标模型；数据管理不受影响。 -->
 <template>
   <Transition name="gate-fade">
-    <div v-if="runtime.gateVisible" class="global-model-gate" role="status" aria-live="polite" aria-busy="true">
+    <div v-if="gateApplies" class="global-model-gate" role="status" aria-live="polite" aria-busy="true">
       <div class="gate-card" role="dialog" aria-modal="false" aria-label="模型加载进度">
         <div class="gate-head">
           <span class="gate-spinner" :class="{ 'is-failed': progress.failed }" aria-hidden="true"></span>
           <div class="gate-head-text">
             <div class="gate-title">{{ gateTitle }}</div>
-            <div class="gate-subtitle">模型就绪前各功能页面暂不可用，加载完成后自动进入</div>
+            <div class="gate-subtitle">当前页面依赖所选模型，加载完成后自动进入；数据管理仍可独立使用</div>
           </div>
         </div>
 
@@ -61,12 +61,15 @@
 
 <script setup>
 import { computed } from "vue";
+import { useRoute } from "vue-router";
 import { useModelRuntimeStore } from "@/stores/modelRuntime.js";
 import { formatDuration } from "@/utils/modelLoadProgress.js";
 
 const runtime = useModelRuntimeStore();
+const route = useRoute();
 const progress = computed(() => runtime.gateProgress);
 const hasSchemes = computed(() => runtime.schemes.length > 0);
+const gateApplies = computed(() => route.meta?.requiresModel !== false && runtime.gateVisible);
 
 const gateTitle = computed(() => {
   if (!runtime.bootstrapped) return "正在检查模型状态";
@@ -220,6 +223,26 @@ function modelLabel(item) {
 @media (max-width: 560px) {
   .gate-selects {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .global-model-gate {
+  background: rgba(7, 11, 17, 0.45);
+}
+
+html.dark .gate-card {
+  background: rgba(17, 23, 31, 0.97);
+  box-shadow: 0 18px 48px rgba(2, 6, 12, 0.62);
+}
+
+html.dark .gate-spinner {
+  border-color: rgba(90, 168, 255, 0.26);
+  border-top-color: var(--app-blue, #409cff);
+
+  &.is-failed {
+    border-color: rgba(255, 122, 110, 0.4);
+    border-top-color: #f87171;
   }
 }
 </style>

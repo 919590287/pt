@@ -266,4 +266,48 @@ h1 {
     padding: 28px 22px 24px;
   }
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+/* 持久化暗底图的用户刷新后登录页也处于 html.dark；保持网格+渐变构图，仅翻转明度 */
+html.dark .auth-page {
+  color: #e7edf6;
+  background:
+    repeating-linear-gradient(90deg, rgba(64, 156, 255, 0.09) 0 1px, transparent 1px 72px),
+    repeating-linear-gradient(0deg, rgba(49, 216, 238, 0.08) 0 1px, transparent 1px 72px),
+    linear-gradient(145deg, #10161e 0%, #0d1218 48%, #10161e 100%);
+}
+
+html.dark .auth-panel {
+  border-color: rgba(148, 180, 220, 0.16);
+  background: rgba(16, 22, 30, 0.94);
+  box-shadow: 0 22px 64px rgba(2, 6, 12, 0.4);
+}
+
+html.dark .brand-mark {
+  background: #1a2431;
+}
+
+html.dark .eyebrow {
+  color: #94a3b8;
+}
+
+html.dark h1 {
+  color: #e7edf6;
+}
+
+html.dark .auth-form :deep(.el-form-item__label) {
+  color: #c2cddd;
+}
+
+html.dark .auth-form :deep(.el-input__wrapper) {
+  background: #1a2431;
+  box-shadow: 0 0 0 1px rgba(148, 180, 220, 0.28) inset;
+}
+
+html.dark .auth-links a {
+  color: #409cff;
+}
+html.dark .auth-links a:hover {
+  color: #31d8ee;
+}
 </style>

@@ -3,11 +3,12 @@ import { computed, ref } from "vue";
 import { getModelList, getSchemeList, loadModel } from "@/api/scheme.js";
 import { useModelSelectionStore } from "@/stores/modelSelection.js";
 import { isModelUsable, unifiedModelProgress } from "@/utils/modelLoadProgress.js";
+import { clearModelDataCache } from "@/utils/modelDataCache.js";
 
 /**
- * 全局模型就绪状态：
- * - 平台打开后，在任何一个模型（loadStatus + cacheStatus=ready）就绪之前，
- *   所有业务页面（数据管理 → 配车测算）都由 MapLayout 的全局门禁挡住；
+ * 目标模型就绪状态：
+ * - 仅依赖模型的页面由 MapLayout 门禁等待当前目标模型；
+ * - 数据管理不依赖运行时模型，不会因首次大模型加载而被阻断；
  * - 本 store 负责：拉取方案/模型列表、自动挑选并触发首个模型的后台加载、
  *   高频轮询直到就绪、就绪后降频心跳（感知"全部被卸载"后重新亮门禁）。
  */
@@ -21,15 +22,22 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
   const isSwitchingTarget = ref(false);
 
   let booting = false;
+  let modelDemand = false;
   let pollSeq = 0;
   let pollTimer = 0;
   let heartbeatTimer = 0;
+  let schemesPromise = null;
+  let schemesFetchedAt = 0;
+  const modelPromises = new Map();
+  const modelFetchedAt = new Map();
+  const CATALOG_FRESH_MS = 750;
 
   const allModels = computed(() => Object.values(modelsByScheme.value).flat());
-  const anyModelReady = computed(() => allModels.value.some(isModelUsable));
-  const gateVisible = computed(() => !anyModelReady.value);
   const gateModels = computed(() => modelsByScheme.value[gateScheme.value] || []);
   const gateModel = computed(() => gateModels.value.find((item) => item.name === gateTarget.value) || null);
+  const anyModelReady = computed(() => allModels.value.some(isModelUsable));
+  // 门禁只服从用户当前目标；其他方案中任意模型 ready 不能误放行到错误数据源。
+  const gateVisible = computed(() => !isModelUsable(gateModel.value));
   const gateProgress = computed(() => unifiedModelProgress(gateModel.value));
 
   function restoredSelection() {
@@ -52,18 +60,57 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     }
   }
 
-  async function fetchSchemes() {
-    const res = await getSchemeList(undefined, { silentError: true });
-    schemes.value = Array.isArray(res?.data) ? res.data : [];
-    return schemes.value;
+  async function fetchSchemes(options = {}) {
+    const now = Date.now();
+    if (!options.force && schemesFetchedAt > 0 && now - schemesFetchedAt < CATALOG_FRESH_MS) {
+      return schemes.value;
+    }
+    if (schemesPromise) return schemesPromise;
+    schemesPromise = (async () => {
+      const res = await getSchemeList(undefined, { silentError: true });
+      schemes.value = Array.isArray(res?.data) ? res.data : [];
+      schemesFetchedAt = Date.now();
+      return schemes.value;
+    })();
+    try {
+      return await schemesPromise;
+    } finally {
+      schemesPromise = null;
+    }
   }
 
-  async function fetchModels(scheme) {
+  async function fetchModels(scheme, options = {}) {
     if (!scheme) return [];
-    const res = await getModelList({ schemeName: scheme }, { silentError: true });
-    const list = Array.isArray(res?.data) ? res.data : [];
-    modelsByScheme.value = { ...modelsByScheme.value, [scheme]: list };
-    return list;
+    const now = Date.now();
+    const fetchedAt = modelFetchedAt.get(scheme) || 0;
+    if (!options.force && fetchedAt > 0 && now - fetchedAt < CATALOG_FRESH_MS) {
+      return modelsByScheme.value[scheme] || [];
+    }
+    const inFlight = modelPromises.get(scheme);
+    if (inFlight) return inFlight;
+    const request = (async () => {
+      const res = await getModelList({ schemeName: scheme }, { silentError: true });
+      const list = Array.isArray(res?.data) ? res.data : [];
+      const previousByName = new Map(
+        (modelsByScheme.value[scheme] || []).map((item) => [item?.name, item]),
+      );
+      for (const item of list) {
+        const previous = previousByName.get(item?.name);
+        if (!previous) continue;
+        const loadGenerationChanged = Number(previous.loadVersion || 0) !== Number(item.loadVersion || 0);
+        const cacheGenerationChanged = Number(previous.cacheGeneratedAt || 0) !== Number(item.cacheGeneratedAt || 0);
+        if (loadGenerationChanged || cacheGenerationChanged) clearModelDataCache(item.name);
+      }
+      modelsByScheme.value = { ...modelsByScheme.value, [scheme]: list };
+      modelFetchedAt.set(scheme, Date.now());
+      return list;
+    })();
+    modelPromises.set(scheme, request);
+    try {
+      return await request;
+    } finally {
+      if (modelPromises.get(scheme) === request) modelPromises.delete(scheme);
+    }
   }
 
   async function refreshAllSchemes() {
@@ -76,7 +123,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     return (
       list.find((item) => item.name === preferredName)
       || list.find((item) => isModelUsable(item))
-      || list.find((item) => item.isDefault)
+      || list.find((item) => item.isDefault === true || item.default === true)
       // 缓存已就绪的模型只差本体加载，最快能把平台"点亮"
       || list.find((item) => item.cacheStatus === "ready")
       || list[0]
@@ -98,11 +145,12 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
   }
 
   function startGatePolling() {
+    if (!modelDemand) return;
     stopPolling();
     const seq = pollSeq;
     let attempt = 0;
     const tick = async () => {
-      if (seq !== pollSeq) return;
+      if (seq !== pollSeq || !modelDemand) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         pollTimer = setTimeout(tick, 3000);
         return;
@@ -112,7 +160,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
           await fetchModels(gateScheme.value);
         }
         if (seq !== pollSeq) return;
-        if (anyModelReady.value) {
+        if (isModelUsable(gateModel.value)) {
           onGateOpened();
           return;
         }
@@ -131,13 +179,16 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
   }
 
   function startHeartbeat() {
-    if (heartbeatTimer) return;
+    if (!modelDemand || heartbeatTimer) return;
     heartbeatTimer = setInterval(async () => {
+      if (!modelDemand) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
-        await refreshAllSchemes();
-        if (!anyModelReady.value && !pollTimer) {
-          // 所有模型都被卸载了：门禁重新亮起，恢复快轮询并自动补加载
+        if (gateScheme.value) {
+          await fetchModels(gateScheme.value);
+        }
+        if (gateVisible.value && !pollTimer) {
+          // 当前目标被卸载：门禁重新亮起，恢复快轮询并自动补加载。
           const target = pickTargetModel(gateModels.value, gateTarget.value);
           if (target) await activateTarget(gateScheme.value || schemes.value[0] || "", target.name);
           startGatePolling();
@@ -168,6 +219,9 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     if (isModelUsable(item)) return;
     isSwitchingTarget.value = true;
     try {
+      // 同名模型重载/缓存重建前先清除浏览器派生缓存；完成后的 loadVersion/
+      // cacheGeneratedAt 变化还会在 fetchModels 中再次兜底，避免本会话展示旧评价值。
+      clearModelDataCache(modelName);
       await loadModel({ name: modelName }, { silentError: true });
     } catch (error) {
       gateError.value = error?.message || "模型后台加载启动失败，请重试";
@@ -198,8 +252,22 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
   }
 
   async function bootstrap() {
-    if (booting || bootstrapped.value) {
-      startHeartbeat();
+    modelDemand = true;
+    if (booting) {
+      return;
+    }
+    if (bootstrapped.value) {
+      booting = true;
+      try {
+        startHeartbeat();
+        if (gateVisible.value) {
+          const target = pickTargetModel(gateModels.value, gateTarget.value);
+          if (target) await activateTarget(gateScheme.value, target.name);
+          startGatePolling();
+        }
+      } finally {
+        booting = false;
+      }
       return;
     }
     booting = true;
@@ -214,24 +282,41 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
         return;
       }
       gateScheme.value = schemeList.includes(restored.scheme) ? restored.scheme : schemeList[0];
-      await refreshAllSchemes();
+      // 先只取目标方案并立即触发模型加载；其余方案目录放到后台补齐，避免首开时
+      // 等所有模型的缓存状态扫描完成后才发送 loadModel。
+      await fetchModels(gateScheme.value);
       bootstrapped.value = true;
-      if (anyModelReady.value) {
-        startHeartbeat();
-        return;
-      }
       const target = pickTargetModel(gateModels.value, restored.model);
       if (target) {
-        await activateTarget(gateScheme.value, target.name);
+        gateTarget.value = target.name;
       }
-      startGatePolling();
-      startHeartbeat();
+      if (isModelUsable(target)) {
+        onGateOpened();
+        startHeartbeat();
+      } else {
+        if (target) {
+          await activateTarget(gateScheme.value, target.name);
+        }
+        startGatePolling();
+        startHeartbeat();
+      }
+      // 其他方案在用户真正切换时才取目录，避免首载期间对外置盘做无关缓存校验。
     } catch {
       bootstrapped.value = true;
       startGatePolling();
       startHeartbeat();
     } finally {
       booting = false;
+    }
+  }
+
+  /** 离开模型依赖页时停止轮询/心跳，数据管理不会在后台偷偷重载大模型。 */
+  function pauseModelDemand() {
+    modelDemand = false;
+    stopPolling();
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = 0;
     }
   }
 
@@ -249,7 +334,11 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     gateModels,
     gateModel,
     gateProgress,
+    fetchSchemes,
+    fetchModels,
+    refreshAllSchemes,
     bootstrap,
+    pauseModelDemand,
     selectGateScheme,
     selectGateModel,
     retryGateLoad,

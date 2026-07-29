@@ -4,8 +4,6 @@ import com.jts.gjcxfzksh.api.common.AjaxResult;
 import com.jts.gjcxfzksh.api.common.HttpCacheSupport;
 import com.jts.gjcxfzksh.api.model.params.DatasourceParam;
 import com.jts.gjcxfzksh.api.service.PopulationService;
-import com.jts.gjcxfzksh.data.Datasource;
-import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.cache.MatsimPopulationCache;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -54,9 +52,8 @@ public class PopulationController {
             // v 为前端缓存击穿参数（URL 参与浏览器缓存键），服务端不使用
             @RequestParam(value = "v", required = false) String v,
             @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
-        MatsimData data = Datasource.data(datasource).matsim_data();
         // ETag 取 manifest 的 sourceFingerprint + 缓存版本哈希；null 即未就绪
-        String tag = MatsimPopulationCache.gridBinTag(data);
+        String tag = populationService.gridTag(datasource);
         if (tag == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
@@ -67,7 +64,7 @@ public class PopulationController {
                     .cacheControl(HttpCacheSupport.immutablePrivate())
                     .build();
         }
-        byte[] body = MatsimPopulationCache.readGridBytes(data);
+        byte[] body = populationService.gridBytes(datasource);
         if (body == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }

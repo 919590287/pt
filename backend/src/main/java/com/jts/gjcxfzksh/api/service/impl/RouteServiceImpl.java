@@ -17,6 +17,7 @@ import com.jts.gjcxfzksh.api.model.vo.RoutePickVO;
 import com.jts.gjcxfzksh.api.service.RouteService;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPersonTrackStore;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRouteSpatialIndex;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
@@ -73,6 +74,10 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         if (cached != null) {
             return cached;
         }
+        if (matsim_data.isLargeModel()) {
+            // 大模型不允许回退到 2000 万级 personTracks 全表扫描。
+            throw new BusinessException("大模型线路详情缓存尚未就绪");
+        }
         Network network = network(param);
         if (param.getRouteId() == null || param.getRouteId().isBlank()) {
             throw new BusinessException("routeId 不能为空");
@@ -85,8 +90,11 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         // 非直线系数（线路长度/首末站直线距离）。原实现误用重复系数 routeRC，
         // 单条 route 的重复系数恒≈1，导致该指标失去意义；与 routePanel 的 metrics.lc 口径对齐。
         vo.getInfo().setLc(routeNoLC(route, network));
-        // 满载率
-        vo.getInfo().setTakeRate(fullLoadRate(route, matsim_data));
+        // 线路平均高峰满载率（小数）；无有效高峰班次时保留 DTO 默认值。
+        Double peakAverageLoadRate = peakAverageLoadRate(route, param.getLineId(), matsim_data);
+        if (peakAverageLoadRate != null) {
+            vo.getInfo().setTakeRate(peakAverageLoadRate);
+        }
         // 填充日均客流
         vo.getInfo().setPassenger(queryPTTrack(new RouteChartParam() {{
             setDatasource(param.getDatasource());
@@ -112,6 +120,24 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         }
         TransitRoute transitRoute = lineRoute.route();
         String lineId = lineRoute.lineId();
+        if (matsim_data.isLargeModel()) {
+            Map<String, Object> detail = MatsimRoutePanelCache.readRoutePanelDetail(
+                    matsim_data, lineId, transitRoute.getId().toString());
+            if (detail.get("metrics") instanceof Map<?, ?> metrics) {
+                Map<String, Object> result = new HashMap<>();
+                result.put("rcxrc", metric(metrics, "passenger"));
+                result.put("fzxxs", metric(metrics, "lc"));
+                result.put("cfxs", routeRC(transitRoute, matsim_data.getTransitNetwork()));
+                Object peakAverageLoadRate = metrics.get("peakAverageLoadRate");
+                result.put("mzl", peakAverageLoadRate instanceof Number number
+                        ? number.doubleValue() / 100.0 : null);
+                result.put("xlklqd", metric(metrics, "passengerStrength"));
+                // 大模型不物化 plans；无可靠线路候车时间缓存时明确返回 null，不能伪装成 0。
+                result.put("pjhcsj", null);
+                return result;
+            }
+            throw new BusinessException("大模型线路客流缓存尚未就绪");
+        }
         Network network = matsim_data.getNetwork();
         Map<String, Object> result = new HashMap<>();
         // 日出行人次（仅统计该线路的上车人次；routeId 跨线路可重复，须带 lineId 过滤）
@@ -127,7 +153,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         double cfxs = routeRC(transitRoute, network);
         result.put("cfxs", cfxs);
         // 满载率
-        double mzl = fullLoadRate(transitRoute, matsim_data);
+        Double mzl = peakAverageLoadRate(transitRoute, lineId, matsim_data);
         result.put("mzl", mzl);
         // 线路客流强度
         double xlklqd = routePersonStrength(transitRoute, lineId, matsim_data);
@@ -145,6 +171,11 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         }
         return track.getLineId() == null || lineId == null
                 || lineId.equals(track.getLineId().toString());
+    }
+
+    private static double metric(Map<?, ?> metrics, String key) {
+        Object value = metrics.get(key);
+        return value instanceof Number number ? number.doubleValue() : 0.0;
     }
 
     @Override
@@ -196,7 +227,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
 
     @Override
     public Map<String, Object> routePanel(DatasourceParam param) {
-        return MatsimRoutePanelCache.readRoutePanel(matsim_data(param));
+        return MatsimRoutePanelCache.readRoutePanelIndex(matsim_data(param));
     }
 
     @Override
@@ -227,6 +258,9 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         if (cached != null) {
             return (List<PTLink>) (List<?>) cached;
         }
+        if (matsimData.isLargeModel()) {
+            throw new BusinessException("大模型公交线路瓦片缓存尚未就绪，请稍后重试");
+        }
         return List.of();
     }
 
@@ -234,8 +268,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     public List<PTLink> routeFull(TileNetworkParam param) {
         MatsimData matsimData = matsim_data(param);
         if (matsimData.isLargeModel()) {
-            log.warn("大模型禁止请求全量线路，请使用瓦片接口: datasource={}", param.getDatasource());
-            return List.of();
+            throw new BusinessException("大模型不支持全量线路返回，请使用瓦片接口");
         }
         Network network = matsimData.getNetwork();
         Set<Id<Link>> routeLinkIds = new LinkedHashSet<>();
@@ -267,6 +300,10 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
 
     @Override
     public List<FacilityFlowVO> routeFlow(RouteChartParam param) {
+        MatsimData matsimData = matsim_data(param);
+        if (matsimData.isLargeModel()) {
+            return largeModelRouteFlow(param, matsimData);
+        }
         List<PTPersonTrack> data = queryPTTrack(param);
         List<FacilityFlowVO> voList = facilityByRouteId(param);
         // 填充客流
@@ -285,6 +322,64 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
             vo.setFlow(flow);
         }
         return voList;
+    }
+
+    /**
+     * V6 断面客流直接使用 route-panel 的线路×站点×小时分片，请求成本与站数相关，
+     * 不再每次解压并扫描全量乘客明细。
+     */
+    private List<FacilityFlowVO> largeModelRouteFlow(RouteChartParam param, MatsimData data) {
+        if (Boolean.TRUE.equals(param.getSingle())) {
+            throw new BusinessException("大模型暂不支持单班次断面客流，请按线路和小时查询");
+        }
+        if (param.getRouteId() == null || param.getRouteId().isBlank()) {
+            throw new BusinessException("routeId 不能为空");
+        }
+        int begin = Math.max(0, param.getBeginSecond());
+        int end = param.getEndSecond() <= 0 ? 24 * 3600 : Math.min(24 * 3600, param.getEndSecond());
+        if (begin % 3600 != 0 || end % 3600 != 0) {
+            throw new BusinessException("大模型断面客流按整小时聚合，起止时刻需对齐整点");
+        }
+        int fromHour = Math.min(24, begin / 3600);
+        int toHour = Math.max(fromHour, Math.min(24, end / 3600));
+        Map<String, Object> detail = MatsimRoutePanelCache.readRoutePanelDetail(
+                data, param.getLineId(), param.getRouteId());
+        if (!(detail.get("stationFlows") instanceof Iterable<?> stationFlows)) {
+            throw new BusinessException("大模型线路断面客流缓存尚未就绪");
+        }
+
+        Map<String, long[]> flowByFacility = new HashMap<>();
+        for (Object value : stationFlows) {
+            if (!(value instanceof Map<?, ?> station)) continue;
+            String facilityId = String.valueOf(station.get("facilityId"));
+            long up = sumHours(station.get("boardingByHour"), fromHour, toHour);
+            long down = sumHours(station.get("alightingByHour"), fromHour, toHour);
+            flowByFacility.put(facilityId, new long[]{up, down});
+        }
+        List<FacilityFlowVO> result = facilityByRouteId(param);
+        long onboard = 0;
+        for (FacilityFlowVO station : result) {
+            long[] values = flowByFacility.getOrDefault(station.getId(), new long[2]);
+            onboard += values[0] - values[1];
+            station.setUp(values[0]);
+            station.setDown(values[1]);
+            station.setFlow(onboard);
+        }
+        return result;
+    }
+
+    private static long sumHours(Object source, int fromHour, int toHour) {
+        if (!(source instanceof Iterable<?> values)) return 0L;
+        long result = 0L;
+        int index = 0;
+        for (Object value : values) {
+            if (index >= toHour) break;
+            if (index >= fromHour && value instanceof Number number) {
+                result += number.longValue();
+            }
+            index++;
+        }
+        return result;
     }
 
 
@@ -411,9 +506,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         return count == 0 ? 0.0 : awaitTime / count;
     }
 
-    /**
-     * 线路客流强度（人次/km），上车记录按 lineId+routeId 过滤。
-     */
+    /** 线路客流强度（人次/车公里），上车记录按 lineId+routeId 过滤。 */
     private double routePersonStrength(TransitRoute transitRoute, String lineId, MatsimData matsim_data) {
         NetworkRoute networkRoute = transitRoute.getRoute();
         double length = DistanceUtil.distance(networkRoute, matsim_data.getNetwork());
@@ -421,21 +514,24 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
                 .filter(track -> Boolean.TRUE.equals(track.getEnter())
                         && trackMatchesRoute(track, transitRoute, lineId))
                 .count();
-        return length <= 0 ? 0.0 : personCount / (length / 1000);
+        double operatingVehicleKm = length > 0
+                ? length / 1000.0 * transitRoute.getDepartures().size() : 0.0;
+        return operatingVehicleKm <= 0 ? 0.0 : personCount / operatingVehicleKm;
     }
 
     /**
-     * 满载率：统一走指标口径层（上车人次/静态容量，输出小数）。
-     * 原实现分子未过滤上车记录（上下车双计，人数约翻倍），已修正。
+     * 平均高峰满载率：每个高峰班次先取最大站段在车人数/额定载客量，
+     * 再对该运行路径全部高峰班次等权平均（输出小数）。
      */
-    private double fullLoadRate(TransitRoute transitRoute, MatsimData matsim_data) {
-        Map<VehicleId, List<PTPersonTrack>> tracksByVehicle = matsim_data.getPersonTracks().stream()
-                .collect(Collectors.groupingBy(PTPersonTrack::getVehicleId));
-        List<VehicleId> vehicleIds = new ArrayList<>();
-        transitRoute.getDepartures().forEach((departureId, departure) ->
-                vehicleIds.add(VehicleId.create(departure.getVehicleId())));
-        return TransitMetrics.fullLoadRate(
-                vehicleIds, tracksByVehicle, matsim_data.getTv().getVehicles(), matsim_data.getScale());
+    private Double peakAverageLoadRate(TransitRoute transitRoute, String lineId, MatsimData matsim_data) {
+        TransitMetrics.PeakAverageLoadAccumulator accumulator =
+                TransitMetrics.PeakAverageLoadAccumulator.route(
+                        lineId, transitRoute, matsim_data.getTv(), true);
+        matsim_data.getPersonTracks().stream()
+                .filter(track -> trackMatchesRoute(track, transitRoute, lineId))
+                .forEach(accumulator::accept);
+        Double percent = accumulator.finish().percent();
+        return percent == null ? null : percent / 100.0;
     }
 
     /**
@@ -495,9 +591,9 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
      * 公交图表出行数据查询
      */
     private List<PTPersonTrack> queryPTTrack(RouteChartParam param) {
-        Set<PTPersonTrack> list = matsim_data(param).getPersonTracks();
-        if (list == null || list.isEmpty()) {
-            return new ArrayList<>();
+        MatsimData data = matsim_data(param);
+        if (data.isLargeModel()) {
+            throw new BusinessException("大模型不支持请求时扫描全量乘客明细，请使用预聚合面板接口");
         }
         boolean single = Boolean.TRUE.equals(param.getSingle());
         if (single) {
@@ -509,23 +605,28 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         }
         int beginSecond = Math.max(0, param.getBeginSecond());
         int endSecond = param.getEndSecond() <= 0 ? Integer.MAX_VALUE : param.getEndSecond();
-        return list.stream().filter(t -> {
+        List<PTPersonTrack> result = new ArrayList<>();
+        MatsimPersonTrackStore.forEachTrack(data, t -> {
             // 时间
             if (t.getTime() >= beginSecond && t.getTime() <= endSecond) {
                 // 单趟
                 if (single) {
-                    return t.getDepartureId().equals(DepartureId.create(param.getDepartureId()));
-                } else {
-                    if (!t.getRouteId().equals(RouteId.create(param.getRouteId()))) {
-                        return false;
+                    if (Objects.equals(t.getDepartureId(), DepartureId.create(param.getDepartureId()))) {
+                        result.add(t);
                     }
-                    return param.getLineId() == null
+                } else {
+                    if (!Objects.equals(t.getRouteId(), RouteId.create(param.getRouteId()))) {
+                        return;
+                    }
+                    if (param.getLineId() == null
                             || param.getLineId().isBlank()
-                            || String.valueOf(t.getLineId()).equals(param.getLineId());
+                            || String.valueOf(t.getLineId()).equals(param.getLineId())) {
+                        result.add(t);
+                    }
                 }
             }
-            return false;
-        }).toList();
+        });
+        return result;
     }
 
 }

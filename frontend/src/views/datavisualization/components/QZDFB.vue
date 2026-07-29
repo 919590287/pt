@@ -1,11 +1,13 @@
 <!-- 出行分布监测（公交出行监测模块，人口分布监测的同级子模块；原「起终点分布监测」，
      文件名/qzd- 前缀/rm-tripends-* 图层 id 为历史内部标识，保持不动）
-     地图：100m 起终点栅格（deck.gl GridCellLayer，rm-tripends-grid）+ 街道边界/名称占比标注（maplibre，rm-tripends-street-*）。
+     地图：仿真模式为 100m 起终点栅格（deck.gl GridCellLayer，rm-tripends-grid）；
+     真实模式为按站点上下客量加权的核密度热力图（maplibre，rm-tripends-heat-*）；
+     两者均叠加街道边界/名称占比标注（maplibre，rm-tripends-street-*）。
      右侧：起点/终点切换 + 按街道占比排序榜，teleport 到 index.vue 的右侧容器（同 RKFB 模式）；
      栅格客流图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
-     口径（tripends-v4）：本次活动出行的起终点——plans 中含 pt leg 的 trip，
+     口径：本次活动出行的起终点——plans 中含 pt leg 的 trip，
      起点=出行前置活动位置、终点=出行后置活动位置（不再是上/下车站点）；
-     一律直出模型抽样人次（不做 ÷scale 扩样）；grid.bin 复用 PGRD 契约（home 列=起点、work 列=终点）。 -->
+     一律直出已加载模型的原始人次，不做任何数量缩放；grid.bin 复用 PGRD 契约（home 列=起点、work 列=终点）。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
     <div class="qzd-card" aria-label="出行分布监测面板">
@@ -24,6 +26,17 @@
         </span>
         <p class="qzd-status-title">出行分布缓存生成中</p>
         <p class="qzd-status-desc">后端正在为当前模型提取公交出行的活动起终点，就绪后将自动展示。</p>
+      </div>
+
+      <div v-else-if="status === 'unsupported'" class="qzd-status" role="status">
+        <span class="qzd-status-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"></circle>
+            <line x1="8" y1="12" x2="16" y2="12"></line>
+          </svg>
+        </span>
+        <p class="qzd-status-title">当前模型不支持出行分布</p>
+        <p class="qzd-status-desc">{{ errorMessage || "缺少可读取的 plans 出行链，平台不会用空分布或 0 值代替。" }}</p>
       </div>
 
       <div v-else-if="status === 'error'" class="qzd-status" role="alert">
@@ -82,7 +95,7 @@
 
         <div v-else class="qzd-street-rank">
           <div class="qzd-rank-head" aria-hidden="true">
-            <span class="qzd-rank-head-name">街道</span>
+            <span class="qzd-rank-head-name">{{ isRealMode ? '站点栅格' : '街道' }}</span>
             <span class="qzd-rank-head-value">人次</span>
             <span class="qzd-rank-head-share">占比</span>
           </div>
@@ -109,29 +122,39 @@
             </li>
           </ol>
           <p v-if="streetRows.length > visibleStreetRows.length" class="qzd-rank-footnote">
-            按{{ metricLabel }}占比排序，显示前 {{ visibleStreetRows.length }} 名（共 {{ streetRows.length }} 个街道）
+            按{{ metricLabel }}占比排序，显示前 {{ visibleStreetRows.length }} 名（共 {{ streetRows.length }} 个{{ isRealMode ? '站点栅格' : '街道' }}）
           </p>
         </div>
       </template>
     </div>
   </teleport>
 
-  <!-- 栅格客流图例：地图左下角浮动（结构同客流分析地图图例）；pageActive 防止 KeepAlive 切页后残留 -->
+  <!-- 地图图例：真实模式为相对热度，仿真模式为栅格人次；pageActive 防止 KeepAlive 切页后残留 -->
   <teleport to="body">
     <div
       v-if="status === 'ready' && pageActive"
       class="qzd-map-legend"
-      aria-label="栅格客流图例（人次/格）"
-      :title="`单格 100m×100m 的${metricLabel}人次`"
+      :aria-label="isRealMode ? '站点客流热力图例' : '栅格客流图例（人次/格）'"
+      :title="isRealMode ? `按真实站点${metricLabel}人次加权的相对热度` : `单格 100m×100m 的${metricLabel}人次`"
       @click.stop
     >
       <div class="qzd-map-legend-head">
-        <span class="qzd-map-legend-title">栅格客流（人次/格）</span>
+        <span class="qzd-map-legend-title">{{ isRealMode ? '站点客流热力（相对热度）' : '栅格客流（人次/格）' }}</span>
       </div>
-      <div v-for="item in legendItems" :key="item.label" class="qzd-map-legend-item">
-        <span class="qzd-map-legend-swatch" :style="{ background: item.color }" aria-hidden="true"></span>
-        <span class="qzd-map-legend-label">{{ item.label }}</span>
-      </div>
+      <template v-if="isRealMode">
+        <div class="qzd-heat-scale" aria-hidden="true">
+          <span>低</span>
+          <i :style="{ background: realHeatLegendGradient }"></i>
+          <span>高</span>
+        </div>
+        <p class="qzd-heat-note">{{ realHeatPointCount }} 个站点单元，按{{ metricLabel }}人次加权</p>
+      </template>
+      <template v-else>
+        <div v-for="item in legendItems" :key="item.label" class="qzd-map-legend-item">
+          <span class="qzd-map-legend-swatch" :style="{ background: item.color }" aria-hidden="true"></span>
+          <span class="qzd-map-legend-label">{{ item.label }}</span>
+        </div>
+      </template>
     </div>
   </teleport>
 </template>
@@ -157,6 +180,11 @@ import {
   buildGridPositions,
   parsePopulationGrid,
 } from "../utils/populationGrid.js";
+import {
+  buildTripEndsHeatmapFeatureCollection,
+  filterTripEndsHeatmapFeatureCollection,
+} from "../utils/tripEndsHeatmap.js";
+import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 
 const props = defineProps({
   model: String,
@@ -164,21 +192,25 @@ const props = defineProps({
 });
 
 const MapRef = inject("MapRef", ref(null));
+const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
+const isRealMode = computed(() => isRealDatasource(props.model));
 
 const METRIC_OPTIONS = [
   { key: "origin", label: "出行起点" },
   { key: "destination", label: "出行终点" },
 ];
 const GRID_LAYER_KEY = "rm-tripends-grid";
+const HEAT_SOURCE_ID = "rm-tripends-heat-source";
+const HEAT_LAYER_ID = "rm-tripends-heat-layer";
 const STREET_SOURCE_ID = "rm-tripends-streets";
 const STREET_LINE_ID = "rm-tripends-street-line";
 const STREET_LABEL_ID = "rm-tripends-street-label";
-const RANK_ROW_LIMIT = 30;
 const GENERATING_POLL_MS = 8000;
 // 3D 柱高 = 单格客流（人次） ÷ 系数。
 const TRIP_ENDS_HEIGHT_DIVISOR = 0.1;
+const REAL_HEAT_RAMP = MAP_THEME.tripEnds.ramp.slice(1);
 
-const status = ref("loading"); // loading | generating | error | ready
+const status = ref("loading"); // loading | generating | unsupported | error | ready
 const errorMessage = ref("");
 const metric = ref("origin");
 const summary = shallowRef(null);
@@ -189,6 +221,8 @@ const streetsGeojson = shallowRef(null); // 模型无关街道面
 const displayRange = useDisplayRangeStore();
 const scopeLabel = computed(() => displayRange.selected || DISPLAY_RANGE_ALL);
 const metricLabel = computed(() => (metric.value === "origin" ? "出行起点" : "出行终点"));
+const realHeatPointCount = ref(0);
+const realHeatLegendGradient = `linear-gradient(90deg, ${REAL_HEAT_RAMP.join(", ")})`;
 
 // 断点为人次/km²（= 单格人次 ×100），图例按人次/格展示（÷100）
 const legendItems = buildDensityLegendItems(
@@ -246,6 +280,13 @@ function bootstrap() {
         schedulePoll();
         return null;
       }
+      if (payload.status === "unsupported" || payload.status === "nodata") {
+        summary.value = payload;
+        errorMessage.value = payload.message || payload.reason || "缺少出行分布所需源数据";
+        status.value = "unsupported";
+        removeMapLayers();
+        return null;
+      }
       summary.value = payload;
       const version = String(payload.generatedAt || payload.cacheVersion || "");
       return Promise.all([
@@ -281,7 +322,7 @@ function bootstrap() {
 }
 
 // ---------------------------------------------------------------------------
-// 街道占比榜单（随指标 / 显示范围联动；数值为模型抽样人次，不扩样；占比=街道人次/范围合计）
+// 街道占比榜单（随指标 / 显示范围联动；数值为模型原始人次；占比=街道人次/范围合计）
 // ---------------------------------------------------------------------------
 
 const streetRows = computed(() => {
@@ -313,7 +354,7 @@ const streetRows = computed(() => {
   return rows;
 });
 
-const visibleStreetRows = computed(() => streetRows.value.slice(0, RANK_ROW_LIMIT));
+const visibleStreetRows = computed(() => streetRows.value.slice(0, rightPanelRankLimit));
 const showDistrictInRow = computed(() => scopeLabel.value === DISPLAY_RANGE_ALL);
 const scopeTotal = computed(() => streetRows.value.reduce((sum, row) => sum + row.value, 0));
 
@@ -386,6 +427,68 @@ function gridLayerInstance() {
     opacity: 1,
     pickable: false,
   });
+}
+
+function realHeatPayload() {
+  const data = grid.value;
+  const model = props.model;
+  if (!data || !model) return null;
+  const counts = metric.value === "origin" ? data.home : data.work;
+  const base = getModelDerived(model, `tripEndsRealHeat:v1:${metric.value}`, () =>
+    markRaw(buildTripEndsHeatmapFeatureCollection(data, counts)),
+  );
+  const mask = scopeStreetMask.value;
+  if (!mask) return base;
+  return getModelDerived(model, `tripEndsRealHeat:v1:${metric.value}:${scopeLabel.value}`, () =>
+    markRaw(filterTripEndsHeatmapFeatureCollection(base, mask)),
+  );
+}
+
+function ensureHeatLayer(map) {
+  if (!map.getSource(HEAT_SOURCE_ID)) {
+    map.addSource(HEAT_SOURCE_ID, {
+      type: "geojson",
+      data: { type: "FeatureCollection", features: [] },
+    });
+  }
+  if (!map.getLayer(HEAT_LAYER_ID)) {
+    const layer = {
+      id: HEAT_LAYER_ID,
+      type: "heatmap",
+      source: HEAT_SOURCE_ID,
+      maxzoom: 24,
+      paint: {
+        "heatmap-weight": ["coalesce", ["get", "weight"], 0],
+        "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.82, 12, 1.05, 16, 1.28],
+        // 采用约 3km 的固定地理带宽：像素半径按 zoom 指数增长，避免同一热区缩放后忽大忽小。
+        // 真实站点样本较少时，其覆盖明显大于 100m 方格，可形成参考图所示的连续客流热区。
+        "heatmap-radius": ["interpolate", ["exponential", 2], ["zoom"], 8, 4.8, 16, 1228.8],
+        "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.82, 14, 0.9, 18, 0.84],
+        "heatmap-color": [
+          "interpolate",
+          ["linear"],
+          ["heatmap-density"],
+          0, "rgba(0,0,0,0)",
+          0.08, REAL_HEAT_RAMP[0],
+          0.24, REAL_HEAT_RAMP[1],
+          0.42, REAL_HEAT_RAMP[2],
+          0.6, REAL_HEAT_RAMP[3],
+          0.78, REAL_HEAT_RAMP[4],
+          0.9, REAL_HEAT_RAMP[5],
+          1, REAL_HEAT_RAMP[REAL_HEAT_RAMP.length - 1],
+        ],
+      },
+    };
+    if (map.getLayer(STREET_LINE_ID)) map.addLayer(layer, STREET_LINE_ID);
+    else map.addLayer(layer);
+  }
+}
+
+function removeHeatLayer(map) {
+  if (!map) return;
+  if (map.getLayer(HEAT_LAYER_ID)) map.removeLayer(HEAT_LAYER_ID);
+  if (map.getSource(HEAT_SOURCE_ID)) map.removeSource(HEAT_SOURCE_ID);
+  realHeatPointCount.value = 0;
 }
 
 // 街道 FeatureCollection 附加展示属性（label/占比）。
@@ -466,8 +569,17 @@ function refreshMapLayers() {
   try {
     ensureStreetLayers(map);
     map.getSource(STREET_SOURCE_ID)?.setData(geojson);
-    const layer = gridLayerInstance();
-    if (layer) setSharedDeckLayer(wrapper, GRID_LAYER_KEY, layer, 0);
+    if (isRealMode.value) {
+      removeSharedDeckLayer(wrapper, GRID_LAYER_KEY);
+      ensureHeatLayer(map);
+      const payload = realHeatPayload();
+      map.getSource(HEAT_SOURCE_ID)?.setData(payload?.collection || { type: "FeatureCollection", features: [] });
+      realHeatPointCount.value = payload?.pointCount || 0;
+    } else {
+      removeHeatLayer(map);
+      const layer = gridLayerInstance();
+      if (layer) setSharedDeckLayer(wrapper, GRID_LAYER_KEY, layer, 0);
+    }
     pendingLayerRefresh = false;
   } catch (error) {
     // 地图尚未就绪（样式加载中等）时静默，数据/指标变化会再次触发
@@ -484,7 +596,10 @@ function removeMapLayers() {
   try {
     if (map.getLayer(STREET_LABEL_ID)) map.removeLayer(STREET_LABEL_ID);
     if (map.getLayer(STREET_LINE_ID)) map.removeLayer(STREET_LINE_ID);
+    if (map.getLayer(HEAT_LAYER_ID)) map.removeLayer(HEAT_LAYER_ID);
     if (map.getSource(STREET_SOURCE_ID)) map.removeSource(STREET_SOURCE_ID);
+    if (map.getSource(HEAT_SOURCE_ID)) map.removeSource(HEAT_SOURCE_ID);
+    realHeatPointCount.value = 0;
   } catch (error) {
     console.warn("[出行分布监测] 图层清理失败", error);
   }
@@ -858,6 +973,31 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.qzd-heat-scale {
+  display: grid;
+  grid-template-columns: auto minmax(112px, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+
+  i {
+    display: block;
+    height: 10px;
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 1px rgba(31, 49, 64, 0.12);
+  }
+}
+
+.qzd-heat-note {
+  margin: 2px 0 0;
+  color: var(--dm2-muted, #667085);
+  font-size: 10px;
+  line-height: 1.35;
+  font-weight: 620;
+}
+
 /* —— 状态与骨架 —— */
 .qzd-status {
   display: flex;
@@ -966,5 +1106,34 @@ onUnmounted(() => {
   .qzd-rank-bar-fill {
     transition: none;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .qzd-metric-switch {
+  background: rgba(148, 180, 220, 0.1);
+}
+html.dark .qzd-metric-btn.active {
+  background: #1a2431;
+  box-shadow: 0 1px 4px rgba(2, 6, 12, 0.32);
+}
+html.dark .qzd-rank-row:hover {
+  background: rgba(64, 156, 255, 0.09);
+}
+html.dark .qzd-rank-bar {
+  background: rgba(148, 180, 220, 0.16);
+}
+html.dark .qzd-map-legend {
+  /* --app-ink-soft 未定义，浅色落在 fallback #475467，暗色需显式提亮 */
+  color: #c2cddd;
+}
+html.dark .qzd-status-icon.is-error {
+  color: #f87171;
+}
+html.dark .qzd-retry {
+  background: #1a2431;
+}
+html.dark .qzd-sk {
+  background: linear-gradient(90deg, rgba(148, 180, 220, 0.08) 25%, rgba(148, 180, 220, 0.14) 42%, rgba(148, 180, 220, 0.08) 60%);
+  background-size: 240% 100%;
 }
 </style>

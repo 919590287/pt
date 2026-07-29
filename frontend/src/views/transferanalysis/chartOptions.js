@@ -1,11 +1,13 @@
 /**
  * 换乘分析 ECharts option 纯函数构建器。
- * 输入 = Worker 聚合结果（已由调用方完成扩样换算）+ 主题令牌，输出 = option。
+ * 输入 = Worker 聚合结果（模型原始数量，不扩样）+ 主题令牌，输出 = option。
  * 口径提示（设计方案 v2）：
  *  - 分时图按"后序上车时刻（换乘完成时刻）"统计，tooltip 已注明；
  *  - 时间区间分布默认 0-5/5-10/10-15/15-20/20-30 min 五段（30 分钟识别窗口封顶，无 >30 桶）；
  *  - 箱线图五数 = 标准 min/P25/P50/P75/max，P90 以散点叠加，绝不混入五数。
  */
+
+import { chartInk, isDarkTheme } from "@/utils/chartInk";
 
 export const SEGMENT_LABELS = ["0-5分", "5-10分", "10-15分", "15-20分", "20-30分"];
 
@@ -44,8 +46,26 @@ const BASE_TEXT = {
   legendText: "#3b4452",
 };
 
+// 暗色中性 chrome（html.dark，跟随底图选择）：文字/分隔线/tooltip 面直取 chartInk 暗色档；
+// 本文件独有的加强轴线与强调蓝 tooltip 边框按暗色取值表提亮。亮色分支原样返回 BASE_TEXT，
+// 渲染结果逐像素不变；系列色/色带（theme.busToMetro/warn/heatRamp 等）为数据语义，不在此列。
+// 调用方（sections 的 computed）读取 isDarkTheme/chartInk 即自动订阅主题切换并重建 option。
+function baseText() {
+  if (!isDarkTheme.value) return BASE_TEXT;
+  const ink = chartInk.value;
+  return {
+    axisLabel: ink.text,
+    axisLine: "rgba(148,180,220,0.28)",
+    splitLine: ink.splitLine,
+    tooltipBg: ink.tooltipBg,
+    tooltipBorder: "rgba(64,156,255,0.26)",
+    tooltipText: ink.tooltipText,
+    legendText: "#c2cddd",
+  };
+}
+
 function baseOption(theme, animation) {
-  const t = { ...BASE_TEXT, ...(theme.chart || {}) };
+  const t = { ...baseText(), ...(theme.chart || {}) };
   return {
     t,
     option: {
@@ -147,7 +167,7 @@ export function directionPieOption({ busToMetro, metroToBus }, theme, animation)
   return option;
 }
 
-/** Top 排名横向条形（value 已扩样）；labelWidth 供全屏放宽类目名截断 */
+/** Top 排名横向条形（value 为模型原始数量）；labelWidth 供全屏放宽类目名截断 */
 export function rankBarOption(items, theme, animation, { color, valueLabel = "人次", secondary, labelWidth = 92 } = {}) {
   const { t, option } = baseOption(theme, animation);
   const names = items.map((it) => it.name).reverse();
@@ -180,6 +200,56 @@ export function rankBarOption(items, theme, animation, { color, valueLabel = "�
       barMaxWidth: 12,
       itemStyle: { color: color || theme.busToMetro, borderRadius: [0, 3, 3, 0] },
       label: { show: true, position: "right", color: t.axisLabel, fontSize: 10, formatter: (p) => fmtCount(p.value) },
+    },
+  ];
+  return option;
+}
+
+/**
+ * 公→地 / 地→公共用一根横向堆叠柱的排名图。
+ * metric=flow 时统计人次；metric=avgSec 时分别展示两个方向的平均换乘时间。
+ */
+export function directionStackRankOption(items, theme, animation, { metric = "flow", labelWidth = 92 } = {}) {
+  const { t, option } = baseOption(theme, animation);
+  const ranked = items
+    .slice()
+    .sort((a, b) => (metric === "avgSec" ? b.avgSec - a.avgSec : b.flow - a.flow));
+  const display = ranked.slice().reverse();
+  const isTime = metric === "avgSec";
+  const b2m = display.map((item) => (isTime ? item.b2mAvgSec : item.b2m));
+  const m2b = display.map((item) => (isTime ? item.m2bAvgSec : item.m2b));
+  const fmt = isTime ? fmtMin : fmtCount;
+  option.tooltip.trigger = "axis";
+  option.tooltip.axisPointer = { type: "shadow" };
+  option.tooltip.formatter = (params) => {
+    const item = display[params[0]?.dataIndex];
+    if (!item) return "";
+    const unit = isTime ? "" : "人次";
+    const rows = params.map((param) => `${param.marker}${param.seriesName}：${fmt(param.value)}${unit}`).join("<br/>");
+    return `${item.name}<br/>${rows}`;
+  };
+  option.legend = { top: 0, right: 0, textStyle: { color: t.legendText, fontSize: 11 }, itemWidth: 14, itemHeight: 8 };
+  option.grid = { left: 8, right: 28, top: 30, bottom: 4, containLabel: true };
+  option.xAxis = valAxis(t, { fmt: isTime ? (v) => `${Math.round(v / 60)}分` : fmtCount });
+  option.yAxis = catAxis(t, display.map((item) => item.name), {
+    axisLabel: { color: t.axisLabel, fontSize: 11, width: labelWidth, overflow: "truncate", interval: 0 },
+  });
+  option.series = [
+    {
+      name: "公交→地铁",
+      type: "bar",
+      stack: "direction",
+      data: b2m,
+      barMaxWidth: 13,
+      itemStyle: { color: theme.busToMetro, borderRadius: [3, 0, 0, 3] },
+    },
+    {
+      name: "地铁→公交",
+      type: "bar",
+      stack: "direction",
+      data: m2b,
+      barMaxWidth: 13,
+      itemStyle: { color: theme.metroToBus, borderRadius: [0, 3, 3, 0] },
     },
   ];
   return option;

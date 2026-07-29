@@ -48,7 +48,7 @@ import java.util.zip.GZIPInputStream;
  * 模型加载时从 transitSchedule 的公交（bus 制式）路线遍历路网 link，把双向路网按
  * 「无向节点对」合并为物理路段（断面），统计每段：
  * ①被多少条**不同公交线路**经过（线路重复系数）；②全部线路的**断面客流叠加**
- * （乘车段沿线路站序做载客量前缀和，分摊到站间 link，双向合计，模型抽样人次不扩样）。
+ * （乘车段沿线路站序做载客量前缀和，分摊到站间 link，双向合计，人次为模型原始值）。
  * 产出三个工件：
  * <ul>
  *   <li>{@code corridor-summary.json}：总量指标 + 口径参数（右侧首屏直出）；</li>
@@ -73,7 +73,7 @@ import java.util.zip.GZIPInputStream;
  *   <li>街道归属：路段中点点面归属（复用 {@link MatsimPopulationCache#streetIndex()}），
  *       仅用于前端行政区过滤，未命中写哨兵。</li>
  * </ul>
- * 线路重复系数与抽样比例无关（数线路不数人）；断面客流为模型抽样人次直出（不扩样）。
+ * 线路重复系数数线路不数人；断面客流为模型原始人次，不做数量缩放。
  */
 @Slf4j
 public final class MatsimCorridorCache {
@@ -89,7 +89,7 @@ public final class MatsimCorridorCache {
     static final int BIN_HEADER_BYTES = 10;
     /**
      * 每段字节数：x1 i32 + y1 i32 + x2 i32 + y2 i32（EPSG:3857 取整）
-     * + coeff u16 + nameIdx u16 + street u16 + flow u32（断面客流，抽样人次，clamp u32）。
+     * + coeff u16 + nameIdx u16 + street u16 + flow u32（断面客流，模型原始人次，clamp u32）。
      */
     static final int BIN_BYTES_PER_SEGMENT = 26;
     /** nameIdx / street 列的“无名 / 未命中街道”哨兵（u16 全 1）。 */
@@ -228,13 +228,14 @@ public final class MatsimCorridorCache {
             return;
         }
         try {
-            Files.createDirectories(cacheDir(data));
             long start = System.currentTimeMillis();
             Artifacts artifacts = buildArtifacts(data);
+            MatsimCachePaths.recreateVersionDir(data, CORRIDOR_CACHE_VERSION);
             writeBytesAtomic(linksPath(data), artifacts.linksBin);
             writeJsonAtomic(namesPath(data), artifacts.names);
             writeJsonAtomic(summaryPath(data), artifacts.summary);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "corridor-v", CORRIDOR_CACHE_VERSION);
             MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
             MEMORY_CACHE.remove(cacheKey(namesPath(data)));
             log.info("走廊缓存生成完成: model={}, busLines={}, segments={}, named={}, maxCoeff={}, "
@@ -259,7 +260,7 @@ public final class MatsimCorridorCache {
         Computation computation = aggregateTraversals(extraction.byLine());
         computation.missingLinks = extraction.missingLinks();
         computation.routeStopMismatch = extraction.routeStopMismatch();
-        accumulateSegmentFlows(data.getPersonTracks(), extraction.contexts(), computation);
+        accumulateSegmentFlows(data, extraction.contexts(), computation);
         return assemble(computation, MatsimPopulationCache.streetIndex());
     }
 
@@ -501,7 +502,7 @@ public final class MatsimCorridorCache {
         final double x2;
         final double y2;
         final TreeSet<String> lines = new TreeSet<>();
-        long flow; // 断面客流（两方向全部线路叠加，模型抽样人次）
+        long flow; // 断面客流（两方向全部线路叠加，模型原始人次）
         String name;
 
         SegmentAgg(double x1, double y1, double x2, double y2) {
@@ -583,6 +584,25 @@ public final class MatsimCorridorCache {
                 collectPersonRides(personTracks, contexts, computation);
             }
         }
+        applySegmentFlows(contexts, computation);
+    }
+
+    /** 磁盘态大模型入口，按 person 分区逐组配对。 */
+    private static void accumulateSegmentFlows(MatsimData data, RouteCtxRegistry contexts,
+                                               Computation computation) {
+        if (data.getPersonTracks() != null && !data.getPersonTracks().isEmpty()) {
+            accumulateSegmentFlows(data.getPersonTracks(), contexts, computation);
+            return;
+        }
+        MatsimPersonTrackStore.forEachPerson(data, (personId, tracks) -> {
+            if (personId != null && !personId.isBlank()) {
+                collectPersonRides(tracks, contexts, computation);
+            }
+        });
+        applySegmentFlows(contexts, computation);
+    }
+
+    private static void applySegmentFlows(RouteCtxRegistry contexts, Computation computation) {
         // 前缀和分摊：站间载客量加到 (上站 link, 下站 link] 的物理路段
         for (RouteFlowCtx ctx : contexts.all()) {
             long load = 0;
@@ -729,7 +749,7 @@ public final class MatsimCorridorCache {
         params.put("modes", "bus"); // 仅公交线路计入重复系数/断面客流
         params.put("dedup", "undirected-node-pair"); // 双向合并：系数同线双向只计一次，客流两方向叠加
         params.put("nameSource", "attributes>embedded-sidecar");
-        params.put("flow", "ride-prefix-sum"); // 乘车段站序前缀和分摊，抽样人次直出不扩样
+        params.put("flow", "ride-prefix-sum"); // 乘车段站序前缀和分摊，人次为模型原始值
 
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("status", "ready");
@@ -764,7 +784,7 @@ public final class MatsimCorridorCache {
      * record × count（26B/段）= x1 i32, y1 i32, x2 i32, y2 i32（EPSG:3857 四舍五入取整，米级精度）,
      * coeff u16（clamp 65535）, nameIdx u16（{@link #U16_SENTINEL}=无名）,
      * street u16（中点点面归属的街道要素索引，{@link #U16_SENTINEL}=未命中）,
-     * flow u32（断面客流，双向叠加抽样人次，clamp u32）。
+     * flow u32（断面客流，双向叠加模型原始人次，clamp u32）。
      * 写入序 = 系数升序（平序按几何坐标升序，可复现）：重复系数子模块按写入序绘制即可压顶；
      * 客流子模块前端自行按 flow 升序重排绘制。
      */
@@ -849,8 +869,27 @@ public final class MatsimCorridorCache {
     }
 
     static String roadNamesTag() {
-        roadNames();
-        return roadNamesTagSingleton;
+        String local = roadNamesTagSingleton;
+        if (local != null) {
+            return local;
+        }
+        synchronized (MatsimCorridorCache.class) {
+            if (roadNamesTagSingleton == null) {
+                String tag = "missing";
+                try (InputStream in = MatsimCorridorCache.class.getResourceAsStream(ROAD_NAMES_RESOURCE)) {
+                    if (in == null) {
+                        log.warn("路名边车表资源缺失: {}", ROAD_NAMES_RESOURCE);
+                    } else {
+                        // 就绪探测只需要内容指纹；不要为了计算哈希解压并常驻 14 万条路名。
+                        tag = sha256Hex(in.readAllBytes()).substring(0, 16);
+                    }
+                } catch (Exception e) {
+                    log.warn("路名边车表指纹读取失败: {}", ROAD_NAMES_RESOURCE, e);
+                }
+                roadNamesTagSingleton = tag;
+            }
+            return roadNamesTagSingleton;
+        }
     }
 
     // ===================================================================================
@@ -885,22 +924,13 @@ public final class MatsimCorridorCache {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static Map<String, Object> loadCachedJson(Path path) {

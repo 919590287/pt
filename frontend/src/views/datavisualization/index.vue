@@ -12,11 +12,14 @@
         {{ item.label }}
       </button>
     </div>
-    <label class="handle analysis-model-label" for="scheme-selector">当前方案</label>
-    <el-select id="scheme-selector" class="analysis-scheme-select" v-model="datebase.scheme" clearable filterable :loading="isLoadingSchemes" :disabled="!isSimulationMode" aria-label="当前方案">
+    <label class="handle analysis-model-label" for="scheme-selector">{{ isSimulationMode ? "当前方案" : "当前区域" }}</label>
+    <el-select v-if="isSimulationMode" id="scheme-selector" class="analysis-scheme-select" v-model="datebase.scheme" clearable filterable :loading="isLoadingSchemes" aria-label="当前方案">
       <el-option v-for="item in schemeList" :key="item" :label="item" :value="item"> </el-option>
     </el-select>
-    <el-select class="model-select analysis-model-select" v-model="modelPickerValue" :disabled="!isSimulationMode || !datebase.scheme || isLoadingModels" clearable filterable :loading="isLoadingModels" aria-label="选择模型" @change="handleModelPick">
+    <el-select v-else id="scheme-selector" class="analysis-scheme-select" :model-value="realAreaName" disabled aria-label="当前区域">
+      <el-option :label="realAreaName" :value="realAreaName" />
+    </el-select>
+    <el-select v-if="isSimulationMode" class="model-select analysis-model-select" v-model="modelPickerValue" :disabled="!datebase.scheme || isLoadingModels" clearable filterable :loading="isLoadingModels" aria-label="选择模型" @change="handleModelPick">
       <el-option v-for="item in modelSelectOptions" :key="item.name" :label="getModelLabel(item)" :value="item.name">
         <div class="model-option">
           <div class="model-option-main">
@@ -37,6 +40,14 @@
           </div>
         </div>
       </el-option>
+    </el-select>
+    <el-select v-else class="model-select analysis-model-select real-date-select" v-model="realServiceDate" filterable aria-label="真实客流日期">
+      <el-option
+        v-for="item in realServiceDateOptions"
+        :key="item.value"
+        :label="item.label"
+        :value="item.value"
+      />
     </el-select>
     <span v-if="loadError" class="load-error" role="status">{{ loadError }}</span>
   </div>
@@ -230,7 +241,12 @@
           :model="selectModel.name"
           :run-monitor-panels="true"
         />
-        <TJFX v-else-if="activeTab == '体检评估分析'" :key="`tjfx-${selectModel.name}`" :model="selectModel.name" />
+        <TJFX
+          v-else-if="activeTab == '体检评估分析'"
+          :key="`tjfx-${selectModel.name}`"
+          :model="selectModel.name"
+          :district="selectedDisplayRange"
+        />
       </div>
       <button
         v-show="isRightPanelVisible"
@@ -336,7 +352,7 @@
                   </div>
                 </div>
 
-                <!-- 公交运营效率：车均/单班次日载客量 + 客流强度，口径见各格 title -->
+                <!-- 公交运营效率：车均日载客量/单班次载客量 + 客流强度，口径见各格 title -->
                 <div class="rm-ops-block">
                   <div class="rm-ops-head">
                     <span class="rm-ops-title">公交运营效率</span>
@@ -375,7 +391,38 @@
                   </el-auto-resizer>
                 </div>
 
-                <!-- 分企业运营指标：企业—线路归属数据待接入，先渲染表头与空态占位 -->
+                <div v-if="!isSimulationMode && overallFlowDailyFlow.length" class="rm-ops-block rm-daily-flow-block">
+                  <div class="rm-ops-head rm-daily-flow-head">
+                    <span class="rm-ops-title">日总客流变化</span>
+                    <div class="rm-daily-range" aria-label="日总客流统计日期范围">
+                      <input
+                        v-model="overallDailyStart"
+                        type="date"
+                        :min="overallDailyMin"
+                        :max="overallDailyEnd || overallDailyMax"
+                        aria-label="开始日期"
+                      />
+                      <span>至</span>
+                      <input
+                        v-model="overallDailyEnd"
+                        type="date"
+                        :min="overallDailyStart || overallDailyMin"
+                        :max="overallDailyMax"
+                        aria-label="结束日期"
+                      />
+                    </div>
+                  </div>
+                  <div class="rm-daily-flow-chart">
+                    <VChart
+                      class="rm-chart"
+                      :option="overallDailyChartOption"
+                      autoresize
+                      :update-options="{ notMerge: true }"
+                    />
+                  </div>
+                </div>
+
+                <!-- 分企业运营指标：真实数据按线路 SHP 的 company 字段归属并汇总刷卡客流 -->
                 <div class="rm-ops-block rm-ops-operators">
                   <div class="rm-ops-head">
                     <span class="rm-ops-title">分企业运营指标</span>
@@ -384,9 +431,9 @@
                     <thead>
                       <tr>
                         <th scope="col">企业</th>
-                        <th scope="col" title="车均日载客量（人次/日）">车均日载客</th>
-                        <th scope="col" title="单班次日载客量（人次/日）">单班次日载客</th>
-                        <th scope="col" title="客流强度（人次/百公里）">客流强度</th>
+                        <th scope="col" title="车均日载客量（人次/车·日）">车均日载客</th>
+                        <th scope="col" title="单班次载客量（人次/班）">单班次载客</th>
+                        <th scope="col" title="客流强度（人次/车公里）">客流强度</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -397,7 +444,7 @@
                         <td>{{ row.intensity }}</td>
                       </tr>
                       <tr v-if="!operatorOpsRows.length">
-                        <td class="rm-ops-empty" colspan="4">企业运营数据接入后展示</td>
+                        <td class="rm-ops-empty" colspan="4">当前范围暂无可匹配企业运营数据</td>
                       </tr>
                     </tbody>
                   </table>
@@ -414,7 +461,7 @@
                       <span
                         v-if="selectedLineBaseName"
                         class="rm-line-company"
-                        :title="`所属企业：${selectedLineCompany}（企业数据待接入）`"
+                        :title="`所属企业：${selectedLineCompany}`"
                       >{{ selectedLineCompany }}</span>
                     </h2>
                     <p
@@ -523,8 +570,7 @@
                           <span class="rm-rank-head">
                             <span class="rm-rank-name">
                               {{ row.name }}
-                              <!-- 所属企业备注：与选中态 rm-line-company 同占位口径，企业数据接入后走 row.operator -->
-                              <span class="rm-rank-operator" title="所属企业（企业数据待接入）">{{ row.operator || '-' }}</span>
+                              <span class="rm-rank-operator" :title="`所属企业：${row.operator || '-'}`">{{ row.operator || '-' }}</span>
                             </span>
                             <span class="rm-rank-value">{{ row.valueText }}<em>{{ activeLineRankMetric.unit }}</em></span>
                           </span>
@@ -650,7 +696,7 @@
               <div v-else class="rm-flow-rank">
                 <div class="rm-right-card-title">
                   <div class="rm-panel-title-main">
-                    <h2>{{ searchWantsMetro ? '地铁' : '公交' }}站点客流排名</h2>
+                    <h2>{{ searchWantsMetro ? '地铁' : '公交' }}站点客流排名 TOP10</h2>
                     <p class="rm-rank-hint">点击排名或地图中的站点，查看客流详情</p>
                   </div>
                   <span class="rm-flow-hero-scope" :title="`显示范围：${selectedDisplayRangeLabel}`">{{ selectedDisplayRangeLabel }}</span>
@@ -760,7 +806,7 @@
         </div>
 
         <!-- Block 2: Line Settings Toggle & Floating Popover -->
-        <div class="control-block settings-block">
+        <div v-if="showSettingsControl" class="control-block settings-block">
           <button
             :class="['control-btn', showLineWidthPopover ? 'active' : '']"
             type="button"
@@ -784,7 +830,7 @@
 
         <!-- Floating Popover for Line Width -->
         <Transition name="popover-fade">
-          <div v-if="showLineWidthPopover" id="line-width-popover" class="line-width-popover" role="dialog" aria-modal="false" @click.stop>
+          <div v-if="showSettingsControl && showLineWidthPopover" id="line-width-popover" class="line-width-popover" role="dialog" aria-modal="false" @click.stop>
             <div class="popover-title">{{ isVehicleMonitorTab ? '车辆模型设置' : '设置' }}</div>
             <div class="popover-content">
               <template v-if="isVehicleMonitorTab">
@@ -796,7 +842,7 @@
                   <el-slider v-model="vehicleSize" :min="minVehicleSize" :max="maxVehicleSize" :step="1" @input="handleVehicleSizeChange" />
                 </div>
                 <!-- 路段公交车速（拥堵路况）：需求为可开关且默认关闭；速度为净行驶口径（剔除站点停靠） -->
-                <div class="layer-mode-row" title="路段公交净行驶车速（剔除站点停靠，随播放时刻变化，模型抽样口径）">
+                <div class="layer-mode-row" title="路段公交净行驶车速（剔除站点停靠，随播放时刻变化，使用模型全部已加载事件）">
                   <span>路段公交车速</span>
                   <el-switch v-model="linkSpeedEnabled" />
                 </div>
@@ -813,75 +859,56 @@
                 </div>
               </template>
               <template v-else>
-                <!-- 运行监测/客流分析共用同一套公交、地铁线网显示设置 -->
+                <!-- 运行监测/客流分析共用同一套公交、地铁显示设置 -->
                 <div class="layer-mode-row">
                   <span>显示图层</span>
-                  <div class="layer-mode-segment" role="group" aria-label="线网显示图层">
+                  <div
+                    class="layer-mode-segment"
+                    role="group"
+                    :aria-label="effectiveTab === '站点客流监测' ? '站点显示类型' : '线网显示图层'"
+                  >
                     <button
                       type="button"
                       :class="{ active: baseMapLineMode === 'bus-network' }"
                       @click="handleBaseMapLineModeChange('bus-network')"
                     >
-                      公交线网
+                      {{ effectiveTab === '站点客流监测' ? '公交站点' : '公交线网' }}
                     </button>
                     <button
                       type="button"
                       :class="{ active: baseMapLineMode === 'metro-network' }"
                       @click="handleBaseMapLineModeChange('metro-network')"
                     >
-                      地铁线网
+                      {{ effectiveTab === '站点客流监测' ? '地铁站点' : '地铁线网' }}
                     </button>
                   </div>
                 </div>
-                <div v-if="lineMetricToggleVisible" class="layer-mode-row">
-                  <span>着色指标</span>
-                  <div class="layer-mode-segment" role="group" aria-label="线路着色指标">
-                    <button
-                      type="button"
-                      :class="{ active: lineColorMetric === 'flow' }"
-                      @click="lineColorMetric = 'flow'"
-                    >客流</button>
-                    <button
-                      type="button"
-                      :class="{ active: lineColorMetric === 'loadRate' }"
-                      @click="lineColorMetric = 'loadRate'"
-                    >满载率</button>
-                  </div>
+                <div v-if="effectiveTab === '站点客流监测'" class="slider-row">
+                  <span class="label">
+                    <span>站点大小</span>
+                    <span class="val-text">{{ `${stationSize}px` }}</span>
+                  </span>
+                  <el-slider v-model="stationSize" :min="minStationSize" :max="maxStationSize" :step="1" @input="handleStationSizeChange" />
                 </div>
-                <div class="slider-row">
+                <div v-else class="slider-row">
                   <span class="label">
                     <span>线宽</span>
                     <span class="val-text">{{ `${lineWidth}px` }}</span>
                   </span>
                   <el-slider v-model="lineWidth" :min="minLineWidth" :max="maxLineWidth" :step="0.1" @input="handleLineWidthChange" />
                 </div>
-                <template v-if="props.mode === 'pfa'">
-                  <!-- 断面客流色阶/阈值设置已移至地图左下角图例面板的齿轮弹层 -->
-                  <!-- 透明度只作用于断面客流图层，站点客流分析下无断面层，不显示无效控件 -->
-                  <div v-if="effectiveTab === '线路客流监测'" class="slider-row">
-                    <span class="label">
-                      <span>透明度</span>
-                      <span class="val-text">{{ `${pfaSegmentOpacity}%` }}</span>
-                    </span>
-                    <el-slider v-model="pfaSegmentOpacity" :min="0" :max="100" :step="1" @input="handlePfaSegmentOpacityChange" />
-                  </div>
-                  <!-- 站点客流分析：站点客流热力图开关（开启时隐藏公交/地铁线网与站点） -->
-                  <div v-if="effectiveTab === '站点客流监测'" class="layer-mode-row">
-                    <span>地图热力图</span>
-                    <el-switch v-model="stationHeatmapEnabled" />
-                  </div>
-                </template>
               </template>
               <div class="vehicle-visibility-row" v-if="isVehicleMonitorTab">
                 <span>可视化范围</span>
-                <el-select v-model="vehicleVisibilityMode" size="small" @change="handleVehicleVisibilityModeChange">
-                  <el-option
+                <el-checkbox-group v-model="vehicleVisibilityMode" class="vehicle-visibility-options" aria-label="车辆可视化范围">
+                  <el-checkbox
                     v-for="item in vehicleVisibilityOptions"
                     :key="item.value"
-                    :label="item.label"
                     :value="item.value"
-                  />
-                </el-select>
+                  >
+                    {{ item.label }}
+                  </el-checkbox>
+                </el-checkbox-group>
               </div>
             </div>
           </div>
@@ -1034,7 +1061,7 @@
         </div>
         <div v-else class="map-legend-card">
           <div class="map-legend-head">
-            <span class="map-legend-title" :title="showLinkSpeedLegend ? '公交净行驶车速：剔除站点停靠、按 15 分钟窗聚合，随播放时刻变化（模型抽样口径）' : undefined">{{ showLinkSpeedLegend ? '公交车速（km/h）' : showOdCurveLegend ? '客流OD（人次）' : showStationHeatLegend ? '站点客流热力（相对密度）' : showStationFlowLegend ? '站点客流（人次/日）' : showSegmentFlowLegend ? '断面客流（人次）' : showMetroFlowLegend ? (lineLoadRateActive ? '地铁高峰满载率（%）' : '地铁客流（人次/日）') : (lineLoadRateActive ? '线路高峰满载率（%）' : '线路客流（人次/日）') }}</span>
+            <span class="map-legend-title" :title="showLinkSpeedLegend ? '公交净行驶车速：剔除站点停靠、按 15 分钟窗聚合，随播放时刻变化（模型已加载事件全量）' : undefined">{{ showLinkSpeedLegend ? '公交车速（km/h）' : showOdCurveLegend ? '客流OD（人次）' : showStationHeatLegend ? '站点客流热力（相对密度）' : showStationFlowLegend ? '站点客流（人次/日）' : showSegmentFlowLegend ? '断面客流（人次）' : lineMetricLegendTitle }}</span>
             <button
               v-if="!showLinkSpeedLegend && !(lineLoadRateActive && !showOdCurveLegend && !showStationHeatLegend && !showSegmentFlowLegend)"
               type="button"
@@ -1084,7 +1111,7 @@
     </div>
   </template>
   <div v-else ref="box1" class="model_box box1" :style="box1Style">
-    <el-empty :description="isSimulationMode ? '请选择模型' : '真实数据暂未接入'" />
+    <el-empty :description="isSimulationMode ? '请选择模型' : '真实数据加载失败，请检查数据目录'" />
   </div>
 
   <RunMonitorOnboarding
@@ -1136,19 +1163,30 @@ import { Remove, VideoPlay } from "@element-plus/icons-vue";
 import ModelProgressBubble from "@/components/ModelProgressBubble.vue";
 import RunMonitorOnboarding from "@/components/RunMonitorOnboarding.vue";
 import { formatDuration, unifiedModelProgress } from "@/utils/modelLoadProgress.js";
-import { ElMessage, ElMessageBox } from "@/plugins/element-plus";
-import { getSchemeList, getModelList, loadModel, unloadModel } from "@/api/scheme.js";
+import { ElMessage, ElMessageBox } from "element-plus";
+import { loadModel, unloadModel } from "@/api/scheme.js";
 import { dataCenter } from "@/api/data.js";
 import { getOverallFlow, getRouteCandidates, getRouteDetail, getRouteTileBinary } from "@/api/route.js";
 import { useModelSelectionStore } from "@/stores/modelSelection.js";
+import { useModelRuntimeStore } from "@/stores/modelRuntime.js";
 import { useDisplayRangeStore } from "@/stores/displayRange.js";
 import { abortOtherModelDataRequests, getCachedFacilityAll, getCachedLineAll, getCachedRoutePanel, getCachedStationPanel, peekCachedRoutePanel, warmModelInteractionCache } from "@/utils/modelDataCache.js";
 import { createDebouncedMirror, runWhenIdle } from "./utils/panelShared.js";
 import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
 import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
 import {
+  DEFAULT_REAL_AREA,
+  REAL_AVERAGE_DATE,
+  getRealNetwork,
+  getRealPassengerFlowCapabilities,
+  isRealDatasource,
+  realDatasource,
+} from "@/utils/realPassengerFlow.js";
+import {
   activeDistrictContext,
+  adminDistrictOutlineStyle,
   clipLineStringToDistrictContext,
+  districtOutlineFeatureCollection,
   districtNamesFromCollection,
   emptyFeatureCollection as emptyDistrictFeatureCollection,
   normalizeAdminDistrictCollection,
@@ -1159,6 +1197,16 @@ import { RouteLayer } from "./layers/RouteLayer.js";
 import ColorScaleControl from "./components/ColorScaleControl.vue";
 import { buildLegendItems, buildValueLegendItems, classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale, sortFlowValues } from "@/utils/colorSchemes.js";
 import { PURE_METRO_LINE, isMetroLine, metroLineCanonicalName } from "@/utils/transitMode.js";
+import {
+  LINE_RANK_METRICS,
+  RIGHT_PANEL_RANK_LIMIT,
+  buildLineRankEntries,
+  limitRightPanelRanking,
+  lineRankMetricValues,
+  lineRankValueText,
+} from "@/utils/rightPanelRanking.js";
+import { busOperationRatios } from "@/utils/busOperationMetrics.js";
+import { chartInk } from "@/utils/chartInk.js";
 import { MAP_THEME, hexNumber, hexToRgba } from "@/utils/mapTheme.js";
 import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
 import metroStationIconUrl from "@/assets/images/datamanagement/metro-station.svg?url";
@@ -1180,6 +1228,7 @@ defineOptions({
 const props = defineProps({
   mode: { type: String, default: "monitor" },
 });
+provide("rightPanelRankLimit", RIGHT_PANEL_RANK_LIMIT);
 // 客流分析模式下，让 XLZL/ZDZL 把完整 MCard2 面板 teleport 到右侧（运行监测仍用简化卡片）
 provide("pfaRightPanel", computed(() => props.mode === "pfa"));
 
@@ -1205,17 +1254,27 @@ const { style: box1Style, x: box1X, y: box1Y } = useDraggable(box1Ref, {
 });
 
 let leftPanelResizeObserver = null;
+let leftPanelCenterFrame = null;
 
 function centerLeftPanel() {
   if (typeof window === "undefined") return;
-  nextTick(() => {
-    const box = box1Ref.value;
-    if (!box) return;
+  if (leftPanelCenterFrame != null) return;
+  const measure = () => {
+    leftPanelCenterFrame = null;
+    nextTick(() => {
+      const box = box1Ref.value;
+      if (!box) return;
 
-    const maxLayoutHeight = (window.innerHeight - 150) / LEFT_PANEL_SCALE;
-    const visualHeight = Math.min(box.offsetHeight, maxLayoutHeight) * LEFT_PANEL_SCALE;
-    box1Y.value = Math.max(LEFT_PANEL_MIN_TOP, (window.innerHeight - visualHeight) / 2);
-  });
+      const maxLayoutHeight = (window.innerHeight - 150) / LEFT_PANEL_SCALE;
+      const visualHeight = Math.min(box.offsetHeight, maxLayoutHeight) * LEFT_PANEL_SCALE;
+      box1Y.value = Math.max(LEFT_PANEL_MIN_TOP, (window.innerHeight - visualHeight) / 2);
+    });
+  };
+  if (typeof requestAnimationFrame === "function") {
+    leftPanelCenterFrame = requestAnimationFrame(measure);
+  } else {
+    measure();
+  }
 }
 
 function observeLeftPanelSize() {
@@ -1237,10 +1296,24 @@ const DATA_SOURCE_OPTIONS = [
   { value: "real", label: "真实" },
 ];
 const modelSelectionStore = useModelSelectionStore();
+const modelRuntime = useModelRuntimeStore();
 const restoredSelection = modelSelectionStore.getSelection(MODEL_SELECTION_KEY);
 let isRestoringSelection = Boolean(restoredSelection.scheme);
 const dataSourceMode = ref(restoredSelection.sourceMode || "simulation");
 const isSimulationMode = computed(() => dataSourceMode.value === "simulation");
+const realAreaName = ref(DEFAULT_REAL_AREA);
+const realServiceDate = ref(restoredSelection.realServiceDate || REAL_AVERAGE_DATE);
+const realDataStatus = ref("idle");
+const realDataCapabilities = shallowRef(null);
+const realServiceDateOptions = computed(() => {
+  const dates = Array.isArray(realDataCapabilities.value?.serviceDates)
+    ? realDataCapabilities.value.serviceDates
+    : [];
+  return [
+    { value: REAL_AVERAGE_DATE, label: `日平均${dates.length ? `（${dates.length}天）` : ""}` },
+    ...dates.map((date) => ({ value: date, label: date })),
+  ];
+});
 const datebase = ref({
   scheme: restoredSelection.scheme,
   model: restoredSelection.model,
@@ -1262,7 +1335,17 @@ let modelLoadSeq = 0;
 let backgroundTaskSeq = 0;
 let interactionCacheSeq = 0;
 const selectModel = computed(() => {
-  if (!isSimulationMode.value) return null;
+  if (!isSimulationMode.value) {
+    const ready = realDataStatus.value === "ready";
+    return {
+      name: realDatasource(realAreaName.value, realServiceDate.value),
+      label: `${realAreaName.value}真实数据·${realServiceDate.value === REAL_AVERAGE_DATE ? "日平均" : realServiceDate.value}`,
+      displayName: `${realAreaName.value}真实数据·${realServiceDate.value === REAL_AVERAGE_DATE ? "日平均" : realServiceDate.value}`,
+      loadStatus: ready,
+      loadStage: realDataStatus.value === "error" ? "failed" : "loading_config",
+      cacheStatus: ready ? "ready" : realDataStatus.value === "error" ? "failed" : "building",
+    };
+  }
   const item = modelList.value?.find((item) => item.name === datebase.value.model);
   if (item) return item;
   if (datebase.value.model && initialModelBootstrap.value) {
@@ -1299,15 +1382,19 @@ const interactionCacheStatus = ref("idle");
 const interactionCacheMessage = ref("");
 const interactionCacheError = ref("");
 const isInteractionCacheReady = computed(() => (
-  !selectModel.value?.name
+  !isSimulationMode.value
+  || !selectModel.value?.name
   || (interactionCacheModel.value === selectModel.value.name && interactionCacheStatus.value === "ready")
 ));
 const isInteractionCacheLoading = computed(() => (
-  isBackendModelReady.value
+  isSimulationMode.value
+  && isBackendModelReady.value
   && Boolean(selectModel.value?.name)
   && !isInteractionCacheReady.value
 ));
-const isModelReady = computed(() => isBackendModelReady.value);
+// 真实数据采用非阻塞切换：后台预热未结束时页面也立即挂载，各面板复用同一批
+// 在途请求渐进填充；不再把真实数据准备误展示成“生成模型缓存”的全屏弹窗。
+const isModelReady = computed(() => !isSimulationMode.value || isBackendModelReady.value);
 const backgroundTaskVisible = computed(() => Boolean(
   isSimulationMode.value
   && backgroundTaskModel.value
@@ -1407,11 +1494,11 @@ async function ensureInteractionCacheForModel(modelName) {
   interactionCacheMessage.value = "正在预热线路、站点、客流与体检评估数据";
   try {
     await warmModelInteractionCache(key, { includeStationPanel: true, includeEvaluation: true });
-    if (seq !== interactionCacheSeq || datebase.value.model !== key) return;
+    if (seq !== interactionCacheSeq || selectModel.value?.name !== key) return;
     interactionCacheStatus.value = "ready";
     interactionCacheMessage.value = "客流交互缓存已就绪";
   } catch (error) {
-    if (seq !== interactionCacheSeq || datebase.value.model !== key) return;
+    if (seq !== interactionCacheSeq || selectModel.value?.name !== key) return;
     interactionCacheStatus.value = "ready";
     interactionCacheError.value = error?.message || "客流交互缓存预热失败，已降级为按需加载";
   }
@@ -1551,9 +1638,8 @@ async function handleGetSchemeList(options = {}) {
     loadError.value = "";
   }
   try {
-    const res = await getSchemeList(undefined, { silentError: silent });
+    const list = await modelRuntime.fetchSchemes();
     if (seq !== schemeRequestSeq) return schemeList.value;
-    const list = Array.isArray(res?.data) ? res.data : [];
     schemeList.value = list;
     if (autoSelect && !datebase.value.scheme && list.length) {
       datebase.value.scheme = list[0];
@@ -1583,6 +1669,13 @@ watch(
 watch(
   [() => selectModel.value?.name, isBackendModelReady],
   ([modelName]) => {
+    if (!isSimulationMode.value) {
+      interactionCacheModel.value = modelName || "";
+      interactionCacheStatus.value = "ready";
+      interactionCacheMessage.value = "";
+      interactionCacheError.value = "";
+      return;
+    }
     if (!modelName || !isBackendModelReady.value) {
       interactionCacheModel.value = modelName || "";
       interactionCacheStatus.value = modelName ? "idle" : "ready";
@@ -1595,12 +1688,13 @@ watch(
   { immediate: true },
 );
 watch(
-  [dataSourceMode, () => datebase.value.scheme, () => datebase.value.model],
+  [dataSourceMode, () => datebase.value.scheme, () => datebase.value.model, realServiceDate],
   () => {
     modelSelectionStore.setSelection(MODEL_SELECTION_KEY, {
       sourceMode: dataSourceMode.value,
       scheme: datebase.value.scheme,
       model: datebase.value.model,
+      realServiceDate: realServiceDate.value,
     });
   },
 );
@@ -1609,8 +1703,10 @@ watch(dataSourceMode, async (mode) => {
   clearLineSelection();
   clearStationSelection();
   runMonitorSearchKeyword.value = "";
+  nextTick(setMapCenter);
   if (mode !== "simulation") {
     loadError.value = "";
+    await ensureRealDataReady();
     return;
   }
   if (!schemeList.value.length) {
@@ -1620,6 +1716,59 @@ watch(dataSourceMode, async (mode) => {
   }
   await ensureSelectedModelReady();
 });
+
+let realDataLoadSeq = 0;
+let realDataLoadPromise = null;
+
+function activateReadyRealDataView() {
+  if (isSimulationMode.value || realDataStatus.value !== "ready") return;
+  nextTick(() => {
+    if (isSimulationMode.value || realDataStatus.value !== "ready") return;
+    syncActiveMenuWithAvailability();
+    setMapCenter();
+    ensureTransitNetworkForCurrentTab();
+  });
+}
+
+async function ensureRealDataReady() {
+  if (realDataStatus.value === "ready") {
+    activateReadyRealDataView();
+    return realDataCapabilities.value;
+  }
+  if (realDataLoadPromise) return realDataLoadPromise;
+  const seq = ++realDataLoadSeq;
+  realDataStatus.value = "loading";
+  if (!isSimulationMode.value) loadError.value = "";
+  const datasource = realDatasource(realAreaName.value, REAL_AVERAGE_DATE);
+  const request = Promise.all([
+    getRealPassengerFlowCapabilities(datasource),
+    getRealNetwork(datasource),
+  ])
+    .then(([capabilities]) => {
+      if (seq !== realDataLoadSeq) return null;
+      realDataCapabilities.value = capabilities || null;
+      const dates = realDataCapabilities.value?.serviceDates || [];
+      if (realServiceDate.value !== REAL_AVERAGE_DATE && !dates.includes(realServiceDate.value)) {
+        realServiceDate.value = REAL_AVERAGE_DATE;
+      }
+      realDataStatus.value = "ready";
+      activateReadyRealDataView();
+      return capabilities;
+    })
+    .catch((error) => {
+      if (seq !== realDataLoadSeq) return null;
+      realDataStatus.value = "error";
+      if (!isSimulationMode.value) {
+        loadError.value = error?.message || "真实客流数据加载失败";
+      }
+      return null;
+    })
+    .finally(() => {
+      if (realDataLoadPromise === request) realDataLoadPromise = null;
+    });
+  realDataLoadPromise = request;
+  return request;
+}
 
 async function ensureSelectedModelReady() {
   if (!isSimulationMode.value) return;
@@ -1645,6 +1794,13 @@ watch(MapRef, setMapCenter);
 async function setMapCenter() {
   if (!pageActive.value) return;
   const seq = ++centerRequestSeq;
+  // 已选择行政区时，相机始终服从行政区；模型/真实数据中心只能用于“全市”。
+  // 行政区几何尚在加载时也不请求模型中心，待 loadDisplayRanges 完成后再定位，
+  // 避免异步中心请求把刚恢复的行政区视角覆盖掉。
+  if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
+    if (activeDisplayRangeContext.value) fitDisplayRangeContext();
+    return;
+  }
   if (selectModel.value && selectModel.value.name && isModelReady.value) {
     try {
       const res = await dataCenter({ datasource: selectModel.value.name }, { silentError: true });
@@ -1721,9 +1877,8 @@ async function handleGetModelList(options = {}) {
     loadError.value = "";
   }
   try {
-    const res = await getModelList({ schemeName: datebase.value.scheme }, { silentError: silent });
+    const list = await modelRuntime.fetchModels(datebase.value.scheme);
     if (seq !== modelRequestSeq) return modelList.value;
-    const list = Array.isArray(res?.data) ? res.data : [];
     modelList.value = list;
     if (datebase.value.model && !list.some((item) => item.name === datebase.value.model)) {
       const fallback = pickReadyModel(list);
@@ -1751,7 +1906,7 @@ async function handleGetModelList(options = {}) {
 // 公交出行监测：出行需求侧监测模块（人口分布 / 出行分布 / 公交OD），后续子模块在此追加
 const BUS_TRAVEL_SECTIONS = [
   { key: "人口分布监测", label: "人口分布监测" },
-  { key: "出行分布监测", label: "出行分布监测" },
+  { key: "出行分布监测", label: "站点OD监测" },
   { key: "公交OD监测", label: "公交OD监测" },
 ];
 
@@ -1885,7 +2040,7 @@ function readRunMonitorOnboardingPreference() {
 }
 
 function startRunMonitorOnboarding({ manual = false } = {}) {
-  if (props.mode === "pfa" || !pageActive.value) return;
+  if (!isSimulationMode.value || props.mode === "pfa" || !pageActive.value) return;
   if (!isModelReady.value) {
     if (manual) {
       runMonitorOnboardingManualPending.value = true;
@@ -1902,7 +2057,7 @@ function startRunMonitorOnboarding({ manual = false } = {}) {
 }
 
 function maybeStartRunMonitorOnboarding() {
-  if (!runMonitorOnboardingHostMounted.value || props.mode === "pfa" || !pageActive.value || !isModelReady.value) return;
+  if (!isSimulationMode.value || !runMonitorOnboardingHostMounted.value || props.mode === "pfa" || !pageActive.value || !isModelReady.value) return;
   if (runMonitorOnboardingManualPending.value) {
     startRunMonitorOnboarding({ manual: true });
     return;
@@ -2003,13 +2158,86 @@ const displayMenuItems = computed(() => {
     // 按 key 取项（勿用下标：运行监测侧新增/调序模块不应影响客流分析菜单）
     const lineItem = runMonitorMenuItems.find((item) => item.key === "线路客流监测");
     const stationItem = runMonitorMenuItems.find((item) => item.key === "站点客流监测");
-    return [
+    const items = [
       { ...lineItem, label: "线路客流分析", children: PFA_LINE_SECTIONS },
       { ...stationItem, label: "站点客流分析", children: PFA_STATION_SECTIONS },
     ];
+    if (isSimulationMode.value) return items;
+    const childCapability = {
+      "线路客流监测::segments": "线路客流监测-断面客流",
+      "线路客流监测::boarding": "线路客流监测-站点乘降",
+      "线路客流监测::demographics": "线路客流监测-客流画像",
+      "线路客流监测::transfer": "线路客流监测-关联线路",
+      "站点客流监测::boarding": "站点客流监测-站点乘降",
+      "站点客流监测::od": "站点客流监测-客流OD",
+      "站点客流监测::demographics": "站点客流监测-客流画像",
+      "站点客流监测::reachability": "站点客流监测-可达性",
+    };
+    return items.map((item) => ({
+      ...item,
+      children: item.children.filter((child) => realCapabilityAvailable(
+        "客流分析",
+        childCapability[`${item.key}::${child.key}`],
+      )),
+    })).filter((item) => item.children.length);
   }
-  return runMonitorMenuItems;
+  if (isSimulationMode.value) return runMonitorMenuItems;
+  const childCapability = {
+    "公交出行监测::人口分布监测": "公交出行监测-人口分布监测",
+    "公交出行监测::出行分布监测": "公交出行监测-站点OD监测",
+    "公交出行监测::公交OD监测": "公交出行监测-公交OD监测",
+    "客流走廊监测::线路重复系数": "客流走廊监测-线路重复系数",
+    "客流走廊监测::公交客流走廊": "客流走廊监测-公交客流走廊",
+  };
+  return runMonitorMenuItems.map((item) => {
+    if (item.children) {
+      return {
+        ...item,
+        children: item.children.filter((child) => realCapabilityAvailable(
+          "运行监测",
+          childCapability[`${item.key}::${child.key}`],
+        )),
+      };
+    }
+    return realCapabilityAvailable("运行监测", item.key) ? item : null;
+  }).filter((item) => item && (!item.children || item.children.length));
 });
+
+function realCapabilityAvailable(platform, panel) {
+  if (!panel) return false;
+  const modules = realDataCapabilities.value?.modules;
+  if (!Array.isArray(modules)) return panel !== "公交出行监测-人口分布监测";
+  const match = modules.find((item) => item?.platformModule === platform && item?.leftPanelModule === panel);
+  return Boolean(match?.available);
+}
+
+function syncActiveMenuWithAvailability() {
+  const items = displayMenuItems.value;
+  if (!items.length) return;
+  let active = items.find((item) => item.key === activeTab.value);
+  if (!active) {
+    active = items[0];
+    activeTab.value = active.key;
+  }
+  if (active.key === "公交出行监测" && active.children?.length
+      && !active.children.some((item) => item.key === busTravelSection.value)) {
+    busTravelSection.value = active.children[0].key;
+  }
+  if (active.key === "客流走廊监测" && active.children?.length
+      && !active.children.some((item) => item.key === corridorSection.value)) {
+    corridorSection.value = active.children[0].key;
+  }
+  if (props.mode === "pfa" && active.key === "线路客流监测" && active.children?.length
+      && !active.children.some((item) => item.key === pfaLineSection.value)) {
+    pfaLineSection.value = active.children[0].key;
+  }
+  if (props.mode === "pfa" && active.key === "站点客流监测" && active.children?.length
+      && !active.children.some((item) => item.key === pfaStationSection.value)) {
+    pfaStationSection.value = active.children[0].key;
+  }
+}
+
+watch(displayMenuItems, () => syncActiveMenuWithAvailability(), { flush: "post" });
 
 const pfaIsExpanded = (key) => pfaExpandedKeys.value.includes(key);
 const isNavItemActive = (item) => {
@@ -2252,6 +2480,7 @@ watch(effectiveTab, (tab) => {
   syncBaseMapLayerVisibilityNow();
   scheduleLayerSyncBurst(4);
   observeLeftPanelSize();
+  nextTick(setMapCenter);
 });
 
 watch(
@@ -2273,11 +2502,11 @@ const mapRotation = ref(0);
 const showRightPanel = ref(true);
 const isRightCollapsed = ref(false);
 const flowControl = ref(false);
-const vehicleVisibilityMode = ref("all");
+const vehicleVisibilityMode = ref(["bus", "subway", "car"]);
 const vehicleVisibilityOptions = [
-  { label: "全部车辆", value: "all" },
-  { label: "仅公共交通", value: "public" },
-  { label: "仅私家车", value: "private" },
+  { label: "公交", value: "bus" },
+  { label: "地铁", value: "subway" },
+  { label: "私家车", value: "car" },
 ];
 
 const isRightPanelVisible = computed(() => showRightPanel.value && rightPanelHasContent.value);
@@ -2289,9 +2518,18 @@ function toggleRightPanel() {
 }
 
 const showLineWidthPopover = ref(false);
+const SIMULATION_TABS_WITHOUT_SETTINGS = new Set([
+  "公交出行监测",
+  "客流走廊监测",
+]);
+const showSettingsControl = computed(
+  () => !isSimulationMode.value || !SIMULATION_TABS_WITHOUT_SETTINGS.has(effectiveTab.value),
+);
+watch(showSettingsControl, (visible) => {
+  if (!visible) showLineWidthPopover.value = false;
+});
 const lineWidth = ref(1.2);
 const stationSize = ref(32);
-const pfaSegmentOpacity = ref(100);
 const vehicleSize = ref(36);
 // 路段公交车速（拥堵路况）图层：需求为可开关且默认关闭，透明度百分比可调；
 // 状态由 GJYS 回报（idle/loading/generating/ready/empty/error），驱动左下角图例显隐
@@ -2597,7 +2835,7 @@ function hourlyIntervalLabel(hour) {
 }
 function hourlyAxisLabelStyle(fullscreen = false) {
   return {
-    color: "#667085",
+    color: chartInk.value.text,
     fontSize: fullscreen ? 11 : 10,
     interval: fullscreen ? 1 : 3,
     hideOverlap: true,
@@ -2608,6 +2846,9 @@ function emptyModeHourlyFlow() {
   return { bus: emptyHourlyFlow(), metro: emptyHourlyFlow() };
 }
 const overallFlowHourlyByMode = ref(emptyModeHourlyFlow());
+const overallFlowDailyFlow = ref([]);
+const overallDailyStart = ref("");
+const overallDailyEnd = ref("");
 // 公交运营效率分母（车辆数/日班次/日运营车公里）：无筛选走轻量接口由后端聚合，
 // 有行政区筛选时从整包 routePanel 本地聚合，两条路径口径一致（Σ各方向计数，仅常规公交）
 const overallFlowBusOps = ref(null);
@@ -2641,10 +2882,11 @@ const overallFlowRefreshing = computed(() =>
 );
 const overallFlowModes = computed(() => {
   const total = overallFlowTotal.value;
-  return [
+  const modes = [
     { key: "bus", label: "公交客流", value: overallFlowBusTotal.value },
     { key: "metro", label: "地铁客流", value: overallFlowMetroTotal.value },
-  ].map((mode) => {
+  ];
+  return modes.filter((mode) => isSimulationMode.value || mode.key !== "metro").map((mode) => {
     const sharePercent = total > 0 ? (mode.value / total) * 100 : 0;
     return {
       ...mode,
@@ -2654,40 +2896,67 @@ const overallFlowModes = computed(() => {
   });
 });
 
-// 公交运营效率三指标：车均日载客量 / 单班次日载客量 / 客流强度（人次/百公里）。
+// 公交运营效率三指标：车均日载客量 / 单班次载客量 / 客流强度（人次/车公里）。
 // 仅统计常规公交（轨道车辆班次与公交不可比）；车辆数/班次与线路卡片的
-// 「车辆数/日发车班次」同源（模型班次表，Σ各方向计数），车公里 = Σ班次×线路长度。
+// 「车辆数/日发车班次」同源；强度分母为日运营车公里 Σ(路径长度×班次)。
 const overallBusOpsStats = computed(() => {
   const ops = overallFlowBusOps.value || {};
   const busTotal = overallFlowBusTotal.value;
   const vehicles = Number(ops.vehicles) || 0;
   const departures = Number(ops.departures) || 0;
   const operatedKm = Number(ops.operatedKm) || 0;
-  const perVehicle = vehicles > 0 && busTotal > 0 ? busTotal / vehicles : NaN;
-  const perTrip = departures > 0 && busTotal > 0 ? busTotal / departures : NaN;
-  const intensity = operatedKm > 0 && busTotal > 0 ? busTotal / (operatedKm / 100) : NaN;
+  const { perVehicle, perTrip, intensity } = busOperationRatios(busTotal, ops);
   return [
     {
       label: "车均日载客量",
-      ...formatLineRatioStat(perVehicle, "人次/日"),
+      ...formatLineRatioStat(perVehicle, "人次/车·日"),
       title: `公交日客运量 ÷ 车辆数（${formatFlowNumber(vehicles)} 辆）`,
     },
     {
-      label: "单班次日载客量",
-      ...formatLineRatioStat(perTrip, "人次/日"),
+      label: "单班次载客量",
+      ...formatLineRatioStat(perTrip, "人次/班"),
       title: `公交日客运量 ÷ 日发车班次（${formatFlowNumber(departures)} 班）`,
     },
     {
       label: "客流强度",
-      ...formatLineRatioStat(intensity, "人次/百公里"),
-      title: `公交日客运量 ÷ 日运营车公里 × 100（车公里 = Σ班次×线路长度，当前 ${formatFlowNumber(operatedKm)} 车公里/日）`,
+      ...formatLineRatioStat(intensity, "人次/车公里"),
+      title: `公交日客运量 ÷ 日运营车公里（当前 ${formatFlowNumber(operatedKm)} 车公里）`,
     },
   ];
 });
 
-// 分企业运营指标：企业—线路归属数据尚未接入，先渲染表头与空态占位；
-// 接入后每行给 { name, perVehicle, perTrip, intensity } 即可
-const operatorOpsRows = computed(() => []);
+// 分企业与总体指标共用 busOperationRatios，不直接采信数据源中的预计算比值，
+// 防止真实模式与仿真模式在接口层各自演化出不同公式。
+const operatorOpsRows = computed(() => (overallFlowBusOps.value?.operators || []).map((item) => {
+  const ratios = busOperationRatios(item?.passenger, item);
+  return {
+    name: String(item?.name || "未知企业"),
+    perVehicle: formatLineRatioStat(ratios.perVehicle, "").value,
+    perTrip: formatLineRatioStat(ratios.perTrip, "").value,
+    intensity: formatLineRatioStat(ratios.intensity, "").value,
+  };
+}));
+
+const filteredOverallDailyFlow = computed(() => {
+  const start = overallDailyStart.value;
+  const end = overallDailyEnd.value;
+  return overallFlowDailyFlow.value.filter((item) => (!start || item.date >= start) && (!end || item.date <= end));
+});
+
+const overallDailyMin = computed(() => overallFlowDailyFlow.value[0]?.date || "");
+const overallDailyMax = computed(() => overallFlowDailyFlow.value[overallFlowDailyFlow.value.length - 1]?.date || "");
+
+watch(overallFlowDailyFlow, (rows) => {
+  if (!rows.length) {
+    overallDailyStart.value = "";
+    overallDailyEnd.value = "";
+    return;
+  }
+  const first = rows[0].date;
+  const last = rows[rows.length - 1].date;
+  if (!overallDailyStart.value || overallDailyStart.value < first || overallDailyStart.value > last) overallDailyStart.value = first;
+  if (!overallDailyEnd.value || overallDailyEnd.value < first || overallDailyEnd.value > last) overallDailyEnd.value = last;
+}, { immediate: true });
 function buildHourlyRankingRows(hourly = []) {
   return hourly
     .map((value, hour) => {
@@ -2705,6 +2974,7 @@ function buildHourlyRankingRows(hourly = []) {
 }
 const overallFlowRankingRows = computed(() => buildHourlyRankingRows(overallFlowHourly.value));
 function buildHourlyFlowChartOption(hourly = []) {
+  const ink = chartInk.value;
   const hours = hourly.map((_, index) => hourlyIntervalLabel(index));
   const LinearGradient = graphic.LinearGradient;
   const areaColor = LinearGradient
@@ -2718,10 +2988,10 @@ function buildHourlyFlowChartOption(hourly = []) {
     tooltip: {
       trigger: "axis",
       appendToBody: true,
-      backgroundColor: "rgba(255, 255, 255, 0.98)",
-      borderColor: "rgba(17, 32, 58, 0.1)",
+      backgroundColor: ink.tooltipBg,
+      borderColor: ink.tooltipBorder,
       borderWidth: 1,
-      textStyle: { color: "#1c2024", fontSize: 12 },
+      textStyle: { color: ink.tooltipText, fontSize: 12 },
       formatter(params = []) {
         const item = params[0];
         if (!item) return "";
@@ -2733,15 +3003,15 @@ function buildHourlyFlowChartOption(hourly = []) {
       type: "category",
       data: hours,
       axisTick: { show: false },
-      axisLine: { lineStyle: { color: "rgba(17, 32, 58, 0.12)" } },
+      axisLine: { lineStyle: { color: ink.axisLine } },
       axisLabel: hourlyAxisLabelStyle(),
     },
     yAxis: {
       type: "value",
       name: "人次",
-      nameTextStyle: { color: "#98a2b3", fontSize: 10, padding: [0, 8, 0, 0] },
-      splitLine: { lineStyle: { color: "rgba(17, 32, 58, 0.07)", type: "dashed" } },
-      axisLabel: { color: "#667085", fontSize: 10 },
+      nameTextStyle: { color: ink.textSoft, fontSize: 10, padding: [0, 8, 0, 0] },
+      splitLine: { lineStyle: { color: ink.splitLine, type: "dashed" } },
+      axisLabel: { color: ink.text, fontSize: 10 },
     },
     series: [
       {
@@ -2760,7 +3030,9 @@ function buildHourlyFlowChartOption(hourly = []) {
   };
 }
 function buildOverallFlowChartOption(byMode = emptyModeHourlyFlow(), opt = {}) {
+  const ink = chartInk.value;
   const fullscreen = opt.fullscreen === true;
+  const includeMetro = opt.includeMetro !== false;
   const bus = Array.isArray(byMode.bus) ? byMode.bus : emptyHourlyFlow();
   const metro = Array.isArray(byMode.metro) ? byMode.metro : emptyHourlyFlow();
   const hours = emptyHourlyFlow().map((_, index) => hourlyIntervalLabel(index));
@@ -2770,11 +3042,11 @@ function buildOverallFlowChartOption(byMode = emptyModeHourlyFlow(), opt = {}) {
     tooltip: {
       trigger: "axis",
       appendToBody: true,
-      backgroundColor: "rgba(255, 255, 255, 0.98)",
-      borderColor: "rgba(17, 32, 58, 0.1)",
+      backgroundColor: ink.tooltipBg,
+      borderColor: ink.tooltipBorder,
       borderWidth: 1,
-      textStyle: { color: "#1c2024", fontSize: 12 },
-      axisPointer: { type: "line", lineStyle: { color: "rgba(17, 32, 58, 0.22)", width: 1 } },
+      textStyle: { color: ink.tooltipText, fontSize: 12 },
+      axisPointer: { type: "line", lineStyle: { color: ink.axisPointer, width: 1 } },
       formatter(params = []) {
         if (!params.length) return "";
         const rows = params.map((item) =>
@@ -2792,8 +3064,8 @@ function buildOverallFlowChartOption(byMode = emptyModeHourlyFlow(), opt = {}) {
       right: 8,
       itemWidth: 12,
       itemHeight: 8,
-      textStyle: { color: "#667085", fontSize: 13 },
-      data: ["公交客流", "地铁客流"],
+      textStyle: { color: ink.text, fontSize: 13 },
+      data: includeMetro ? ["公交客流", "地铁客流"] : ["公交客流"],
     },
     grid: fullscreen
       ? { top: 74, right: 46, bottom: 76, left: 58, containLabel: true }
@@ -2802,15 +3074,15 @@ function buildOverallFlowChartOption(byMode = emptyModeHourlyFlow(), opt = {}) {
       type: "category",
       data: hours,
       axisTick: { show: false },
-      axisLine: { lineStyle: { color: "rgba(17, 32, 58, 0.12)" } },
+      axisLine: { lineStyle: { color: ink.axisLine } },
       axisLabel: hourlyAxisLabelStyle(fullscreen),
     },
     yAxis: {
       type: "value",
       name: "人次",
-      nameTextStyle: { color: "#98a2b3", fontSize: fullscreen ? 12 : 10, padding: [0, 8, 0, 0] },
-      splitLine: { lineStyle: { color: "rgba(17, 32, 58, 0.07)", type: "dashed" } },
-      axisLabel: { color: "#667085", fontSize: fullscreen ? 12 : 10 },
+      nameTextStyle: { color: ink.textSoft, fontSize: fullscreen ? 12 : 10, padding: [0, 8, 0, 0] },
+      splitLine: { lineStyle: { color: ink.splitLine, type: "dashed" } },
+      axisLabel: { color: ink.text, fontSize: fullscreen ? 12 : 10 },
     },
     series: [
       {
@@ -2824,7 +3096,7 @@ function buildOverallFlowChartOption(byMode = emptyModeHourlyFlow(), opt = {}) {
         lineStyle: { width: fullscreen ? 4 : 2.6, color: OVERALL_FLOW_MODE_COLORS.bus },
         emphasis: { focus: "series" },
       },
-      {
+      ...(includeMetro ? [{
         name: "地铁客流",
         type: "line",
         smooth: 0.35,
@@ -2834,12 +3106,56 @@ function buildOverallFlowChartOption(byMode = emptyModeHourlyFlow(), opt = {}) {
         itemStyle: { color: OVERALL_FLOW_MODE_COLORS.metro },
         lineStyle: { width: fullscreen ? 4 : 2.6, color: OVERALL_FLOW_MODE_COLORS.metro },
         emphasis: { focus: "series" },
-      },
+      }] : []),
     ],
   };
 }
-const overallFlowChartOption = computed(() => buildOverallFlowChartOption(overallFlowHourlyByMode.value));
-const overallFlowFullscreenChartOption = computed(() => buildOverallFlowChartOption(overallFlowHourlyByMode.value, { fullscreen: true }));
+const overallFlowChartOption = computed(() => buildOverallFlowChartOption(overallFlowHourlyByMode.value, { includeMetro: isSimulationMode.value }));
+const overallFlowFullscreenChartOption = computed(() => buildOverallFlowChartOption(overallFlowHourlyByMode.value, { fullscreen: true, includeMetro: isSimulationMode.value }));
+
+const overallDailyChartOption = computed(() => {
+  const ink = chartInk.value;
+  return {
+    backgroundColor: "transparent",
+    tooltip: {
+      trigger: "axis",
+      appendToBody: true,
+      backgroundColor: ink.tooltipBg,
+      borderColor: ink.tooltipBorder,
+      textStyle: { color: ink.tooltipText, fontSize: 12 },
+      formatter(params = []) {
+        const item = params[0];
+        return item ? `<strong>${item.name}</strong><br/>总客流：${formatFlowNumber(item.value)} 人次` : "";
+      },
+    },
+    grid: { top: 18, right: 14, bottom: 38, left: 12, containLabel: true },
+    xAxis: {
+      type: "category",
+      data: filteredOverallDailyFlow.value.map((item) => item.date),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: ink.axisLine } },
+      axisLabel: { color: ink.text, fontSize: 10, rotate: filteredOverallDailyFlow.value.length > 12 ? 35 : 0 },
+    },
+    yAxis: {
+      type: "value",
+      name: "人次",
+      nameTextStyle: { color: ink.textSoft, fontSize: 10 },
+      splitLine: { lineStyle: { color: ink.splitLine, type: "dashed" } },
+      axisLabel: { color: ink.text, fontSize: 10 },
+    },
+    series: [{
+      name: "日总客流",
+      type: "line",
+      smooth: 0.2,
+      showSymbol: filteredOverallDailyFlow.value.length <= 20,
+      symbolSize: 6,
+      data: filteredOverallDailyFlow.value.map((item) => item.flow),
+      itemStyle: { color: "#0f8b6d" },
+      lineStyle: { width: 2.8, color: "#0f8b6d" },
+      areaStyle: { color: "rgba(15, 139, 109, 0.10)" },
+    }],
+  };
+});
 const overallFlowFullscreenVisible = ref(false);
 
 function openOverallFlowFullscreen() {
@@ -2932,7 +3248,9 @@ const lineFlowHourly = computed(() => {
   }
   return base;
 });
+const selectedLinePanelIsGroup = computed(() => Boolean(selectedLinePanel.value?.lineGroup));
 const reverseLineFlowHourly = computed(() => {
+  if (selectedLinePanelIsGroup.value) return Array.from({ length: 24 }, () => 0);
   const flow = selectedReverseLinePanel.value?.hourlyFlow;
   const base = Array.from({ length: 24 }, () => 0);
   if (Array.isArray(flow)) {
@@ -2948,6 +3266,7 @@ const lineFlowPrimaryTotal = computed(() => {
   return lineFlowHourly.value.reduce((sum, value) => sum + value, 0);
 });
 const lineFlowReverseTotal = computed(() => {
+  if (selectedLinePanelIsGroup.value) return 0;
   const metricTotal = Number(selectedReverseLinePanel.value?.metrics?.passenger);
   if (Number.isFinite(metricTotal) && metricTotal > 0) return metricTotal;
   return reverseLineFlowHourly.value.reduce((sum, value) => sum + value, 0);
@@ -2958,6 +3277,7 @@ function positiveMetric(panel, key) {
 }
 
 function combinedMetric(key) {
+  if (selectedLinePanel.value?.lineGroup) return positiveMetric(selectedLinePanel.value, key);
   return positiveMetric(selectedLinePanel.value, key) + positiveMetric(selectedReverseLinePanel.value, key);
 }
 
@@ -2978,40 +3298,58 @@ function formatLineRatioStat(value, unit) {
 
 const lineFlowTotal = computed(() => lineFlowPrimaryTotal.value + lineFlowReverseTotal.value);
 
-// 满载率保留 1 位小数（与排名榜口径一致），取整会抹掉 48.6% 与 49.4% 的差异
+// 平均高峰满载率保留 1 位小数（与排名榜口径一致）
 function formatLinePercentStat(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return { value: "--", unit: "" };
   return { value: number.toFixed(1), unit: "%" };
 }
 
-// 所属企业：模型与爬虫数据暂无企业归属字段，按需求以“-”占位；
-// 待线路总表（真实数据）与模型线路完成 uid 对账后在此按线取值
-const selectedLineCompany = computed(() => "-");
+// 真实数据以线路 SHP 的 company 字段为准；仿真旧缓存没有企业字段时保留“-”。
+const selectedLineCompany = computed(() => String(
+  selectedLinePanel.value?.operator
+    || selectedLinePanel.value?.metrics?.company
+    || selectedReverseLinePanel.value?.operator
+    || selectedReverseLinePanel.value?.metrics?.company
+    || "-",
+));
 
 // 日客流量已升为面板主指标（hero），这里 8 项运营指标铺满 2×4，不出现空格子。
 // 发车间隔为方向级口径（上下行间隔合并求均无意义），取选中方向、缺失时退对向；
-// 客流强度/高峰满载率与未选中态排名榜同一算法（合计客流÷合计里程、断面 loadRateByHour 峰值）
+// 客流强度/平均高峰满载率与未选中态排名榜同一算法
+// （合计客流÷日运营车公里、各高峰班次最大站段满载率的班次均值）
 const lineOperationStats = computed(() => {
   const passenger = lineFlowTotal.value;
   const departures = combinedMetric("departures");
-  const vehicles = combinedMetric("vehicles");
+  const selectedVehicleIds = new Set(
+    [selectedLinePanel.value, selectedReverseLinePanel.value]
+      .flatMap((panel) => Array.isArray(panel?.metrics?.vehicleIds) ? panel.metrics.vehicleIds : [])
+      .map((id) => String(id || "")).filter(Boolean),
+  );
+  const vehicles = selectedVehicleIds.size > 0 ? selectedVehicleIds.size : combinedMetric("vehicles");
   const perTrip = departures > 0 ? passenger / departures : combinedMetric("perTripFlow");
   const perVehicle = vehicles > 0 ? passenger / vehicles : combinedMetric("perVehicleFlow");
   const peakHeadway = positiveMetric(selectedLinePanel.value, "peakHeadwayMin")
     || positiveMetric(selectedReverseLinePanel.value, "peakHeadwayMin");
   const offPeakHeadway = positiveMetric(selectedLinePanel.value, "offPeakHeadwayMin")
     || positiveMetric(selectedReverseLinePanel.value, "offPeakHeadwayMin");
-  // 线路里程取最长单向（lineGroup 的 routeDist 同此口径），上下行相加会把强度算低一倍
-  const routeDist = Math.max(
-    positiveMetric(selectedLinePanel.value, "routeDist"),
-    positiveMetric(selectedReverseLinePanel.value, "routeDist"),
-  );
-  const strength = routeDist > 0 ? passenger / (routeDist / 100000) : 0;
-  const peakLoadRate = Math.max(
-    segmentsPeakLoadRate(selectedLinePanel.value?.segments),
-    segmentsPeakLoadRate(selectedReverseLinePanel.value?.segments),
-  );
+  const routePanels = selectedLinePanelIsGroup.value
+    ? [selectedLinePanel.value]
+    : [selectedLinePanel.value, selectedReverseLinePanel.value].filter(Boolean);
+  const weightedRouteDist = routePanels.reduce((sum, panel) =>
+    sum + positiveMetric(panel, "routeDist") * positiveMetric(panel, "departures"), 0);
+  const strength = weightedRouteDist > 0 ? passenger / (weightedRouteDist / 1000) : 0;
+  const peakSamples = routePanels.reduce(
+    (sum, panel) => sum + positiveMetric(panel, "peakDepartureSamples"), 0);
+  const peakRateWeighted = routePanels.reduce(
+    (sum, panel) => sum
+      + positiveMetric(panel, "peakAverageLoadRate")
+      * positiveMetric(panel, "peakDepartureSamples"), 0);
+  const peakMissingCapacity = routePanels.reduce(
+    (sum, panel) => sum + positiveMetric(panel, "peakMissingCapacityDepartures"), 0);
+  const peakLoadRate = peakMissingCapacity === 0 && peakSamples > 0
+    ? peakRateWeighted / peakSamples
+    : positiveMetric(selectedLinePanel.value, "peakAverageLoadRate");
   return [
     { label: "日发车班次", ...formatLineCountStat(departures, "班") },
     { label: "车辆数", ...formatLineCountStat(vehicles, "辆") },
@@ -3019,8 +3357,8 @@ const lineOperationStats = computed(() => {
     { label: "平峰发车间隔", ...formatLineRatioStat(offPeakHeadway, "分") },
     { label: "单班次客流", ...formatLineRatioStat(perTrip, "人次") },
     { label: "车日均客流", ...formatLineRatioStat(perVehicle, "人次") },
-    { label: "客流强度", ...formatLineCountStat(strength, "人次/百公里") },
-    { label: "高峰满载率", ...formatLinePercentStat(peakLoadRate) },
+    { label: "客流强度", ...formatLineRatioStat(strength, "人次/车公里") },
+    { label: "平均高峰满载率", ...formatLinePercentStat(peakLoadRate) },
   ];
 });
 
@@ -3444,26 +3782,79 @@ function routePanelToOverallHourlyByMode(panel = {}, routeIds = null) {
 // 公交运营效率分母：与上面的小时聚合同一套 routeIds 过滤与 bus/metro 判定，
 // 口径同后端 overallFlow.busOperation（仅常规公交，车公里 = Σ班次×线长）
 function routePanelToOverallBusOps(panel = {}, routeIds = null) {
-  const ops = { vehicles: 0, departures: 0, operatedKm: 0 };
+  const ops = { vehicles: 0, departures: 0, operatedKm: 0, operators: [] };
+  const operatorMap = new Map();
+  const vehicleIds = new Set();
+  let fallbackVehicles = 0;
   const routeEntries = panel?.routes && typeof panel.routes === "object" ? Object.entries(panel.routes) : [];
   routeEntries.forEach(([routeId, route]) => {
     if (routeModeKey(route) !== "bus") return;
     if (!routeMatchesDisplayIds(routeId, route, routeIds)) return;
     const metrics = route?.metrics || {};
     const departures = Number(metrics.departures) || 0;
-    ops.vehicles += Number(metrics.vehicles) || 0;
+    const passenger = sumHourlyFlowArray(route?.hourlyFlow);
+    const company = String(route?.operator || metrics.company || "未知企业");
+    const operatedKm = Number(metrics.operatingVehicleKm)
+      || Number(metrics.operatedKm)
+      || (departures * (Number(metrics.routeDist) || 0)) / 1000;
+    const routeVehicleIds = Array.isArray(metrics.vehicleIds)
+      ? metrics.vehicleIds.map((id) => String(id || "")).filter(Boolean)
+      : [];
+    if (routeVehicleIds.length) routeVehicleIds.forEach((id) => vehicleIds.add(id));
+    else fallbackVehicles += Number(metrics.vehicles) || 0;
     ops.departures += departures;
-    ops.operatedKm += (departures * (Number(metrics.routeDist) || 0)) / 1000;
+    ops.operatedKm += operatedKm;
+    const operator = operatorMap.get(company)
+      || { name: company, passenger: 0, vehicleIds: new Set(), fallbackVehicles: 0,
+        departures: 0, operatedKm: 0 };
+    operator.passenger += passenger;
+    if (routeVehicleIds.length) routeVehicleIds.forEach((id) => operator.vehicleIds.add(id));
+    else operator.fallbackVehicles += Number(metrics.vehicles) || 0;
+    operator.departures += departures;
+    operator.operatedKm += operatedKm;
+    operatorMap.set(company, operator);
   });
+  ops.vehicles = vehicleIds.size + fallbackVehicles;
+  ops.operators = [...operatorMap.values()].map((item) => ({
+    name: item.name,
+    passenger: item.passenger,
+    vehicles: item.vehicleIds.size + item.fallbackVehicles,
+    departures: item.departures,
+    operatedKm: item.operatedKm,
+    perVehicle: (item.vehicleIds.size + item.fallbackVehicles) > 0
+      ? item.passenger / (item.vehicleIds.size + item.fallbackVehicles) : 0,
+    perTrip: item.departures > 0 ? item.passenger / item.departures : 0,
+    intensity: item.operatedKm > 0 ? item.passenger / item.operatedKm : 0,
+  })).sort((left, right) => right.passenger - left.passenger);
   return ops;
 }
 
+function normalizeDailyFlow(rows = []) {
+  return (Array.isArray(rows) ? rows : []).map((item) => ({
+    date: String(item?.date || ""),
+    flow: Math.max(0, Number(item?.flow) || 0),
+  })).filter((item) => item.date).sort((left, right) => left.date.localeCompare(right.date));
+}
+
+function routePanelToOverallDailyFlow(panel = {}, routeIds = null) {
+  const values = new Map();
+  for (const [routeId, route] of Object.entries(panel?.routes || {})) {
+    if (routeModeKey(route) !== "bus" || !routeMatchesDisplayIds(routeId, route, routeIds)) continue;
+    for (const item of normalizeDailyFlow(route?.dailyFlow)) {
+      values.set(item.date, (values.get(item.date) || 0) + item.flow);
+    }
+  }
+  return [...values.entries()].sort(([left], [right]) => left.localeCompare(right))
+    .map(([date, flow]) => ({ date, flow }));
+}
+
 // 后端 overallFlow 接口返回的 busOperation 兜底为数值（旧后端无此字段时全 0 → 指标显示 "--"）
-function normalizeOverallBusOps(raw = {}) {
+function normalizeOverallBusOps(raw = {}, operators = []) {
   return {
     vehicles: Number(raw?.vehicles) || 0,
     departures: Number(raw?.departures) || 0,
     operatedKm: Number(raw?.operatedKm) || 0,
+    operators: Array.isArray(operators) ? operators : [],
   };
 }
 
@@ -3502,6 +3893,7 @@ async function loadOverallFlow() {
       }
       overallFlowHourlyByMode.value = routePanelToOverallHourlyByMode(panel || {}, displayRouteIdSet.value);
       overallFlowBusOps.value = routePanelToOverallBusOps(panel || {}, displayRouteIdSet.value);
+      overallFlowDailyFlow.value = routePanelToOverallDailyFlow(panel || {}, displayRouteIdSet.value);
     } else {
       // 无行政区筛选：走轻量总体客流接口，避免下载整包 routePanel
       const res = await getOverallFlow(
@@ -3515,13 +3907,15 @@ async function loadOverallFlow() {
         return;
       }
       overallFlowHourlyByMode.value = normalizeOverallHourlyByMode(data.hourlyByMode);
-      overallFlowBusOps.value = normalizeOverallBusOps(data.busOperation);
+      overallFlowBusOps.value = normalizeOverallBusOps(data.busOperation, data.operatorOperations);
+      overallFlowDailyFlow.value = normalizeDailyFlow(data.dailyFlow);
     }
   } catch (error) {
     if (seq !== overallFlowRequestSeq) return;
     if (error?.message === "请求已取消" || error?.cause?.message === "canceled") return;
     overallFlowHourlyByMode.value = emptyModeHourlyFlow();
     overallFlowBusOps.value = null;
+    overallFlowDailyFlow.value = [];
     overallFlowError.value = error?.message || "总体客流监测加载失败";
   } finally {
     if (seq === overallFlowRequestSeq) {
@@ -3553,6 +3947,7 @@ watch([selectedDisplayRange, displayRouteIdSet], () => {
     overallFlowError.value = "";
     overallFlowHourlyByMode.value = routePanelToOverallHourlyByMode(cachedPanel, displayRouteIdSet.value);
     overallFlowBusOps.value = routePanelToOverallBusOps(cachedPanel, displayRouteIdSet.value);
+    overallFlowDailyFlow.value = routePanelToOverallDailyFlow(cachedPanel, displayRouteIdSet.value);
     return;
   }
   loadOverallFlow();
@@ -3597,6 +3992,8 @@ const RM_LAYER_TRANSFER_STATION_LABELS = "rm-transfer-station-labels";
 const RM_SOURCE_TRANSFER_LINES = "rm-transfer-lines-source";
 const RM_LAYER_TRANSFER_LINES = "rm-transfer-lines";
 const PFA_RELATED_LINE_COLOR = "#1569de"; // 与客流画像下行蓝线一致
+// 关联线路只作为换乘关系的辅助参照，降低透明度以让选中线路保持视觉焦点。
+const PFA_RELATED_LINE_OPACITY = 0.62;
 // 关联线路模式的选中线路本体：黄色高亮线（业务要求），压在蓝色关联线之上、换乘图标之下。
 // 亮黄在浅色底图上轮廓发虚，主线下垫一条深琥珀描边线。
 const RM_SOURCE_TRANSFER_SELECTED_LINE = "rm-transfer-selected-line-source";
@@ -4019,57 +4416,33 @@ const metroLineIdSet = computed(() => {
   return set;
 });
 
-// 全部线路客流值（按公交/地铁分开），用于分位数断点与最大值
-const lineFlowValuesByMode = computed(() => {
-  const metroIds = metroLineIdSet.value;
-  const bus = [];
-  const metro = [];
-  lineFlowById.value.forEach((flow, lineId) => {
-    if (!(flow > 0)) return;
-    (metroIds.has(lineId) ? metro : bus).push(flow);
-  });
-  return { bus, metro };
-});
-
-const busMaxLineFlow = computed(() => lineFlowValuesByMode.value.bus.reduce((m, v) => Math.max(m, v), 0));
-const metroMaxLineFlow = computed(() => lineFlowValuesByMode.value.metro.reduce((m, v) => Math.max(m, v), 0));
-
-// ===== 线网着色指标切换（需求：线路客流监测支持 客流量 / 高峰满载率）=====
+// ===== 线网着色指标：与右侧排名面板的“排名依据”同步（不再在设置面板单独切换）=====
 // 仅线路客流监测页签生效；其余页签维持客流着色（切页自动回落，无需重置状态）。
-const lineColorMetric = ref("flow"); // flow | loadRate
-const lineLoadRateActive = computed(
-  () => lineColorMetric.value === "loadRate" && effectiveTab.value === "线路客流监测",
+// 取值为 LINE_RANK_METRICS.key（定义见下方排名区），排名榜与线网着色共用同一状态。
+const lineRankMetric = ref("flow");
+const activeLineColorMetricKey = computed(() =>
+  effectiveTab.value === "线路客流监测" ? lineRankMetric.value : "flow",
 );
-const lineMetricToggleVisible = computed(() => effectiveTab.value === "线路客流监测");
+const lineLoadRateActive = computed(() => activeLineColorMetricKey.value === "peakLoadRate");
 
-/** 各断面 loadRateByHour（后端不封顶）的全日最大值 = 高峰满载率（%）。 */
-function segmentsPeakLoadRate(segments) {
-  let peak = 0;
-  for (const segment of Array.isArray(segments) ? segments : []) {
-    const rates = segment?.loadRateByHour;
-    if (!Array.isArray(rates)) continue;
-    for (let h = 0; h < rates.length; h++) {
-      const value = Number(rates[h]) || 0;
-      if (value > peak) peak = value;
-    }
-  }
-  return peak;
+/** 后端按系统早晚高峰窗计算的“各班最大站段满载率”班次均值（%）。 */
+function panelPeakAverageLoadRate(panel) {
+  return Number(panel?.metrics?.peakAverageLoadRate) || 0;
 }
 
 /**
- * 每条线路高峰满载率（%）：lineId 归属接线与 lineFlowById 完全同构
+ * 每条线路平均高峰满载率（%）：lineId 归属接线与 lineFlowById 完全同构
  * （lineGroups 优先、routes 兜底 + routeId 反查）。
  */
 const linePeakLoadById = computed(() => {
   const peaks = new Map();
   const panel = lineFlowPanel.value;
   if (!panel) return peaks;
-  const peakOf = segmentsPeakLoadRate;
   const routeIdToLineIds = new Map();
   Object.entries(panel.routes || {}).forEach(([key, item]) => {
     const lineId = String(item?.lineId ?? "") || String(key).split("::")[0] || "";
     if (!lineId) return;
-    peaks.set(lineId, Math.max(peaks.get(lineId) || 0, peakOf(item?.segments)));
+    peaks.set(lineId, panelPeakAverageLoadRate(item));
     const routeId = String(item?.routeId ?? "");
     if (routeId) {
       if (!routeIdToLineIds.has(routeId)) routeIdToLineIds.set(routeId, []);
@@ -4077,7 +4450,7 @@ const linePeakLoadById = computed(() => {
     }
   });
   Object.entries(panel.lineGroups || {}).forEach(([key, group]) => {
-    const peak = peakOf(group?.segments);
+    const peak = panelPeakAverageLoadRate(group);
     if (!(peak > 0)) return;
     const lineIds = new Set();
     if (String(key).startsWith("bus::")) lineIds.add(String(key).slice(5));
@@ -4106,9 +4479,71 @@ const metroMaxPeakLoad = computed(() => {
   return max;
 });
 
+/**
+ * lineGroups.metrics 派生指标（车均日载客量/单班次载客量/客流强度）按 lineId 展开，
+ * 归属接线与 lineFlowById 同构（bus:: 组直配 + routeId 反查）。旧缓存无 lineGroups 时为空 Map，
+ * 线网退回基础配色，与排名榜同口径（彼时排名值也以 0 兜底）。
+ */
+const lineGroupMetricValuesById = computed(() => {
+  const maps = { perVehicleFlow: new Map(), perTripFlow: new Map(), strength: new Map() };
+  const panel = lineFlowPanel.value;
+  if (!panel) return maps;
+  const routeIdToLineIds = new Map();
+  Object.entries(panel.routes || {}).forEach(([key, item]) => {
+    const lineId = String(item?.lineId ?? "") || String(key).split("::")[0] || "";
+    const routeId = String(item?.routeId ?? "");
+    if (!lineId || !routeId) return;
+    if (!routeIdToLineIds.has(routeId)) routeIdToLineIds.set(routeId, []);
+    routeIdToLineIds.get(routeId).push(lineId);
+  });
+  Object.entries(panel.lineGroups || {}).forEach(([key, group]) => {
+    const metrics = group?.metrics || {};
+    const passenger = Number(metrics.passenger);
+    const flow = Number.isFinite(passenger)
+      ? passenger
+      : (Array.isArray(group?.hourlyFlow)
+        ? group.hourlyFlow.reduce((sum, value) => sum + (Number(value) || 0), 0)
+        : 0);
+    const values = lineRankMetricValues(metrics, flow);
+    if (!(values.perVehicleFlow > 0) && !(values.perTripFlow > 0) && !(values.strength > 0)) return;
+    const lineIds = new Set();
+    if (String(key).startsWith("bus::")) lineIds.add(String(key).slice(5));
+    (Array.isArray(group?.routeIds) ? group.routeIds : []).forEach((routeId) => {
+      (routeIdToLineIds.get(String(routeId)) || []).forEach((lineId) => lineIds.add(lineId));
+    });
+    lineIds.forEach((lineId) => {
+      Object.keys(maps).forEach((metricKey) => {
+        const value = values[metricKey];
+        if (value > 0) maps[metricKey].set(lineId, value);
+      });
+    });
+  });
+  return maps;
+});
+
+// 分位分档着色的取值来源：lineId → 当前指标值（平均高峰满载率走固定语义分档，不经此路）
+const activeQuantileMetricValuesById = computed(() =>
+  lineGroupMetricValuesById.value[activeLineColorMetricKey.value] || lineFlowById.value,
+);
+
+// 当前分位口径的全部线路指标值（按公交/地铁分开），用于分位数断点与最大值
+const lineMetricValuesByMode = computed(() => {
+  const metroIds = metroLineIdSet.value;
+  const bus = [];
+  const metro = [];
+  activeQuantileMetricValuesById.value.forEach((value, lineId) => {
+    if (!(value > 0)) return;
+    (metroIds.has(lineId) ? metro : bus).push(value);
+  });
+  return { bus, metro };
+});
+
+const busLineMetricMax = computed(() => lineMetricValuesByMode.value.bus.reduce((m, v) => Math.max(m, v), 0));
+const metroLineMetricMax = computed(() => lineMetricValuesByMode.value.metro.reduce((m, v) => Math.max(m, v), 0));
+
 const lineFlowResolvedScale = computed(() => resolveColorScale(lineFlowScale.value));
 
-/** 当前着色指标的取值/断点/色板：满载率用 mapTheme.lineLoadRate 固定语义分档，客流保持分位分档。 */
+/** 当前着色指标的取值/断点/色板：满载率用 mapTheme.lineLoadRate 固定语义分档，其余口径保持分位分档。 */
 const activeLineMetricScale = computed(() => {
   if (lineLoadRateActive.value) {
     const scale = MAP_THEME.lineLoadRate;
@@ -4116,25 +4551,25 @@ const activeLineMetricScale = computed(() => {
   }
   const resolved = lineFlowResolvedScale.value;
   return {
-    values: lineFlowById.value,
-    busBreaks: busLineFlowBreaks.value,
-    metroBreaks: metroLineFlowBreaks.value,
+    values: activeQuantileMetricValuesById.value,
+    busBreaks: busLineMetricBreaks.value,
+    metroBreaks: metroLineMetricBreaks.value,
     colors: resolved.colors,
     widths: resolved.widths,
   };
 });
 
-// 同断面色阶：排序只随各制式客流分布变化重跑
-const lineFlowSortedValuesByMode = computed(() => ({
-  bus: sortFlowValues(lineFlowValuesByMode.value.bus),
-  metro: sortFlowValues(lineFlowValuesByMode.value.metro),
+// 同断面色阶：排序只随各制式指标分布变化重跑
+const lineMetricSortedValuesByMode = computed(() => ({
+  bus: sortFlowValues(lineMetricValuesByMode.value.bus),
+  metro: sortFlowValues(lineMetricValuesByMode.value.metro),
 }));
 
-// 分位数断点：由各制式的线路客流分布计算（各档线路条数大致均匀）
-const busLineFlowBreaks = computed(() => quantileBreaks(lineFlowSortedValuesByMode.value.bus, lineFlowResolvedScale.value.thresholds, { assumeSorted: true }));
-const metroLineFlowBreaks = computed(() => quantileBreaks(lineFlowSortedValuesByMode.value.metro, lineFlowResolvedScale.value.thresholds, { assumeSorted: true }));
+// 分位数断点：由各制式的线路指标分布计算（各档线路条数大致均匀）
+const busLineMetricBreaks = computed(() => quantileBreaks(lineMetricSortedValuesByMode.value.bus, lineFlowResolvedScale.value.thresholds, { assumeSorted: true }));
+const metroLineMetricBreaks = computed(() => quantileBreaks(lineMetricSortedValuesByMode.value.metro, lineFlowResolvedScale.value.thresholds, { assumeSorted: true }));
 
-// 以下三个构建器同时服务两种着色指标（客流量/高峰满载率）：values 为 lineId → 指标值。
+// 以下三个构建器同时服务全部着色口径（排名依据五种）：values 为 lineId → 指标值。
 function buildLineFlowMatchExpression(includeMetro, breaks, values, colors) {
   const metroIds = metroLineIdSet.value;
   if (!values.size || !breaks.length) return null;
@@ -4179,7 +4614,7 @@ function buildLineFlowSortKeyExpression(includeMetro, breaks, values) {
 }
 
 // match 表达式：lineId → 分档颜色；routePanel 未就绪时为 null（保持现有颜色）。
-// 着色指标由 activeLineMetricScale 决定（线路客流监测页签可切满载率，其余页签恒为客流）。
+// 着色指标由 activeLineMetricScale 决定（线路客流监测页签随排名依据切换，其余页签恒为客流）。
 const lineFlowColorExpression = computed(() => {
   const scale = activeLineMetricScale.value;
   return buildLineFlowMatchExpression(false, scale.busBreaks, scale.values, scale.colors);
@@ -4209,15 +4644,22 @@ function flowValueLabel(value) {
   return `${Math.round(Number(value) || 0).toLocaleString()} 人次`;
 }
 
-const lineFlowLegendItems = computed(() =>
-  buildValueLegendItems(lineFlowResolvedScale.value.colors, busLineFlowBreaks.value, busMaxLineFlow.value, flowValueLabel, lineFlowResolvedScale.value.widths)
+// 分位口径图例区间标签：客流沿用“x 人次”，派生口径裸数值（单位已在图例标题里）
+function lineMetricValueLabel(value) {
+  return activeLineColorMetricKey.value === "flow"
+    ? flowValueLabel(value)
+    : Math.round(Number(value) || 0).toLocaleString();
+}
+
+const busLineMetricLegendItems = computed(() =>
+  buildValueLegendItems(lineFlowResolvedScale.value.colors, busLineMetricBreaks.value, busLineMetricMax.value, lineMetricValueLabel, lineFlowResolvedScale.value.widths)
 );
 
-const metroFlowLegendItems = computed(() =>
-  buildValueLegendItems(lineFlowResolvedScale.value.colors, metroLineFlowBreaks.value, metroMaxLineFlow.value, flowValueLabel, lineFlowResolvedScale.value.widths)
+const metroLineMetricLegendItems = computed(() =>
+  buildValueLegendItems(lineFlowResolvedScale.value.colors, metroLineMetricBreaks.value, metroLineMetricMax.value, lineMetricValueLabel, lineFlowResolvedScale.value.widths)
 );
 
-// 高峰满载率图例（固定语义分档，% 标注；随制式取各自峰值封顶末档标签）
+// 平均高峰满载率图例（固定语义分档，% 标注；随制式取各自峰值封顶末档标签）
 function loadRateValueLabel(value) {
   return `${Math.round(Number(value) || 0)}%`;
 }
@@ -4231,11 +4673,9 @@ const metroLoadRateLegendItems = computed(() =>
 );
 
 // ===== 未选中线路/站点时，右侧面板显示客流排名（点击排名行等价于在搜索框选中） =====
-const FLOW_RANK_LIMIT = 15;
-
 function buildFlowRankResult(entries) {
   entries.sort((a, b) => b.flow - a.flow);
-  const rows = entries.slice(0, FLOW_RANK_LIMIT);
+  const rows = limitRightPanelRanking(entries);
   const maxFlow = rows.length ? rows[0].flow : 0;
   return {
     total: entries.length,
@@ -4247,33 +4687,14 @@ function buildFlowRankResult(entries) {
   };
 }
 
-// 旧版缓存无 lineGroups 时按 routes 聚合的兜底命名：与 XLZL lineDisplayName 同一套地铁规范化
-function rankMetroDisplayName(lineName, lineId) {
-  const canonical = metroLineCanonicalName({ lineName, lineId });
-  if (PURE_METRO_LINE.test(canonical)) return `地铁${canonical}`;
-  return canonical || String(lineName || lineId || "").trim();
-}
-
 // ===== 线路排名（未选中态右栏）：Top10 + 五种排名口径可切换 =====
 // 指标全部来自 routePanel lineGroups 线级口径（上下行合并，与选中线路面板一致）；
-// 客流强度 = passengerStrength(人次/公里)×100 折算人次/百公里；高峰满载率 = 断面 loadRateByHour 峰值。
-const LINE_RANK_METRICS = [
-  { key: "flow", label: "线路总客流量", unit: "人次", decimals: 0 },
-  { key: "perVehicleFlow", label: "车均日载客量", unit: "人次/日", decimals: 0 },
-  { key: "perTripFlow", label: "单班次日载客量", unit: "人次/日", decimals: 0 },
-  { key: "strength", label: "客流强度", unit: "人次/百公里", decimals: 0 },
-  { key: "peakLoadRate", label: "高峰满载率", unit: "%", decimals: 1 },
-];
-const LINE_RANK_TOP = 10;
-const lineRankMetric = ref("flow");
+// 车均、班均与客流强度只使用规范分子/分母现场计算；
+// 平均高峰满载率由后端按“每班最大站段满载率”的班次均值计算。
+// 排名依据 lineRankMetric 同时驱动线网着色（状态定义见上方“线网着色指标”区）。
 const activeLineRankMetric = computed(
   () => LINE_RANK_METRICS.find((metric) => metric.key === lineRankMetric.value) || LINE_RANK_METRICS[0],
 );
-
-function lineRankValueText(value, decimals) {
-  const safe = Number.isFinite(value) ? value : 0;
-  return decimals > 0 ? safe.toFixed(decimals) : Math.round(safe).toLocaleString();
-}
 
 // 线路排名：与线路着色共用同一份 routePanel 整包。lineGroups 为上下行合并口径
 // （与选中线路面板的“日客流量”一致），组名与搜索候选同一套命名规则，点击行可直接按名选中
@@ -4281,54 +4702,13 @@ const lineFlowRank = computed(() => {
   const panel = lineFlowPanel.value;
   if (!panel) return null;
   const wantMode = searchWantsMetro.value ? "subway" : "bus";
-  const entryByName = new Map();
-  const groups = panel.lineGroups && typeof panel.lineGroups === "object" ? Object.values(panel.lineGroups) : [];
-  if (groups.length) {
-    for (const group of groups) {
-      if (String(group?.mode || "") !== wantMode) continue;
-      // 无名公交线回退 lineId，与搜索候选（lineDisplayName）同一套命名
-      const name = String(group?.lineName || (wantMode === "bus" ? group?.lineId : "") || "").trim();
-      if (!name) continue;
-      const flow = sumHourlyFlowArray(group?.hourlyFlow);
-      if (!(flow > 0)) continue;
-      // 罕见同名线路取客流较大者而非相加，与选中面板显示的单线口径一致
-      if (flow <= (entryByName.get(name)?.flow || 0)) continue;
-      const metrics = group?.metrics || {};
-      entryByName.set(name, {
-        name,
-        flow,
-        perVehicleFlow: Number(metrics.perVehicleFlow) || 0,
-        perTripFlow: Number(metrics.perTripFlow) || 0,
-        strength: (Number(metrics.passengerStrength) || 0) * 100, // 人次/公里 → 人次/百公里
-        peakLoadRate: segmentsPeakLoadRate(group?.segments),
-      });
-    }
-  } else {
-    // 旧版缓存无 lineGroups：按 routes 聚合仅有总客流口径，其余指标以 0 兜底（仍可排序）
-    for (const item of Object.values(panel.routes || {})) {
-      if (String(item?.mode || "") !== wantMode) continue;
-      const name = wantMode === "subway"
-        ? rankMetroDisplayName(item?.lineName, item?.lineId)
-        : String(item?.lineName || item?.lineId || "").trim();
-      if (!name) continue;
-      const flow = sumHourlyFlowArray(item?.hourlyFlow);
-      if (!(flow > 0)) continue;
-      // 同名各方向相加，等价于 lineGroups 的合并口径
-      const entry = entryByName.get(name)
-        || { name, flow: 0, perVehicleFlow: 0, perTripFlow: 0, strength: 0, peakLoadRate: 0 };
-      entry.flow += flow;
-      entry.peakLoadRate = Math.max(entry.peakLoadRate, segmentsPeakLoadRate(item?.segments));
-      entryByName.set(name, entry);
-    }
-  }
   const metric = activeLineRankMetric.value;
-  const entries = [];
-  entryByName.forEach((entry) => {
-    if (!runMonitorOptionInDisplayRange({ value: entry.name }, "line")) return;
-    entries.push(entry);
+  const entries = buildLineRankEntries(panel, wantMode).filter((entry) => {
+    return Number.isFinite(entry[metric.key])
+      && runMonitorOptionInDisplayRange({ value: entry.name }, "line");
   });
   entries.sort((a, b) => (b[metric.key] - a[metric.key]) || a.name.localeCompare(b.name, "zh-CN"));
-  const rows = entries.slice(0, LINE_RANK_TOP);
+  const rows = limitRightPanelRanking(entries);
   const maxValue = rows.length ? rows[0][metric.key] : 0;
   return {
     total: entries.length,
@@ -4515,7 +4895,8 @@ const lineSelectionActiveState = computed(() =>
   )
 );
 
-// 总体客流监测、线路客流监测、体检评估分析共用同一套线路客流着色，图例与色阶设置同步展示
+// 总体客流监测、线路客流监测、体检评估分析共用同一套线网着色，图例与色阶设置同步展示
+// （线路客流监测的着色口径随右侧排名依据切换，其余页签恒为客流）
 const LINE_FLOW_LEGEND_TABS = ["线路客流监测", "总体客流监测", "体检评估分析"];
 
 const showLineFlowLegend = computed(() =>
@@ -4581,17 +4962,26 @@ const activeMapLegendItems = computed(() => {
   if (lineLoadRateActive.value) {
     return showMetroFlowLegend.value ? metroLoadRateLegendItems.value : busLoadRateLegendItems.value;
   }
-  return showMetroFlowLegend.value ? metroFlowLegendItems.value : lineFlowLegendItems.value;
+  return showMetroFlowLegend.value ? metroLineMetricLegendItems.value : busLineMetricLegendItems.value;
 });
+
+// 线网着色图例标题：随排名依据切换口径，前缀区分公交/地铁各自分档
+const LINE_METRIC_LEGEND_TITLES = {
+  flow: "客流（人次/日）",
+  perVehicleFlow: "车均日载客量（人次/车·日）",
+  perTripFlow: "单班次载客量（人次/班）",
+  strength: "客流强度（人次/车公里）",
+  peakLoadRate: "平均高峰满载率（%）",
+};
+const lineMetricLegendTitle = computed(() =>
+  `${showMetroFlowLegend.value ? "地铁" : "线路"}${LINE_METRIC_LEGEND_TITLES[activeLineColorMetricKey.value] || LINE_METRIC_LEGEND_TITLES.flow}`,
+);
 
 // 图例色块高度按该档线宽系数变化（客流越大越粗），无系数时用默认高度
 function legendSwatchHeight(width) {
   if (!width) return "10px";
   return `${Math.round(6 + (Number(width) - 1) * 6)}px`;
 }
-const pfaSegmentLayerOpacity = computed(() =>
-  Math.max(0, Math.min(1, (Number(pfaSegmentOpacity.value) || 0) / 100))
-);
 const busNetworkLoading = ref(false);
 const busNetworkError = ref("");
 let busNetworkRequestSeq = 0;
@@ -4669,6 +5059,19 @@ const busNetworkStationIconScale = computed(() => {
     highZoomScale * 0.68,
     16,
     highZoomScale * 1.08,
+  ];
+});
+const stationFlowCircleRadius = computed(() => {
+  const sizeScale = Math.max(0.5, Math.min(1.5, Number(stationSize.value) / 32 || 1));
+  return [
+    "interpolate",
+    ["linear"],
+    ["zoom"],
+    8, 1.6 * sizeScale,
+    10, 2.6 * sizeScale,
+    12, 4 * sizeScale,
+    14, 6 * sizeScale,
+    16, 9 * sizeScale,
   ];
 });
 const selectedBusStationIconScale = computed(() => {
@@ -5002,7 +5405,7 @@ function ensureBusNetworkLayers(map) {
       source: RM_SOURCE_STATIONS,
       layout: { visibility: "none" },
       paint: {
-        "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 1.6, 10, 2.6, 12, 4, 14, 6, 16, 9],
+        "circle-radius": stationFlowCircleRadius.value,
         "circle-color": stationFlowColorExpression.value || RM_STATION_FLOW_FALLBACK_COLOR,
         "circle-opacity": 0.95,
         "circle-stroke-color": "#ffffff",
@@ -5078,7 +5481,7 @@ function ensureBusNetworkLayers(map) {
       layout: { "line-join": "round", "line-cap": "round", visibility: "none" },
       paint: {
         "line-color": PFA_RELATED_LINE_COLOR,
-        "line-opacity": 0.82,
+        "line-opacity": PFA_RELATED_LINE_OPACITY,
         "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.4, 12, 2.4, 14, 3.4, 16, 4.4],
       },
     });
@@ -5222,60 +5625,21 @@ function ensureBusNetworkLayers(map) {
   syncBaseMapLayerVisibility();
 }
 
-function displayRangeOutlineCollection(context = activeDisplayRangeContext.value) {
-  const geometry = displayRangeOutlineGeometry(context?.feature?.geometry);
-  return geometry
-    ? {
-        type: "FeatureCollection",
-        features: [{
-          type: "Feature",
-          id: context?.feature?.id || "active-display-range",
-          geometry,
-          properties: { ...(context?.feature?.properties || {}) },
-        }],
-      }
-    : emptyFeatureCollection();
-}
-
-function displayRangeOutlineGeometry(geometry) {
-  if (!geometry) return null;
-  if (geometry.type === "LineString" || geometry.type === "MultiLineString") return geometry;
-  const rings = [];
-  if (geometry.type === "Polygon") {
-    (geometry.coordinates || []).forEach((ring) => {
-      if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
-    });
-  } else if (geometry.type === "MultiPolygon") {
-    (geometry.coordinates || []).forEach((polygon) => {
-      (Array.isArray(polygon) ? polygon : []).forEach((ring) => {
-        if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
-      });
-    });
-  }
-  if (!rings.length) return null;
-  return rings.length === 1
-    ? { type: "LineString", coordinates: rings[0] }
-    : { type: "MultiLineString", coordinates: rings };
-}
-
 function ensureDisplayRangeLayer(map = MapRef.value?.map) {
   if (!map) return;
-  ensureBusNetworkSource(map, RM_SOURCE_DISPLAY_RANGE, displayRangeOutlineCollection());
+  ensureBusNetworkSource(
+    map,
+    RM_SOURCE_DISPLAY_RANGE,
+    districtOutlineFeatureCollection(activeDisplayRangeContext.value),
+  );
   if (!map.getLayer(RM_LAYER_DISPLAY_RANGE_OUTLINE)) {
+    const style = adminDistrictOutlineStyle();
     map.addLayer({
       id: RM_LAYER_DISPLAY_RANGE_OUTLINE,
       type: "line",
       source: RM_SOURCE_DISPLAY_RANGE,
-      layout: {
-        "line-join": "round",
-        "line-cap": "round",
-      },
-      paint: {
-        "line-color": "#1569de",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.4, 12, 2.1, 15, 2.8],
-        "line-opacity": 0.86,
-        "line-dasharray": [3.2, 2.4],
-      },
+      layout: style.layout,
+      paint: style.paint,
     });
   }
   setBusLayerVisibility(map, RM_LAYER_DISPLAY_RANGE_OUTLINE, Boolean(activeDisplayRangeContext.value));
@@ -5388,6 +5752,9 @@ function applyBusNetworkPaint() {
   }
   if (map.getLayer(RM_LAYER_BASE_STATIONS)) {
     map.setLayoutProperty(RM_LAYER_BASE_STATIONS, "icon-size", busNetworkStationIconScale.value);
+  }
+  if (map.getLayer(RM_LAYER_STATION_FLOW)) {
+    map.setPaintProperty(RM_LAYER_STATION_FLOW, "circle-radius", stationFlowCircleRadius.value);
   }
   if (map.getLayer(RM_LAYER_STATION_LABELS)) {
     map.setPaintProperty(RM_LAYER_STATION_LABELS, "text-opacity", busStationLabelPaint()["text-opacity"]);
@@ -5936,13 +6303,14 @@ function applyBusNetworkLineClip(context) {
 function syncBusNetworkDisplayRange() {
   const context = activeDisplayRangeContext.value;
   ensureDisplayRangeLayer();
-  setGeoJsonSourceData(RM_SOURCE_DISPLAY_RANGE, displayRangeOutlineCollection(context));
+  setGeoJsonSourceData(RM_SOURCE_DISPLAY_RANGE, districtOutlineFeatureCollection(context));
   setBusLayerVisibility(MapRef.value?.map, RM_LAYER_DISPLAY_RANGE_OUTLINE, Boolean(context));
   applyBusNetworkLineClip(context);
   setGeoJsonSourceData(RM_SOURCE_STATIONS, stationCollectionForDisplayRange(context));
   if (monitorBusRouteLayer && selectModel.value?.name && shouldLoadTransitNetworkForCurrentTab()) {
     monitorBusRouteLayer.setLineClipContext(context);
-    if (!monitorBusRouteLayer.tileMode || monitorBusRouteLayer.datasource !== selectModel.value.name) {
+    if (!isRealDatasource(selectModel.value.name)
+        && (!monitorBusRouteLayer.tileMode || monitorBusRouteLayer.datasource !== selectModel.value.name)) {
       monitorBusRouteLayer.setTileSource(selectModel.value.name, { tileRequest: getRouteTileBinary });
     }
   } else if (!shouldLoadTransitNetworkForCurrentTab()) {
@@ -6111,7 +6479,7 @@ function ensureMonitorBusRouteLayer() {
   });
   monitorSelectedRouteSegmentLayer = new RouteLayer({
     zIndex: 1001,
-    lineWidth: Math.max(6.4, Math.max(4, busNetworkLineWidth.value + 3.6) * 1.08) * 10,
+    lineWidth: selectedSegmentLineWidth(busNetworkLineWidth.value) * 10,
     fixedPixelWidth: true,
     // 二进制转换仍走 worker（deckData 就绪才渲染）；拼路径按同色档分组缓存，单线量级为毫秒开销
     workerEnabled: true,
@@ -6124,14 +6492,14 @@ function ensureMonitorBusRouteLayer() {
     flowWidthStep: 2,
     widthMaxPixels: 26,
     flowStyleStops: pfaSegmentFlowStops.value,
-    opacity: pfaSegmentLayerOpacity.value,
+    opacity: 1,
     // 单条选中线路：关闭随缩放的透明度衰减，避免中低缩放级别下线体发虚
     zoomFadeOpacity: false,
   });
   // 需求11：下行断面客流图层（与上行同一套色阶 stops）
   monitorReverseRouteSegmentLayer = new RouteLayer({
     zIndex: 1000.8,
-    lineWidth: Math.max(6.4, Math.max(4, busNetworkLineWidth.value + 3.6) * 1.08) * 10,
+    lineWidth: selectedSegmentLineWidth(busNetworkLineWidth.value) * 10,
     fixedPixelWidth: true,
     workerEnabled: true,
     continuousPath: true,
@@ -6140,7 +6508,7 @@ function ensureMonitorBusRouteLayer() {
     flowWidthStep: 2,
     widthMaxPixels: 26,
     flowStyleStops: pfaSegmentFlowStops.value,
-    opacity: pfaSegmentLayerOpacity.value,
+    opacity: 1,
     zoomFadeOpacity: false,
   });
   monitorTransferRouteGlowLayer = new RouteLayer({
@@ -6179,19 +6547,31 @@ function ensureMonitorBusRouteLayer() {
   monitorSelectedRouteLayer.setData([]);
   monitorSelectedRouteSegmentLayer.setData([]);
   monitorReverseRouteSegmentLayer.setData([]);
-  monitorBusRouteLayer.setTileSource(selectModel.value.name, { tileRequest: getRouteTileBinary });
+  if (!isRealDatasource(selectModel.value.name)) {
+    monitorBusRouteLayer.setTileSource(selectModel.value.name, { tileRequest: getRouteTileBinary });
+  }
   syncBusNetworkDisplayRange();
   syncBaseMapLayerVisibility();
+}
+
+function selectedSegmentLineWidth(baseWidth) {
+  // 断面层必须跟随设置中的线宽连续变化。原先 Math.max(6.4, ...)
+  // 在滑块 0.1–2 的整个范围内始终得到 6.4，导致控件看起来完全失效。
+  // 这里保留约 4px 的可读性基线，再直接叠加滑块值，确保最小档到最大档
+  // 每一步都有反馈；站点空心圈仍以 6.4px 为下限，可以继续完整盖住断面线。
+  const sliderWidth = Math.max(0.1, Math.min(2, Number(baseWidth) || 1.2));
+  return 4 + sliderWidth * 1.08;
 }
 
 function syncMonitorRouteLineWidths() {
   const baseWidth = busNetworkLineWidth.value;
   const selectedWidth = Math.max(4, baseWidth + 3.6);
+  const segmentWidth = selectedSegmentLineWidth(baseWidth);
   monitorBusRouteLayer?.setLineWidth(baseWidth * 10);
   monitorSelectedRouteGlowLayer?.setLineWidth(selectedWidth * 2.2 * 10);
   monitorSelectedRouteLayer?.setLineWidth(selectedWidth * 10);
-  monitorSelectedRouteSegmentLayer?.setLineWidth(Math.max(6.4, selectedWidth * 1.08) * 10);
-  monitorReverseRouteSegmentLayer?.setLineWidth(Math.max(6.4, selectedWidth * 1.08) * 10);
+  monitorSelectedRouteSegmentLayer?.setLineWidth(segmentWidth * 10);
+  monitorReverseRouteSegmentLayer?.setLineWidth(segmentWidth * 10);
   monitorReverseRouteGlowLayer?.setLineWidth(selectedWidth * 2.2 * 10);
   monitorReverseRouteLayer?.setLineWidth(selectedWidth * 10);
   monitorTransferRouteGlowLayer?.setLineWidth(selectedWidth * 2.2 * 10);
@@ -6216,13 +6596,6 @@ function applyPfaSegmentFlowStyle() {
   }
   if (pfaSegmentStyleFrameId) return;
   pfaSegmentStyleFrameId = requestAnimationFrame(applyPfaSegmentFlowStyleNow);
-}
-
-function applyPfaSegmentOpacity() {
-  monitorSelectedRouteSegmentLayer?.setFlowControl?.(true);
-  monitorSelectedRouteSegmentLayer?.setOpacity(pfaSegmentLayerOpacity.value);
-  monitorReverseRouteSegmentLayer?.setFlowControl?.(true);
-  monitorReverseRouteSegmentLayer?.setOpacity(pfaSegmentLayerOpacity.value);
 }
 
 function hasSegmentFlowValue(link) {
@@ -7239,6 +7612,8 @@ function clearBusNetworkLayers() {
 
 const minLineWidth = computed(() => 0.1);
 const maxLineWidth = computed(() => 2);
+const minStationSize = computed(() => 16);
+const maxStationSize = computed(() => 48);
 const minVehicleSize = computed(() => 20);
 const maxVehicleSize = computed(() => 72);
 
@@ -7308,7 +7683,6 @@ watch(stationSize, () => {
 });
 // pfaSegmentFlowStops 为 computed，每次整体重建数组，监听引用即可，无需 deep
 watch(pfaSegmentFlowStops, applyPfaSegmentFlowStyle);
-watch(pfaSegmentLayerOpacity, applyPfaSegmentOpacity);
 // 需求2：着色表达式变化（routePanel 就绪 / 色阶配置调整 / 数据刷新）时实时重着色
 watch([lineFlowColorExpression, metroLineFlowColorExpression, lineFlowWidthFactorExpression, metroLineWidthFactorExpression], applyLineFlowColoring);
 // 模型就绪后即加载线路客流整包（共享缓存，与 XLZL 共用同一次下载），任意 tab 首屏即可着色
@@ -7489,6 +7863,7 @@ async function loadDisplayRanges(options = {}) {
       selectedDisplayRange.value = DISPLAY_RANGE_ALL;
     }
     syncBusNetworkDisplayRange();
+    nextTick(setMapCenter);
   } catch (error) {
     if (seq !== displayRangeRequestSeq) return;
     adminDistrictCollection.value = emptyDistrictFeatureCollection();
@@ -7535,10 +7910,24 @@ function applyLineWidth() {
   if (MapRef.value && MapRef.value.layers) {
     MapRef.value.layers.forEach((layer) => {
       if (typeof layer.setLineWidth === "function") {
+        // 运行监测/客流分析的线路图层使用 fixedPixelWidth，内部约定值为
+        // “实际像素 × 10”；不能用通用的模型线宽覆盖，否则拖动时会写入错误单位。
+        if (
+          layer === monitorBusRouteLayer
+          || layer === monitorSelectedRouteGlowLayer
+          || layer === monitorSelectedRouteLayer
+          || layer === monitorSelectedRouteSegmentLayer
+          || layer === monitorReverseRouteSegmentLayer
+          || layer === monitorReverseRouteGlowLayer
+          || layer === monitorReverseRouteLayer
+          || layer === monitorTransferRouteGlowLayer
+          || layer === monitorTransferRouteLayer
+        ) return;
         layer.setLineWidth(computedLineWidth.value);
       }
     });
   }
+  syncMonitorRouteLineWidths();
   // 不再连带 applyBusNetworkPaint：其 paint 输入不依赖 zoom 缩放系数，由 busNetworkHitLineWidth watch 触发
 }
 
@@ -7590,7 +7979,6 @@ function syncAllLayerSettings() {
   applyLineWidth();
   applyFlowWidthStep();
   applyFlowControl();
-  applyPfaSegmentOpacity();
   applyStationSize();
   applyVehicleSize();
   applyVehicleVisibilityMode();
@@ -7627,19 +8015,14 @@ function handleLineWidthChange(val) {
   applyFlowWidthStep();
 }
 
-// 只负责 clamp 落值：图层透明度统一由 pfaSegmentLayerOpacity 的 watcher 单一数据流下发
-function handlePfaSegmentOpacityChange(val) {
-  pfaSegmentOpacity.value = Math.max(0, Math.min(100, Number(val) || 0));
+function handleStationSizeChange(val) {
+  stationSize.value = val;
+  applyStationSize();
 }
 
 function handleVehicleSizeChange(val) {
   vehicleSize.value = val;
   applyVehicleSize();
-}
-
-function handleVehicleVisibilityModeChange(val) {
-  vehicleVisibilityMode.value = val;
-  applyVehicleVisibilityMode();
 }
 
 function applyFlowControl() {
@@ -7728,7 +8111,7 @@ watch(selectedDisplayRange, () => {
   clearLineSelection();
   clearStationSelection();
   syncBusNetworkDisplayRange();
-  nextTick(fitDisplayRangeContext);
+  nextTick(setMapCenter);
 });
 
 watch(
@@ -7763,7 +8146,9 @@ watch(
       ensureLineFlowPanel();
       if (monitorBusRouteLayer) {
         monitorBusRouteLayer.setLineClipContext(activeDisplayRangeContext.value);
-        monitorBusRouteLayer.setTileSource(modelName, { tileRequest: getRouteTileBinary });
+        if (!isRealDatasource(modelName)) {
+          monitorBusRouteLayer.setTileSource(modelName, { tileRequest: getRouteTileBinary });
+        }
       } else {
         ensureMonitorBusRouteLayer();
       }
@@ -7809,7 +8194,6 @@ function hasTransitionalModels() {
   return (modelList.value || []).some((item) =>
     item?.loadStage === "queued"
     || item?.loadStage === "loading_config"
-    || item?.loadStatus
     || item?.cacheStatus === "queued"
     || item?.cacheStatus === "building");
 }
@@ -7897,6 +8281,7 @@ provide("AddPageMapLayer", addPageMapLayer);
 
 onActivated(() => {
   pageActive.value = true;
+  nextTick(setMapCenter);
   // 首次挂载的 activated 与 mounted 同帧触发，交给 onMounted 的引导流程
   if (!hasBeenDeactivated) return;
   while (pendingLayerAdds.length) {
@@ -7979,7 +8364,11 @@ onMounted(() => {
       await ensureSelectedModelReady();
     }
   })
-    : Promise.resolve();
+    : ensureRealDataReady();
+  if (isSimulationMode.value) {
+    // 仿真首屏稳定后真实数据已在后台预热；用户首次点击“真实”通常直接命中缓存。
+    ensureRealDataReady();
+  }
   bootstrapSimulation.finally(() => {
     initialModelBootstrap.value = false;
     isRestoringSelection = false;
@@ -8049,6 +8438,10 @@ onUnmounted(() => {
   monitorBusRouteLayer = null;
   leftPanelResizeObserver?.disconnect();
   leftPanelResizeObserver = null;
+  if (leftPanelCenterFrame != null && typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(leftPanelCenterFrame);
+    leftPanelCenterFrame = null;
+  }
   window.removeEventListener(RUN_MONITOR_ONBOARDING_RESTART_EVENT, handleRunMonitorOnboardingRestart);
   window.removeEventListener("resize", centerLeftPanel);
   window.removeEventListener("auth:changed", handleAuthChanged);
@@ -8308,9 +8701,24 @@ onUnmounted(() => {
       font-weight: 600;
       color: var(--app-muted);
 
-      .el-select {
-        width: 126px;
+      .vehicle-visibility-options {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        width: 100%;
+
+        .el-checkbox {
+          height: auto;
+          margin-right: 0;
+        }
       }
+    }
+
+    .vehicle-visibility-row {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 8px;
     }
 
   }
@@ -8827,21 +9235,26 @@ onUnmounted(() => {
 
   :deep(.el-scrollbar__wrap),
   :deep(.el-scrollbar__view) {
-    height: 100%;
+    min-height: 100%;
   }
 
   :deep(.el-scrollbar__wrap) {
-    overflow: hidden !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+  }
+
+  :deep(.el-scrollbar__view) {
+    height: auto;
   }
 
   #datavisualization_index_box2 {
-    height: 100%;
-    min-height: 0;
+    height: auto;
+    min-height: 100%;
     display: flex;
     flex-direction: column;
     align-items: stretch;
     gap: var(--dm2-space-3);
-    overflow: hidden;
+    overflow: visible;
   }
 
   :deep(.MCard2) {
@@ -8858,13 +9271,37 @@ onUnmounted(() => {
   }
 }
 
+/* dark 底图下右侧内容面使用纯黑底，避免深色地图后仍浮着一块白色面板。 */
+:global(html.dark .run-monitor-right-panel) {
+  background: #000000 !important;
+}
+
+:global(html.dark .run-monitor-right-panel .MCard2) {
+  background: #000000;
+}
+
+:global(html.dark .run-monitor-right-panel .rm-flow-hero),
+:global(html.dark .run-monitor-right-panel .rm-flow-kpi-grid),
+:global(html.dark .run-monitor-right-panel .rm-ops-table),
+:global(html.dark .run-monitor-right-panel .rm-overall-chart),
+:global(html.dark .run-monitor-right-panel .rm-daily-flow-chart),
+:global(html.dark .run-monitor-right-panel .rm-daily-range input) {
+  background: #000000;
+}
+
+:global(html.dark .run-monitor-right-panel .rm-overall-chart),
+:global(html.dark .run-monitor-right-panel .rm-clickable-chart:hover) {
+  border-color: var(--dm2-line);
+  box-shadow: none;
+}
+
 .rm-right-card {
   width: 100%;
   box-sizing: border-box;
-  min-height: 0;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
-  flex: 1;
+  flex: 0 0 auto;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -8911,7 +9348,7 @@ onUnmounted(() => {
 
 /* ── 总体客流监测：主指标 → 方式构成（兼作图例）→ 曲线 → 高峰速览 ── */
 .overall-flow-card {
-  overflow: hidden;
+  overflow: visible;
 
   .rm-right-card-title {
     padding-bottom: 10px;
@@ -8923,10 +9360,10 @@ onUnmounted(() => {
     }
   }
 
-  /* 曲线是这张卡的正文，吃掉面板剩余高度，而不是留一段死白 */
+  /* 面板允许纵向滚动，图表使用稳定高度，避免下方企业和日变化内容被裁掉。 */
   .rm-overall-chart {
-    flex: 1 1 auto;
-    min-height: 210px;
+    flex: none;
+    height: 210px;
     margin-top: 12px;
   }
 }
@@ -8934,7 +9371,7 @@ onUnmounted(() => {
 /* ── 线路 / 站点客流监测：名称 → 主指标 → 构成（兼作图例）→ 曲线 → 分项指标 ── */
 .line-flow-card,
 .station-flow-card {
-  overflow: hidden;
+  overflow: visible;
 
   .rm-right-card-title {
     padding-bottom: 10px;
@@ -8947,10 +9384,10 @@ onUnmounted(() => {
     }
   }
 
-  /* 曲线是这两张卡的正文，吃掉面板剩余高度，而不是在图表下留一段死白 */
+  /* 固定图表正文高度，其余指标由右侧滚动容器完整承载。 */
   .rm-overall-chart {
-    flex: 1 1 auto;
-    min-height: 226px;
+    flex: none;
+    height: 226px;
     margin-top: 12px;
   }
 }
@@ -8960,7 +9397,7 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-/* 线路名 + 所属企业同行展示：名称可截断，企业名（暂为占位“-”）灰字不折行 */
+/* 线路名 + 所属企业同行展示：名称可截断，企业名灰字不折行 */
 .line-flow-card .rm-panel-title-main h2 {
   display: flex;
   align-items: baseline;
@@ -9253,7 +9690,7 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── 总体卡新增：公交运营效率三指标 + 分企业指标表（企业数据待接入，先占位） ── */
+/* ── 总体卡：公交运营效率、日变化与分企业指标 ── */
 .rm-ops-block {
   margin-top: 12px;
 }
@@ -9279,6 +9716,44 @@ onUnmounted(() => {
   cursor: help;
 }
 
+.rm-daily-flow-head {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.rm-daily-range {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dm2-muted);
+  font-size: 11px;
+}
+
+.rm-daily-range input {
+  width: 112px;
+  box-sizing: border-box;
+  padding: 4px 5px;
+  border: 1px solid var(--dm2-line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.76);
+  color: var(--dm2-ink-soft);
+  font: 600 10.5px/1.2 var(--dm2-font-num);
+}
+
+.rm-daily-range input:focus-visible {
+  border-color: var(--dm2-accent);
+  outline: 2px solid var(--dm2-accent-ring);
+  outline-offset: 1px;
+}
+
+.rm-daily-flow-chart {
+  width: 100%;
+  height: 210px;
+  border: 1px solid var(--dm2-line-faint);
+  border-radius: var(--dm2-radius-sm);
+  background: rgba(255, 255, 255, 0.34);
+}
+
 /* 三列变体：覆盖基础 2×2 网格的奇偶分隔线规则，改为列间竖线 */
 .rm-ops-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9300,7 +9775,7 @@ onUnmounted(() => {
     }
   }
 
-  /* 「人次/百公里」较长：放不下时单位落到下一行，不许横向溢出 */
+  /* 较长单位放不下时落到下一行，不许横向溢出 */
   .rm-flow-kpi-value {
     flex-wrap: wrap;
     row-gap: 1px;

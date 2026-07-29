@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { CORRIDOR_U16_SENTINEL, buildFlowPathData, parseCorridorLinks } from "./corridorLinks.js";
+import {
+  CORRIDOR_U16_SENTINEL,
+  buildFlowPathData,
+  buildFlowRoadLabelData,
+  parseCorridorLinks,
+  selectVisibleRoadLabels,
+} from "./corridorLinks.js";
 import { mercatorToLngLat } from "./populationGrid.js";
 
 /** 按 PCRD 契约手工编码（小端），与后端 MatsimCorridorCache.encodeLinks 对齐。 */
@@ -87,5 +93,78 @@ describe("buildFlowPathData", () => {
     expect(built.length).toBe(0);
     expect(built.positions.length).toBe(0);
     expect(Array.from(built.startIndices)).toEqual([0]);
+  });
+});
+
+describe("buildFlowRoadLabelData", () => {
+  const links = parseCorridorLinks(encode([
+    { x1: 0, y1: 0, x2: 100, y2: 0, coeff: 1, nameIdx: 7, flow: 500 },
+    { x1: 1000, y1: 0, x2: 1300, y2: 0, coeff: 1, nameIdx: 7, flow: 500 },
+    { x1: 0, y1: 1000, x2: 100, y2: 1000, coeff: 1, nameIdx: 8, flow: 700 },
+    { x1: 0, y1: 2000, x2: 1000, y2: 2000, coeff: 1, nameIdx: 9, flow: 900 },
+  ]));
+
+  it("只为当前范围的上榜道路生成一个标注，并保持榜单顺序", () => {
+    const labels = buildFlowRoadLabelData(links, [0, 1, 2], [
+      { nameIdx: 8, name: "乙路" },
+      { nameIdx: 7, name: "甲路" },
+      { nameIdx: 9, name: "范围外道路" },
+    ]);
+
+    expect(labels.map((item) => [item.rank, item.nameIdx, item.name])).toEqual([
+      [1, 8, "乙路"],
+      [2, 7, "甲路"],
+    ]);
+  });
+
+  it("客流并列时选更长路段的中点，保证名称落在道路上", () => {
+    const [label] = buildFlowRoadLabelData(links, [0, 1], [{ nameIdx: 7, name: "甲路" }]);
+    expect(label.position).toEqual(mercatorToLngLat(1150, 0));
+  });
+});
+
+describe("selectVisibleRoadLabels", () => {
+  // 测试用 project 直接把 position 当屏幕像素（[x,y] → {x,y}）
+  const project = ([x, y]) => ({ x, y });
+
+  it("重叠时低名次让位、互不重叠全保留，返回序按名次", () => {
+    const labels = [
+      { rank: 2, name: "乙路", position: [10, 0] }, // 与甲路水平相距 10px < 两框半宽和 → 冲突
+      { rank: 1, name: "甲路", position: [0, 0] },
+      { rank: 3, name: "丙路", position: [500, 0] }, // 远离：保留
+    ];
+    const kept = selectVisibleRoadLabels(labels, project, { sizePx: 11, pixelOffset: [0, -8], paddingPx: 6 });
+    expect(kept.map((item) => item.name)).toEqual(["甲路", "丙路"]);
+  });
+
+  it("同点聚簇只留最高名次（洛溪聚簇回归）", () => {
+    const cluster = [1, 2, 3, 4, 6].map((rank) => ({ rank, name: `道路${rank}号`, position: [rank * 2, rank * 2] }));
+    const kept = selectVisibleRoadLabels(cluster, project, {});
+    expect(kept.map((item) => item.rank)).toEqual([1]);
+  });
+
+  it("宽度按全角 1em/半角 0.6em 估算：长名占位更宽", () => {
+    // 甲路(2 全角=22px 半宽 11+6=17)与 x=40 的丙路不冲突；
+    // 换成 4 全角长名（44px 半宽 22+6=28）后 28+17=45 > 40 → 冲突
+    const short = [
+      { rank: 1, name: "甲路", position: [0, 0] },
+      { rank: 2, name: "丙路", position: [40, 0] },
+    ];
+    expect(selectVisibleRoadLabels(short, project, {}).length).toBe(2);
+    const long = [
+      { rank: 1, name: "环市东路", position: [0, 0] },
+      { rank: 2, name: "丙路", position: [40, 0] },
+    ];
+    expect(selectVisibleRoadLabels(long, project, {}).map((item) => item.name)).toEqual(["环市东路"]);
+  });
+
+  it("投影失效的标签跳过，不占用避让空间", () => {
+    const labels = [
+      { rank: 1, name: "甲路", position: [0, 0] },
+      { rank: 2, name: "乙路", position: [0, 0] },
+    ];
+    const brokenProject = (p) => (p === labels[0].position ? null : { x: 0, y: 0 });
+    expect(selectVisibleRoadLabels(labels, brokenProject, {}).map((item) => item.name)).toEqual(["乙路"]);
+    expect(selectVisibleRoadLabels(labels, null, {})).toEqual([]);
   });
 });

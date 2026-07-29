@@ -29,27 +29,27 @@ export const EVALUATION_INDICATORS = [
     gzAvg: 69, gzAvg2022: 65, type: "目标型", modelKey: "fgl300",
   },
   {
-    key: "wrbyl", dimension: "总体水平", name: "万人保有量", unit: "标台/万人",
-    standardText: "≥10.0", standard: { kind: "min", a: 10.0 }, betterDirection: "higher",
-    gzAvg: 9.5, gzAvg2022: 9.7, type: "目标型", modelKey: "wrbyl",
+    key: "wrbyl", dimension: "总体水平", name: "万人公共交通车辆保有量", unit: "标台/万人",
+    standardText: "—", standard: null, betterDirection: null,
+    gzAvg: 9.5, gzAvg2022: 9.7, type: "待配置", modelKey: "wrbyl",
   },
   {
-    key: "cxfdl", dimension: "总体水平", name: "公交分担率", unit: "%",
-    standardText: "6.5", standard: { kind: "point", a: 6.5 }, betterDirection: "higher",
-    gzAvg: 4.0, gzAvg2022: 3.1, type: "建议型", modelKey: "cxfdl",
+    key: "cxfdl", dimension: "总体水平", name: "公共交通机动化出行分担率", unit: "%",
+    standardText: "—", standard: null, betterDirection: null,
+    gzAvg: 4.0, gzAvg2022: 3.1, type: "待配置", modelKey: "cxfdl",
   },
   {
-    key: "pjrzkl", dimension: "总体水平", name: "平均日载客量", unit: "人次/d",
-    standardText: "≥300", standard: { kind: "min", a: 300 }, betterDirection: "higher",
-    gzAvg: 82, gzAvg2022: 72, type: "建议型", modelKey: "cjrzkl",
+    key: "pjrzkl", dimension: "总体水平", name: "车均日载客量", unit: "人次/车·日",
+    standardText: "—", standard: null, betterDirection: null,
+    gzAvg: 82, gzAvg2022: 72, type: "待配置", modelKey: "cjrzkl",
   },
   {
     key: "dbczkl", dimension: "总体水平", name: "单班次载客量", unit: "人次/班",
-    standardText: "25", standard: { kind: "point", a: 25 }, betterDirection: "higher",
-    gzAvg: 10, gzAvg2022: 9, type: "建议型", modelKey: "dbczkl",
+    standardText: "—", standard: null, betterDirection: null,
+    gzAvg: 10, gzAvg2022: 9, type: "待配置", modelKey: "dbczkl",
   },
   {
-    key: "rcxcs", dimension: "需求强度", name: "日出行次数", unit: "次/人/d",
+    key: "rcxcs", dimension: "需求强度", name: "公交人均日出行次数", unit: "次/人·日",
     standardText: "0.159", standard: { kind: "point", a: 0.159 }, betterDirection: "higher",
     gzAvg: 0.078, gzAvg2022: 0.069, type: "建议型", modelKey: "rcxcs",
   },
@@ -64,12 +64,12 @@ export const EVALUATION_INDICATORS = [
     gzAvg: 2.5, gzAvg2022: 2.7, type: "目标型", modelKey: "xlcfxs",
   },
   {
-    key: "mzl", dimension: "线路效益", name: "线路满载率", unit: "%",
+    key: "mzl", dimension: "线路效益", name: "线路平均高峰满载率", unit: "%",
     standardText: "36.0", standard: { kind: "point", a: 36.0 }, betterDirection: "higher",
     gzAvg: 25.8, gzAvg2022: 26.7, type: "建议型", modelKey: "xlmzl",
   },
   {
-    key: "klqd", dimension: "线路效益", name: "线路客流强度", unit: "人次/km",
+    key: "klqd", dimension: "线路效益", name: "线路客流强度", unit: "人次/车公里",
     standardText: "1.50", standard: { kind: "point", a: 1.5 }, betterDirection: "higher",
     gzAvg: 0.45, gzAvg2022: 0.46, type: "建议型", modelKey: "xlklqd",
   },
@@ -79,12 +79,12 @@ export const EVALUATION_INDICATORS = [
     gzAvg: 0.45, gzAvg2022: 0.44, type: "目标型", modelKey: "yxsdb",
   },
   {
-    key: "pjhcsj", dimension: "运营服务", name: "平均候车时间", unit: "min",
+    key: "pjhcsj", dimension: "运营服务", name: "平均候车时间（公交）", unit: "min",
     standardText: "10", standard: { kind: "max", a: 10 }, betterDirection: "lower",
     gzAvg: 15, gzAvg2022: 15, type: "建议型", modelKey: "pjhcsj",
   },
   {
-    key: "pjhccs", dimension: "运营服务", name: "平均换乘次数", unit: "次",
+    key: "pjhccs", dimension: "运营服务", name: "平均换乘次数（公交）", unit: "次",
     standardText: "-", standard: null, betterDirection: null,
     gzAvg: null, gzAvg2022: null, type: "建议型", modelKey: "pjhccs",
   },
@@ -96,7 +96,7 @@ export const EVALUATION_INDICATORS = [
   {
     key: "cjczmj", dimension: "场站设施", name: "车均场站面积", unit: "m²/标台",
     standardText: "150~200", standard: { kind: "range", a: 150, b: 200 }, betterDirection: "range",
-    gzAvg: 91, gzAvg2022: 94, type: "目标型", modelKey: null,
+    gzAvg: 91, gzAvg2022: 94, type: "目标型", modelKey: "cjczmj",
   },
 ];
 

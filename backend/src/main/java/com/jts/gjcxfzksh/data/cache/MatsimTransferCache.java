@@ -44,8 +44,8 @@ import java.util.zip.GZIPOutputStream;
  * <p>
  * 模型加载时从 {@code PTPersonTrack} 上下车流水单遍识别跨制式换乘事件，产出三个工件：
  * <ul>
- *   <li>{@code transfer-summary.json}：全网指标 + Top 榜（右侧首屏直出，抽样量，前端 ÷scale 展示）；</li>
- *   <li>{@code transfer-events.bin}：紧凑列式事件表（23B/事件，前后端二进制契约，见 §11.2）；</li>
+ *   <li>{@code transfer-summary.json}：全网指标 + Top 榜（右侧首屏直出模型原始量）；</li>
+ *   <li>{@code transfer-events.bin}：紧凑列式事件表（27B/事件，前后端二进制契约，见 §11.2）；</li>
  *   <li>{@code transfer-dict.json.gz}：字典（枢纽/线路/站点 + 稳定原始 ID，见 §11.3）。</li>
  * </ul>
  * 口径契约（§3，任何改动必须 bump {@link #TRANSFER_CACHE_VERSION}）：
@@ -60,7 +60,11 @@ public final class MatsimTransferCache {
     // v1: 首版口径：30min 时间窗 + 800m 地面距离 + bus↔subway（tramAsRail=false，tram 段两头都不算）；
     //     枢纽=subway stopFacility 清洗站名+质心500m(地面)聚类；hour 桶按 min(floor(tBoard/3600),23) 夹逼；
     //     直方图 30 个分钟桶（识别窗口封顶，无溢出桶，1800s 计入桶 29）。
-    public static final String TRANSFER_CACHE_VERSION = "transfer-v1";
+    // v2: 原模型数量直出，取消所有 desc.scale 扩样。
+    // v3: 事件表增加公交整段上车站 busOriginStop，供地铁枢纽详情还原公交来向。
+    // v4: 事件表再增加公交整段下车站 busDestinationStop，使公→地、地→公都能还原
+    //     “公交整段端点—公交换乘站—地铁换乘站”的完整链路。
+    public static final String TRANSFER_CACHE_VERSION = "transfer-v4";
 
     // ===== §3 统一口径常量（改动必须 bump 版本）=====
     /** 换乘识别时间窗（秒），与 TransitMetrics.transferStats 的 1800s 窗口一致（仅数值一致，互不引用）。 */
@@ -83,11 +87,11 @@ public final class MatsimTransferCache {
 
     // ===== transfer-events.bin 布局常量（§11.2，前后端二进制契约，禁止偏离）=====
     static final byte[] BIN_MAGIC = {'T', 'F', 'E', 'V'};
-    static final int BIN_VERSION = 1;
+    static final int BIN_VERSION = 3;
     /** 头部字节数：magic(4) + version u16(2) + count u32(4)。 */
     static final int BIN_HEADER_BYTES = 10;
-    /** 每事件字节数：personIndex u32 + tBoard u32 + transferSec u16 + dir u8 + 6×u16 字典索引。 */
-    static final int BIN_BYTES_PER_EVENT = 23;
+    /** 每事件字节数：personIndex u32 + tBoard u32 + transferSec u16 + dir u8 + 8×u16 字典索引。 */
+    static final int BIN_BYTES_PER_EVENT = 27;
 
     private static final String SUMMARY_FILE = "transfer-summary.json";
     private static final String DICT_FILE = "transfer-dict.json.gz";
@@ -223,13 +227,14 @@ public final class MatsimTransferCache {
             return; // 幂等：已就绪直接跳过
         }
         try {
-            Files.createDirectories(cacheDir(data));
             Artifacts artifacts = buildArtifacts(data);
+            MatsimCachePaths.recreateVersionDir(data, TRANSFER_CACHE_VERSION);
             // 工件先落盘、manifest 最后写：manifest=ready 即三工件必然齐备
             writeBytesAtomic(eventsPath(data), artifacts.eventsBin);
             writeGzipJson(dictPath(data), artifacts.dict);
             writeJsonAtomic(summaryPath(data), artifacts.summary);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "transfer-v", TRANSFER_CACHE_VERSION);
             MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
             MEMORY_CACHE.remove(cacheKey(dictPath(data)));
             Object totals = artifacts.summary.get("totals");
@@ -308,7 +313,7 @@ public final class MatsimTransferCache {
             // lineId 缺失（vlMap 未命中）时按 routeId 兜底，跨线冲突则视为未知制式
             return conflictedRouteIds.contains(routeId) ? null : byRouteOnly.get(routeId);
         };
-        TransferComputation computation = computeTransfers(data.getPersonTracks(), resolver, coordByFacility);
+        TransferComputation computation = computeTransfers(data, resolver, coordByFacility);
         return assemble(computation, hubs, lineNames, routeNames, nameByFacility, coordByFacility,
                 effectiveSampleRate(data));
     }
@@ -320,8 +325,9 @@ public final class MatsimTransferCache {
     /**
      * 制式判定：transportMode 优先。正则口径复刻自 PTDataServiceImpl.routeModeIndex
      * （api.service.impl 包内 static，缓存层不可达，不改其可见性与行为）。
-     * 与 routeModeIndex 的差异仅在 tram：本模块把 tram/APM/有轨单独识别为 {@link #MODE_TRAM}
-     * （routeModeIndex 会把 tram 判成 bus——那是体检评估 gjjbbl 口径，红线不动）。
+     * 与 routeModeIndex 的差异仅在 tram：本模块把 tram/APM/有轨单独识别为 {@link #MODE_TRAM}。
+     * 体检评估 gjjbbl 已改由 population-v9 的完整 OD 出行链及统一 schedule 制式解析计算，
+     * 不再依赖本换乘事件子集或这里的兜底分类。
      * transportMode 缺失时与 routeModeIndex 一致按 bus 处理（广州模型 transportMode 全覆盖）。
      */
     static String classifyTransportMode(String transportMode) {
@@ -340,13 +346,9 @@ public final class MatsimTransferCache {
         return TRAM_AS_RAIL && MODE_TRAM.equals(mode) ? MODE_SUBWAY : mode;
     }
 
-    /**
-     * 人口抽样比例：口径复刻自 PTDataServiceImpl.effectiveSampleRate（desc.json 的 scale，
-     * 只接受 (0,1]，异常值按全样本 1.0 处理，宁可不扩样也不放大指标）。
-     */
+    /** 数量严格按模型原始值计算；历史 scale 不参与任何数值。 */
     static double effectiveSampleRate(MatsimData data) {
-        double scale = data.getScale();
-        return scale > 0 && scale <= 1.0 ? scale : 1.0;
+        return 1.0;
     }
 
     /**
@@ -526,6 +528,7 @@ public final class MatsimTransferCache {
     /** 识别期事件（保留原始 ID，落盘前经字典编码；原始 personId 不落任何工件）。 */
     record RawEvent(String personId, long tBoard, int transferSec, int dir,
                     String busLineId, String busRouteId, String busStopId,
+                    String busOriginStopId, String busDestinationStopId,
                     String metroLineId, String metroStopId) {
     }
 
@@ -533,7 +536,7 @@ public final class MatsimTransferCache {
     static final class TransferComputation {
         final List<RawEvent> events = new ArrayList<>();
         long droppedTracks;
-        /** lineId → [boardings, alightings]，bus 制式全线全日、抽样口径不扩样（口径同 routePanel totalBoardings/totalAlightings）。 */
+        /** lineId → [boardings, alightings]，bus 制式全线全日模型原始量（口径同 routePanel totalBoardings/totalAlightings）。 */
         final Map<String, long[]> busLineFlows = new HashMap<>();
     }
 
@@ -587,6 +590,33 @@ public final class MatsimTransferCache {
         for (Map.Entry<String, List<PTPersonTrack>> entry : byPerson.entrySet()) {
             collectPersonEvents(entry.getKey(), entry.getValue(), routeResolver, coordByFacility, result);
         }
+        return result;
+    }
+
+    /** 大模型磁盘态入口：逐 person 分区处理，不把全量 tracks 或全量 byPerson 留在堆中。 */
+    private static TransferComputation computeTransfers(
+            MatsimData data,
+            BiFunction<String, String, RouteRef> routeResolver,
+            Map<String, double[]> coordByFacility
+    ) {
+        if (data.getPersonTracks() != null && !data.getPersonTracks().isEmpty()) {
+            return computeTransfers(data.getPersonTracks(), routeResolver, coordByFacility);
+        }
+        TransferComputation result = new TransferComputation();
+        MatsimPersonTrackStore.forEachPerson(data, (personId, tracks) -> {
+            for (PTPersonTrack track : tracks) {
+                RouteRef ref = resolveTrack(routeResolver, track);
+                if (ref != null && ref.lineId() != null && MODE_BUS.equals(ref.mode()) && track.getEnter() != null) {
+                    result.busLineFlows.computeIfAbsent(ref.lineId(), ignored -> new long[2])
+                            [Boolean.TRUE.equals(track.getEnter()) ? 0 : 1]++;
+                }
+            }
+            if (personId == null || personId.isBlank()) {
+                result.droppedTracks += tracks.size();
+                return;
+            }
+            collectPersonEvents(personId, tracks, routeResolver, coordByFacility, result);
+        });
         return result;
     }
 
@@ -664,8 +694,10 @@ public final class MatsimTransferCache {
             } else {
                 continue;
             }
+            String busOriginStop = busSeg.boardFacility();
+            String busDestinationStop = busSeg.alightFacility();
             if (busSeg.lineId() == null || metroSeg.lineId() == null
-                    || busStop == null || metroStop == null) {
+                    || busStop == null || busOriginStop == null || busDestinationStop == null || metroStop == null) {
                 continue; // 无法字典编码的残缺段不成事件
             }
             // 空间校验：前后站地面距离 ≤800m（cos(lat) 修正后比较）
@@ -682,7 +714,7 @@ public final class MatsimTransferCache {
                     Math.max(0L, Math.round(next.boardTime())), // 归属时刻 = 后序交通工具上车时刻（§3.5）
                     (int) Math.round(gap),
                     dir,
-                    busSeg.lineId(), busSeg.routeId(), busStop,
+                    busSeg.lineId(), busSeg.routeId(), busStop, busOriginStop, busDestinationStop,
                     metroSeg.lineId(), metroStop));
         }
     }
@@ -717,6 +749,8 @@ public final class MatsimTransferCache {
                     .thenComparing(RawEvent::personId)
                     .thenComparingInt(RawEvent::transferSec)
                     .thenComparingInt(RawEvent::dir)
+                    .thenComparing(RawEvent::busOriginStopId)
+                    .thenComparing(RawEvent::busDestinationStopId)
                     .thenComparing(RawEvent::busStopId)
                     .thenComparing(RawEvent::metroStopId);
 
@@ -745,6 +779,8 @@ public final class MatsimTransferCache {
             busRoutesByLine.computeIfAbsent(event.busLineId(), ignored -> new TreeSet<>()).add(event.busRouteId());
             metroLineIds.add(event.metroLineId());
             busStopIds.add(event.busStopId());
+            busStopIds.add(event.busOriginStopId());
+            busStopIds.add(event.busDestinationStopId());
             metroStopIds.add(event.metroStopId());
             String hubKey = hubs.hubKeyOf(event.metroStopId()); // 枢纽归属=轨道侧 facility 所属聚类（§3.2）
             eventHubKeys[i] = hubKey;
@@ -789,6 +825,8 @@ public final class MatsimTransferCache {
         int[] busLineCol = new int[count];
         int[] busRouteCol = new int[count];
         int[] busStopCol = new int[count];
+        int[] busOriginStopCol = new int[count];
+        int[] busDestinationStopCol = new int[count];
         int[] metroLineCol = new int[count];
         int[] metroStopCol = new int[count];
         int[] hubCol = new int[count];
@@ -799,6 +837,8 @@ public final class MatsimTransferCache {
             busLineCol[i] = busLineIdx.get(event.busLineId());
             busRouteCol[i] = busRouteIdx.get(event.busLineId()).get(event.busRouteId());
             busStopCol[i] = busStopIdx.get(event.busStopId());
+            busOriginStopCol[i] = busStopIdx.get(event.busOriginStopId());
+            busDestinationStopCol[i] = busStopIdx.get(event.busDestinationStopId());
             metroLineCol[i] = metroLineIdx.get(event.metroLineId());
             metroStopCol[i] = metroStopIdx.get(event.metroStopId());
             hubCol[i] = hubIdx.get(eventHubKeys[i]);
@@ -819,7 +859,7 @@ public final class MatsimTransferCache {
             pairAggs.computeIfAbsent(pairKey, ignored -> new FlowAgg()).add(event.transferSec());
         }
         // 列式落盘，列顺序固定（§11.2）：personIndex → tBoard → transferSec → dir → busLine →
-        // busRoute → busStop → metroLine → metroStop → hub
+        // busRoute → busStop → busOriginStop → busDestinationStop → metroLine → metroStop → hub
         for (int i = 0; i < count; i++) buffer.putInt(personCol[i]);
         for (int i = 0; i < count; i++) buffer.putInt((int) tBoardCol[i]);
         for (int i = 0; i < count; i++) buffer.putShort((short) events.get(i).transferSec());
@@ -827,6 +867,8 @@ public final class MatsimTransferCache {
         for (int i = 0; i < count; i++) buffer.putShort((short) busLineCol[i]);
         for (int i = 0; i < count; i++) buffer.putShort((short) busRouteCol[i]);
         for (int i = 0; i < count; i++) buffer.putShort((short) busStopCol[i]);
+        for (int i = 0; i < count; i++) buffer.putShort((short) busOriginStopCol[i]);
+        for (int i = 0; i < count; i++) buffer.putShort((short) busDestinationStopCol[i]);
         for (int i = 0; i < count; i++) buffer.putShort((short) metroLineCol[i]);
         for (int i = 0; i < count; i++) buffer.putShort((short) metroStopCol[i]);
         for (int i = 0; i < count; i++) buffer.putShort((short) hubCol[i]);
@@ -903,7 +945,7 @@ public final class MatsimTransferCache {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("lineId", lineId);
             payload.put("name", nonBlank(lineNames.get(lineId), lineId));
-            // 契约补充：全线全日上/下车人次（抽样口径不扩样，仅 bus 制式；§6.3 接驳率分母）
+            // 契约补充：全线全日上/下车人次（模型原始量，仅 bus 制式；§6.3 接驳率分母）
             long[] flows = busLineFlows.getOrDefault(lineId, new long[2]);
             payload.put("boardings", flows[0]);
             payload.put("alightings", flows[1]);
@@ -932,7 +974,8 @@ public final class MatsimTransferCache {
         Map<String, Object> dict = new LinkedHashMap<>();
         dict.put("version", TRANSFER_CACHE_VERSION);
         dict.put("params", paramsPayload());
-        dict.put("scale", scale);
+        dict.put("scale", 1.0);
+        dict.put("quantityPolicy", "model-original");
         dict.put("hubs", hubPayloads);
         dict.put("busLines", busLinePayloads);
         dict.put("metroLines", metroLinePayloads);
@@ -964,7 +1007,7 @@ public final class MatsimTransferCache {
         return payload;
     }
 
-    /** transfer-summary.json 结构（§11.1 v2 版；量为抽样口径，前端 ÷scale 展示）。 */
+    /** transfer-summary.json 结构（§11.1 v2 版；数量为模型原始值）。 */
     private static Map<String, Object> buildSummary(
             long droppedTracks,
             int count,
@@ -1021,7 +1064,8 @@ public final class MatsimTransferCache {
         summary.put("status", "ready");
         summary.put("version", TRANSFER_CACHE_VERSION);
         summary.put("params", paramsPayload());
-        summary.put("scale", scale);
+        summary.put("scale", 1.0);
+        summary.put("quantityPolicy", "model-original");
         summary.put("droppedTracks", droppedTracks);
         summary.put("totals", totals);
         Map<String, Object> hourlyPayload = new LinkedHashMap<>();
@@ -1092,22 +1136,13 @@ public final class MatsimTransferCache {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static Map<String, Object> loadCachedJson(Path path, boolean gzip) {

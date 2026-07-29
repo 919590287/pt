@@ -45,7 +45,7 @@ import java.util.TreeMap;
  * 模型加载时做两遍独立扫描：①从 MATSim plans 抽取每次「活动出行」（含 pt leg 的 trip）的
  * 起点/终点活动坐标（端点工件）；②从 {@code PTPersonTrack} 上下车流水识别整段公交出行
  * （journey）并聚合站点级公交出行 OD（OD 工件，供公交OD监测子模块）。
- * 产出五个工件（全部为模型抽样量，前端直出不扩样；scale 仅作元信息下发）：
+ * 产出五个工件（全部为加载模型的原始量，不做任何数量缩放）：
  * <ul>
  *   <li>{@code tripends-summary.json}：总量指标 + 口径参数（右侧首屏直出）；</li>
  *   <li>{@code tripends-grid.bin}：100 米栅格二进制表——布局与 population-grid.bin 完全同契约
@@ -90,7 +90,13 @@ public final class MatsimTripEndsCache {
     // v4: 模块改名「出行分布监测」，端点口径从「journey 首上车站/末下车站」改为「本次活动出行的
     //     起终点」（plans 中含 pt leg 的 trip 两端非 interaction 活动坐标）；journeys/riders 随之
     //     改为 plans 口径；OD 工件维持 events 站点口径不变；源指纹新增 plans。
-    public static final String TRIPENDS_CACHE_VERSION = "tripends-v4";
+    // v5: 原模型数量直出，取消 desc.scale 扩样，并支持缺 plans 的显式 unsupported 状态。
+    public static final String TRIPENDS_CACHE_VERSION = "tripends-v5";
+    /**
+     * 大模型出行端点独立工件：v2 将 TransitPassengerRoute 以及
+     * pt/bus/subway/rail/tram/ferry 全制式纳入，修复 V6 仅识别 mode=pt 导致的空分布。
+     */
+    public static final String TRIP_DISTRIBUTION_CACHE_VERSION = "trip-distribution-v3";
 
     // ===== 口径常量（改动必须 bump 版本）=====
     /** 出行链识别时间窗（秒）。与 MatsimTransferCache.TRANSFER_WINDOW_SECONDS 仅数值一致，互不引用。 */
@@ -116,6 +122,7 @@ public final class MatsimTripEndsCache {
     private static final String OD_STREETS_FILE = "tripends-od-streets.json";
     private static final String OD_GRID_FILE = "tripends-od-grid.bin";
     private static final String MANIFEST_FILE = "manifest.json";
+    private static final String ENDPOINT_MANIFEST_FILE = "manifest.json";
 
     // 项目统一投影 epsg:3857，纬度反算公式与 MatsimTransferCache.groundDistanceMeters 同源。
     private static final double EARTH_RADIUS = 6378137.0;
@@ -144,6 +151,10 @@ public final class MatsimTripEndsCache {
     }
 
     public static boolean isReady(MatsimData data) {
+        return isBaseReady(data) && endpointReady(data);
+    }
+
+    private static boolean isBaseReady(MatsimData data) {
         if (!Files.exists(manifestPath(data)) || !Files.exists(summaryPath(data))
                 || !Files.exists(streetsPath(data)) || !Files.exists(gridPath(data))
                 || !Files.exists(odStreetsPath(data)) || !Files.exists(odGridPath(data))) {
@@ -160,13 +171,42 @@ public final class MatsimTripEndsCache {
         }
     }
 
+    /** 小模型直接复用 tripends-v4；大模型要求全制式端点覆盖工件就绪。 */
+    private static boolean endpointReady(MatsimData data) {
+        if (data == null || !data.isLargeModel()) {
+            return data != null && isBaseReady(data);
+        }
+        if (!Files.isRegularFile(endpointManifestPath(data))) {
+            return false;
+        }
+        try {
+            Map<String, Object> manifest = JSON.readValue(endpointManifestPath(data).toFile(), MAP_TYPE);
+            if (!TRIP_DISTRIBUTION_CACHE_VERSION.equals(manifest.get("cacheVersion"))
+                    || !sameEndpointSources(data, manifest)) {
+                return false;
+            }
+            if ("unsupported".equals(manifest.get("status"))) {
+                return true;
+            }
+            return "ready".equals(manifest.get("status"))
+                    && Files.isRegularFile(endpointSummaryPath(data))
+                    && Files.isRegularFile(endpointStreetsPath(data))
+                    && Files.isRegularFile(endpointGridPath(data));
+        } catch (Exception e) {
+            log.warn("大模型出行分布端点缓存状态读取失败: model={}", data.getName(), e);
+            return false;
+        }
+    }
+
     /** 总量指标 + 口径参数（POST /pt/tripends/summary）。未就绪返回 generating 态。 */
     public static Map<String, Object> readTripEndsSummary(MatsimData data) {
-        if (!isReady(data)) {
+        Map<String, Object> unsupported = endpointUnsupportedPayload(data);
+        if (unsupported != null) return unsupported;
+        if (!endpointReady(data)) {
             return generatingPayload();
         }
         try {
-            return loadCachedJson(summaryPath(data));
+            return loadCachedJson(endpointSummaryPath(data));
         } catch (Exception e) {
             log.warn("读取出行分布汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
             return Map.of();
@@ -175,11 +215,13 @@ public final class MatsimTripEndsCache {
 
     /** 176 街道全量统计（POST /pt/tripends/streets）。未就绪返回 generating 态。 */
     public static Map<String, Object> readTripEndsStreets(MatsimData data) {
-        if (!isReady(data)) {
+        Map<String, Object> unsupported = endpointUnsupportedPayload(data);
+        if (unsupported != null) return unsupported;
+        if (!endpointReady(data)) {
             return generatingPayload();
         }
         try {
-            return loadCachedJson(streetsPath(data));
+            return loadCachedJson(endpointStreetsPath(data));
         } catch (Exception e) {
             log.warn("读取出行分布街道缓存失败: model={}, path={}", data.getName(), streetsPath(data), e);
             return Map.of();
@@ -188,11 +230,11 @@ public final class MatsimTripEndsCache {
 
     /** 栅格二进制表字节（GET /pt/tripends/grid.bin）。未就绪返回 null（Controller 侧 404）。 */
     public static byte[] readGridBytes(MatsimData data) {
-        if (!isReady(data)) {
+        if (endpointUnsupportedPayload(data) != null || !endpointReady(data)) {
             return null;
         }
         try {
-            return Files.readAllBytes(gridPath(data));
+            return Files.readAllBytes(endpointGridPath(data));
         } catch (Exception e) {
             log.warn("读取出行分布栅格表失败: model={}, path={}", data.getName(), gridPath(data), e);
             return null;
@@ -201,7 +243,7 @@ public final class MatsimTripEndsCache {
 
     /** 街道级 OD 对（POST /pt/tripends/od/streets）。未就绪返回 generating 态。 */
     public static Map<String, Object> readOdStreets(MatsimData data) {
-        if (!isReady(data)) {
+        if (!isBaseReady(data)) {
             return generatingPayload();
         }
         try {
@@ -214,7 +256,7 @@ public final class MatsimTripEndsCache {
 
     /** 栅格级 OD 对二进制表字节（GET /pt/tripends/od/grid.bin）。未就绪返回 null（Controller 侧 404）。 */
     public static byte[] readOdGridBytes(MatsimData data) {
-        if (!isReady(data)) {
+        if (!isBaseReady(data)) {
             return null;
         }
         try {
@@ -230,12 +272,13 @@ public final class MatsimTripEndsCache {
      * （照 MatsimPopulationCache.gridBinTag，街道资源键一并纳入）。未就绪返回 null。
      */
     public static String gridBinTag(MatsimData data) {
-        if (!isReady(data)) {
+        if (endpointUnsupportedPayload(data) != null || !endpointReady(data)) {
             return null;
         }
         try {
-            Map<String, Object> manifest = JSON.readValue(manifestPath(data).toFile(), MAP_TYPE);
-            StringBuilder content = new StringBuilder(TRIPENDS_CACHE_VERSION);
+            Map<String, Object> manifest = JSON.readValue(endpointManifestPath(data).toFile(), MAP_TYPE);
+            StringBuilder content = new StringBuilder(data.isLargeModel()
+                    ? TRIP_DISTRIBUTION_CACHE_VERSION : TRIPENDS_CACHE_VERSION);
             new TreeMap<>(manifest).forEach((key, value) -> {
                 if (key.endsWith("File") || key.endsWith("Modified") || key.endsWith("Size")
                         || key.startsWith("streets")) {
@@ -249,12 +292,68 @@ public final class MatsimTripEndsCache {
         }
     }
 
+    /** OD 工件仍以 events+schedule 的 tripends-v4 源指纹生成 ETag。 */
+    public static String odGridBinTag(MatsimData data) {
+        if (!isBaseReady(data)) {
+            return null;
+        }
+        try {
+            Map<String, Object> manifest = JSON.readValue(manifestPath(data).toFile(), MAP_TYPE);
+            StringBuilder content = new StringBuilder(TRIPENDS_CACHE_VERSION);
+            new TreeMap<>(manifest).forEach((key, value) -> {
+                if (key.endsWith("File") || key.endsWith("Modified") || key.endsWith("Size")
+                        || key.startsWith("streets")) {
+                    content.append('|').append(key).append('=').append(value);
+                }
+            });
+            return sha256Hex(content.toString().getBytes(StandardCharsets.UTF_8)).substring(0, 16);
+        } catch (Exception e) {
+            log.warn("公交OD栅格表 ETag 计算失败: {}", manifestPath(data), e);
+            return null;
+        }
+    }
+
     private static Map<String, Object> generatingPayload() {
         return Map.of(
                 "status", "generating",
-                "cacheVersion", TRIPENDS_CACHE_VERSION,
+                "cacheVersion", TRIP_DISTRIBUTION_CACHE_VERSION,
                 "message", "出行分布缓存正在后台生成"
         );
+    }
+
+    static void writeUnsupportedEndpointManifest(MatsimData data, String message) {
+        if (data == null || !data.isLargeModel()) return;
+        try {
+            MatsimCachePaths.recreateVersionDir(data, TRIP_DISTRIBUTION_CACHE_VERSION);
+            writeJsonAtomic(endpointManifestPath(data), endpointManifest(data, "unsupported", message));
+            MatsimCachePaths.deleteOtherVersions(
+                    data, "trip-distribution-v", TRIP_DISTRIBUTION_CACHE_VERSION);
+            MEMORY_CACHE.remove(cacheKey(endpointSummaryPath(data)));
+            MEMORY_CACHE.remove(cacheKey(endpointStreetsPath(data)));
+        } catch (Exception e) {
+            throw new RuntimeException("写入出行分布 unsupported 状态失败", e);
+        }
+    }
+
+    private static Map<String, Object> endpointUnsupportedPayload(MatsimData data) {
+        if (data == null || !data.isLargeModel() || !Files.isRegularFile(endpointManifestPath(data))) return null;
+        try {
+            Map<String, Object> manifest = JSON.readValue(endpointManifestPath(data).toFile(), MAP_TYPE);
+            if (!"unsupported".equals(manifest.get("status"))
+                    || !TRIP_DISTRIBUTION_CACHE_VERSION.equals(manifest.get("cacheVersion"))
+                    || !sameEndpointSources(data, manifest)) {
+                return null;
+            }
+            String message = String.valueOf(manifest.getOrDefault("message", "缺少 plans 数据"));
+            return Map.of(
+                    "status", "unsupported",
+                    "cacheVersion", TRIP_DISTRIBUTION_CACHE_VERSION,
+                    "reason", message,
+                    "message", message
+            );
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // ===================================================================================
@@ -263,16 +362,25 @@ public final class MatsimTripEndsCache {
 
     static void storeBuiltAggregation(MatsimData data, Aggregation aggregation,
                                       MatsimPopulationCache.StreetIndex streets, long startedAt) {
+        boolean largeModel = data.isLargeModel();
+        if (largeModel && isBaseReady(data)) {
+            storeLargeModelEndpoints(data, aggregation, streets, startedAt);
+            return;
+        }
         try {
-            Files.createDirectories(cacheDir(data));
             if (aggregation.transformFailures > 0) {
                 log.warn("出行分布缓存坐标转换失败端点已跳过: model={}, count={}",
                         data.getName(), aggregation.transformFailures);
             }
             Map<String, double[]> coordByFacility = facilityCoords(
                     data.getScenario() == null ? null : data.getSchedule());
-            aggregateJourneys(data.getPersonTracks(), coordByFacility, aggregation);
+            if (largeModel && (data.getPersonTracks() == null || data.getPersonTracks().isEmpty())) {
+                aggregateJourneys(data, coordByFacility, aggregation);
+            } else {
+                aggregateJourneys(data.getPersonTracks(), coordByFacility, aggregation);
+            }
             Artifacts artifacts = assemble(aggregation, streets, MatsimPopulationCache.effectiveSampleRate(data));
+            MatsimCachePaths.recreateVersionDir(data, TRIPENDS_CACHE_VERSION);
             // 工件先落盘、manifest 最后写：manifest=ready 即五工件必然齐备
             writeBytesAtomic(gridPath(data), artifacts.gridBin);
             writeBytesAtomic(odGridPath(data), artifacts.odGridBin);
@@ -280,6 +388,7 @@ public final class MatsimTripEndsCache {
             writeJsonAtomic(odStreetsPath(data), artifacts.odStreets);
             writeJsonAtomic(summaryPath(data), artifacts.summary);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "tripends-v", TRIPENDS_CACHE_VERSION);
             MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
             MEMORY_CACHE.remove(cacheKey(streetsPath(data)));
             MEMORY_CACHE.remove(cacheKey(odStreetsPath(data)));
@@ -293,16 +402,89 @@ public final class MatsimTripEndsCache {
                     artifacts.gridBin.length, artifacts.summary.get("odStreetPairs"),
                     artifacts.summary.get("odGridPairs"), artifacts.summary.get("odGridDroppedPairs"),
                     artifacts.odGridBin.length, System.currentTimeMillis() - startedAt);
+            // 新建的大模型可能尚无 tripends-v4。先用当前已物化的小规模轨迹建立
+            // 完整 OD 工件，再从同一次 plans 聚合写入全公交制式的端点覆盖工件。
+            if (largeModel) {
+                storeLargeModelEndpoints(data, aggregation, streets, startedAt);
+            }
         } catch (Exception e) {
             writeFailedManifest(data);
             throw new RuntimeException("出行分布缓存生成失败: " + e.getMessage(), e);
         }
     }
 
+    /**
+     * 大模型只重建 plans 端点工件，不重扫 15GB events，也不用空 personTracks
+     * 覆盖已验证的 OD 工件。OD 指标从原 tripends-v4 summary 原样继承。
+     */
+    private static void storeLargeModelEndpoints(MatsimData data, Aggregation aggregation,
+                                                 MatsimPopulationCache.StreetIndex streets,
+                                                 long startedAt) {
+        if (!isBaseReady(data)) {
+            throw new IllegalStateException("大模型基础 tripends OD 工件未就绪，拒绝用空轨迹覆盖");
+        }
+        try {
+            byte[] grid = MatsimPopulationCache.encodeGrid(
+                    aggregation.originCells, aggregation.destCells, aggregation.mercCellSize, streets);
+            int gridCells = (grid.length - MatsimPopulationCache.BIN_HEADER_BYTES)
+                    / MatsimPopulationCache.BIN_BYTES_PER_CELL;
+            Map<String, Object> summary = new LinkedHashMap<>(loadCachedJson(summaryPath(data)));
+            summary.put("status", "ready");
+            summary.put("cacheVersion", TRIP_DISTRIBUTION_CACHE_VERSION);
+            summary.put("generatedAt", System.currentTimeMillis());
+            summary.put("cellSizeMeters", (int) MatsimPopulationCache.CELL_SIZE_METERS);
+            summary.put("mercCellSize", aggregation.mercCellSize);
+            summary.put("gridCells", gridCells);
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("windowSec", JOURNEY_WINDOW_SECONDS);
+            params.put("maxDistM", (int) JOURNEY_MAX_DIST_M);
+            params.put("modes", "all-transit");
+            params.put("endpoints", "activity");
+            params.put("source", "streaming-selected-plans");
+            summary.put("params", params);
+            summary.put("journeys", aggregation.journeys);
+            summary.put("riders", aggregation.riders);
+            summary.put("originPoints", aggregation.originPoints);
+            summary.put("destPoints", aggregation.destPoints);
+            summary.put("unassignedOrigin", aggregation.unassignedOrigin);
+            summary.put("unassignedDest", aggregation.unassignedDest);
+
+            MatsimCachePaths.recreateVersionDir(data, TRIP_DISTRIBUTION_CACHE_VERSION);
+            writeBytesAtomic(endpointGridPath(data), grid);
+            writeJsonAtomic(endpointStreetsPath(data), buildStreets(aggregation, streets));
+            writeJsonAtomic(endpointSummaryPath(data), summary);
+            writeJsonAtomic(endpointManifestPath(data), endpointManifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(
+                    data, "trip-distribution-v", TRIP_DISTRIBUTION_CACHE_VERSION);
+            MEMORY_CACHE.remove(cacheKey(endpointSummaryPath(data)));
+            MEMORY_CACHE.remove(cacheKey(endpointStreetsPath(data)));
+            log.info("大模型出行分布端点缓存生成完成: model={}, journeys={}, riders={}, "
+                            + "origin={}, dest={}, cells={}, bin={}B, elapsedMs={}",
+                    data.getName(), aggregation.journeys, aggregation.riders,
+                    aggregation.originPoints, aggregation.destPoints, gridCells, grid.length,
+                    System.currentTimeMillis() - startedAt);
+        } catch (Exception e) {
+            writeEndpointFailedManifest(data);
+            throw new RuntimeException("大模型出行分布端点缓存生成失败: " + e.getMessage(), e);
+        }
+    }
+
     static void writeFailedManifest(MatsimData data) {
+        if (data != null && data.isLargeModel()) {
+            writeEndpointFailedManifest(data);
+            return;
+        }
         try {
             Files.createDirectories(cacheDir(data));
             writeJsonAtomic(manifestPath(data), manifest(data, false));
+        } catch (Exception ignored) {
+        }
+    }
+
+    private static void writeEndpointFailedManifest(MatsimData data) {
+        try {
+            Files.createDirectories(endpointCacheDir(data));
+            writeJsonAtomic(endpointManifestPath(data), endpointManifest(data, false));
         } catch (Exception ignored) {
         }
     }
@@ -386,7 +568,7 @@ public final class MatsimTripEndsCache {
         /** 活动坐标转换失败数（与坐标缺失同待遇跳过，日志披露）。 */
         long transformFailures;
         // ===== OD（events 整段出行站点口径）=====
-        /** 栅格 OD：O 格键 → (D 格键 → 抽样人次)。 */
+        /** 栅格 OD：O 格键 → (D 格键 → 模型原始人次)。 */
         final Long2ObjectOpenHashMap<Long2IntOpenHashMap> gridOd = new Long2ObjectOpenHashMap<>();
         /** 街道 OD 矩阵（行主序 [o*size+d]，有向，含 o==d 自环）。 */
         final int[] streetOd;
@@ -418,8 +600,8 @@ public final class MatsimTripEndsCache {
 
         /**
          * 端点抽取一个 person（selectedPlan 空回退首 plan，照 MatsimPopulationCache.acceptPerson）：
-         * 非 interaction 活动切分 trip，trip 内出现 {@code mode=pt} 的 leg（与 TransitMetrics 同源
-         * {@link Constant#ROUTE_MODE_PT}）即计一次公交出行——起点=前置活动坐标、终点=后置活动坐标。
+         * 非 interaction 活动切分 trip，trip 内出现 TransitPassengerRoute 或
+         * pt/bus/subway/rail/tram/ferry 等公交制式 leg 即计一次公交出行。
          */
         void acceptPerson(Person person, CoordinateTransformation ctf) {
             persons++;
@@ -435,7 +617,7 @@ public final class MatsimTripEndsCache {
             boolean tripHasPt = false;
             for (PlanElement element : plan.getPlanElements()) {
                 if (element instanceof Leg leg) {
-                    if (Constant.ROUTE_MODE_PT.equals(leg.getMode())) {
+                    if (isTransitLeg(leg)) {
                         tripHasPt = true;
                     }
                     continue;
@@ -457,6 +639,16 @@ public final class MatsimTripEndsCache {
             if (rode) {
                 riders++;
             }
+        }
+
+        private static boolean isTransitLeg(Leg leg) {
+            if (leg == null) return false;
+            if (leg.getRoute() instanceof org.matsim.pt.routes.TransitPassengerRoute) return true;
+            String mode = leg.getMode() == null ? "" : leg.getMode().toLowerCase(Locale.ROOT);
+            return switch (mode) {
+                case Constant.ROUTE_MODE_PT, "bus", "subway", "metro", "rail", "train", "tram", "ferry" -> true;
+                default -> false;
+            };
         }
 
         /** 一次公交出行：两端各自独立计入端点统计（缺坐标的端点跳过，journeys 照计）。 */
@@ -593,6 +785,21 @@ public final class MatsimTripEndsCache {
         for (List<PTPersonTrack> personTracks : byPerson.values()) {
             collectPersonJourneys(personTracks, coordByFacility, out);
         }
+    }
+
+    /** 大模型磁盘态 OD：按 person 分区逐组配对，不物化全量乘客轨迹。 */
+    private static void aggregateJourneys(
+            MatsimData data,
+            Map<String, double[]> coordByFacility,
+            Aggregation out
+    ) {
+        MatsimPersonTrackStore.forEachPerson(data, (personId, personTracks) -> {
+            if (personId == null || personId.isBlank()) {
+                out.droppedTracks += personTracks.size();
+                return;
+            }
+            collectPersonJourneys(personTracks, coordByFacility, out);
+        });
     }
 
     private static void collectPersonJourneys(
@@ -795,7 +1002,7 @@ public final class MatsimTripEndsCache {
     /**
      * tripends-od-streets.json：街道级 OD 对（有向，含 o==d 自环）。
      * pairs = [[o, d, n], ...]，o/d 为街道要素索引（资源文件序，与 tripends-streets.json 行序一致），
-     * n 为抽样人次；按 n 降序（平序 o、d 升序）。totals 供前端对账：
+     * n 为模型原始人次；按 n 降序（平序 o、d 升序）。totals 供前端对账：
      * sum(pairs.n) + odStreetUnassigned == odJourneys。
      */
     static Map<String, Object> buildOdStreets(Aggregation aggregation, MatsimPopulationCache.StreetIndex streets) {
@@ -828,7 +1035,7 @@ public final class MatsimTripEndsCache {
         return payload;
     }
 
-    /** tripends-summary.json（量为模型抽样口径，前端直出不扩样；scale 仅元信息）。 */
+    /** tripends-summary.json（数量严格为模型文件原始值）。 */
     private static Map<String, Object> buildSummary(Aggregation aggregation, int gridCells,
                                                     OdGridEncoded odGrid, int odStreetPairs, double scale) {
         Map<String, Object> params = new LinkedHashMap<>();
@@ -841,7 +1048,8 @@ public final class MatsimTripEndsCache {
         summary.put("status", "ready");
         summary.put("cacheVersion", TRIPENDS_CACHE_VERSION);
         summary.put("generatedAt", System.currentTimeMillis());
-        summary.put("scale", scale);
+        summary.put("scale", 1.0);
+        summary.put("quantityPolicy", "model-original");
         summary.put("cellSizeMeters", (int) MatsimPopulationCache.CELL_SIZE_METERS);
         summary.put("mercCellSize", aggregation.mercCellSize);
         summary.put("gridCells", gridCells);
@@ -910,6 +1118,33 @@ public final class MatsimTripEndsCache {
         return result;
     }
 
+    private static Map<String, Object> endpointManifest(MatsimData data, boolean ready) {
+        return endpointManifest(data, ready ? "ready" : "failed", null);
+    }
+
+    private static Map<String, Object> endpointManifest(MatsimData data, String status, String message) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("status", status);
+        result.put("cacheVersion", TRIP_DISTRIBUTION_CACHE_VERSION);
+        result.put("generatedAt", System.currentTimeMillis());
+        if (message != null && !message.isBlank()) result.put("message", message);
+        endpointSourceFingerprint(data, result);
+        return result;
+    }
+
+    private static void endpointSourceFingerprint(MatsimData data, Map<String, Object> result) {
+        putFileFingerprint(result, "plans", data.getOutfile() == null ? null : data.getOutfile().getPlans());
+        result.put("streetsResource", MatsimPopulationCache.STREETS_RESOURCE);
+        result.put("streetsSha256", MatsimPopulationCache.streetsGeojsonTag());
+        result.put("transitModes", "route-or-pt-bus-subway-metro-rail-train-tram-ferry");
+    }
+
+    private static boolean sameEndpointSources(MatsimData data, Map<String, Object> manifest) {
+        Map<String, Object> current = new LinkedHashMap<>();
+        endpointSourceFingerprint(data, current);
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
+    }
+
     /**
      * 源指纹：plans（端点数据源，v4 起）+ events（OD 乘车流水数据源）
      * + transitSchedule（OD 站点坐标输入）+ 街道资源标识（路径 + 内容 sha256，资源升级即失效重建）。
@@ -927,22 +1162,13 @@ public final class MatsimTripEndsCache {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static Map<String, Object> loadCachedJson(Path path) {
@@ -1007,6 +1233,28 @@ public final class MatsimTripEndsCache {
 
     private static Path cacheDir(MatsimData data) {
         return MatsimCachePaths.versionDir(data, TRIPENDS_CACHE_VERSION);
+    }
+
+    private static Path endpointCacheDir(MatsimData data) {
+        return data.isLargeModel()
+                ? MatsimCachePaths.versionDir(data, TRIP_DISTRIBUTION_CACHE_VERSION)
+                : cacheDir(data);
+    }
+
+    private static Path endpointManifestPath(MatsimData data) {
+        return endpointCacheDir(data).resolve(ENDPOINT_MANIFEST_FILE);
+    }
+
+    private static Path endpointSummaryPath(MatsimData data) {
+        return endpointCacheDir(data).resolve(SUMMARY_FILE);
+    }
+
+    private static Path endpointStreetsPath(MatsimData data) {
+        return endpointCacheDir(data).resolve(STREETS_FILE);
+    }
+
+    private static Path endpointGridPath(MatsimData data) {
+        return endpointCacheDir(data).resolve(GRID_FILE);
     }
 
     private static Path manifestPath(MatsimData data) {

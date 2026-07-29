@@ -33,9 +33,18 @@ public final class FastEventReader {
         void handle(String eventType, double time, Attributes attributes) throws Exception;
     }
 
+    public interface ProgressListener {
+        void update(long eventCount, double eventTime);
+    }
+
     public static void read(String eventsFile, Handler handler) throws Exception {
+        read(eventsFile, handler, null);
+    }
+
+    public static void read(String eventsFile, Handler handler, ProgressListener progress) throws Exception {
         long startedAt = System.currentTimeMillis();
         long eventCount = 0L;
+        double lastEventTime = 0.0;
         try (Source source = open(eventsFile)) {
             Attributes attributes = new Attributes();
             String line;
@@ -63,8 +72,13 @@ public final class FastEventReader {
                 }
                 handler.handle(eventType, time, attributes);
                 eventCount++;
+                lastEventTime = time;
+                if (progress != null && eventCount % 1_000_000L == 0L) {
+                    progress.update(eventCount, time);
+                }
             }
         }
+        if (progress != null) progress.update(eventCount, lastEventTime);
         log.info("快速解析events完成: file={}, events={}, elapsed={}ms",
                 eventsFile, eventCount, System.currentTimeMillis() - startedAt);
     }

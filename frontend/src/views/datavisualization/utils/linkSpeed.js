@@ -6,7 +6,7 @@
 //   speeds  u8 × (linkCount×bucketCount)：链路主序；km/h，0=无数据（有数据下限 1，freespeed 封顶）
 //   samples u8 × (linkCount×bucketCount)：±1 桶合并窗样本数（clamp 255）
 // nameIdx / street 的 0xFFFF 为“无名 / 未命中街道”哨兵；
-// 速度为公交运营车辆净行驶口径（扣站点停靠），模型抽样、不扩样。
+// 速度为公交运营车辆净行驶口径（扣站点停靠），使用模型已加载穿越事件全量。
 
 const HEADER_BYTES = 14;
 const RECORD_BYTES = 20;

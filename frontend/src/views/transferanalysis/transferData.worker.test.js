@@ -1,24 +1,25 @@
 /**
  * 换乘事件表 Worker 契约测试。
  * bin 布局与后端 MatsimTransferCache 严格一致：
- *   header = "TFEV"(4B) + version u16(=1) + count u32，列式小端无填充：
+ *   header = "TFEV"(4B) + version u16(=3) + count u32，列式小端无填充：
  *   personIndex u32 | tBoard u32 | transferSec u16 | dir u8 | busLine u16 |
- *   busRoute u16 | busStop u16 | metroLine u16 | metroStop u16 | hub u16（23B/事件）
+ *   busRoute u16 | busStop u16 | busOriginStop u16 | busDestinationStop u16 |
+ *   metroLine u16 | metroStop u16 | hub u16（27B/事件）
  * 口径断言对应设计方案 v2 §3：30 桶直方图（无 >30min 溢出桶）、1800s 边界入桶 29、
  * end=24 视为 +∞ 收纳跨午夜事件、personIndex 去重、箱线五数为标准 min/P25/P50/P75/max。
  */
 import { describe, expect, it } from "vitest";
-import { __aggregate, __buildGlobalIndex, __decode } from "./transferData.worker.js";
+import { __aggregate, __decode } from "./transferData.worker.js";
 
 function buildBin(events) {
   const n = events.length;
-  const buf = new ArrayBuffer(10 + n * 23);
+  const buf = new ArrayBuffer(10 + n * 27);
   const view = new DataView(buf);
   view.setUint8(0, 0x54); // T
   view.setUint8(1, 0x46); // F
   view.setUint8(2, 0x45); // E
   view.setUint8(3, 0x56); // V
-  view.setUint16(4, 1, true);
+  view.setUint16(4, 3, true);
   view.setUint32(6, n, true);
   let off = 10;
   for (const e of events) view.setUint32((off += 0), e.p, true), (off += 4);
@@ -28,6 +29,8 @@ function buildBin(events) {
   for (const e of events) view.setUint16(off, e.bl, true), (off += 2);
   for (const e of events) view.setUint16(off, e.br, true), (off += 2);
   for (const e of events) view.setUint16(off, e.bs, true), (off += 2);
+  for (const e of events) view.setUint16(off, e.bos, true), (off += 2);
+  for (const e of events) view.setUint16(off, e.bds, true), (off += 2);
   for (const e of events) view.setUint16(off, e.ml, true), (off += 2);
   for (const e of events) view.setUint16(off, e.ms, true), (off += 2);
   for (const e of events) view.setUint16(off, e.hub, true), (off += 2);
@@ -50,7 +53,10 @@ const BASE_FILTERS = {
 };
 
 function ev(over = {}) {
-  return { p: 0, t: 8 * 3600, sec: 300, dir: 0, bl: 0, br: 0, bs: 0, ml: 0, ms: 0, hub: 0, ...over };
+  const event = { p: 0, t: 8 * 3600, sec: 300, dir: 0, bl: 0, br: 0, bs: 0, bos: 0, bds: 0, ml: 0, ms: 0, hub: 0, ...over };
+  if (!Object.prototype.hasOwnProperty.call(over, "bos")) event.bos = event.bs;
+  if (!Object.prototype.hasOwnProperty.call(over, "bds")) event.bds = event.bs;
+  return event;
 }
 
 describe("transferData.worker 契约", () => {
@@ -60,7 +66,7 @@ describe("transferData.worker 契约", () => {
     expect(() => __decode(buf)).toThrow(/magic/);
   });
 
-  it("截断的 buffer 报错（长度 = 10 + 23n 校验）", () => {
+  it("截断的 buffer 报错（长度 = 10 + 27n 校验）", () => {
     const buf = buildBin([ev(), ev()]);
     expect(() => __decode(buf.slice(0, buf.byteLength - 1))).toThrow(/长度不足/);
   });
@@ -110,7 +116,7 @@ describe("transferData.worker 契约", () => {
 
   it("方向 / 枢纽 / 线路筛选 + 筛选态人数重新去重", () => {
     const buf = buildBin([
-      ev({ p: 0, dir: 0, hub: 0, bl: 0 }),
+      ev({ p: 0, dir: 0, hub: 0, bl: 0, ml: 1 }),
       ev({ p: 0, dir: 1, hub: 1, bl: 1 }),
       ev({ p: 1, dir: 1, hub: 1, bl: 1, sec: 900 }),
     ]);
@@ -122,9 +128,9 @@ describe("transferData.worker 契约", () => {
     expect(hubOnly.kpi.events).toBe(2);
     expect(hubOnly.hubDetail).toBeTruthy();
     expect(hubOnly.hubDetail.busLines[0].idx).toBe(1);
-    const lineOnly = __aggregate("feeder", { ...BASE_FILTERS, busLineId: 1 });
+    const lineOnly = __aggregate("feeder", { ...BASE_FILTERS, metroLineId: 0 });
     expect(lineOnly.kpi.events).toBe(2);
-    expect(lineOnly.feederDetail.metroLines.length).toBe(1);
+    expect(lineOnly.feederDetail.busLines.length).toBe(1);
   });
 
   it("箱线五数为标准 min/P25/P50/P75/max，P90 单独给出", () => {
@@ -151,36 +157,6 @@ describe("transferData.worker 契约", () => {
     expect(r.kpi.within15Share).toBeCloseTo(2 / 3); // 1000s 超 900s
   });
 
-  it("hubKind=bus：枢纽维度改按公交站分组，口径与地铁枢纽同构", () => {
-    // 三个事件落在两个公交站（bs 0/7），但三个不同地铁枢纽（hub 0/1/2）
-    const buf = buildBin([
-      ev({ p: 0, bs: 7, hub: 0, sec: 120, dir: 0 }),
-      ev({ p: 1, bs: 7, hub: 1, sec: 600, dir: 1 }),
-      ev({ p: 2, bs: 0, hub: 2, sec: 300, dir: 0 }),
-    ]);
-    __decode(buf);
-    const metro = __aggregate("overview", { ...BASE_FILTERS });
-    expect(metro.hubs.length).toBe(3); // 地铁口径：三个枢纽
-    const bus = __aggregate("overview", { ...BASE_FILTERS, hubKind: "bus" });
-    expect(bus.hubs.length).toBe(2); // 公交口径：两个公交站
-    const top = bus.hubs[0];
-    expect(top.idx).toBe(7);
-    expect(top.flow).toBe(2);
-    expect(top.b2m).toBe(1);
-    expect(top.m2b).toBe(1);
-    expect(top.avgSec).toBe(Math.round((120 + 600) / 2));
-    expect(top.p90Sec).toBe(600); // 分位口径与地铁枢纽一致
-    // 全网 KPI 不受分组口径影响
-    expect(bus.kpi.events).toBe(metro.kpi.events);
-    // hubId 过滤作用于公交站分组键
-    const one = __aggregate("overview", { ...BASE_FILTERS, hubKind: "bus", hubId: 7 });
-    expect(one.kpi.events).toBe(2);
-    // 全局索引给出公交站候选（换乘站点分析公交口径下拉），按换乘量降序
-    const idx = __buildGlobalIndex();
-    expect(idx.busStopsSorted.map((s) => s.idx)).toEqual([7, 0]);
-    expect(idx.busStopsSorted[0].flow).toBe(2);
-  });
-
   it("多选过滤：busLineIds / hubIds", () => {
     const buf = buildBin([ev({ bl: 0, hub: 0 }), ev({ p: 1, bl: 1, hub: 1 }), ev({ p: 2, bl: 2, hub: 2 })]);
     __decode(buf);
@@ -188,6 +164,46 @@ describe("transferData.worker 契约", () => {
     expect(r.kpi.events).toBe(2);
     const r2 = __aggregate("overview", { ...BASE_FILTERS, hubIds: [1] });
     expect(r2.kpi.events).toBe(1);
+  });
+
+  it("地铁枢纽详情聚合两个方向的公交整段起终点", () => {
+    const buf = buildBin([
+      ev({ p: 0, hub: 2, dir: 0, bos: 9, bds: 3, bs: 3 }),
+      ev({ p: 1, hub: 2, dir: 0, bos: 9, bds: 3, bs: 3 }),
+      ev({ p: 2, hub: 2, dir: 0, bos: 8, bds: 3, bs: 3 }),
+      ev({ p: 3, hub: 2, dir: 1, bos: 3, bds: 7, bs: 3 }),
+    ]);
+    __decode(buf);
+    const r = __aggregate("hub", { ...BASE_FILTERS, hubId: 2 });
+    expect(r.hubDetail.busTripLinks).toEqual([
+      { originBusStop: 9, destinationBusStop: 3, flow: 2, b2m: 2, m2b: 0 },
+      { originBusStop: 8, destinationBusStop: 3, flow: 1, b2m: 1, m2b: 0 },
+      { originBusStop: 3, destinationBusStop: 7, flow: 1, b2m: 0, m2b: 1 },
+    ]);
+  });
+
+  it("同一公交站—地铁站的公→地与地→公合并为一条换乘线", () => {
+    const buf = buildBin([
+      ev({ p: 0, hub: 2, dir: 0, bs: 3, ms: 6, bos: 9, bds: 3 }),
+      ev({ p: 1, hub: 2, dir: 1, bs: 3, ms: 6, bos: 3, bds: 7 }),
+    ]);
+    __decode(buf);
+    const result = __aggregate("hub", { ...BASE_FILTERS, hubId: 2 });
+    expect(result.hubDetail.stopMetroLinks).toEqual([
+      { busStop: 3, metroStop: 6, flow: 2, b2m: 1, m2b: 1, avgSec: 300 },
+    ]);
+  });
+
+  it("站点与地铁线路排名同时输出双方向客流及方向平均时间", () => {
+    const buf = buildBin([
+      ev({ p: 0, hub: 1, ml: 2, dir: 0, sec: 300 }),
+      ev({ p: 1, hub: 1, ml: 2, dir: 0, sec: 600 }),
+      ev({ p: 2, hub: 1, ml: 2, dir: 1, sec: 900 }),
+    ]);
+    __decode(buf);
+    const result = __aggregate("overview", { ...BASE_FILTERS });
+    expect(result.hubs[0]).toMatchObject({ b2m: 2, m2b: 1, b2mAvgSec: 450, m2bAvgSec: 900 });
+    expect(result.metroLines[0]).toMatchObject({ idx: 2, b2m: 2, m2b: 1, b2mAvgSec: 450, m2bAvgSec: 900 });
   });
 
   it("分时标签为起止区间；末桶按 endHour 封顶不虚标", () => {

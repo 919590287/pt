@@ -71,6 +71,32 @@ class AuthServiceImplConcurrencyTest {
         }
     }
 
+    static class CountingMatsimConfig extends MatsimConfig {
+        final AtomicInteger scans = new AtomicInteger();
+
+        @Override
+        public synchronized void init() {
+            scans.incrementAndGet();
+            super.init();
+        }
+    }
+
+    @Test
+    void authHotPathsDoNotRescanTheWholeModelRegistry() throws Exception {
+        AuthServiceImpl service = new AuthServiceImpl();
+        CountingMatsimConfig config = new CountingMatsimConfig();
+        setField(config, MatsimConfig.class, "folder", tempDir.toString());
+        setField(config, MatsimConfig.class, "cacheFolder", "");
+        setField(service, AuthServiceImpl.class, "matsimConfig", config);
+        service.loadStoreIntoMemory();
+
+        service.register("registry-user", "password123");
+        service.login("registry-user", "password123");
+        service.resetPassword("registry-user", "password123", "password456");
+
+        assertEquals(0, config.scans.get(), "认证只创建空用户目录，不应重扫全部模型 output");
+    }
+
     @Test
     void concurrentLoginsVerifyPasswordOutsideLock() throws Exception {
         InstrumentedAuthService service = wire(new InstrumentedAuthService());

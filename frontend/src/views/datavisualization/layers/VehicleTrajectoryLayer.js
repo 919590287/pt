@@ -1,4 +1,8 @@
 import { Layer, MAP_EVENT, webMercatorToLngLat } from "@/mymap/index.js";
+import {
+  isVehicleModeVisible,
+  normalizeVehicleVisibility,
+} from "@/utils/vehicleVisibility.js";
 import { removeSharedDeckLayer } from "./deckOverlayRegistry.js";
 import { VehicleModelLayer } from "./VehicleModelLayer.js";
 
@@ -25,9 +29,9 @@ export const VEHICLE_MODE_CONFIG = {
 
 const MODE_KEYS = Object.keys(VEHICLE_MODE_CONFIG);
 const BINARY_MAGIC = "GJTB";
-const BINARY_VERSION = 1;
+const BINARY_VERSION = 2;
 const BINARY_HEADER_BYTES = 64;
-const BINARY_STRIDE = 8;
+const BINARY_STRIDE = 9;
 const MODE_CODE_TO_KEY = ["bus", "subway", "car"];
 const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
   map[mode] = index;
@@ -35,9 +39,31 @@ const MODE_KEY_TO_CODE = MODE_KEYS.reduce((map, mode, index) => {
 }, {});
 const DEFAULT_VEHICLE_MODEL_SIZE = 36;
 const MIN_FRAME_CAPACITY = 1024;
-const VEHICLE_VISIBILITY_MODES = ["all", "public", "private"];
 const WORKER_VIEWPORT_MIN_PADDING_METERS = 1600;
 const WORKER_VIEWPORT_PADDING_RATIO = 0.55;
+
+export function trajectoryPrefetchBlockCount({
+  chunkSeconds = 30,
+  speed = 1,
+  ewmaMs = 400,
+  highMs = 600,
+  chunkBytes = 1,
+  maxBytes = 128 * 1024 * 1024,
+  maxBlocks = 4,
+  minSafetyMs = 800,
+} = {}) {
+  const seconds = Math.max(1, Number(chunkSeconds) || 30);
+  const playbackSpeed = Math.max(1, Number(speed) || 1);
+  const bytes = Math.max(1, Number(chunkBytes) || 1);
+  const safetyMs = Math.max(
+    Number(minSafetyMs) || 0,
+    (Number(ewmaMs) || 0) * 1.8,
+    (Number(highMs) || 0) * 1.25,
+  );
+  const latencyBlocks = Math.ceil((playbackSpeed * safetyMs / 1000) / seconds) + 1;
+  const memoryBlocks = Math.max(1, Math.floor(Math.max(1, Number(maxBytes) || 1) / bytes));
+  return Math.max(1, Math.min(Math.max(1, Number(maxBlocks) || 1), memoryBlocks, latencyBlocks));
+}
 
 function nextFrameCapacity(count) {
   let capacity = MIN_FRAME_CAPACITY;
@@ -60,15 +86,22 @@ function modeKeyFromCode(code) {
   return MODE_CODE_TO_KEY[Math.round(Number(code) || 0)] || "car";
 }
 
-function normalizeVisibilityMode(mode) {
-  return VEHICLE_VISIBILITY_MODES.includes(mode) ? mode : "all";
+function binaryIntValues(values) {
+  if (!(values instanceof Float32Array)) return null;
+  return new Int32Array(values.buffer, values.byteOffset, values.length);
+}
+
+function binaryVehicleIndex(values, offset, ints = binaryIntValues(values)) {
+  return ints ? ints[offset + 7] : 0;
+}
+
+function binaryDistanceMeters(values, offset) {
+  const distance = Number(values?.[offset + 8]);
+  return Number.isFinite(distance) && distance >= 0 ? distance : 0;
 }
 
 function isModeVisible(mode, visibilityMode = "all") {
-  const normalized = normalizeVisibilityMode(visibilityMode);
-  if (normalized === "public") return mode === "bus" || mode === "subway";
-  if (normalized === "private") return mode === "car";
-  return true;
+  return isVehicleModeVisible(mode, visibilityMode);
 }
 
 function emptyModeCount() {
@@ -144,20 +177,16 @@ function plainChunk(chunk = {}) {
   };
 }
 
-function cloneFloat32(values) {
-  if (values instanceof Float32Array) {
-    return new Float32Array(values);
-  }
-  if (ArrayBuffer.isView(values)) {
-    return new Float32Array(values.buffer.slice(values.byteOffset, values.byteOffset + values.byteLength));
-  }
-  return new Float32Array(values || []);
-}
-
 function trajectoryWorkerPayload(data) {
   if (!data) return null;
   if (data.binary) {
-    const segments = cloneFloat32(data.segments);
+    // parseVehicleTrajectoryBinaryChunk 返回的 Float32Array 直接引用 HTTP/IndexedDB
+    // 得到的原 ArrayBuffer。这里把所有权一次性 transfer 给 Worker，
+    // 不再在主线程复制一份完整分块（V6 旧块单份可达 228MB）。
+    const segments = data.segments instanceof Float32Array
+      ? data.segments
+      : new Float32Array(data.segments || []);
+    const transferable = segments.buffer instanceof ArrayBuffer ? segments.buffer : null;
     return {
       payload: {
         binary: true,
@@ -166,7 +195,7 @@ function trajectoryWorkerPayload(data) {
         chunkSeconds: Number(data.chunkSeconds) || undefined,
         segments,
       },
-      transfer: segments.buffer ? [segments.buffer] : [],
+      transfer: transferable ? [transferable] : [],
     };
   }
 
@@ -273,13 +302,14 @@ export class VehicleTrajectoryLayer extends Layer {
     this.modelLayer = null;
     this.statsCallback = null;
     this.followCallback = null;
+    this.samplingBoundsCallback = null;
     this.followedVehicleKey = "";
     this.followedVehicleIndex = null;
     this.vehicleMeta = {};
     this.vehicleMetaByIndex = new Map();
     this.vehicleMetaById = new Map();
     this.routeMetaById = new Map();
-    this.vehicleVisibilityMode = "all";
+    this.vehicleVisibilityMode = normalizeVehicleVisibility();
     this.segmentBucketSeconds = 1;
     this.follow3DOrbitYaw = 0;
     this.isApplyingFollowCamera = false;
@@ -327,6 +357,10 @@ export class VehicleTrajectoryLayer extends Layer {
     this.followCallback = typeof callback === "function" ? callback : null;
   }
 
+  setSamplingBoundsCallback(callback) {
+    this.samplingBoundsCallback = typeof callback === "function" ? callback : null;
+  }
+
   setVehicleMeta(meta = {}) {
     this.vehicleMeta = meta || {};
     this.vehicleMetaByIndex = new Map();
@@ -344,9 +378,13 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   setVehicleVisibilityMode(mode) {
-    const nextMode = normalizeVisibilityMode(mode);
+    const nextMode = normalizeVehicleVisibility(mode);
     if (nextMode === this.vehicleVisibilityMode) return;
     this.vehicleVisibilityMode = nextMode;
+    // 让变更前已在途的 Worker 帧立即失效，防止切换任意车辆组合后旧帧反向覆盖。
+    this.workerTimeSeq += 1;
+    this.segmentFrameCache.clear();
+    this.segmentFrameRequests.clear();
     if (this.binaryChunk || this.vehicles.length) {
       this.setTime(this.currentTime);
     } else if (this.ensureWorker()) {
@@ -419,7 +457,13 @@ export class VehicleTrajectoryLayer extends Layer {
     if (!viewport || this.viewportInsideSamplingBounds(viewport)) return false;
     this.ensureWorkerSamplingBounds(true);
     this.workerTimeSeq += 1;
-    this.requestWorkerTime(this.currentTime);
+    if (this.samplingBoundsCallback) {
+      // 时空分块模式下保留旧帧，由上层无闪烁换入新视口块；
+      // 不在仅含旧视口数据的 Worker 集合上采样新范围。
+      this.samplingBoundsCallback({ ...this.workerSamplingBounds }, this.workerSamplingSeq);
+    } else {
+      this.requestWorkerTime(this.currentTime);
+    }
     return true;
   }
 
@@ -551,13 +595,13 @@ export class VehicleTrajectoryLayer extends Layer {
     activeSeq = this.workerActiveSeq,
     samplingSeq = this.workerSamplingSeq,
   ) {
-    return `${activeSeq}:${samplingSeq}:${normalizeVisibilityMode(visibilityMode)}:${this.segmentBucketSeconds}:${this.segmentBucketStart(seconds)}`;
+    return `${activeSeq}:${samplingSeq}:${normalizeVehicleVisibility(visibilityMode)}:${this.segmentBucketSeconds}:${this.segmentBucketStart(seconds)}`;
   }
 
   cacheSegmentFrame(frame, visibilityMode = this.vehicleVisibilityMode) {
     if (frame?.kind !== "vehicle-segment-frame") return null;
     const key = this.segmentFrameKey(frame.bucketSecond, visibilityMode);
-    frame.__visibilityMode = normalizeVisibilityMode(visibilityMode);
+    frame.__visibilityMode = normalizeVehicleVisibility(visibilityMode);
     frame.__activeSeq = this.workerActiveSeq;
     frame.__samplingSeq = frame.__samplingSeq ?? this.workerSamplingSeq;
     this.segmentFrameCache.set(key, frame);
@@ -604,6 +648,12 @@ export class VehicleTrajectoryLayer extends Layer {
     this.applyFollowCamera();
   }
 
+  applyWorkerEvictions(result) {
+    for (const key of result?.evictedKeys || []) {
+      this.workerChunkKeys.delete(key);
+    }
+  }
+
   setData(data) {
     if (data?.meta) {
       this.setVehicleMeta(data.meta);
@@ -641,86 +691,101 @@ export class VehicleTrajectoryLayer extends Layer {
       }
       this.renderVehicleLayer();
       this.statsCallback?.(this.getCurrentStats());
-      return;
+      return Promise.resolve({ cleared: true });
     }
 
     // 分块走 Worker：分段索引构建与逐帧采样在 Worker 中完成。切到已常驻分块仅 activateChunk
     // （零重建，根治分块边界周期性卡顿）；否则下发整块建一次索引并常驻。Worker 不可用时回退主线程。
     if (this.ensureWorker()) {
-      this.activateOrAddChunkInWorker(data, true);
-      return;
+      return this.activateOrAddChunkInWorker(data, true);
     }
 
     this.setDataOnMainThread(data);
     this.setTime(this.currentTime);
+    return Promise.resolve({ mainThread: true, activated: true, key: this.chunkKeyOf(data) });
   }
 
   chunkKeyOf(data) {
     if (data?.snapshotKey) return `snapshot:${data.snapshotKey}`;
     const start = Number(data?.chunk?.start);
     if (!Number.isFinite(start)) return null;
-    return data?.binary ? `bin:${start}` : `json:${start}`;
+    const spatialKey = data?.spatialKey ? `:${data.spatialKey}` : "";
+    return data?.binary ? `bin:${start}${spatialKey}` : `json:${start}${spatialKey}`;
   }
 
   // 供预取调用：把相邻分块提前推给 Worker 建好索引并常驻，切块时即可秒切（双缓冲）。
   preindexChunk(data) {
-    if (!data || !this.ensureWorker()) return;
-    this.activateOrAddChunkInWorker(data, false);
+    if (!data || !this.ensureWorker()) return Promise.resolve({ failed: true, reason: "worker-unavailable" });
+    return this.activateOrAddChunkInWorker(data, false);
   }
 
   activateOrAddChunkInWorker(data, activate) {
     const key = this.chunkKeyOf(data);
     const version = this.workerDataVersion;
-    const activeSeq = activate ? ++this.workerActiveSeq : this.workerActiveSeq;
-    if (activate) {
-      this.workerTimeSeq++;
-    }
     if (key != null && this.workerChunkKeys.has(key)) {
-      if (!activate) return; // 已常驻，无需重复预建
-      const bounds = this.workerSamplingPayload();
-      const samplingSeq = this.workerSamplingSeq;
-      this.postWorker("activateChunk", {
-        key,
-        seconds: this.currentTime,
-        visibilityMode: this.vehicleVisibilityMode,
-        gpuSegments: true,
-        bucketSeconds: this.segmentBucketSeconds,
-        bounds,
-      })
-        .then((result) => {
-          if (
-            this.isDisposed
-            || version !== this.workerDataVersion
-            || activeSeq !== this.workerActiveSeq
-            || samplingSeq !== this.workerSamplingSeq
-          ) {
-            this.releaseWorkerFrame(result?.frame, true);
-            return;
-          }
-          if (result?.miss) {
-            // Worker 端已被 LRU 淘汰：重新下发整块。
-            this.workerChunkKeys.delete(key);
-            this.sendChunkToWorker(data, true, version, activeSeq);
-            return;
-          }
-          if (result?.frame || result?.segmentFrame) {
-            this.applyWorkerResult(result, samplingSeq);
-          } else {
-            this.requestWorkerTime(this.currentTime);
-          }
-        })
-        .catch(() => {
-          if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) return;
-          this.workerChunkKeys.delete(key);
-          this.sendChunkToWorker(data, true, version, activeSeq);
-        });
-      return;
+      if (!activate) return Promise.resolve({ stored: true, key }); // 已常驻，无需重复预建
+      return this.activateChunkKey(key);
     }
-    this.sendChunkToWorker(data, activate, version, activeSeq);
+    const activeSeq = activate ? ++this.workerActiveSeq : this.workerActiveSeq;
+    if (activate) this.workerTimeSeq++;
+    return this.sendChunkToWorker(data, activate, version, activeSeq);
+  }
+
+  // 主线程只保留 key/字节数后，切块通过 key 激活 Worker 内的常驻块。
+  // Worker 若因 LRU 已淘汰该块，返回 miss，由 GJYS 重新下载并 transfer。
+  activateChunkKey(key, seconds = this.currentTime) {
+    if (key == null || !this.ensureWorker() || !this.workerChunkKeys.has(key)) {
+      return Promise.resolve({ miss: true, key });
+    }
+    const version = this.workerDataVersion;
+    const activeSeq = ++this.workerActiveSeq;
+    this.workerTimeSeq++;
+    const bounds = this.workerSamplingPayload();
+    const samplingSeq = this.workerSamplingSeq;
+    const targetTime = Math.max(0, Number(seconds) || 0);
+    this.currentTime = targetTime;
+    return this.postWorker("activateChunk", {
+      key,
+      seconds: targetTime,
+      visibilityMode: this.vehicleVisibilityMode,
+      gpuSegments: true,
+      bucketSeconds: this.segmentBucketSeconds,
+      bounds,
+    })
+      .then((result) => {
+        this.applyWorkerEvictions(result);
+        if (
+          this.isDisposed
+          || version !== this.workerDataVersion
+          || activeSeq !== this.workerActiveSeq
+          || samplingSeq !== this.workerSamplingSeq
+        ) {
+          this.releaseWorkerFrame(result?.frame, true);
+          return { stale: true, key };
+        }
+        if (result?.miss) {
+          this.workerChunkKeys.delete(key);
+          return { ...result, key };
+        }
+        if (result?.frame || result?.segmentFrame) {
+          this.applyWorkerResult(result, samplingSeq);
+        } else {
+          this.requestWorkerTime(this.currentTime);
+        }
+        return { ...result, key, activated: true };
+      })
+      .catch((error) => {
+        this.workerChunkKeys.delete(key);
+        if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) {
+          return { stale: true, key };
+        }
+        return { failed: true, miss: true, key, error };
+      });
   }
 
   sendChunkToWorker(data, activate, version, activeSeq = this.workerActiveSeq) {
     const key = this.chunkKeyOf(data);
+    const sourceBytes = Number(data?.segments?.byteLength) || 0;
     // 乐观登记，避免并发预取重复下发；失败时回滚。
     if (key != null) this.workerChunkKeys.add(key);
     const { payload, transfer } = trajectoryWorkerPayload(data);
@@ -735,8 +800,9 @@ export class VehicleTrajectoryLayer extends Layer {
       bounds,
     };
     if (activate) message.seconds = this.currentTime;
-    this.postWorker(activate ? "setData" : "addChunk", message, transfer)
+    return this.postWorker(activate ? "setData" : "addChunk", message, transfer)
       .then((result) => {
+        this.applyWorkerEvictions(result);
         if (
           this.isDisposed
           || version !== this.workerDataVersion
@@ -744,23 +810,27 @@ export class VehicleTrajectoryLayer extends Layer {
           || (activate && samplingSeq !== this.workerSamplingSeq)
         ) {
           this.releaseWorkerFrame(result?.frame, true);
-          return;
+          return { stale: true, key, bytes: sourceBytes };
         }
-        if (!activate) return;
+        if (!activate) return { ...result, key, bytes: sourceBytes, stored: true };
         if (result?.frame || result?.segmentFrame) {
           this.applyWorkerResult(result, samplingSeq);
         } else {
           this.requestWorkerTime(this.currentTime);
         }
+        return { ...result, key, bytes: sourceBytes, activated: true };
       })
       .catch((error) => {
         if (key != null) this.workerChunkKeys.delete(key);
-        if (this.isDisposed || version !== this.workerDataVersion || (activate && activeSeq !== this.workerActiveSeq)) return;
+        if (this.isDisposed || version !== this.workerDataVersion || (activate && activeSeq !== this.workerActiveSeq)) {
+          return { stale: true, key, bytes: sourceBytes };
+        }
         if (activate) {
           console.warn("[VehicleTrajectoryLayer] worker data setup failed", error);
-          this.setDataOnMainThread(data);
-          this.setTime(this.currentTime);
         }
+        // postMessage 成功后原 ArrayBuffer 已移交，不能再用分离的 view
+        // 回退主线程。返回 miss 让上层从 HTTP/IndexedDB 重取小块。
+        return { failed: true, miss: true, key, bytes: sourceBytes, error };
       });
   }
 
@@ -1006,6 +1076,7 @@ export class VehicleTrajectoryLayer extends Layer {
     let speedCount = 0;
     const capacity = offsets.length;
     const buffers = this.ensureFrameBuffers(capacity);
+    const intValues = binaryIntValues(values);
     let count = 0;
 
     for (const offset of offsets) {
@@ -1026,9 +1097,9 @@ export class VehicleTrajectoryLayer extends Layer {
       const dx = ex - sx;
       const dy = ey - sy;
       const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-      const speed = (Math.sqrt(dx * dx + dy * dy) / duration) * 3.6;
+      const speed = (binaryDistanceMeters(values, offset) / duration) * 3.6;
       const webMercator = [originX + x, originY + y];
-      const vehicleIndex = Math.round(Number(values[offset + 7]) || 0);
+      const vehicleIndex = binaryVehicleIndex(values, offset, intValues);
 
       buffers.xs[count] = webMercator[0];
       buffers.ys[count] = webMercator[1];
@@ -1363,7 +1434,10 @@ export class VehicleTrajectoryLayer extends Layer {
       const mode = modeKeyFromCode(segmentFrame.modes?.[index]);
       const vehicleIndex = Math.round(Number(segmentFrame.ids?.[index]) || index);
       const angle = Math.atan2(ey - sy, ex - sx) * 180 / Math.PI;
-      const speed = (Math.hypot(ex - sx, ey - sy) / duration) * 3.6;
+      const distanceMeters = Number(segmentFrame.distances?.[index]);
+      const speed = (Number.isFinite(distanceMeters) && distanceMeters >= 0
+        ? distanceMeters
+        : Math.hypot(ex - sx, ey - sy)) / duration * 3.6;
       return {
         key: `binary:${vehicleIndex}`,
         vehicleIndex,
@@ -1506,3 +1580,6 @@ export class VehicleTrajectoryLayer extends Layer {
     super.dispose();
   }
 }
+
+// 导出纯数据适配器供回归测试验证 transferable 所有权语义。
+export { trajectoryWorkerPayload };

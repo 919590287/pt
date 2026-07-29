@@ -99,12 +99,21 @@ public class MatsimData {
     /**
      * 面积
      */
-    protected double area = 1.;
+    protected double area = 0.;
 
     /**
-     * 流量比例
+     * 数量口径固定为模型原始值。历史 desc.json 中的 scale 仅是来源元数据，
+     * 平台不再用它对人口、客流或任何评价指标扩样。
      */
     protected double scale = 1.0;
+
+    /**
+     * 禁止通过模型描述改变计算数量。保留 setter 是为了兼容旧调用方和旧 desc.json，
+     * 但运行态永远按“文件中有多少就计算多少”的 1:1 口径。
+     */
+    public void setScale(double ignoredScale) {
+        this.scale = 1.0;
+    }
 
     /**
      * 路网最大点最小点
@@ -144,6 +153,29 @@ public class MatsimData {
     protected volatile boolean eventIsLoaded = false;
 
     public Network getNetwork() {
+        return scenario.getNetwork();
+    }
+
+    /**
+     * 公交计算/展示网络。大模型下这是仅包含公交线路引用 link 的低内存网络；
+     * 普通模型下与完整道路网络相同。
+     */
+    public Network getTransitNetwork() {
+        return scenario.getNetwork();
+    }
+
+    /** 当前内存网络是否可安全用于道路统计、吸附和寻路。 */
+    public boolean hasFullRoadNetwork() {
+        return !largeModel;
+    }
+
+    /**
+     * 道路业务必须从该入口取得网络，避免把大模型公交精简网络误当完整道路网并返回错误结果。
+     */
+    public Network requireFullRoadNetwork() {
+        if (!hasFullRoadNetwork()) {
+            throw new IllegalStateException("大模型当前仅加载公交精简网络，不支持需要完整道路网络的优化操作");
+        }
         return scenario.getNetwork();
     }
 

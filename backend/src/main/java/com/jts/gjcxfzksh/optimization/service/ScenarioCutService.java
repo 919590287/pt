@@ -100,6 +100,11 @@ public class ScenarioCutService {
     private static final String OUTSIDE = ConfigGroups.OUTSIDE_ACT_TYPE;
 
     public CutResult cut(Scheme parent, AreaSpec area, int iterations, Path outDir, Progress progress) {
+        if (parent == null || parent.isLargeModel() || !parent.isCuttable()) {
+            throw new BusinessException(parent != null && parent.isLargeModel()
+                    ? "大模型仅加载公交精简网络，暂不能作为线网优化母本"
+                    : "母本模型缺少可切分的完整 output_plans");
+        }
         long start = System.currentTimeMillis();
         CutResult result = new CutResult();
         try {
@@ -203,6 +208,8 @@ public class ScenarioCutService {
             }
         }
         log.warn("未找到可用的完整 config，回退精简版: {}", outfile.getConfig());
+        // MatsimOutFile 的目录扫描现在延迟解析；真正使用精简配置前仍需触发旧版本兼容转换。
+        outfile.loadConfig();
         return outfile.getConfig();
     }
 

@@ -21,11 +21,13 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongConsumer;
 
 /**
  * plans 派生缓存共享扫描器。
  *
- * <p>population 与 tripends 的活动端点都来自同一份 plans。大模型冷启动时只解压、
+ * <p>population、tripends 活动端点与超大模型客流画像都来自同一份 plans。
+ * 大模型冷启动时只解压、
  * 解析一次 XML，然后通过有界队列交给 {@link ModelProcessingPool#parallelism()} 个上限内的
  * worker。每个 worker 持有私有聚合器和坐标街道缓存，扫描完再确定性合并，避免高频锁竞争。</p>
  */
@@ -43,35 +45,65 @@ public final class MatsimPlansDerivedCache {
     }
 
     public static void prepareAllOnModelLoad(MatsimData data) {
-        prepare(data, true, true);
+        prepare(data, true, true, data.isLargeModel());
+    }
+
+    public static void prepareAllOnModelLoad(MatsimData data, LongConsumer progress) {
+        prepare(data, true, true, data.isLargeModel(), progress);
     }
 
     static void preparePopulationOnModelLoad(MatsimData data) {
-        prepare(data, true, false);
+        prepare(data, true, false, false);
     }
 
     static void prepareTripEndsOnModelLoad(MatsimData data) {
-        prepare(data, false, true);
+        prepare(data, false, true, false);
     }
 
-    private static void prepare(MatsimData data, boolean requestPopulation, boolean requestTripEnds) {
+    static void preparePassengerProfilesOnModelLoad(MatsimData data) {
+        prepare(data, false, false, true);
+    }
+
+    private static void prepare(MatsimData data, boolean requestPopulation, boolean requestTripEnds,
+                                boolean requestPassengerProfiles) {
+        prepare(data, requestPopulation, requestTripEnds, requestPassengerProfiles, null);
+    }
+
+    private static void prepare(MatsimData data, boolean requestPopulation, boolean requestTripEnds,
+                                boolean requestPassengerProfiles, LongConsumer progress) {
         synchronized (ModelBuildLocks.lockFor(LOCK_FAMILY, data)) {
             boolean buildPopulation = requestPopulation && !MatsimPopulationCache.isReady(data);
             boolean buildTripEnds = requestTripEnds && !MatsimTripEndsCache.isReady(data);
-            if (!buildPopulation && !buildTripEnds) {
+            boolean buildPassengerProfiles = requestPassengerProfiles
+                    && !MatsimPassengerProfileCache.isReady(data);
+            if (!buildPopulation && !buildTripEnds && !buildPassengerProfiles) {
+                return;
+            }
+
+            if (data.isLargeModel() && !hasReadablePlans(data)) {
+                String plans = data.getOutfile() == null ? null : data.getOutfile().getPlans();
+                String message = "模型缺少可读取的 plans，相关能力不受支持: " + plans;
+                if (buildPopulation) MatsimPopulationCache.writeUnsupportedManifest(data, message);
+                if (buildTripEnds) MatsimTripEndsCache.writeUnsupportedEndpointManifest(data, message);
+                if (buildPassengerProfiles) MatsimPassengerProfileCache.writeUnsupportedManifest(data, message);
+                log.warn("{} model={}", message, data.getName());
                 return;
             }
 
             MatsimPopulationCache.StreetIndex streets = MatsimPopulationCache.streetIndex();
+            MatsimPassengerProfileCache.Context profileContext = buildPassengerProfiles
+                    ? MatsimPassengerProfileCache.buildContext(data)
+                    : null;
             long startedAt = System.currentTimeMillis();
             ScanResult result;
             try {
-                result = scan(data, streets, buildPopulation, buildTripEnds,
-                        ModelProcessingPool.parallelism(), TOTAL_STREET_CACHE_ENTRIES);
-                log.info("共享plans扫描完成: model={}, persons={}, workers={}, population={}, tripends={}, "
+                result = scan(data, streets, profileContext, buildPopulation, buildTripEnds,
+                        buildPassengerProfiles,
+                        ModelProcessingPool.parallelism(), TOTAL_STREET_CACHE_ENTRIES, progress);
+                log.info("共享plans扫描完成: model={}, persons={}, workers={}, population={}, tripends={}, profiles={}, "
                                 + "streetCache={}/{}({}%), 耗时={}ms",
                         data.getName(), result.stats.persons, result.stats.workers,
-                        buildPopulation, buildTripEnds, result.stats.streetCacheHits,
+                        buildPopulation, buildTripEnds, buildPassengerProfiles, result.stats.streetCacheHits,
                         result.stats.streetCacheLookups(), result.stats.streetCacheHitPercent(),
                         result.stats.elapsedMs);
             } catch (Throwable e) {
@@ -81,17 +113,24 @@ public final class MatsimPlansDerivedCache {
                 if (buildTripEnds) {
                     MatsimTripEndsCache.writeFailedManifest(data);
                 }
+                if (buildPassengerProfiles) {
+                    MatsimPassengerProfileCache.writeFailedManifest(data);
+                }
                 if (e instanceof RuntimeException runtimeException) {
                     throw runtimeException;
                 }
                 throw new RuntimeException("共享plans扫描失败: " + e.getMessage(), e);
             }
-            // 两类工件各自原子落盘。某一类写失败不回滚/污染另一类已 ready 的 manifest。
+            // 各类工件独立原子落盘。某一类写失败不回滚/污染其他已 ready 工件。
             if (buildPopulation) {
                 MatsimPopulationCache.storeBuiltAggregation(data, result.population, streets, startedAt);
             }
             if (buildTripEnds) {
                 MatsimTripEndsCache.storeBuiltAggregation(data, result.tripEnds, streets, startedAt);
+            }
+            if (buildPassengerProfiles) {
+                MatsimPassengerProfileCache.storeBuiltAggregation(
+                        data, result.passengerProfiles, startedAt);
             }
         }
     }
@@ -105,23 +144,62 @@ public final class MatsimPlansDerivedCache {
                            boolean buildTripEnds,
                            int requestedWorkers,
                            int streetCacheEntries) {
+        return scan(data, streets, null, buildPopulation, buildTripEnds, false,
+                requestedWorkers, streetCacheEntries, null);
+    }
+
+    static ScanResult scan(MatsimData data,
+                           MatsimPopulationCache.StreetIndex streets,
+                           MatsimPassengerProfileCache.Context profileContext,
+                           boolean buildPopulation,
+                           boolean buildTripEnds,
+                           boolean buildPassengerProfiles,
+                           int requestedWorkers,
+                           int streetCacheEntries) {
+        return scan(data, streets, profileContext, buildPopulation, buildTripEnds,
+                buildPassengerProfiles, requestedWorkers, streetCacheEntries, null);
+    }
+
+    private static ScanResult scan(MatsimData data,
+                           MatsimPopulationCache.StreetIndex streets,
+                           MatsimPassengerProfileCache.Context profileContext,
+                           boolean buildPopulation,
+                           boolean buildTripEnds,
+                           boolean buildPassengerProfiles,
+                           int requestedWorkers,
+                           int streetCacheEntries,
+                           LongConsumer progress) {
         long startedAt = System.currentTimeMillis();
         int workers = resolveWorkers(data, requestedWorkers);
         Map<String, double[]> coordByFacility = buildTripEnds
                 ? MatsimTripEndsCache.facilityCoords(data.getScenario() == null ? null : data.getSchedule())
                 : Map.of();
+        com.jts.gjcxfzksh.utils.TransitMetrics.RoadTransitContext roadTransit = buildPopulation
+                ? com.jts.gjcxfzksh.utils.TransitMetrics.RoadTransitContext.from(data.getSchedule()) : null;
+        Object runtimeCrs = data.getSchedule() == null ? null
+                : data.getSchedule().getAttributes().getAttribute("coordinateReferenceSystem");
+        MatsimPopulationCache.CoverageIndex coverageIndex = buildPopulation
+                ? MatsimPopulationCache.coverageIndexForRoadTransit(roadTransit,
+                        com.jts.gjcxfzksh.utils.TransitMetrics.MetricCoordinateContext.fromCrs(
+                                runtimeCrs == null ? null : String.valueOf(runtimeCrs))) : null;
         ParallelPersonSink sink = new ParallelPersonSink(
                 workers, MatsimPopulationCache.mercCellSize(data.getCenter()), streets, coordByFacility,
-                buildPopulation, buildTripEnds, streetCacheEntries);
+                coverageIndex, roadTransit, profileContext,
+                buildPopulation, buildTripEnds, buildPassengerProfiles,
+                streetCacheEntries);
         try {
             if (data.isLargeModel()) {
-                streamPlans(data, sink);
+                streamPlans(data, sink, progress);
             } else {
                 Population population = data.getScenario() == null ? null : data.getPopulation();
                 if (population != null) {
+                    long processed = 0;
                     for (Person person : population.getPersons().values()) {
                         sink.accept(person, null);
+                        processed++;
+                        if (progress != null && processed % 100_000 == 0) progress.accept(processed);
                     }
+                    if (progress != null) progress.accept(processed);
                 }
             }
             sink.finish();
@@ -138,7 +216,7 @@ public final class MatsimPlansDerivedCache {
                 sink.streetCacheHits(),
                 sink.streetCacheMisses()
         );
-        return new ScanResult(merged.population, merged.tripEnds, stats);
+        return new ScanResult(merged.population, merged.tripEnds, merged.passengerProfiles, stats);
     }
 
     private static int resolveWorkers(MatsimData data, int requestedWorkers) {
@@ -158,12 +236,22 @@ public final class MatsimPlansDerivedCache {
         return workers;
     }
 
+    private static boolean hasReadablePlans(MatsimData data) {
+        String plans = data == null || data.getOutfile() == null ? null : data.getOutfile().getPlans();
+        if (plans == null || plans.isBlank()) return false;
+        try {
+            return Files.isRegularFile(Path.of(plans)) && Files.isReadable(Path.of(plans));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** 大模型只读一次 plans；坐标转换器由每个 worker 按同一 CRS 规则独立创建。 */
-    private static void streamPlans(MatsimData data, ParallelPersonSink sink) {
+    private static void streamPlans(MatsimData data, ParallelPersonSink sink, LongConsumer progress) {
         String plansFile = data.getOutfile() == null ? null : data.getOutfile().getPlans();
-        if (plansFile == null || plansFile.isBlank() || !Files.exists(Path.of(plansFile))) {
-            log.warn("共享plans扫描未找到文件，按空人口处理: model={}, plans={}", data.getName(), plansFile);
-            return;
+        if (plansFile == null || plansFile.isBlank() || !Files.isRegularFile(Path.of(plansFile))) {
+            throw new IllegalStateException("共享plans扫描缺少可读取文件: model=" + data.getName()
+                    + ", plans=" + plansFile);
         }
 
         Config readCfg = ConfigUtils.createConfig();
@@ -187,15 +275,20 @@ public final class MatsimPlansDerivedCache {
             }
             sink.accept(person, transformSpec[0]);
             persons[0]++;
+            if (progress != null && persons[0] % 250_000 == 0) {
+                progress.accept(persons[0]);
+            }
             if (persons[0] % 1_000_000 == 0) {
                 log.info("共享plans流式读取进度: model={}, persons={}", data.getName(), persons[0]);
             }
         });
         reader.readFile(plansFile);
+        if (progress != null) progress.accept(persons[0]);
     }
 
     record ScanResult(MatsimPopulationCache.Aggregation population,
                       MatsimTripEndsCache.Aggregation tripEnds,
+                      MatsimPassengerProfileCache.Aggregation passengerProfiles,
                       ScanStats stats) {
     }
 
@@ -229,6 +322,7 @@ public final class MatsimPlansDerivedCache {
         private final MatsimPopulationCache.CoordinateStreetCache streetCache;
         private final MatsimPopulationCache.Aggregation population;
         private final MatsimTripEndsCache.Aggregation tripEnds;
+        private final MatsimPassengerProfileCache.Aggregation passengerProfiles;
         private TransformSpec transformSpec;
         private CoordinateTransformation transformation;
         private boolean transformationResolved;
@@ -236,18 +330,26 @@ public final class MatsimPlansDerivedCache {
         private WorkerState(double mercCellSize,
                             MatsimPopulationCache.StreetIndex streets,
                             Map<String, double[]> coordByFacility,
+                            MatsimPopulationCache.CoverageIndex coverageIndex,
+                            com.jts.gjcxfzksh.utils.TransitMetrics.RoadTransitContext roadTransit,
+                            MatsimPassengerProfileCache.Context profileContext,
                             boolean buildPopulation,
                             boolean buildTripEnds,
+                            boolean buildPassengerProfiles,
                             int streetCacheEntries) {
             this.streetCache = streets != null && streetCacheEntries > 0
                     ? new MatsimPopulationCache.CoordinateStreetCache(streets, streetCacheEntries)
                     : null;
             MatsimPopulationCache.StreetLocator locator = streetCache == null ? streets : streetCache;
             this.population = buildPopulation
-                    ? new MatsimPopulationCache.Aggregation(mercCellSize, streets, locator)
+                    ? new MatsimPopulationCache.Aggregation(
+                            mercCellSize, streets, locator, coverageIndex, roadTransit)
                     : null;
             this.tripEnds = buildTripEnds
                     ? new MatsimTripEndsCache.Aggregation(mercCellSize, streets, coordByFacility, locator)
+                    : null;
+            this.passengerProfiles = buildPassengerProfiles
+                    ? MatsimPassengerProfileCache.newAggregation(profileContext)
                     : null;
         }
 
@@ -258,6 +360,9 @@ public final class MatsimPlansDerivedCache {
             }
             if (tripEnds != null) {
                 tripEnds.acceptPerson(person, ctf);
+            }
+            if (passengerProfiles != null) {
+                passengerProfiles.acceptPerson(person);
             }
         }
 
@@ -278,7 +383,10 @@ public final class MatsimPlansDerivedCache {
             if (population != null) {
                 return population.persons;
             }
-            return tripEnds == null ? 0 : tripEnds.persons;
+            if (tripEnds != null) {
+                return tripEnds.persons;
+            }
+            return passengerProfiles == null ? 0 : passengerProfiles.persons();
         }
 
         private void mergeFrom(WorkerState other) {
@@ -287,6 +395,9 @@ public final class MatsimPlansDerivedCache {
             }
             if (tripEnds != null) {
                 tripEnds.mergeFrom(other.tripEnds);
+            }
+            if (passengerProfiles != null) {
+                passengerProfiles.mergeFrom(other.passengerProfiles);
             }
         }
 
@@ -311,8 +422,12 @@ public final class MatsimPlansDerivedCache {
                                    double mercCellSize,
                                    MatsimPopulationCache.StreetIndex streets,
                                    Map<String, double[]> coordByFacility,
+                                   MatsimPopulationCache.CoverageIndex coverageIndex,
+                                   com.jts.gjcxfzksh.utils.TransitMetrics.RoadTransitContext roadTransit,
+                                   MatsimPassengerProfileCache.Context profileContext,
                                    boolean buildPopulation,
                                    boolean buildTripEnds,
+                                   boolean buildPassengerProfiles,
                                    int totalStreetCacheEntries) {
             this.workerCount = workerCount;
             this.states = new ArrayList<>(workerCount);
@@ -322,7 +437,9 @@ public final class MatsimPlansDerivedCache {
                     : Math.max(1 << 14, totalStreetCacheEntries / workerCount);
             for (int i = 0; i < workerCount; i++) {
                 states.add(new WorkerState(mercCellSize, streets, coordByFacility,
-                        buildPopulation, buildTripEnds, perWorkerCacheEntries));
+                        coverageIndex, roadTransit, profileContext,
+                        buildPopulation, buildTripEnds, buildPassengerProfiles,
+                        perWorkerCacheEntries));
             }
             if (workerCount > 1) {
                 startWorkers();

@@ -7,7 +7,7 @@
      图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
      口径：O=整段公交出行首次上车站、D=最终下车站（events 乘车链 30min/800m 全制式；
      与出行分布监测共用 tripends 缓存家族，但出行分布端点自 v4 起已改活动口径，本模块维持站点口径）；
-     一律直出模型抽样人次（不做 ÷scale 扩样）；地图线为双向合计（自环不画），榜单为有向对。 -->
+     一律直出已加载模型的原始人次，不做任何数量缩放；地图线为双向合计（自环不画），榜单为有向对。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
     <div class="gjod-card" aria-label="公交OD监测面板">
@@ -150,8 +150,8 @@
         ></span>
         <span class="gjod-map-legend-label">{{ item.label }}</span>
       </div>
-      <p v-if="granularity === 'grid' && gridTruncated" class="gjod-map-legend-note">
-        栅格连线仅显示流量前 {{ GRID_RENDER_LIMIT }} 条
+      <p v-if="granularity === 'grid'" class="gjod-map-legend-note">
+        100m–2km 各栅格档位均按双向合计流量排序，最多显示前 {{ formatInt(GRID_RENDER_LIMIT) }} 条 OD 连线。
       </p>
     </div>
   </teleport>
@@ -179,7 +179,7 @@ const props = defineProps({
 });
 
 const MapRef = inject("MapRef", ref(null));
-
+const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
 const GRANULARITY_OPTIONS = [
   { key: "street", label: "街道" },
   { key: "grid", label: "栅格" },
@@ -188,9 +188,8 @@ const OD_LINE_LAYER_KEY = "rm-busod-lines";
 const STREET_SOURCE_ID = "rm-busod-streets";
 const STREET_LINE_ID = "rm-busod-street-line";
 const STREET_LABEL_ID = "rm-busod-street-label";
-const RANK_ROW_LIMIT = 30;
-/** 栅格模式连线渲染上限（双向合并后按流量取 Top）：期望线超过几千条即不可读，也拖慢渲染。 */
-const GRID_RENDER_LIMIT = 2000;
+/** 100m–2km 各栅格档位的连线渲染上限：双向合并后按流量降序取 Top 1000。 */
+const GRID_RENDER_LIMIT = 1000;
 const GENERATING_POLL_MS = 8000;
 
 const status = ref("loading"); // loading | generating | error | ready
@@ -199,7 +198,7 @@ const granularity = ref("street"); // street | grid
 // 栅格连线边长（米）：100m–2km、间隔 100m；由 100m 格对聚合成 N×100m 超格
 const gridCellSizeM = ref(100);
 const summary = shallowRef(null);
-const odStreets = shallowRef(null); // { pairs:[[o,d,n]...], totals }（o/d=街道要素索引，n 抽样人次）
+const odStreets = shallowRef(null); // { pairs:[[o,d,n]...], totals }（o/d=街道要素索引，n 为模型原始人次）
 const streetStats = shallowRef(null); // tripends-streets.json（index 对齐的街道元信息来源）
 const odGrid = shallowRef(null); // parseBusOdGrid 结果（markRaw）
 const streetsGeojson = shallowRef(null);
@@ -305,7 +304,7 @@ function streetInScope(idx) {
 }
 
 // ---------------------------------------------------------------------------
-// 街道 OD 榜单（有向；**同街道内部出行 o==d 不计入**，用户定版；数值为模型抽样人次，不扩样）
+// 街道 OD 榜单（有向；**同街道内部出行 o==d 不计入**，用户定版；数值为模型原始人次）
 // ---------------------------------------------------------------------------
 
 const displayedPairs = computed(() => {
@@ -339,7 +338,7 @@ const rankRows = computed(() => {
 });
 
 const visibleRankRows = computed(() => {
-  const rows = rankRows.value.slice(0, RANK_ROW_LIMIT);
+  const rows = rankRows.value.slice(0, rightPanelRankLimit);
   const maxValue = rows.length ? rows[0].n : 0;
   return rows.map((row) => ({
     ...row,
@@ -390,7 +389,7 @@ const streetLines = computed(() => {
  */
 const gridLineState = computed(() => {
   const grid = odGrid.value;
-  if (!grid || !grid.count) return { lines: [], truncated: false };
+  if (!grid || !grid.count) return { lines: [] };
   const scoped = scopeLabel.value !== DISPLAY_RANGE_ALL;
   const n = Math.max(1, Math.round(gridCellSizeM.value / 100));
   const merged = new Map();
@@ -415,17 +414,15 @@ const gridLineState = computed(() => {
   }
   const all = Array.from(merged.values());
   all.sort((a, b) => b.flow - a.flow);
-  const truncated = all.length > GRID_RENDER_LIMIT;
   const cs = grid.mercCellSize * n;
   const lines = all.slice(0, GRID_RENDER_LIMIT).map((entry) => ({
     from: mercatorToLngLat((entry.iA + 0.5) * cs, (entry.jA + 0.5) * cs),
     to: mercatorToLngLat((entry.iB + 0.5) * cs, (entry.jB + 0.5) * cs),
     flow: entry.flow,
   }));
-  return { lines, truncated };
+  return { lines };
 });
 
-const gridTruncated = computed(() => gridLineState.value.truncated);
 const activeLines = computed(() => (granularity.value === "street" ? streetLines.value : gridLineState.value.lines));
 
 /** 分位分级：断点随当前显示流量集合自适应；级数不足时取色带/线宽尾部（保留红端）。 */
@@ -1124,5 +1121,34 @@ onUnmounted(() => {
   .gjod-rank-bar-fill {
     transition: none;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .gjod-granularity-switch {
+  background: rgba(148, 180, 220, 0.1);
+}
+html.dark .gjod-granularity-btn.active {
+  background: #1a2431;
+  box-shadow: 0 1px 4px rgba(2, 6, 12, 0.32);
+}
+html.dark .gjod-rank-row:hover {
+  background: rgba(64, 156, 255, 0.09);
+}
+html.dark .gjod-rank-bar {
+  background: rgba(148, 180, 220, 0.16);
+}
+html.dark .gjod-map-legend {
+  /* --app-ink-soft 未定义，浅色落在 fallback #475467，暗色需显式提亮 */
+  color: #c2cddd;
+}
+html.dark .gjod-status-icon.is-error {
+  color: #f87171;
+}
+html.dark .gjod-retry {
+  background: #1a2431;
+}
+html.dark .gjod-sk {
+  background: linear-gradient(90deg, rgba(148, 180, 220, 0.08) 25%, rgba(148, 180, 220, 0.14) 42%, rgba(148, 180, 220, 0.08) 60%);
+  background-size: 240% 100%;
 }
 </style>

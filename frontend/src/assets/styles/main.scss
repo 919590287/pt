@@ -81,6 +81,53 @@
   --z-popover: 2000;
 }
 
+/* ──────────────────────────────────────────────────────────────
+   暗色模式（html.dark，由 utils/uiTheme.js 跟随底图选择切换）。
+   只翻转中性表面/文字/线条/阴影与强调色亮度，布局与语义不变；
+   地图图层配色（mapTheme.js）不受影响。
+   ────────────────────────────────────────────────────────────── */
+html.dark {
+  --app-blue: oklch(60% 0.17 253);
+  --app-blue-strong: oklch(74% 0.13 251);
+  --app-blue-soft: oklch(31% 0.06 253);
+  --app-cyan: oklch(70% 0.1 218);
+  --app-cyan-strong: oklch(78% 0.09 218);
+  --app-cyan-soft: oklch(31% 0.05 218);
+  --app-emerald: oklch(72% 0.13 165);
+  --app-emerald-strong: oklch(80% 0.11 165);
+  --app-emerald-soft: oklch(30% 0.055 165);
+  --app-amber: oklch(78% 0.14 78);
+  --app-amber-soft: oklch(32% 0.06 78);
+  --app-coral: oklch(72% 0.15 22);
+  --app-coral-soft: oklch(30% 0.06 22);
+  --app-indigo: oklch(72% 0.12 275);
+  --app-indigo-soft: oklch(31% 0.055 275);
+  --app-ink: oklch(93% 0.012 250);
+  --app-muted: oklch(74% 0.028 248);
+  --app-muted-soft: oklch(60% 0.03 248);
+  --app-surface: #131a23;
+  --app-surface-soft: #10161d;
+  --app-surface-strong: #1a2330;
+  --app-border: rgba(126, 170, 224, 0.2);
+  --app-border-strong: rgba(126, 170, 224, 0.34);
+  --app-panel-bg: rgba(16, 22, 30, 0.96);
+  --app-card-bg: rgba(20, 27, 37, 0.96);
+  --app-card-bg-tint: rgba(23, 31, 42, 0.96);
+  --app-shadow-sm: 0 2px 8px rgba(2, 6, 12, 0.4);
+  --app-shadow-md: 0 12px 34px rgba(2, 6, 12, 0.5);
+  --app-shadow-panel: 0 18px 48px rgba(2, 6, 12, 0.6);
+  --app-focus-ring: 0 0 0 3px rgba(90, 168, 255, 0.28);
+}
+
+html.dark .model-loading-card {
+  background: rgba(17, 23, 31, 0.97);
+  box-shadow: 0 18px 48px rgba(2, 6, 12, 0.62);
+}
+
+html.dark .model-loading-close:hover {
+  background: rgba(90, 168, 255, 0.14);
+}
+
 * {
   box-sizing: border-box;
 }

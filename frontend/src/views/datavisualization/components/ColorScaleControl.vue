@@ -312,4 +312,49 @@ function schemePreview(scheme) {
     color: #475467;
   }
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .color-scale-control {
+  color: #c2cddd;
+}
+html.dark .csc-reverse-btn {
+  color: #94a3b8;
+  border-color: rgba(64, 156, 255, 0.28);
+}
+html.dark .csc-reverse-btn.active {
+  color: #409cff;
+  border-color: #409cff;
+  background: rgba(64, 156, 255, 0.14);
+}
+html.dark .csc-scheme.active {
+  border-color: #409cff;
+  background: rgba(64, 156, 255, 0.12);
+}
+html.dark .csc-scheme .csc-scheme-ramp {
+  border-color: rgba(148, 180, 220, 0.16);
+}
+html.dark .csc-scheme .csc-scheme-name {
+  color: #94a3b8;
+}
+html.dark .csc-count .csc-count-value {
+  color: #409cff;
+}
+html.dark .csc-label {
+  color: #94a3b8;
+}
+html.dark .csc-threshold-row .csc-threshold-swatch {
+  border-color: rgba(148, 180, 220, 0.16);
+}
+html.dark .csc-threshold-row .csc-unit {
+  color: #64748b;
+}
+html.dark .csc-legend {
+  border-top-color: rgba(64, 156, 255, 0.24);
+}
+html.dark .csc-legend .csc-legend-title {
+  color: #e7edf6;
+}
+html.dark .csc-legend .csc-legend-label {
+  color: #c2cddd;
+}
 </style>

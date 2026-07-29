@@ -115,7 +115,7 @@ class MatsimPopulationCacheSmokeTest {
             buffer.getInt();
             gridHome += Integer.toUnsignedLong(buffer.getInt());
             gridWork += Integer.toUnsignedLong(buffer.getInt());
-            buffer.getShort(); // population-v2 格中心街道索引
+            buffer.getShort(); // population 格中心街道索引
         }
         assertEquals(homePersons, gridHome, "grid home 总和必须等于 homePersons");
         assertEquals(workPersons, gridWork, "grid work 总和必须等于 workPersons");

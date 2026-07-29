@@ -854,4 +854,30 @@ function handleItemClick(item) {
   pointer-events: none;
 }
 
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .dm-sidebar {
+  background: linear-gradient(180deg, rgba(19, 26, 35, 0.97), rgba(16, 22, 30, 0.94)) !important;
+  box-shadow: 16px 0 48px -24px rgba(2, 6, 12, 0.5), var(--dm2-glass-highlight) !important;
+  scrollbar-color: rgba(148, 180, 220, 0.28) transparent;
+}
+
+html.dark .nav-item .chevron-icon {
+  color: #94a3b8;
+}
+
+html.dark .nav-item:hover .chevron-icon {
+  color: #c2cddd;
+}
+
+html.dark .nav-item:hover,
+html.dark .sub-nav-item:hover {
+  background: rgba(148, 180, 220, 0.08) !important;
+}
+
+html.dark .nav-item.active,
+html.dark .sub-nav-item.active {
+  background: var(--dm2-accent-weak) !important;
+  box-shadow: inset 3px 0 0 var(--dm2-accent), 0 1px 2px rgba(2, 6, 12, 0.3) !important;
+}
+
 </style>

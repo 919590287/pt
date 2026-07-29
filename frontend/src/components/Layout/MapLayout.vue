@@ -3,8 +3,8 @@
   <div class="MapLayout">
     <MHeader></MHeader>
     <div id="mapRoot" role="region" aria-label="公交数字孪生地图"></div>
-    <!-- 任一模型就绪之前，业务页面（数据管理 → 配车测算）不挂载，统一显示全局加载门禁 -->
-    <RouterView v-if="!modelRuntime.gateVisible" v-slot="{ Component }">
+    <!-- 依赖模型的页面等目标模型就绪；数据管理始终可挂载。 -->
+    <RouterView v-if="route.meta?.requiresModel === false || !modelRuntime.gateVisible" v-slot="{ Component }">
       <KeepAlive :include="CACHED_PAGE_COMPONENTS">
         <component :is="Component" />
       </KeepAlive>
@@ -14,13 +14,17 @@
 </template>
 
 <script setup>
+import "maplibre-gl/dist/maplibre-gl.css";
 import { onBeforeUnmount, onMounted, provide, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 import MHeader from "./MHeader.vue";
 import ModelLoadGate from "@/components/ModelLoadGate.vue";
 import { useModelRuntimeStore } from "@/stores/modelRuntime.js";
-import { MyMap, MapLayer, DEFAULT_MAP_LAYER_STYLE, CityBuildingsLayer } from "@/mymap/index.js";
-import { warmRealData } from "@/utils/realDataCache.js";
+import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
+import { MyMap, MapLayer, DEFAULT_MAP_LAYER_STYLE, CityBuildingsLayer, lngLatToWebMercator } from "@/mymap/index.js";
+import { getCachedAdminDistricts, warmRealData } from "@/utils/realDataCache.js";
+import { warmRealPassengerFlow } from "@/utils/realPassengerFlow.js";
+import { activeDistrictContext, normalizeAdminDistrictCollection } from "@/utils/adminDistrictRange.js";
 import { quarantineInactiveStyleLayers } from "@/utils/mapLayerOwnership.js";
 
 defineOptions({
@@ -49,6 +53,7 @@ const MapRef = shallowRef(null);
 provide("MapRef", MapRef);
 
 const modelRuntime = useModelRuntimeStore();
+const displayRangeStore = useDisplayRangeStore();
 const route = useRoute();
 
 // 共享地图上属于 MapLayout 自己的常驻图层（底图瓦片、建筑）；其余图层都归当前激活页面组所有
@@ -57,7 +62,31 @@ const baseLayerIds = new Set();
 // maplibre 样式图层按页面前缀记录当前可见性后统一隐藏，激活时按记录恢复。
 const pageLayerStash = new Map();
 const styleVisibilityStash = new Map();
-let styleOwnershipReconcileQueued = false;
+let styleOwnershipReconcileFrame = null;
+let districtCameraSeq = 0;
+
+async function focusSharedDisplayRange() {
+  const selected = displayRangeStore.selected;
+  if (!MapRef.value || !selected || selected === DISPLAY_RANGE_ALL) return false;
+  const seq = ++districtCameraSeq;
+  try {
+    const data = await getCachedAdminDistricts("广州市");
+    if (seq !== districtCameraSeq || displayRangeStore.selected !== selected || !MapRef.value) return false;
+    const collection = normalizeAdminDistrictCollection(data?.collection);
+    const context = activeDistrictContext(collection, selected, DISPLAY_RANGE_ALL);
+    const bounds = context?.bounds;
+    if (!Array.isArray(bounds) || bounds.length < 4) return false;
+    const points = [
+      lngLatToWebMercator(bounds[0], bounds[1]),
+      lngLatToWebMercator(bounds[2], bounds[3]),
+    ].filter((point) => Array.isArray(point) && point.every(Number.isFinite));
+    if (points.length < 2) return false;
+    MapRef.value.setFitZoomAndCenterByPoints?.(points);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function activePageGroupKey() {
   return PAGE_GROUPS[route.name]?.key || "";
@@ -88,7 +117,7 @@ provide("PageMapLayerHost", {
 });
 
 function reconcileStyleLayerOwnership() {
-  styleOwnershipReconcileQueued = false;
+  styleOwnershipReconcileFrame = null;
   quarantineInactiveStyleLayers(
     MapRef.value?.map,
     PAGE_GROUPS,
@@ -98,9 +127,13 @@ function reconcileStyleLayerOwnership() {
 }
 
 function scheduleStyleLayerOwnershipReconcile() {
-  if (styleOwnershipReconcileQueued) return;
-  styleOwnershipReconcileQueued = true;
-  queueMicrotask(reconcileStyleLayerOwnership);
+  if (styleOwnershipReconcileFrame != null) return;
+  if (typeof requestAnimationFrame === "function") {
+    styleOwnershipReconcileFrame = requestAnimationFrame(reconcileStyleLayerOwnership);
+  } else {
+    styleOwnershipReconcileFrame = true;
+    queueMicrotask(reconcileStyleLayerOwnership);
+  }
 }
 
 function stashPageLayers(groupKey, stylePrefixes) {
@@ -148,6 +181,9 @@ function restorePageLayers(groupKey) {
 watch(
   () => route.name,
   (next, prev) => {
+    // 无论两个路由是否复用同一页面实例（如运行监测 ↔ 客流分析），
+    // 功能切换都要先恢复共享行政区视角。
+    focusSharedDisplayRange();
     const prevGroup = PAGE_GROUPS[prev];
     const nextGroup = PAGE_GROUPS[next];
     // 运行监测 ↔ 客流分析：同组同实例，仅 mode prop 变化，不做任何图层挪动
@@ -155,6 +191,23 @@ watch(
     if (prevGroup) stashPageLayers(prevGroup.key, prevGroup.stylePrefixes);
     if (nextGroup) restorePageLayers(nextGroup.key);
     scheduleStyleLayerOwnershipReconcile();
+  },
+);
+
+watch(
+  () => displayRangeStore.selected,
+  () => focusSharedDisplayRange(),
+  { flush: "post" },
+);
+
+watch(
+  () => route.meta?.requiresModel,
+  (requiresModel) => {
+    if (requiresModel === false) {
+      modelRuntime.pauseModelDemand();
+    } else {
+      modelRuntime.bootstrap();
+    }
   },
 );
 
@@ -195,10 +248,16 @@ onMounted(() => {
   }
 
   warmRealData("广州市");
+  warmRealPassengerFlow("广州市").catch(() => null);
+  focusSharedDisplayRange();
 
-  modelRuntime.bootstrap();
+  if (route.meta?.requiresModel !== false) {
+    modelRuntime.bootstrap();
+  } else {
+    modelRuntime.pauseModelDemand();
+  }
 
-  // styledata 会在异步 addLayer / setLayoutProperty 后触发。每个微任务只扫描一次，
+  // styledata 会在异步 addLayer / setLayoutProperty 后触发。每个渲染帧只扫描一次，
   // 将非当前页面的晚到图层立即隔离，堵住“静置后串出线网/站点层”的竞态。
   MapRef.value.map?.on?.("styledata", scheduleStyleLayerOwnershipReconcile);
   scheduleStyleLayerOwnershipReconcile();
@@ -206,6 +265,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   MapRef.value?.map?.off?.("styledata", scheduleStyleLayerOwnershipReconcile);
+  if (typeof styleOwnershipReconcileFrame === "number" && typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(styleOwnershipReconcileFrame);
+  }
+  styleOwnershipReconcileFrame = null;
   MapRef.value?.dispose?.();
   MapRef.value = null;
 });

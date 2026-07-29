@@ -705,4 +705,54 @@ function clearDragState() {
     gap: 10px;
   }
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+:global(html.dark .dm-attribute-dialog .el-dialog__headerbtn:hover) {
+  background: rgba(148, 180, 220, 0.1);
+}
+
+:global(html.dark .dm-attribute-dialog .el-dialog__close) {
+  color: #94a3b8;
+}
+
+html.dark .attr-table-scroll {
+  scrollbar-color: rgba(148, 180, 220, 0.3) transparent;
+}
+
+html.dark .attr-table-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.28);
+}
+
+html.dark .record-action-btn {
+  color: #f87171;
+}
+
+html.dark .record-action-btn:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+html.dark .record-action-btn.is-restore {
+  color: var(--dm2-accent);
+}
+
+html.dark .record-action-btn.is-restore:hover {
+  background: var(--dm2-accent-weak);
+}
+
+html.dark .history-table-scroll {
+  scrollbar-color: rgba(148, 180, 220, 0.3) transparent;
+}
+
+html.dark .history-table .history-data-cell {
+  background: rgba(16, 22, 30, 0.7);
+}
+
+html.dark .history-table .history-data-cell.is-muted {
+  color: rgba(148, 163, 184, 0.5);
+}
+
+html.dark .history-table .history-data-cell.is-changed {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+}
 </style>

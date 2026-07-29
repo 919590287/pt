@@ -43,7 +43,7 @@
       <div v-if="selectedStation" class="detail-title-block station">
         <p class="panel-kicker">站点详情</p>
         <h2 class="overview-station-title">{{ selectedStation.name }}</h2>
-        <span>{{ selectedStationRouteCount }} 条途经线路</span>
+        <span>显示 TOP10 · 共 {{ selectedStationRouteCount }} 条途经线路</span>
       </div>
       <div v-else-if="selectedRoute" class="detail-title-block route">
         <p class="panel-kicker">线路详情</p>
@@ -80,9 +80,9 @@
           <span class="col-name">线路名称</span>
           <span v-if="selectedStationHasPassengerFlow" class="col-flow">日均客流量</span>
         </div>
-        <div v-if="selectedStation.routes.length" class="ranking-scroll-list">
+        <div v-if="selectedStationRankedRoutes.length" class="ranking-scroll-list">
           <button
-            v-for="(route, index) in selectedStation.routes"
+            v-for="(route, index) in selectedStationRankedRoutes"
             :key="`${route.name}-${index}`"
             type="button"
             :class="['ranking-row', route.feature ? 'is-clickable' : 'is-disabled']"
@@ -724,6 +724,8 @@ import DmSidebar from "./components/DmSidebar.vue";
 import MapSearchBox from "./components/MapSearchBox.vue";
 import MapControlsToolbar from "./components/MapControlsToolbar.vue";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { adminDistrictOutlineStyle, districtOutlineFeatureCollection } from "@/utils/adminDistrictRange.js";
+import { limitRightPanelRanking } from "@/utils/rightPanelRanking.js";
 import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
 import busStationHighlightIconUrl from "@/assets/images/datamanagement/bus-station_highlight.svg?url";
 import busStationHighlightOutsideIconUrl from "@/assets/images/datamanagement/bus-station_highlight_outside.svg?url";
@@ -1091,6 +1093,7 @@ const selectedStationHasPassengerFlow = computed(() => {
   const routes = Array.isArray(selectedStation.value?.routes) ? selectedStation.value.routes : [];
   return routes.some((route) => hasPassengerFlow(route.passengerFlow));
 });
+const selectedStationRankedRoutes = computed(() => limitRightPanelRanking(selectedStation.value?.routes));
 const selectedStationRouteCount = computed(() => {
   const routes = Array.isArray(selectedStation.value?.routes) ? selectedStation.value.routes : [];
   const seen = new Set();
@@ -1531,6 +1534,9 @@ async function loadDisplayRanges(options = {}) {
       selectedDisplayRange.value = DISPLAY_RANGE_ALL;
     }
     applyDisplayRangeFilter({ updateSources: true });
+    if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
+      nextTick(fitDisplayRangeBounds);
+    }
   } catch (error) {
     if (seq !== displayRangeRequestSeq) return;
     adminDistrictCollection = emptyFeatureCollection();
@@ -2259,68 +2265,28 @@ function routeStopPhysicalKey(feature) {
 // 行政区边界虚线：与运行监测等模块统一的显示范围描边（选中某行政区时高亮其边界）
 function ensureDistrictOutlineLayer(map) {
   if (!map.getSource(SOURCE_DISTRICT_OUTLINE)) {
-    map.addSource(SOURCE_DISTRICT_OUTLINE, { type: "geojson", data: districtOutlineCollection() });
+    map.addSource(SOURCE_DISTRICT_OUTLINE, {
+      type: "geojson",
+      data: districtOutlineFeatureCollection(activeDisplayRangeContext()),
+    });
   }
   if (!map.getLayer(LAYER_DISTRICT_OUTLINE)) {
+    const style = adminDistrictOutlineStyle();
     map.addLayer({
       id: LAYER_DISTRICT_OUTLINE,
       type: "line",
       source: SOURCE_DISTRICT_OUTLINE,
-      layout: {
-        "line-join": "round",
-        "line-cap": "round",
-      },
-      paint: {
-        "line-color": "#1569de",
-        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.4, 12, 2.1, 15, 2.8],
-        "line-opacity": 0.86,
-        "line-dasharray": [3.2, 2.4],
-      },
+      layout: style.layout,
+      paint: style.paint,
     });
   }
   updateDistrictOutlineLayer(map);
 }
 
-function districtOutlineCollection(context = activeDisplayRangeContext()) {
-  const geometry = districtOutlineGeometry(context?.feature?.geometry);
-  return geometry
-    ? {
-        type: "FeatureCollection",
-        features: [{
-          type: "Feature",
-          id: context?.feature?.id || "active-display-range",
-          geometry,
-          properties: { ...(context?.feature?.properties || {}) },
-        }],
-      }
-    : emptyFeatureCollection();
-}
-
-function districtOutlineGeometry(geometry) {
-  if (!geometry) return null;
-  if (geometry.type === "LineString" || geometry.type === "MultiLineString") return geometry;
-  const rings = [];
-  if (geometry.type === "Polygon") {
-    (geometry.coordinates || []).forEach((ring) => {
-      if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
-    });
-  } else if (geometry.type === "MultiPolygon") {
-    (geometry.coordinates || []).forEach((polygon) => {
-      (Array.isArray(polygon) ? polygon : []).forEach((ring) => {
-        if (Array.isArray(ring) && ring.length >= 2) rings.push(ring);
-      });
-    });
-  }
-  if (!rings.length) return null;
-  return rings.length === 1
-    ? { type: "LineString", coordinates: rings[0] }
-    : { type: "MultiLineString", coordinates: rings };
-}
-
 function updateDistrictOutlineLayer(map = MapRef.value?.map) {
   if (!map?.getLayer?.(LAYER_DISTRICT_OUTLINE)) return;
   const context = activeDisplayRangeContext();
-  setGeoJsonSourceData(SOURCE_DISTRICT_OUTLINE, districtOutlineCollection(context), map);
+  setGeoJsonSourceData(SOURCE_DISTRICT_OUTLINE, districtOutlineFeatureCollection(context), map);
   setLayerVisibility(map, LAYER_DISTRICT_OUTLINE, context ? "visible" : "none");
 }
 
@@ -7146,6 +7112,9 @@ watch(selectedDisplayRange, () => {
 watch(activeKey, (key, previousKey) => {
   closeTransientSurfaces();
   closeHistoryDetails();
+  if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
+    nextTick(fitDisplayRangeBounds);
+  }
   pendingAddDataset.value = "";
   pendingMoveTarget.value = null;
   if (historyPreview.visible) {
@@ -7192,6 +7161,9 @@ function parsePickerRoute(fullName) {
 // 必须按激活态短路，防止在别的页面点地图误触本页的选中逻辑
 onActivated(() => {
   pageActive.value = true;
+  if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
+    nextTick(fitDisplayRangeBounds);
+  }
   if (!hasBeenDeactivated) return;
   if (isMapDataPage(activeKey.value)) {
     // 若首次线网请求在失活期间完成，它已被生命周期门禁丢弃；缓存仍保留，
@@ -8882,7 +8854,7 @@ onBeforeUnmount(() => {
   margin-bottom: 4px;
   border: 1px solid rgba(21, 105, 222, 0.06);
   border-radius: 8px;
-  background: #ffffff;
+  background: var(--dm2-surface);
   color: #1e293b;
   text-align: left;
   cursor: pointer;
@@ -9713,8 +9685,8 @@ onBeforeUnmount(() => {
   --dm-shadow: 0 18px 48px rgba(15, 23, 42, 0.1), 0 3px 12px rgba(15, 23, 42, 0.04);
   --dm-shadow-soft: 0 10px 28px rgba(15, 23, 42, 0.07);
   --dm-ease: cubic-bezier(0.32, 0.72, 0, 1);
-  /* 统一纯白：侧栏 / 面板 / 顶栏同色（应用户要求，去掉此前的偏蓝底色） */
-  --dm-surface: #ffffff;
+  /* 统一纯白：侧栏 / 面板 / 顶栏同色（应用户要求，去掉此前的偏蓝底色）；浅色值与 --dm2-surface 等值 */
+  --dm-surface: var(--dm2-surface);
 }
 
 .dm-history-page,
@@ -10951,7 +10923,7 @@ onBeforeUnmount(() => {
   --dm-secondary-soft: var(--dm2-accent-weak);
   --dm-border: var(--dm2-line);
   --dm-border-strong: var(--dm2-line-strong);
-  --dm-surface: #ffffff;
+  --dm-surface: var(--dm2-surface);
   --dm-shadow: var(--dm2-shadow-panel);
   --dm-shadow-soft: var(--dm2-shadow-pop);
   --dm-ease: var(--dm2-ease);
@@ -11064,7 +11036,7 @@ onBeforeUnmount(() => {
 .route-detail-panel .metrics-grid .metric-card {
   border: 1px solid var(--dm2-line) !important;
   border-radius: var(--dm2-radius) !important;
-  background: #ffffff !important;
+  background: var(--dm2-surface) !important;
   box-shadow: var(--dm2-shadow-card) !important;
   transition:
     border-color var(--dm2-dur) var(--dm2-ease),
@@ -11125,7 +11097,7 @@ onBeforeUnmount(() => {
 
 .timeline-container .timeline-item .timeline-dot {
   border-color: var(--dm2-line-strong) !important;
-  background: #ffffff !important;
+  background: var(--dm2-surface) !important;
 }
 
 .timeline-container .timeline-item .timeline-dot.first {
@@ -11342,5 +11314,184 @@ onBeforeUnmount(() => {
 .dm-right-collapse-tab {
     right: calc(var(--app-edge, 24px) + var(--app-scaled-414, 414px) - var(--app-scaled-16, 16px));
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+
+/* 骨架屏 shimmer：墨色高光 → 冷调亮高光（background-size 随简写重申，保持动画口径不变） */
+html.dark .sk-shimmer {
+  background:
+    linear-gradient(100deg, rgba(148, 180, 220, 0.06) 8%, rgba(148, 180, 220, 0.12) 20%, rgba(148, 180, 220, 0.06) 33%),
+    var(--dm2-surface-sunken);
+  background-size: 220% 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.dark .sk-shimmer {
+    background: var(--dm2-surface-sunken);
+  }
+}
+
+/* 建成区弹窗遮罩 */
+html.dark .built-up-backdrop {
+  background: rgba(6, 10, 16, 0.66);
+}
+
+/* 总览/详情标题行分隔线（编辑面板同角色已走 --dm2-line-faint，取值一致） */
+html.dark .overview-title-row {
+  border-bottom-color: rgba(148, 180, 220, 0.1);
+}
+
+/* 详情关闭按钮：钢蓝描边 → 提亮的强调蓝弱描边 */
+html.dark .detail-close-btn,
+html.dark .detail-close-btn:hover {
+  border-color: rgba(64, 156, 255, 0.26);
+}
+
+/* 排名表头：残留的浅色投影 */
+html.dark .ranking-header {
+  box-shadow: 0 6px 18px rgba(2, 6, 12, 0.3);
+}
+
+/* 可点击卡片 hover 描边 */
+html.dark .ranking-row.is-clickable:hover,
+html.dark .route-detail-panel .metrics-grid .metric-card:hover {
+  border-color: rgba(64, 156, 255, 0.28) !important;
+}
+
+/* 空态提示条 */
+html.dark .station-route-empty {
+  background: var(--dm2-surface-sunken);
+  border-color: rgba(64, 156, 255, 0.14);
+}
+
+/* 沿途站点：站名正文 */
+html.dark .timeline-container .timeline-item .timeline-content .station-name {
+  color: #e7edf6;
+}
+
+/* 场站详情 */
+html.dark .depot-locate {
+  border-color: rgba(64, 156, 255, 0.18);
+  background: linear-gradient(135deg, rgba(64, 156, 255, 0.13), rgba(64, 156, 255, 0.03));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html.dark .depot-locate-icon {
+  color: #409cff;
+  background: rgba(20, 27, 37, 0.86);
+  border-color: rgba(64, 156, 255, 0.2);
+}
+
+html.dark .depot-locate-label,
+html.dark .depot-fact-label {
+  color: #94a3b8;
+}
+
+html.dark .depot-locate-value,
+html.dark .depot-fact-value {
+  color: #e7edf6;
+}
+
+html.dark .depot-fact-grid {
+  background: rgba(148, 180, 220, 0.16);
+  border-color: rgba(64, 156, 255, 0.16);
+  box-shadow: 0 8px 22px rgba(2, 6, 12, 0.25);
+}
+
+html.dark .depot-fact {
+  background: #151d27;
+}
+
+html.dark .depot-fact.is-wide .depot-fact-value {
+  color: #c2cddd;
+}
+
+/* 滚动条：墨色细条 → 冷调亮细条（Firefox + WebKit） */
+html.dark .overview-metric-list,
+html.dark .route-detail-panel,
+html.dark .depot-detail-panel,
+html.dark .ranking-scroll-list,
+html.dark .edit-operation-list,
+html.dark .dm-edit-panel .edit-operation-list,
+html.dark .station-scroll-list,
+html.dark .line-route-picker {
+  scrollbar-color: rgba(148, 180, 220, 0.28) transparent;
+}
+
+html.dark .route-detail-panel::-webkit-scrollbar-thumb,
+html.dark .depot-detail-panel::-webkit-scrollbar-thumb,
+html.dark .ranking-scroll-list::-webkit-scrollbar-thumb,
+html.dark .station-scroll-list::-webkit-scrollbar-thumb,
+html.dark .line-route-picker::-webkit-scrollbar-thumb,
+html.dark .dm-edit-panel .edit-operation-list::-webkit-scrollbar-thumb {
+  background: rgba(148, 180, 220, 0.28);
+}
+
+/* 线路选择浮层 */
+html.dark .picker-title {
+  border-bottom-color: rgba(148, 180, 220, 0.1);
+}
+
+html.dark .picker-route-btn {
+  border-color: rgba(64, 156, 255, 0.1);
+  box-shadow: 0 1px 3px rgba(2, 6, 12, 0.25);
+}
+
+html.dark .picker-route-btn:hover {
+  border-color: rgba(64, 156, 255, 0.26);
+}
+
+html.dark .picker-route-btn.active {
+  background: rgba(64, 156, 255, 0.12) !important;
+  border-color: rgba(64, 156, 255, 0.32);
+}
+
+/* 编辑面板 */
+html.dark .dm-edit-panel .edit-pending-count {
+  background: rgba(148, 180, 220, 0.09);
+}
+
+html.dark .dm-edit-panel .edit-pending-count.has-pending {
+  background: var(--dm2-accent-weak);
+}
+
+html.dark .edit-operation-item strong {
+  color: #e7edf6;
+}
+
+html.dark .dm-edit-panel .operation-protected.is-deletion {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+html.dark .edit-empty {
+  color: #c2cddd;
+}
+
+html.dark .edit-empty strong {
+  color: #e7edf6;
+}
+
+html.dark .edit-empty li {
+  color: #c2cddd;
+}
+
+html.dark .edit-empty li::before {
+  background: rgba(94, 178, 183, 0.16);
+}
+
+/* 弹窗（teleport 到 body）：关闭按钮 hover 墨色浮底 */
+:global(html.dark .dm-commit-dialog .el-dialog__headerbtn:hover),
+:global(html.dark .dm-commit-dialog .el-dialog__headerbtn:focus-visible),
+:global(html.dark .dm-shp-deletion-dialog .el-dialog__headerbtn:hover),
+:global(html.dark .dm-shp-deletion-dialog .el-dialog__headerbtn:focus-visible) {
+  background: rgba(148, 180, 220, 0.1);
+}
+
+/* 证据缩略图删除钮：深色遮罩上的图标恒亮（surface 令牌在暗色下会翻黑） */
+html.dark .evidence-preview-item button {
+  color: #ffffff;
 }
 </style>

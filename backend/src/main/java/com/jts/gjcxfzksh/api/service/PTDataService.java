@@ -19,6 +19,16 @@ public interface PTDataService {
     Map<String, Object> trajectory(DatasourceParam param);
     Map<String, Object> trajectoryChunk(DatasourceParam param, int start);
     byte[] trajectoryChunkBinary(DatasourceParam param, int start);
+    byte[] trajectoryViewportBinary(
+            DatasourceParam param,
+            int start,
+            int windowSeconds,
+            String visibilityMode,
+            Double minX,
+            Double minY,
+            Double maxX,
+            Double maxY
+    );
     byte[] trajectoryFrameBinary(
             DatasourceParam param,
             int time,
@@ -31,5 +41,15 @@ public interface PTDataService {
     );
     Path trajectoryChunkBinaryPath(DatasourceParam param, int start);
     String trajectoryChunkTag(DatasourceParam param, int start);
+    String trajectoryViewportTag(
+            DatasourceParam param,
+            int start,
+            int windowSeconds,
+            String visibilityMode,
+            Double minX,
+            Double minY,
+            Double maxX,
+            Double maxY
+    );
 
 }

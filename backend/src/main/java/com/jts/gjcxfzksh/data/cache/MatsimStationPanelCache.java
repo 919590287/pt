@@ -120,11 +120,73 @@ public final class MatsimStationPanelCache {
         }
     }
 
+    /** 全局热力/排行所需轻量索引；选中站点后读取单个详情分片。 */
+    public static Map<String, Object> readStationPanelIndex(MatsimData data) {
+        if (!isReady(data)) {
+            return Map.of(
+                    "status", "generating",
+                    "cacheVersion", STATION_PANEL_CACHE_VERSION,
+                    "message", "站点客流缓存正在后台生成"
+            );
+        }
+        return MatsimPanelReadCache.readStationIndex(data, panelPath(data));
+    }
+
     /**
      * 单站点明细：对齐 route 侧 routePanelDetail 模式，前端选中站点无需下载全城 stations 整包。
      */
     public static Map<String, Object> readStationPanelDetail(MatsimData data, String stationName) {
-        return stationDetailFromPanel(readStationPanel(data), stationName);
+        return readStationPanelDetail(data, stationName, null);
+    }
+
+    public static Map<String, Object> readStationPanelDetail(
+            MatsimData data, String stationName, String facilityId) {
+        if ((stationName == null || stationName.isBlank())
+                && (facilityId == null || facilityId.isBlank())) return Map.of();
+        if (!isReady(data)) {
+            return Map.of("status", "generating", "cacheVersion", STATION_PANEL_CACHE_VERSION);
+        }
+        if (stationName != null && !stationName.isBlank()) {
+            Map<String, Object> detail = MatsimPanelReadCache.readDetail(
+                    data, panelPath(data), "station", "stations", stationName);
+            if (!detail.isEmpty()) return MatsimPassengerProfileCache.applyStationProfile(data, detail);
+        }
+        Map<String, Object> index = readStationPanelIndex(data);
+        Object stationsValue = index.get("stations");
+        if (stationsValue instanceof Map<?, ?> stations) {
+            String actual = resolveStationDetailKey(stations, stationName, facilityId);
+            if (!actual.isEmpty()) {
+                Map<String, Object> detail = MatsimPanelReadCache.readDetail(
+                        data, panelPath(data), "station", "stations", actual);
+                return MatsimPassengerProfileCache.applyStationProfile(data, detail);
+            }
+        }
+        return Map.of();
+    }
+
+    static String resolveStationDetailKey(Map<?, ?> stations, String stationName, String facilityId) {
+        String targetName = normalizeStationName(stationName);
+        String targetFacility = facilityId == null ? "" : facilityId.trim();
+        String facilityMatch = "";
+        for (Map.Entry<?, ?> entry : stations.entrySet()) {
+            String actual = String.valueOf(entry.getKey());
+            if (!targetName.isEmpty() && normalizeStationName(actual).equals(targetName)) {
+                return actual;
+            }
+            if (facilityMatch.isEmpty() && !targetFacility.isEmpty()
+                    && entry.getValue() instanceof Map<?, ?> station) {
+                Object idsValue = station.get("facilityIds");
+                if (idsValue instanceof Iterable<?> ids) {
+                    for (Object id : ids) {
+                        if (targetFacility.equals(String.valueOf(id))) {
+                            facilityMatch = actual;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return facilityMatch;
     }
 
     static Map<String, Object> stationDetailFromPanel(Map<String, Object> panel, String stationName) {
@@ -187,10 +249,11 @@ public final class MatsimStationPanelCache {
             return;
         }
         try {
-            Files.createDirectories(cacheDir(data));
             Map<String, Object> payload = buildPanel(data);
+            MatsimCachePaths.recreateVersionDir(data, STATION_PANEL_CACHE_VERSION);
             writeGzipJson(panelPath(data), payload);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "station-panel-v", STATION_PANEL_CACHE_VERSION);
             MEMORY_CACHE.remove(panelPath(data).toAbsolutePath().normalize().toString());
             log.info("站点客流面板缓存生成完成: model={}, stations={}",
                     data.getName(), ((Map<?, ?>) payload.getOrDefault("stations", Map.of())).size());
@@ -223,8 +286,8 @@ public final class MatsimStationPanelCache {
         StationNetworkIndex index = buildStationNetworkIndex(data);
         Map<String, StationPanelAccumulator> stations = buildStationAccumulators(data, index);
 
-        indexPassengerTracks(data.getPersonTracks(), stations, index);
-        indexStationOd(data.getPersonTracks(), stations, index);
+        indexPassengerTracks(data, stations, index);
+        indexStationOd(data, stations, index);
         indexReachability(stations, index);
         // 任务B：按上车站（accessStopId）预统计“本次出行的出行目的活动”，一次遍历 population。
         Map<String, Map<String, Integer>> tripPurposeByAccessStop = buildTripPurposeByAccessStop(data.getPopulation());
@@ -305,39 +368,24 @@ public final class MatsimStationPanelCache {
     }
 
     private static void indexPassengerTracks(
-            Collection<PTPersonTrack> tracks,
+            MatsimData data,
             Map<String, StationPanelAccumulator> stations,
             StationNetworkIndex index
     ) {
-        if (tracks == null || tracks.isEmpty()) {
-            return;
-        }
-        for (PTPersonTrack track : tracks) {
+        MatsimPersonTrackStore.forEachTrack(data, track -> {
             String stationName = index.stationName(idString(track.getFacilityId()));
             StationPanelAccumulator station = stations.computeIfAbsent(stationName, StationPanelAccumulator::new);
             station.addTrack(track);
-        }
+        });
     }
 
     private static void indexStationOd(
-            Collection<PTPersonTrack> tracks,
+            MatsimData data,
             Map<String, StationPanelAccumulator> stations,
             StationNetworkIndex index
     ) {
-        if (tracks == null || tracks.isEmpty()) {
-            return;
-        }
-
-        Map<String, List<PTPersonTrack>> byPerson = new HashMap<>();
-        for (PTPersonTrack track : tracks) {
-            String personId = idString(track.getPersonId());
-            if (personId != null) {
-                byPerson.computeIfAbsent(personId, ignored -> new ArrayList<>()).add(track);
-            }
-        }
-
-        long droppedOpenBoardings = 0;
-        for (List<PTPersonTrack> personTracks : byPerson.values()) {
+        long[] droppedOpenBoardings = {0};
+        MatsimPersonTrackStore.forEachPerson(data, (personId, personTracks) -> {
             personTracks.sort(TRACK_TIME_ORDER);
             PTPersonTrack openBoarding = null;
             for (PTPersonTrack track : personTracks) {
@@ -345,7 +393,7 @@ public final class MatsimStationPanelCache {
                     if (openBoarding != null) {
                         // 连续两条上车（下车事件缺失）：前一次乘坐无法闭合，OD 丢一段。
                         // 完全静默会让 Σod.flow 与上车总量的口径差无从解释，至少计数留痕。
-                        droppedOpenBoardings++;
+                        droppedOpenBoardings[0]++;
                     }
                     openBoarding = track;
                     continue;
@@ -368,9 +416,9 @@ public final class MatsimStationPanelCache {
                 }
                 openBoarding = null;
             }
-        }
-        if (droppedOpenBoardings > 0) {
-            log.warn("站点客流面板: {} 条上车记录缺失对应下车事件，OD 段被弃计（Σod.flow 会小于上车总量）", droppedOpenBoardings);
+        });
+        if (droppedOpenBoardings[0] > 0) {
+            log.warn("站点客流面板: {} 条上车记录缺失对应下车事件，OD 段被弃计（Σod.flow 会小于上车总量）", droppedOpenBoardings[0]);
         }
     }
 
@@ -493,22 +541,13 @@ public final class MatsimStationPanelCache {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static void writeJsonAtomic(Path path, Map<String, Object> payload) throws Exception {

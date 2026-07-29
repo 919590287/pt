@@ -4,9 +4,11 @@
      无向节点对合并的物理路段，经过同一断面的全部公交线路客流叠加；
      带宽为地理米数∝流量（圆头端帽衔接成连续流量带，不透明单色橙，
      对齐业务 Transit Flows 样张）；零流量路段只出现在灰色底网（=公交线网轮廓）。
-     右侧：断面客流排名前十的道路（路网名称字段）+ 最高断面客流，teleport 到 index.vue 右侧容器；
+     右侧：仿真模式展示断面客流排名前十的道路（路网名称字段）+ 最高断面客流，真实模式仅展示摘要；
+     地图同步标注这些 Top10 道路名称，标注点位于各道路最高客流代表路段上，
+     重叠时按名次做屏幕空间贪心避让（低名次隐藏，缩放/平移结束重算补显）；
      图例浮在地图左下角（分级宽度示意，结构同客流分析地图图例）。
-     数据与线路重复系数共用 corridor 缓存工件（PCRD v2 的 flow 列，模型抽样人次直出不扩样）。 -->
+     数据与线路重复系数共用 corridor 缓存工件（PCRD v2 的 flow 列，模型原始人次直出）。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
     <div class="gkl-card" aria-label="公交客流走廊面板">
@@ -42,7 +44,9 @@
 
       <div v-else-if="status === 'loading'" class="gkl-skeleton" aria-hidden="true">
         <div class="gkl-sk gkl-sk-hero"></div>
-        <div class="gkl-sk gkl-sk-row" v-for="n in 8" :key="n"></div>
+        <template v-if="!isRealMode">
+          <div class="gkl-sk gkl-sk-row" v-for="n in 8" :key="n"></div>
+        </template>
       </div>
 
       <template v-else>
@@ -57,44 +61,46 @@
           <p class="gkl-hero-sub">{{ scopeLabel }}内公交经过路段 {{ formatInt(scopeSegmentCount) }} 段</p>
         </div>
 
-        <div v-if="!rankRows.length" class="gkl-status" role="status">
-          <span class="gkl-status-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11Z"></path>
-              <circle cx="12" cy="10" r="2.5"></circle>
-            </svg>
-          </span>
-          <p class="gkl-status-title">{{ scopeLabel }}范围内暂无命名道路</p>
-          <p class="gkl-status-desc">该范围内公交经过的路段没有可用的道路名称，可切换显示范围。</p>
-        </div>
-
-        <div v-else class="gkl-road-rank">
-          <div class="gkl-rank-head" aria-hidden="true">
-            <span class="gkl-rank-head-name">道路</span>
-            <span class="gkl-rank-head-value">断面客流</span>
+        <template v-if="!isRealMode">
+          <div v-if="!rankRows.length" class="gkl-status" role="status">
+            <span class="gkl-status-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11Z"></path>
+                <circle cx="12" cy="10" r="2.5"></circle>
+              </svg>
+            </span>
+            <p class="gkl-status-title">{{ scopeLabel }}范围内暂无{{ corridorUnitLabel }}</p>
+            <p class="gkl-status-desc">该范围内没有可用于排名的公交{{ corridorUnitLabel }}，可切换显示范围。</p>
           </div>
-          <ol class="gkl-rank-list">
-            <li v-for="row in rankRows" :key="row.nameIdx">
-              <button
-                type="button"
-                class="gkl-rank-row"
-                :title="`${row.name}：最高断面客流 ${formatInt(row.flow)} 人次（${scopeLabel}内 ${row.segments} 段公交路段）`"
-                @click="focusRoad(row.nameIdx)"
-              >
-                <span class="gkl-rank-main">
-                  <span class="gkl-rank-name">{{ row.name }}</span>
-                  <span class="gkl-rank-value">{{ formatInt(row.flow) }}</span>
-                </span>
-                <span class="gkl-rank-bar" aria-hidden="true">
-                  <span class="gkl-rank-bar-fill" :style="{ width: row.barWidth }"></span>
-                </span>
-              </button>
-            </li>
-          </ol>
-          <p class="gkl-rank-footnote">
-            按道路最高断面客流排序，显示前 {{ rankRows.length }} 名（{{ scopeLabel }}内共 {{ namedRoadCount }} 条命名道路）
-          </p>
-        </div>
+
+          <div v-else class="gkl-road-rank">
+            <div class="gkl-rank-head" aria-hidden="true">
+              <span class="gkl-rank-head-name">{{ corridorUnitLabel }}</span>
+              <span class="gkl-rank-head-value">断面客流</span>
+            </div>
+            <ol class="gkl-rank-list">
+              <li v-for="row in rankRows" :key="row.nameIdx">
+                <button
+                  type="button"
+                  class="gkl-rank-row"
+                  :title="`${row.name}：最高断面客流 ${formatInt(row.flow)} 人次（${scopeLabel}内 ${row.segments} 段公交路段）`"
+                  @click="focusRoad(row.nameIdx)"
+                >
+                  <span class="gkl-rank-main">
+                    <span class="gkl-rank-name">{{ row.name }}</span>
+                    <span class="gkl-rank-value">{{ formatInt(row.flow) }}</span>
+                  </span>
+                  <span class="gkl-rank-bar" aria-hidden="true">
+                    <span class="gkl-rank-bar-fill" :style="{ width: row.barWidth }"></span>
+                  </span>
+                </button>
+              </li>
+            </ol>
+            <p class="gkl-rank-footnote">
+              按{{ corridorUnitLabel }}最高断面客流排序，显示前 {{ rankRows.length }} 名（{{ scopeLabel }}内共 {{ namedRoadCount }} 个{{ corridorUnitLabel }}）
+            </p>
+          </div>
+        </template>
       </template>
     </div>
   </teleport>
@@ -105,7 +111,7 @@
       v-if="status === 'ready' && pageActive && legendItems.length"
       class="gkl-map-legend"
       aria-label="断面客流图例（人次）"
-      title="断面=双向合并的物理路段，客流为经过该断面全部公交线路的叠加（模型抽样人次）"
+      title="断面=双向合并的物理路段，客流为经过该断面全部公交线路的模型原始人次叠加"
       @click.stop
     >
       <div class="gkl-map-legend-head">
@@ -125,8 +131,13 @@
 
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch, inject, markRaw } from "vue";
-import { LineLayer, PathLayer } from "@deck.gl/layers";
-import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
+import { COORDINATE_SYSTEM } from "@deck.gl/core";
+import { LineLayer, PathLayer, TextLayer } from "@deck.gl/layers";
+import {
+  batchSharedDeckLayerUpdates,
+  setSharedDeckLayer,
+  removeSharedDeckLayer,
+} from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
 import {
   getCachedCorridorLinks,
@@ -136,16 +147,26 @@ import {
 } from "@/utils/modelDataCache.js";
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import { mercatorToLngLat } from "../utils/populationGrid.js";
-import { CORRIDOR_U16_SENTINEL, buildFlowPathData, parseCorridorLinks } from "../utils/corridorLinks.js";
+import {
+  CORRIDOR_U16_SENTINEL,
+  buildFlowPathData,
+  buildFlowRoadLabelData,
+  parseCorridorLinks,
+  selectVisibleRoadLabels,
+} from "../utils/corridorLinks.js";
+import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 
 const props = defineProps({
   model: String,
 });
 
 const MapRef = inject("MapRef", ref(null));
+const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
 
 const FLOW_LAYER_KEY = "rm-corridor-flow";
-const RANK_LIMIT = 10;
+const ROAD_LABEL_LAYER_KEY = `${FLOW_LAYER_KEY}-road-labels`;
+// 压在专题客流线层（0）之上，低于站点名称（1005）。
+const ROAD_LABEL_LAYER_ORDER = 1002;
 const GENERATING_POLL_MS = 8000;
 
 const status = ref("loading"); // loading | generating | error | ready
@@ -156,6 +177,8 @@ const links = shallowRef(null); // parseCorridorLinks 结果（markRaw；与线�
 
 const displayRange = useDisplayRangeStore();
 const scopeLabel = computed(() => displayRange.selected || DISPLAY_RANGE_ALL);
+const isRealMode = computed(() => isRealDatasource(props.model));
+const corridorUnitLabel = computed(() => isRealMode.value ? "站间区间" : "道路");
 
 function formatInt(value) {
   if (!Number.isFinite(value)) return "--";
@@ -323,13 +346,32 @@ const rankRows = computed(() => {
     rows.push({ nameIdx, name: roadNames.value[nameIdx] || `道路${nameIdx}`, flow: agg.flow, segments: agg.segments });
   }
   rows.sort((a, b) => b.flow - a.flow || b.segments - a.segments || a.name.localeCompare(b.name, "zh-CN"));
-  const top = rows.slice(0, RANK_LIMIT);
+  const top = rows.slice(0, rightPanelRankLimit);
   const maxFlow = top.length ? top[0].flow : 0;
   return top.map((row) => ({
     ...row,
     barWidth: `${maxFlow > 0 ? Math.max(2, (row.flow / maxFlow) * 100) : 0}%`,
   }));
 });
+
+/** 右侧 Top10 在地图上的一对一标注数据。 */
+const roadLabelData = computed(() => buildFlowRoadLabelData(
+  links.value,
+  scopeSegmentIndexes.value,
+  rankRows.value,
+));
+
+/** TextLayer 默认字符集只有 ASCII，必须把当前道路名的中文字形显式加入图集。 */
+const roadLabelCharacterSet = computed(() => {
+  const characters = new Set();
+  for (const item of roadLabelData.value) {
+    for (const character of item.name) characters.add(character);
+  }
+  return [...characters];
+});
+
+/** 标注锚点的像素上抬量（同时参与避让盒计算，改动须两处同步）。 */
+const ROAD_LABEL_PIXEL_OFFSET = [0, -8];
 
 // ---------------------------------------------------------------------------
 // 地图图层：灰色细底网（LineLayer，全部公交路段）+ 正流量橙色流量带
@@ -428,6 +470,57 @@ function flowLayerInstance() {
   return [baseLayer, flowLayer];
 }
 
+function roadLabelLayerInstance() {
+  const allLabels = roadLabelData.value;
+  const map = MapRef.value?.map;
+  if (!allLabels.length || typeof map?.project !== "function") return null;
+  const labelTheme = MAP_THEME.corridor.flow.label;
+  // 屏幕空间贪心避让（selectVisibleRoadLabels 注释里有为何不用 CollisionFilterExtension）；
+  // 视野变化后由 moveend 监听重建本层补显/让位。
+  const data = selectVisibleRoadLabels(allLabels, (position) => map.project(position), {
+    sizePx: labelTheme.sizePx,
+    pixelOffset: ROAD_LABEL_PIXEL_OFFSET,
+    paddingPx: labelTheme.paddingPx,
+  });
+  if (!data.length) return null;
+  return new TextLayer({
+    id: ROAD_LABEL_LAYER_KEY,
+    data,
+    coordinateSystem: COORDINATE_SYSTEM.LNGLAT,
+    getPosition: (item) => item.position,
+    getText: (item) => item.name,
+    getSize: labelTheme.sizePx,
+    getColor: [...hexToRgb(labelTheme.color), 240],
+    getTextAnchor: "middle",
+    getAlignmentBaseline: "center",
+    getPixelOffset: ROAD_LABEL_PIXEL_OFFSET,
+    fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif",
+    fontWeight: 600,
+    characterSet: roadLabelCharacterSet.value,
+    fontSettings: { sdf: true, fontSize: 64, buffer: 6, radius: 12 },
+    outlineWidth: 2,
+    outlineColor: [...hexToRgb(labelTheme.halo), 235],
+    sizeUnits: "pixels",
+    billboard: true,
+    pickable: false,
+    parameters: {
+      // luma.gl v9 写法（等价旧 depthTest:false）：压在流量带上不受深度影响
+      depthWriteEnabled: false,
+      depthCompare: "always",
+    },
+  });
+}
+
+/** 只重建标注层（moveend 避让重算用），不动重得多的流量带层。 */
+function refreshRoadLabelLayer() {
+  if (status.value !== "ready" || !pageActive.value) return;
+  const wrapper = MapRef.value;
+  if (!wrapper?.map) return;
+  const labelLayer = roadLabelLayerInstance();
+  if (labelLayer) setSharedDeckLayer(wrapper, ROAD_LABEL_LAYER_KEY, labelLayer, ROAD_LABEL_LAYER_ORDER);
+  else removeSharedDeckLayer(wrapper, ROAD_LABEL_LAYER_KEY);
+}
+
 function refreshMapLayers() {
   if (status.value !== "ready") return;
   if (!pageActive.value) {
@@ -440,8 +533,14 @@ function refreshMapLayers() {
   if (!map || !map.getStyle) return;
   try {
     const layer = flowLayerInstance();
-    if (layer) setSharedDeckLayer(wrapper, FLOW_LAYER_KEY, layer, 0);
-    else removeSharedDeckLayer(wrapper, FLOW_LAYER_KEY);
+    const labelLayer = roadLabelLayerInstance();
+    batchSharedDeckLayerUpdates(() => {
+      if (layer) setSharedDeckLayer(wrapper, FLOW_LAYER_KEY, layer, 0);
+      else removeSharedDeckLayer(wrapper, FLOW_LAYER_KEY);
+      if (labelLayer) setSharedDeckLayer(wrapper, ROAD_LABEL_LAYER_KEY, labelLayer, ROAD_LABEL_LAYER_ORDER);
+      else removeSharedDeckLayer(wrapper, ROAD_LABEL_LAYER_KEY);
+    });
+    attachLabelMoveListener(map);
     pendingLayerRefresh = false;
   } catch (error) {
     // 地图尚未就绪（样式加载中等）时静默，数据/范围变化会再次触发
@@ -450,8 +549,25 @@ function refreshMapLayers() {
   }
 }
 
+// 标注避让基于屏幕坐标，缩放/平移结束后需重算（moveend 覆盖 zoom/pan 手势收尾）。
+// 只在页面激活期挂监听：失活摘除，与"失活期间不动共享地图"的 KeepAlive 契约一致。
+let labelMoveListenerMap = null;
+function attachLabelMoveListener(map) {
+  if (!map?.on || labelMoveListenerMap === map) return;
+  detachLabelMoveListener();
+  map.on("moveend", refreshRoadLabelLayer);
+  labelMoveListenerMap = map;
+}
+function detachLabelMoveListener() {
+  if (labelMoveListenerMap?.off) labelMoveListenerMap.off("moveend", refreshRoadLabelLayer);
+  labelMoveListenerMap = null;
+}
+
 function removeMapLayers() {
-  removeSharedDeckLayer(MapRef.value, FLOW_LAYER_KEY);
+  batchSharedDeckLayerUpdates(() => {
+    removeSharedDeckLayer(MapRef.value, FLOW_LAYER_KEY);
+    removeSharedDeckLayer(MapRef.value, ROAD_LABEL_LAYER_KEY);
+  });
 }
 
 // 点击道路行 → 地图定位到该道路（范围内该名称全部路段的联合外接框）
@@ -485,16 +601,27 @@ onMounted(bootstrap);
 
 onActivated(() => {
   pageActive.value = true;
-  if (pendingLayerRefresh) refreshMapLayers();
+  if (pendingLayerRefresh) {
+    refreshMapLayers();
+  } else if (status.value === "ready") {
+    // 失活期间摘掉了 moveend 监听、地图也可能被其他页面移动过：恢复监听并重算标注避让
+    const map = MapRef.value?.map;
+    if (map) {
+      attachLabelMoveListener(map);
+      refreshRoadLabelLayer();
+    }
+  }
 });
 
 onDeactivated(() => {
   pageActive.value = false;
+  detachLabelMoveListener();
 });
 
 onUnmounted(() => {
   requestSeq += 1;
   clearTimeout(pollTimer);
+  detachLabelMoveListener();
   removeMapLayers();
 });
 </script>
@@ -854,5 +981,27 @@ onUnmounted(() => {
   .gkl-rank-bar-fill {
     transition: none;
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .gkl-rank-row:hover {
+  background: rgba(64, 156, 255, 0.09);
+}
+html.dark .gkl-rank-bar {
+  background: rgba(240, 140, 60, 0.2);
+}
+html.dark .gkl-map-legend {
+  /* --app-ink-soft 未定义，浅色落在 fallback #475467，暗色需显式提亮 */
+  color: #c2cddd;
+}
+html.dark .gkl-status-icon.is-error {
+  color: #f87171;
+}
+html.dark .gkl-retry {
+  background: #1a2431;
+}
+html.dark .gkl-sk {
+  background: linear-gradient(90deg, rgba(148, 180, 220, 0.08) 25%, rgba(148, 180, 220, 0.14) 42%, rgba(148, 180, 220, 0.08) 60%);
+  background-size: 240% 100%;
 }
 </style>

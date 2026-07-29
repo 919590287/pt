@@ -713,4 +713,24 @@ defineExpose({ closePopovers });
   }
 }
 
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .range-option:hover,
+html.dark .range-option:focus-visible {
+  border-color: rgba(64, 185, 220, 0.3);
+}
+
+html.dark .range-option.active {
+  background: rgba(64, 156, 255, 0.14);
+  border-color: rgba(64, 156, 255, 0.3);
+}
+
+html.dark .range-state {
+  background: rgba(64, 156, 255, 0.1);
+  color: #94a3b8;
+}
+
+html.dark .range-error {
+  color: #eab04c;
+}
+
 </style>

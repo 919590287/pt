@@ -1,19 +1,21 @@
 // 人口分布监测：population-grid.bin 解析与栅格渲染数据构建（纯函数，Worker 可复用）。
 // 二进制契约见 docs/公交出行监测人口分布模块设计方案.md §3 + v2 增列（与后端 MatsimPopulationCache 对齐，小端）：
-//   header: magic "PGRD"(4B) + version u16(=2) + count u32 + mercCellSize f64  = 18B
-//   record × count（18B/cell）: i i32, j i32, home u32, work u32, street u16
-//   —— home/work 为模型抽样人数，展示侧直出不扩样；street 为格中心街道要素索引
+//   header: magic "PGRD"(4B) + version u16 + count u32 + mercCellSize f64 = 18B
+//   v2 record（仿真，18B/cell）: i i32, j i32, home u32, work u32, street u16
+//   v3 record（真实，22B/cell）: i i32, j i32, home u32, work u32, resident u32, street u16
+//   —— 人数为源数据原始量，展示侧不做缩放；street 为格中心街道要素索引
 //     （资源文件序，0xFFFF=未命中，行政区过滤用）。
 // cell 西南角 = (i*cs, j*cs)（EPSG:3857）。出行分布监测复用本契约（home 列=出行起点、work 列=出行终点）。
 
 /** 与后端 GeoUtil/前端 LngLatUtils 同源的 Web 墨卡托半周长 */
 const EARTH_RADIUS = 20037508.3427892;
 const HEADER_BYTES = 18;
-const RECORD_BYTES = 18;
+const RECORD_BYTES_V2 = 18;
+const RECORD_BYTES_V3 = 22;
 const GRID_MAGIC = "PGRD";
 /** street 列的“未命中街道”哨兵（与后端 STREET_SENTINEL 一致）。 */
 export const GRID_STREET_SENTINEL = 0xffff;
-/** 100m 栅格单元面积（km²），密度 = 抽样人数 ÷ CELL_AREA_KM2（不扩样） */
+/** 100m 栅格单元面积（km²），密度 = 模型原始人数 ÷ CELL_AREA_KM2 */
 export const CELL_AREA_KM2 = 0.01;
 
 export function mercatorToLngLat(x, y) {
@@ -37,36 +39,56 @@ export function parsePopulationGrid(buffer) {
     throw new Error(`人口栅格 magic 不符: ${magic}`);
   }
   const version = view.getUint16(4, true);
-  if (version !== 2) {
+  if (version !== 2 && version !== 3) {
     throw new Error(`人口栅格版本不支持: ${version}`);
   }
+  const recordBytes = version === 3 ? RECORD_BYTES_V3 : RECORD_BYTES_V2;
   const count = view.getUint32(6, true);
   const mercCellSize = view.getFloat64(10, true);
   if (!(mercCellSize > 0)) {
     throw new Error(`人口栅格 cellSize 非法: ${mercCellSize}`);
   }
-  if (buffer.byteLength < HEADER_BYTES + count * RECORD_BYTES) {
-    throw new Error(`人口栅格长度不足: 期望 ${HEADER_BYTES + count * RECORD_BYTES}B 实际 ${buffer.byteLength}B`);
+  if (buffer.byteLength < HEADER_BYTES + count * recordBytes) {
+    throw new Error(`人口栅格长度不足: 期望 ${HEADER_BYTES + count * recordBytes}B 实际 ${buffer.byteLength}B`);
   }
   const i = new Int32Array(count);
   const j = new Int32Array(count);
   const home = new Uint32Array(count);
   const work = new Uint32Array(count);
+  const resident = version === 3 ? new Uint32Array(count) : null;
   const street = new Uint16Array(count);
   let homeTotal = 0;
   let workTotal = 0;
+  let residentTotal = 0;
   let offset = HEADER_BYTES;
   for (let k = 0; k < count; k++) {
     i[k] = view.getInt32(offset, true);
     j[k] = view.getInt32(offset + 4, true);
     home[k] = view.getUint32(offset + 8, true);
     work[k] = view.getUint32(offset + 12, true);
-    street[k] = view.getUint16(offset + 16, true);
+    if (version === 3) {
+      resident[k] = view.getUint32(offset + 16, true);
+      residentTotal += resident[k];
+    }
+    street[k] = view.getUint16(offset + (version === 3 ? 20 : 16), true);
     homeTotal += home[k];
     workTotal += work[k];
-    offset += RECORD_BYTES;
+    offset += recordBytes;
   }
-  return { count, mercCellSize, i, j, home, work, street, homeTotal, workTotal };
+  return {
+    version,
+    count,
+    mercCellSize,
+    i,
+    j,
+    home,
+    work,
+    resident,
+    street,
+    homeTotal,
+    workTotal,
+    residentTotal,
+  };
 }
 
 /**
@@ -100,7 +122,7 @@ export function densityClassIndex(density, breaks) {
 
 /**
  * 按指标生成逐 cell RGBA（Uint8Array，deck.gl 二进制 accessor）。
- * counts 为模型抽样人数，直接使用不扩样；密度 = counts ÷ 0.01km²。
+ * counts 为模型原始人数，不做缩放；密度 = counts ÷ 0.01km²。
  * count=0 的 cell alpha=0（该指标下不画）。
  */
 export function buildGridColors(counts, { breaks, ramp, alphaLow = 120, alpha = 205 }) {

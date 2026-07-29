@@ -12,4 +12,10 @@ public class StationInfoParam extends DatasourceParam {
      */
     private String stationName;
 
+    /**
+     * 站台 ID。地图点选的显示名可能与站点面板的物理站名不完全一致，
+     * 此时用 facilityId 反查 stationPanel 的归并站点。
+     */
+    private String facilityId;
+
 }

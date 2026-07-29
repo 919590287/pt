@@ -68,6 +68,11 @@ public class Scheme {
     private boolean largeModel;
 
     /**
+     * output 顶层是否包含 plans；模型目录初始化时与大小统计共用一次扫描。
+     */
+    private boolean cuttable;
+
+    /**
      * json信息
      */
     private Desc desc;
@@ -80,7 +85,13 @@ public class Scheme {
         private String detail;
         private Boolean _default = false;
         private double scale = 1.0;
-        private double area = 1.0;
+        /** 0 表示未声明；密度类指标必须返回 nodata，禁止用占位面积计算。 */
+        private double area = 0.0;
+        /**
+         * 可选的人工模式覆盖。true 可对高压缩率等自动阈值难以识别的数据
+         * 强制启用低内存模式；false 不会降级已自动识别的大模型，避免误配导致 OOM。
+         */
+        private Boolean largeModel;
         /**
          * 线网优化元数据（kind/pairId/parentModel/regionPolygon 等），
          * 由 ModelRegistryService 写入，非优化生成的模型为 null。

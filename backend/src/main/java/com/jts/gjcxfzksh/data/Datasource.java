@@ -4,12 +4,17 @@ import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
 import com.jts.gjcxfzksh.data.cache.MatsimCorridorCache;
 import com.jts.gjcxfzksh.data.cache.MatsimLinkSpeedCache;
+import com.jts.gjcxfzksh.data.cache.MatsimLargeModelNetworkCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPlansDerivedCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPassengerProfileCache;
+import com.jts.gjcxfzksh.data.cache.MatsimPersonTrackStore;
+import com.jts.gjcxfzksh.data.cache.MatsimPopulationCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRouteSpatialIndex;
 import com.jts.gjcxfzksh.data.cache.MatsimStationPanelCache;
 import com.jts.gjcxfzksh.data.cache.MatsimTransferCache;
+import com.jts.gjcxfzksh.data.cache.MatsimTripEndsCache;
 import com.jts.gjcxfzksh.data.entry.Database;
 import com.jts.gjcxfzksh.data.entry.MatsimOutFile;
 import com.jts.gjcxfzksh.data.entry.Scheme;
@@ -20,8 +25,6 @@ import org.matsim.api.core.v01.population.Activity;
 import org.matsim.api.core.v01.population.Plan;
 import org.matsim.api.core.v01.population.Population;
 import org.matsim.core.config.Config;
-import org.matsim.core.config.ConfigReader;
-import org.matsim.core.config.ConfigUtils;
 import org.matsim.core.population.PopulationUtils;
 import org.matsim.core.scenario.MutableScenario;
 import org.matsim.core.scenario.ScenarioUtils;
@@ -40,6 +43,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
 public class Datasource {
@@ -52,6 +56,7 @@ public class Datasource {
     private static final Map<String, ModelLoadStatus> statusMap = new ConcurrentHashMap<>();
     private static final Set<String> retainLoadedRequests = ConcurrentHashMap.newKeySet();
     private static final Map<String, Long> loadVersionMap = new ConcurrentHashMap<>();
+    private static final Map<String, Object> lifecycleLocks = new ConcurrentHashMap<>();
     private static final ExecutorService LOAD_EXECUTOR = Executors.newFixedThreadPool(1, r -> {
         Thread thread = new Thread(r, "matsim-model-loader");
         thread.setDaemon(true);
@@ -85,14 +90,24 @@ public class Datasource {
     }
 
     public static Database data(String name) {
-        Database data = dataMap.get(name);
-        if (data == null) {
-            log.error("数据[{}]未加载", name);
-            throw new RuntimeException("数据[" + name + "]未加载");
+        synchronized (lifecycleLock(name)) {
+            Database data = dataMap.get(name);
+            if (data == null) {
+                log.error("数据[{}]未加载", name);
+                throw new RuntimeException("数据[" + name + "]未加载");
+            }
+            // 记录真实业务读取，供运行状态和诊断使用。模型只能由手动卸载接口释放。
+            retainLoadedRequests.add(name);
+            data.matsim_data().setLastRequestTime(System.currentTimeMillis());
+            return data;
         }
-        data.matsim_data().setLastRequestTime(System.currentTimeMillis());
-        // 返回已校验的同一引用；若此刻并发卸载，二次 get 会变成 null，导致请求偶发 NPE。
-        return data;
+    }
+
+    /**
+     * 无副作用读取已加载模型，仅供清理/诊断任务使用；不会刷新最后请求时间。
+     */
+    public static Database peek(String name) {
+        return dataMap.get(name);
     }
 
     /**
@@ -139,20 +154,28 @@ public class Datasource {
     }
 
     public static void remove(String name) {
-        dataMap.remove(name);
-        loadStatusMap.remove(name);
-        statusMap.remove(name);
-        retainLoadedRequests.remove(name);
+        synchronized (lifecycleLock(name)) {
+            // 仅供测试和内部注册表维护使用；生产卸载统一走 unload。
+            loadVersionMap.merge(name, 1L, Long::sum);
+            dataMap.remove(name);
+            loadStatusMap.remove(name);
+            statusMap.remove(name);
+            retainLoadedRequests.remove(name);
+        }
     }
 
     public static void unload(String name) {
-        retainLoadedRequests.remove(name);
-        loadVersionMap.merge(name, 1L, Long::sum);
-        dataMap.remove(name);
-        loadStatusMap.remove(name);
-        loadingStatusMap.remove(name);
-        ModelLoadStatus status = setStatus(name, "unloaded", "模型已卸载", false, false);
-        status.resetProgress("模型已卸载");
+        synchronized (lifecycleLock(name)) {
+            retainLoadedRequests.remove(name);
+            loadVersionMap.merge(name, 1L, Long::sum);
+            dataMap.remove(name);
+            loadStatusMap.remove(name);
+            // 解析器不可中途强停；保留 loading 标记直到旧任务真正退出，防止同一模型并发重复解析。
+            boolean canceling = loadingStatus(name);
+            ModelLoadStatus status = setStatus(name, canceling ? "canceling" : "unloaded",
+                    canceling ? "正在取消模型加载" : "模型已卸载", false, canceling);
+            status.resetProgress(canceling ? "等待当前解析安全退出" : "模型已卸载");
+        }
     }
 
     public static void loadAsync(Scheme scheme) {
@@ -184,11 +207,27 @@ public class Datasource {
     }
 
     public static void load(Scheme scheme) {
-        load(scheme, currentLoadVersion(scheme.getName()), true);
+        loadSynchronously(scheme);
     }
 
     public static void loadForCache(Scheme scheme) {
-        load(scheme, currentLoadVersion(scheme.getName()), false);
+        loadSynchronously(scheme);
+    }
+
+    private static void loadSynchronously(Scheme scheme) {
+        String name = scheme.getName();
+        while (!loadStatus(name)) {
+            if (loadingStatusMap.putIfAbsent(name, true) == null) {
+                load(scheme, currentLoadVersion(name), true);
+                return;
+            }
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("等待模型加载被中断", e);
+            }
+        }
     }
 
     /**
@@ -219,9 +258,9 @@ public class Datasource {
         try {
             MatsimData data = new MatsimData(scheme.getName(), scheme.getOutput(), scheme.getCache(), scheme.isLargeModel());
             data.setArea(scheme.getDesc().getArea());
-            // desc.json 的 scale 是人口抽样比例（10% 模型写 0.1）。此前只解析不落到 MatsimData，
-            // 导致所有"抽样量 ÷ 全量"的指标整体偏 1/scale 倍
-            data.setScale(scheme.getDesc().getScale());
+            // 数量严格按当前模型文件原样计算，不对人口/客流做任何扩样。
+            // setScale 保留兼容旧 desc.json，但 MatsimData 会强制归一为 1.0。
+            data.setScale(1.0);
             // 加载。loadConfig 内部是一次性阻塞读取，进度按预计总时长在 3%→85% 区间做时间插值，
             // 预计总时长优先取上次成功加载的真实耗时（load-stats.json），首次按 output 体量估算。
             status.beginPhase(3, 82, Math.round(estimatedTotalMs * 0.85), "正在加载路网、公交与出行链数据");
@@ -230,14 +269,18 @@ public class Datasource {
             // 避免“后续加载”仍主动解压数十 MB JSON/TSV 并长期占用堆。
             status.beginPhase(85, 12, Math.round(estimatedTotalMs * 0.15), "正在构建线路空间索引");
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);
-            if (cancelable && isStaleLoad(name, expectedVersion)) {
-                log.info("模型加载完成但请求已取消，不写入内存: model={}", name);
-                return;
-            }
             long endTime = System.currentTimeMillis();
             log.info("加载[{}]耗时: {}ms", scheme.getName(), endTime - startTime);
-            dataMap.put(scheme.getName(), new Database(data));
-            loadStatusMap.put(scheme.getName(), true);
+            // 即使模型加载后尚未收到业务请求，也应从加载完成时开始计算空闲时间。
+            data.setLastRequestTime(endTime);
+            synchronized (lifecycleLock(name)) {
+                if (isStaleLoad(name, expectedVersion)) {
+                    log.info("模型加载完成但请求已取消，不写入内存: model={}", name);
+                    return;
+                }
+                dataMap.put(scheme.getName(), new Database(data));
+                loadStatusMap.put(scheme.getName(), true);
+            }
             status = setStatus(scheme.getName(), "ready", "模型基础数据已加载，缓存将在后台生成", true, false);
             status.setStartedAt(startTime);
             status.setFinishedAt(endTime);
@@ -257,8 +300,17 @@ public class Datasource {
             }
             throw e;
         } finally {
-            loadingStatusMap.remove(scheme.getName());
+            boolean stale = isStaleLoad(name, expectedVersion);
+            loadingStatusMap.remove(scheme.getName(), true);
+            // 用户在旧任务取消期间重新点击加载：旧任务退出后自动提交当前代际，避免请求丢失。
+            if (stale && retainLoadedRequests.contains(name) && !loadStatus(name)) {
+                loadAsync(scheme);
+            }
         }
+    }
+
+    private static Object lifecycleLock(String name) {
+        return lifecycleLocks.computeIfAbsent(name, ignored -> new Object());
     }
 
     private static final com.fasterxml.jackson.databind.ObjectMapper LOAD_STATS_JSON = new com.fasterxml.jackson.databind.ObjectMapper();
@@ -285,9 +337,28 @@ public class Datasource {
         } catch (Exception e) {
             log.debug("读取 load-stats.json 失败: model={}, error={}", scheme.getName(), e.getMessage());
         }
-        long bytes = Math.max(scheme.getOutputBytes(), 64L * 1024 * 1024);
+        // 大模型基础加载会跳过 plans/events，不能再用整个 30GB output 估算成几十分钟。
+        long bytes = scheme.isLargeModel() ? largeModelBaseInputBytes(scheme) : scheme.getOutputBytes();
+        bytes = Math.max(bytes, 32L * 1024 * 1024);
         long ms = bytes / (15L * 1024 * 1024) * 1000;
-        return Math.max(20_000L, Math.min(ms, 2L * 3600 * 1000));
+        return scheme.isLargeModel()
+                ? Math.max(5_000L, Math.min(ms, 5L * 60 * 1000))
+                : Math.max(20_000L, Math.min(ms, 2L * 3600 * 1000));
+    }
+
+    private static long largeModelBaseInputBytes(Scheme scheme) {
+        java.io.File[] files = new java.io.File(scheme.getOutput()).listFiles(file -> file.isFile()
+                && !file.getName().startsWith(".") && !file.getName().startsWith("._"));
+        if (files == null) return 32L * 1024 * 1024;
+        long total = 0L;
+        for (java.io.File file : files) {
+            String lower = file.getName().toLowerCase(java.util.Locale.ROOT);
+            if (lower.contains("network") || lower.contains("transitschedule")
+                    || lower.contains("transitvehicles") || lower.contains("config")) {
+                total = total > Long.MAX_VALUE - file.length() ? Long.MAX_VALUE : total + file.length();
+            }
+        }
+        return total;
     }
 
     private static void writeLoadStats(Scheme scheme, long loadMs) {
@@ -315,6 +386,18 @@ public class Datasource {
         loadEvent(database.matsim_data(), progress);
     }
 
+    public interface CacheBuildProgress {
+        void update(int percent, String phaseMessage);
+    }
+
+    public static void buildCachesWithProgress(String name, CacheBuildProgress progress) {
+        Database database = dataMap.get(name);
+        if (database == null) {
+            throw new RuntimeException("数据[" + name + "]未加载");
+        }
+        loadEvent(database.matsim_data(), progress);
+    }
+
     private static ModelLoadStatus setStatus(String name, String stage, String message, boolean loaded, boolean loading) {
         ModelLoadStatus status = statusMap.computeIfAbsent(name, ignored -> new ModelLoadStatus());
         status.setStage(stage);
@@ -325,26 +408,78 @@ public class Datasource {
     }
 
     private static void loadEvent(MatsimData data) {
-        loadEvent(data, null);
+        loadEvent(data, (MatsimAnalysisCache.BuildProgress) null);
     }
 
     private static void loadEvent(MatsimData data, MatsimAnalysisCache.BuildProgress progress) {
+        loadEvent(data, progress, null);
+    }
+
+    private static void loadEvent(MatsimData data, CacheBuildProgress progress) {
+        MatsimAnalysisCache.BuildProgress trajectoryProgress = progress == null ? null : (time, vehicles) -> {
+            int percent = 10 + (int) Math.round(Math.min(1.0, Math.max(0.0, time / 86_400.0)) * 32.0);
+            progress.update(percent, "events：已处理到 " + formatEventTime(time) + "，车辆约 " + vehicles + " 台");
+        };
+        loadEvent(data, trajectoryProgress, progress);
+    }
+
+    private static void loadEvent(MatsimData data, MatsimAnalysisCache.BuildProgress trajectoryProgress,
+                                  CacheBuildProgress phaseProgress) {
         try {
-            MatsimAnalysisCache.prepareAllOnModelLoad(data, progress);
-            MatsimRoutePanelCache.prepareOnModelLoad(data);
+            phase(phaseProgress, 10, "events：生成轨迹和乘客磁盘工件");
+            MatsimAnalysisCache.prepareAllOnModelLoad(data, trajectoryProgress);
+            if (data.isLargeModel() && (data.getPersonTracks() == null || data.getPersonTracks().isEmpty())) {
+                // 真正的全冷启动链路：events 先生成磁盘轨迹和按人分区，后续缓存逐分区聚合；
+                // plans 仍只流式扫描一次。整个流程不物化 2000 万条 personTracks。
+                phase(phaseProgress, 45, "乘客轨迹：建立低内存按人分区");
+                MatsimPersonTrackStore.preparePartitions(data);
+                phase(phaseProgress, 50, "线路面板：聚合线路客流与 OD");
+                MatsimRoutePanelCache.prepareOnModelLoad(data, (completed, total) ->
+                        routePanelProgress(phaseProgress, completed, total));
+                phase(phaseProgress, 58, "换乘分析：识别换乘事件");
+                MatsimTransferCache.prepareOnModelLoad(data);
+                phase(phaseProgress, 65, "plans：流式扫描人口、出行端点与画像");
+                MatsimPlansDerivedCache.prepareAllOnModelLoad(data, persons ->
+                        phase(phaseProgress, 65, "plans：已扫描 " + persons + " 人"));
+                phase(phaseProgress, 80, "走廊分析：聚合站间断面客流");
+                MatsimCorridorCache.prepareOnModelLoad(data);
+                phase(phaseProgress, 85, "链路速度：流式聚合 events");
+                MatsimLinkSpeedCache.prepareOnModelLoad(data, (events, time) ->
+                        linkSpeedProgress(phaseProgress, events, time));
+                phase(phaseProgress, 90, "站点面板：聚合站点客流与 OD");
+                MatsimStationPanelCache.prepareOnModelLoad(data);
+                phase(phaseProgress, 94, "可视化：生成完整道路与公交瓦片");
+                MatsimPrecomputedCache.prepareOnModelLoad(data);
+                phase(phaseProgress, 97, "索引：构建线路空间索引");
+                MatsimRouteSpatialIndex.prepareOnModelLoad(data);
+                runCacheWarmupHooks(data);
+                return;
+            }
+            phase(phaseProgress, 50, "线路面板：聚合线路客流与 OD");
+            MatsimRoutePanelCache.prepareOnModelLoad(data, (completed, total) ->
+                    routePanelProgress(phaseProgress, completed, total));
             // 换乘分析缓存（transfer-v1）：只依赖 personTracks + schedule，排在 routePanel 之后（设计文档 §9.1）。
             // 不带 progress 的 loadEvent 重载委托到本重载，两条调用链同样覆盖。
+            phase(phaseProgress, 58, "换乘分析：识别换乘事件");
             MatsimTransferCache.prepareOnModelLoad(data);
             // population + tripends 的活动端点同源于 plans：共享一次流式扫描，
             // 按 MATSIM_PROCESSING_THREADS 有界并行聚合；tripends OD 仍在扫描后使用 personTracks + schedule。
-            MatsimPlansDerivedCache.prepareAllOnModelLoad(data);
+            phase(phaseProgress, 65, "plans：聚合人口、出行端点与画像");
+            MatsimPlansDerivedCache.prepareAllOnModelLoad(data, persons ->
+                    phase(phaseProgress, 65, "plans：已处理 " + persons + " 人"));
             // 走廊缓存（corridor-v1）：只依赖 schedule + network + 内嵌资源（街道面/路名边车表）。
+            phase(phaseProgress, 80, "走廊分析：聚合站间断面客流");
             MatsimCorridorCache.prepareOnModelLoad(data);
             // 链路车速缓存（link-speed-v1）：独立单遍流式扫 events（不依赖 personTracks），
             // 首建约一次 events 解压/解析成本，之后 manifest 指纹命中即跳过。
-            MatsimLinkSpeedCache.prepareOnModelLoad(data);
+            phase(phaseProgress, 85, "链路速度：流式聚合 events");
+            MatsimLinkSpeedCache.prepareOnModelLoad(data, (events, time) ->
+                    linkSpeedProgress(phaseProgress, events, time));
+            phase(phaseProgress, 90, "站点面板：聚合站点客流与 OD");
             MatsimStationPanelCache.prepareOnModelLoad(data);
+            phase(phaseProgress, 94, "可视化：生成网络与公交瓦片");
             MatsimPrecomputedCache.prepareOnModelLoad(data);
+            phase(phaseProgress, 97, "索引：构建线路空间索引");
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);
             // personTracks 此时已就绪（小模型来自 events 解析，大模型来自轨迹缓存），
             // 在同一后台线程里完成体检评估等追加预计算，前端进页面即可直接命中
@@ -355,15 +490,42 @@ public class Datasource {
         }
     }
 
+    private static void phase(CacheBuildProgress progress, int percent, String message) {
+        if (progress != null) progress.update(percent, message);
+    }
+
+    private static void routePanelProgress(CacheBuildProgress progress, int completed, int total) {
+        int safeTotal = Math.max(1, total);
+        int percent = 50 + Math.min(7, (int) Math.floor(completed * 7.0 / safeTotal));
+        phase(progress, percent, "线路面板：已处理乘客分区 " + completed + "/" + safeTotal);
+    }
+
+    private static void linkSpeedProgress(CacheBuildProgress progress, long events, double eventTime) {
+        int percent = 85 + Math.min(4, (int) Math.floor(Math.max(0.0, eventTime) * 4.0 / 86_400.0));
+        phase(progress, percent, "链路速度：已扫描 " + String.format(java.util.Locale.ROOT, "%,d", events)
+                + " 条事件，仿真时刻 " + formatEventTime((int) Math.max(0, eventTime)));
+    }
+
+    private static String formatEventTime(int seconds) {
+        int safe = Math.max(0, seconds);
+        return String.format(java.util.Locale.ROOT, "%02d:%02d:%02d",
+                safe / 3600, (safe % 3600) / 60, safe % 60);
+    }
+
     private static void loadConfig(MatsimData data) {
         MatsimOutFile outfile = data.getOutfile();
-        Config cfg = ConfigUtils.createConfig();
-        new ConfigReader(cfg).readFile(outfile.getConfig());
-        cfg.network().setInputFile(outfile.getNetwork());
+        Config cfg = outfile.loadConfig();
+        cfg.network().setInputFile(data.isLargeModel()
+                ? MatsimLargeModelNetworkCache.resolveNetworkInput(data)
+                : outfile.getNetwork());
         if (data.isLargeModel()) {
             cfg.plans().setInputFile(null);
             cfg.facilities().setInputFile(null);
             cfg.vehicles().setVehiclesFile(null);
+            int runtimeThreads = Math.max(1, ModelProcessingPool.parallelism());
+            if (cfg.global().getNumberOfThreads() > runtimeThreads) {
+                cfg.global().setNumberOfThreads(runtimeThreads);
+            }
             log.info("模型[{}]进入大模型轻量加载模式，跳过 plans/facilities/vehicles eager 读取", data.getName());
         } else {
             cfg.plans().setInputFile(outfile.getPlans());
@@ -422,6 +584,7 @@ public class Datasource {
         String networkCRS = (String) data.getNetwork().getAttributes().getAttribute("coordinateReferenceSystem");
         ctf = ctf(globalCRS, inputCRS, networkCRS);
         CoordinateTransformation nodectf = ctf;
+        AtomicLong networkTransformFailures = new AtomicLong();
         ModelProcessingPool.forEach(data.getNetwork().getNodes().values(), node -> {
             Coord nodeCoord = node.getCoord();
             try {
@@ -429,48 +592,45 @@ public class Datasource {
                 if (nodectf != null) {
                     transformedCoord = nodectf.transform(transformedCoord);
                 }
+                if (transformedCoord == null || !Double.isFinite(transformedCoord.getX())
+                        || !Double.isFinite(transformedCoord.getY())) {
+                    throw new IllegalArgumentException("坐标转换返回非有限值");
+                }
                 node.setCoord(transformedCoord);
             } catch (Exception e) {
-                log.warn("network.node 坐标系系转换失败, {}", e.getMessage());
+                networkTransformFailures.incrementAndGet();
             }
         });
+        if (networkTransformFailures.get() > 0) {
+            throw new IllegalStateException("network.node 坐标转换失败: " + networkTransformFailures.get()
+                    + " 个；拒绝发布混合坐标系模型");
+        }
+        if (networkCRS != null || inputCRS != null || globalCRS != null) {
+            data.getNetwork().getAttributes().putAttribute("coordinateReferenceSystem", "EPSG:3857");
+        }
 
 
-        // 路网中心点
-        double[] maxx = new double[]{0}, minx = new double[]{Double.MAX_VALUE}, maxy = new double[]{0}, miny = new double[]{Double.MAX_VALUE};
-        data.getNetwork().getNodes().values().forEach(node -> {
-            if (maxx[0] < node.getCoord().getX()) {
-                maxx[0] = node.getCoord().getX();
-            }
-            if (maxy[0] < node.getCoord().getY()) {
-                maxy[0] = node.getCoord().getY();
-            }
-            if (minx[0] > node.getCoord().getX()) {
-                minx[0] = node.getCoord().getX();
-            }
-            if (miny[0] > node.getCoord().getY()) {
-                miny[0] = node.getCoord().getY();
-            }
-        });
-        data.center = new Coord((maxx[0] + minx[0]) / 2, (maxy[0] + miny[0]) / 2);
-        data.range[0] = new PTCoord(maxx[0], maxy[0]);
-        data.range[1] = new PTCoord(minx[0], miny[0]);
+        // 路网中心点。不能把 max 初始化为 0，否则全负坐标模型会被错误扩到本初子午线/赤道。
+        NetworkBounds bounds = networkBounds(data.getNetwork().getNodes().values());
+        data.center = new Coord((bounds.maxX() + bounds.minX()) / 2, (bounds.maxY() + bounds.minY()) / 2);
+        data.range[0] = new PTCoord(bounds.maxX(), bounds.maxY());
+        data.range[1] = new PTCoord(bounds.minX(), bounds.minY());
 
         // 公交
         inputCRS = data.config.transit().getInputScheduleCRS();
         String tfCRS = (String) data.getSchedule().getAttributes().getAttribute("coordinateReferenceSystem");
         ctf = ctf(globalCRS, inputCRS, tfCRS);
         if (ctf != null) {
-            CoordinateTransformation finalCtf = ctf;
-            ModelProcessingPool.forEach(data.getSchedule().getFacilities().values(), facility -> {
-                Coord coord = facility.getCoord();
-                try {
-                    var transformedCoord = finalCtf.transform(coord);
-                    facility.setCoord(transformedCoord);
-                } catch (Exception e) {
-//                    log.warn("transitSchedule.facility 坐标系转换失败, {}", e.getMessage());
-                }
-            });
+            long failures = transformScheduleCoordinates(data.getSchedule(), ctf);
+            if (failures > 0) {
+                log.warn("transitSchedule.facility 坐标转换失败点已置空: model={}, count={}",
+                        data.getName(), failures);
+            }
+        } else {
+            data.getSchedule().getAttributes().putAttribute("coordinateTransformFailures", 0L);
+        }
+        if (tfCRS != null || inputCRS != null || globalCRS != null) {
+            data.getSchedule().getAttributes().putAttribute("coordinateReferenceSystem", "EPSG:3857");
         }
 
         // plans。原始 output 必须保持只读，加载阶段不再回写 plans 文件。
@@ -479,22 +639,15 @@ public class Datasource {
             String planCRS = (String) data.getPopulation().getAttributes().getAttribute("coordinateReferenceSystem");
             ctf = ctf(globalCRS, inputCRS, planCRS);
             if (ctf != null) {
-                CoordinateTransformation finalCtf = ctf;
-                ModelProcessingPool.forEach(data.getPopulation().getPersons().values(), person -> {
-                    person.getSelectedPlan().getPlanElements().forEach(element -> {
-                        if (element instanceof Activity act) {
-                            if (act.getCoord() != null) {
-                                Coord coord = act.getCoord();
-                                try {
-                                    var transformedCoord = finalCtf.transform(coord);
-                                    act.setCoord(transformedCoord);
-                                } catch (Exception e) {
-//                                log.warn("plan.activity 坐标系转换失败, {}", e.getMessage());
-                                }
-                            }
-                        }
-                    });
-                });
+                long failures = transformPopulationCoordinates(data.getPopulation(), ctf);
+                if (failures > 0) {
+                    log.warn("plan.activity 坐标转换失败点已置空: model={}, count={}", data.getName(), failures);
+                }
+            } else {
+                data.getPopulation().getAttributes().putAttribute("coordinateTransformFailures", 0L);
+            }
+            if (planCRS != null || inputCRS != null || globalCRS != null) {
+                data.getPopulation().getAttributes().putAttribute("coordinateReferenceSystem", "EPSG:3857");
             }
         }
 
@@ -548,6 +701,89 @@ public class Datasource {
             return TransformationFactory.getCoordinateTransformation(globalCRS, projectCrs);
         }
         return null;
+    }
+
+    /**
+     * 把小模型内存 plans 转成 WebMercator。单点失败必须置空，不能在随后把整个
+     * population 标成 EPSG:3857 后继续把原坐标当作米制坐标参与覆盖率/密度计算。
+     * 返回值写入 population attributes，供评价元数据披露；有效点仍完整保留，不抽样。
+     */
+    static long transformPopulationCoordinates(Population population, CoordinateTransformation transformation) {
+        if (population == null || transformation == null) return 0L;
+        AtomicLong failures = new AtomicLong();
+        ModelProcessingPool.forEach(population.getPersons().values(), person -> {
+            Plan plan = person.getSelectedPlan();
+            if (plan == null && !person.getPlans().isEmpty()) plan = person.getPlans().get(0);
+            if (plan == null) return;
+            for (var element : plan.getPlanElements()) {
+                if (!(element instanceof Activity activity) || activity.getCoord() == null) continue;
+                try {
+                    Coord transformed = transformation.transform(activity.getCoord());
+                    if (transformed == null || !Double.isFinite(transformed.getX())
+                            || !Double.isFinite(transformed.getY())) {
+                        throw new IllegalArgumentException("坐标转换返回非有限值");
+                    }
+                    activity.setCoord(transformed);
+                } catch (Exception e) {
+                    activity.setCoord(null);
+                    failures.incrementAndGet();
+                }
+            }
+        });
+        long count = failures.get();
+        population.getAttributes().putAttribute("coordinateTransformFailures", count);
+        return count;
+    }
+
+    /** 转换站点坐标；失败点置空并披露，避免原始坐标被误标成 EPSG:3857。 */
+    static long transformScheduleCoordinates(
+            org.matsim.pt.transitSchedule.api.TransitSchedule schedule,
+            CoordinateTransformation transformation) {
+        if (schedule == null || transformation == null) return 0L;
+        AtomicLong failures = new AtomicLong();
+        ModelProcessingPool.forEach(schedule.getFacilities().values(), facility -> {
+            if (facility.getCoord() == null) return;
+            try {
+                Coord transformed = transformation.transform(facility.getCoord());
+                if (transformed == null || !Double.isFinite(transformed.getX())
+                        || !Double.isFinite(transformed.getY())) {
+                    throw new IllegalArgumentException("坐标转换返回非有限值");
+                }
+                facility.setCoord(transformed);
+            } catch (Exception e) {
+                facility.setCoord(null);
+                failures.incrementAndGet();
+            }
+        });
+        long count = failures.get();
+        schedule.getAttributes().putAttribute("coordinateTransformFailures", count);
+        return count;
+    }
+
+    record NetworkBounds(double minX, double minY, double maxX, double maxY) {
+    }
+
+    static NetworkBounds networkBounds(
+            java.util.Collection<? extends org.matsim.api.core.v01.network.Node> nodes) {
+        double minX = Double.POSITIVE_INFINITY;
+        double minY = Double.POSITIVE_INFINITY;
+        double maxX = Double.NEGATIVE_INFINITY;
+        double maxY = Double.NEGATIVE_INFINITY;
+        if (nodes != null) {
+            for (var node : nodes) {
+                Coord coord = node == null ? null : node.getCoord();
+                if (coord == null || !Double.isFinite(coord.getX()) || !Double.isFinite(coord.getY())) continue;
+                minX = Math.min(minX, coord.getX());
+                minY = Math.min(minY, coord.getY());
+                maxX = Math.max(maxX, coord.getX());
+                maxY = Math.max(maxY, coord.getY());
+            }
+        }
+        if (!Double.isFinite(minX) || !Double.isFinite(minY)
+                || !Double.isFinite(maxX) || !Double.isFinite(maxY)) {
+            throw new IllegalStateException("network 不含可用坐标，无法计算模型范围");
+        }
+        return new NetworkBounds(minX, minY, maxX, maxY);
     }
 
     private static void removeNoSelectPlan(Population pop, String outputPlans) {

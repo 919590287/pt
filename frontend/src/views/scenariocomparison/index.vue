@@ -183,12 +183,13 @@
 
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
-import { getSchemeList, getModelList } from "@/api/scheme.js";
 import { dataEvaluation } from "@/api/data.js";
 import { getRoutePanel } from "@/api/route.js";
+import { useModelRuntimeStore } from "@/stores/modelRuntime.js";
 import "../datamanagement/tokens.css";
 
 const MapRef = inject("MapRef", null);
+const modelRuntime = useModelRuntimeStore();
 
 // ---------------- 维度导航 ----------------
 const NAV = [
@@ -220,18 +221,18 @@ const activeNav = computed(() => NAV.find((n) => n.key === activeEval.value) || 
 // 全网指标（总体）：客流量 / 客流强度 / 配车数 / 线网运营规模
 const NET_METRICS = [
   { key: "khl", label: "客流量", cal: "日客运总量", unit: "人次", digits: 0, good: 1 },
-  { key: "xlklqd", label: "客流强度", cal: "单位里程日客流", unit: "人次/km", digits: 1, good: 1 },
+  { key: "xlklqd", label: "客流强度", cal: "日客运量/运营车公里", unit: "人次/车公里", digits: 2, good: 1 },
   { key: "pcs", label: "配车数", cal: "高峰在营标台", unit: "标台", digits: 0, good: -1 },
   { key: "yylc", label: "线网运营规模", cal: "线网运营里程", unit: "km", digits: 1, good: 0, subKey: "xlls", subUnit: "条线路" },
 ];
 // 线路指标（单一线路）：客流量/客流强度/配车数/运营规模/运营成本/满载率
 const LINE_METRICS = [
   { key: "khl", label: "客流量", cal: "线路日均客流", unit: "人次", digits: 0, good: 1 },
-  { key: "xlklqd", label: "客流强度", cal: "单位里程日客流", unit: "人次/km", digits: 1, good: 1 },
+  { key: "xlklqd", label: "客流强度", cal: "日客运量/运营车公里", unit: "人次/车公里", digits: 2, good: 1 },
   { key: "pcs", label: "配车数", cal: "高峰在营估算", unit: "标台", digits: 0, good: -1 },
   { key: "yylc", label: "线网运营规模", cal: "日运营车公里", unit: "车公里", digits: 0, good: 0 },
   { key: "cost", label: "运营成本", cal: "按 ¥12/车公里估算", unit: "元/日", digits: 0, good: -1 },
-  { key: "mzl", label: "满载率", cal: "上车人次/静态容量", unit: "%", digits: 1, good: 1 },
+  { key: "mzl", label: "平均高峰满载率", cal: "各高峰班次最大站段满载率均值", unit: "%", digits: 1, good: 1 },
 ];
 const COST_PER_VEHKM = 12; // 运营成本单价（元/车公里），口径说明在页脚
 const OP_SPEED_KMH = 20; // 配车数估算用平均运营速度
@@ -264,7 +265,6 @@ function modelLabel(m) {
 const labelA = computed(() => (modelMap.value.get(modelA.value) ? modelLabel(modelMap.value.get(modelA.value)) : "基准模型"));
 const labelB = computed(() => (modelMap.value.get(modelB.value) ? modelLabel(modelMap.value.get(modelB.value)) : "对比模型"));
 let modelsRequestSeq = 0;
-let modelsAbortController = null;
 
 const pairHint = computed(() => {
   const a = modelMap.value.get(modelA.value)?.optimization;
@@ -279,8 +279,7 @@ const pairHint = computed(() => {
 async function loadSchemes() {
   schemesLoading.value = true;
   try {
-    const res = await getSchemeList(undefined, { silentError: true });
-    schemeList.value = Array.isArray(res?.data) ? res.data : [];
+    schemeList.value = await modelRuntime.fetchSchemes();
     if (!area.value && schemeList.value.length) area.value = schemeList.value[0];
   } catch (error) {
     schemeList.value = [];
@@ -291,23 +290,18 @@ async function loadSchemes() {
 async function loadModels() {
   const requestedArea = area.value;
   const seq = ++modelsRequestSeq;
-  modelsAbortController?.abort();
-  modelsAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
   if (!requestedArea) {
     modelsLoading.value = false;
     return;
   }
   modelsLoading.value = true;
   try {
-    const res = await getModelList(
-      { schemeName: requestedArea },
-      { silentError: true, signal: modelsAbortController?.signal },
-    );
+    const list = await modelRuntime.fetchModels(requestedArea);
     if (seq !== modelsRequestSeq || requestedArea !== area.value) return;
-    models.value = Array.isArray(res?.data) ? res.data : [];
+    models.value = list;
     autoPair();
   } catch (error) {
-    if (seq === modelsRequestSeq && !modelsAbortController?.signal?.aborted) {
+    if (seq === modelsRequestSeq) {
       models.value = [];
       modelA.value = "";
       modelB.value = "";
@@ -452,15 +446,15 @@ function aggregateLine(panelMap, lineId) {
   const line = panelMap?.get(lineId);
   if (!line || !line.routes.length) return null;
   let khl = 0;
-  let distKm = 0;
   let vehKm = 0;
   let fleet = 0;
   let deps = 0;
-  let mzlWeighted = 0;
+  let peakRateWeighted = 0;
+  let peakSamples = 0;
+  let peakMissingCapacity = 0;
   for (const m of line.routes) {
     const dist = (Number(m.routeDist) || 0) / 1000; // m -> km
     const pax = Number(m.passenger) || 0;
-    const lr = Number(m.loadRate) || 0; // 小数
     const n = Number(m.departures) || 0;
     const first = Number(m.firstTime) || 0;
     const last = Number(m.lastTime) || 0;
@@ -469,18 +463,21 @@ function aggregateLine(panelMap, lineId) {
     const oneWay = dist > 0 ? (dist / OP_SPEED_KMH) * 3600 : 0;
     fleet += headway > 0 ? Math.max(1, Math.ceil(oneWay / headway)) : n;
     khl += pax;
-    distKm += dist;
     vehKm += dist * n;
     deps += n;
-    mzlWeighted += lr * n;
+    const peakRate = Number(m.peakAverageLoadRate);
+    const samples = Number(m.peakDepartureSamples) || 0;
+    if (Number.isFinite(peakRate) && samples > 0) peakRateWeighted += peakRate * samples;
+    peakSamples += samples;
+    peakMissingCapacity += Number(m.peakMissingCapacityDepartures) || 0;
   }
   return {
     khl,
-    xlklqd: distKm > 0 ? khl / distKm : null,
+    xlklqd: vehKm > 0 ? khl / vehKm : null,
     pcs: fleet || null,
     yylc: vehKm || null,
     cost: vehKm > 0 ? vehKm * COST_PER_VEHKM : null,
-    mzl: deps > 0 ? (mzlWeighted / deps) * 100 : null,
+    mzl: peakMissingCapacity === 0 && peakSamples > 0 ? peakRateWeighted / peakSamples : null,
   };
 }
 
@@ -647,7 +644,6 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   modelsRequestSeq += 1;
-  modelsAbortController?.abort();
   Object.values(evalRequests).forEach((requestState) => {
     requestState.seq += 1;
     requestState.controller?.abort();
@@ -941,8 +937,35 @@ onUnmounted(() => {
 :global(.oe-model-pop .oe-opt-tag.base) { color: var(--oe-a, #5b6bb5); background: rgba(91, 107, 181, 0.12); }
 :global(.oe-model-pop .oe-opt-tag.variant) { color: #0071e3; background: rgba(0, 113, 227, 0.1); }
 :global(.oe-model-pop .oe-opt-tag.scope) { color: #667085; background: rgba(17, 32, 58, 0.06); }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+/* 仅覆盖上文写死的浅色字面量；--dm2-* 令牌与 B 侧强调蓝已随 tokens.css 翻转。
+   A 侧 --oe-a 的暗色提亮值在下方非 scoped 块随令牌定义处覆写。 */
+html.dark .oe-head {
+  background: linear-gradient(180deg, rgba(64, 156, 255, 0.085), rgba(64, 156, 255, 0));
+}
+html.dark .oe-summary .oe-sum-vs {
+  background: rgba(148, 180, 220, 0.1);
+}
+html.dark .oe-bar-row .oe-bar-track {
+  background: rgba(148, 180, 220, 0.1);
+}
+html.dark .skeleton-chip,
+html.dark .skeleton-num {
+  /* 只换渐变图层，background-size/动画沿用原规则 */
+  background-image: linear-gradient(90deg, rgba(148, 180, 220, 0.08) 25%, rgba(148, 180, 220, 0.14) 37%, rgba(148, 180, 220, 0.08) 63%);
+}
+/* 弹层挂 body 取不到 .opteval-wrapper 的 --oe-a，暗色值需在此写死（与下方令牌覆写同值） */
+:global(html.dark .oe-model-pop .oe-opt-tag.base) { color: #8b9ce6; background: rgba(139, 156, 230, 0.16); }
+:global(html.dark .oe-model-pop .oe-opt-tag.variant) { color: #409cff; background: rgba(64, 156, 255, 0.14); }
+:global(html.dark .oe-model-pop .oe-opt-tag.scope) { color: #94a3b8; background: rgba(148, 180, 220, 0.1); }
 </style>
 
 <style>
 .opteval-wrapper { --oe-a: #5b6bb5; }
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+/* A/B 双模型标识色成对处理：B 侧走 --dm2-accent（暗色自动提亮为 #409cff），
+   A 侧靛蓝同族提亮，保持两侧明度对等；亮色值不变。 */
+html.dark .opteval-wrapper { --oe-a: #8b9ce6; }
 </style>

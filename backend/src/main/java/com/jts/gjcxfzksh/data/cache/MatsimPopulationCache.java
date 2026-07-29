@@ -2,8 +2,10 @@ package com.jts.gjcxfzksh.data.cache;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jts.gjcxfzksh.api.common.Constant;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.optimization.util.GeoUtil;
+import com.jts.gjcxfzksh.utils.TransitMetrics;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import lombok.extern.slf4j.Slf4j;
@@ -18,6 +20,7 @@ import org.locationtech.jts.geom.prep.PreparedGeometry;
 import org.locationtech.jts.index.strtree.STRtree;
 import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.population.Activity;
+import org.matsim.api.core.v01.population.Leg;
 import org.matsim.api.core.v01.population.Person;
 import org.matsim.api.core.v01.population.Plan;
 import org.matsim.api.core.v01.population.PlanElement;
@@ -39,6 +42,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.zip.GZIPInputStream;
@@ -47,7 +51,7 @@ import java.util.zip.GZIPInputStream;
  * 公交出行监测 · 人口分布监测缓存家族（设计文档《公交出行监测人口分布模块设计方案》§1/§2/§3）。
  * <p>
  * 模型加载时从 MATSim plans 抽取每人的居住点 / 就业点，产出三个工件
- * （全部为模型抽样量，前端直出不扩样；scale 仅作元信息下发）：
+ * （全部为加载模型的原始量，平台不做任何抽样、扩大或缩小）：
  * <ul>
  *   <li>{@code population-summary.json}：总量指标 + 活动类型集合（右侧首屏直出）；</li>
  *   <li>{@code population-grid.bin}：100 米栅格二进制表（§3 前后端二进制契约，行式 16B/cell）；</li>
@@ -78,7 +82,18 @@ public final class MatsimPopulationCache {
     //     100m 栅格（mercCellSize 按模型中心纬度修正）；街道归属=点面 point-in-polygon（多候选取最小要素索引）。
     // v2: grid.bin 增加“格中心街道要素索引”列（16B→18B/cell，BIN_VERSION=2），
     //     供前端行政区过滤隐藏区外栅格；抽取/统计口径不变。
-    public static final String POPULATION_CACHE_VERSION = "population-v2";
+    // v3: 数量严格采用模型原始值（scale 恒为 1），并补充 plans 派生指标与显式 unsupported 语义。
+    // v5: 混合公交/轨道 trip 的主方式固定为轨道优先，消除 leg 顺序依赖；
+    //     覆盖率继续使用可投影的首个 home 分母并披露缺失/转换失败计数。
+    // v6: 新增公共交通机动化出行分担率，分子为公交/轨道/轮渡主方式出行，
+    //     分母排除步行、自行车及接驳步行。
+    // v7: 历史公共交通总口径（已由 v8 的公交主方式完整出行口径替代）
+    //     不再因 legacy pt 无法细分公交/轨道而错误标记 unsupported。
+    // v8: 人均日出行次数改为公交主方式完整出行/homePersons，明确排除地铁、铁路与轮渡；
+    //     新增 residentBusJourneys 和 residentUnresolvedLegacyPtJourneys 供严格口径审计。
+    // v9: 新增高峰小汽车运行速度、公交平均换乘次数、公交—轨道接驳比例的完整 OD 分母；
+    //     平均候车继续按公交上车样本加权，供大小模型共用同一缓存结果。
+    public static final String POPULATION_CACHE_VERSION = "population-v9";
 
     /** 栅格边长（地面米，§1）。栅格实际投影边长 mercCellSize 随模型中心纬度修正。 */
     static final double CELL_SIZE_METERS = 100.0;
@@ -134,15 +149,22 @@ public final class MatsimPopulationCache {
     }
 
     public static boolean isReady(MatsimData data) {
-        if (!Files.exists(manifestPath(data)) || !Files.exists(summaryPath(data))
-                || !Files.exists(streetsPath(data)) || !Files.exists(gridPath(data))) {
+        if (!Files.exists(manifestPath(data))) {
             return false;
         }
         try {
             Map<String, Object> manifest = JSON.readValue(manifestPath(data).toFile(), MAP_TYPE);
+            if (!POPULATION_CACHE_VERSION.equals(manifest.get("cacheVersion"))
+                    || !sameSources(data, manifest)) {
+                return false;
+            }
+            if ("unsupported".equals(manifest.get("status"))) {
+                return true; // 终态：源数据明确缺失，不能反复排队重建
+            }
             return "ready".equals(manifest.get("status"))
-                    && POPULATION_CACHE_VERSION.equals(manifest.get("cacheVersion"))
-                    && sameSources(data, manifest);
+                    && Files.exists(summaryPath(data))
+                    && Files.exists(streetsPath(data))
+                    && Files.exists(gridPath(data));
         } catch (Exception e) {
             log.warn("人口分布缓存状态读取失败: {}", manifestPath(data), e);
             return false;
@@ -151,6 +173,8 @@ public final class MatsimPopulationCache {
 
     /** 总量指标 + 活动类型集合（POST /pt/population/summary）。未就绪返回 generating 态。 */
     public static Map<String, Object> readPopulationSummary(MatsimData data) {
+        Map<String, Object> unsupported = unsupportedPayloadIfPresent(data);
+        if (unsupported != null) return unsupported;
         if (!isReady(data)) {
             return generatingPayload();
         }
@@ -164,6 +188,8 @@ public final class MatsimPopulationCache {
 
     /** 176 街道全量统计（POST /pt/population/streets）。未就绪返回 generating 态。 */
     public static Map<String, Object> readPopulationStreets(MatsimData data) {
+        Map<String, Object> unsupported = unsupportedPayloadIfPresent(data);
+        if (unsupported != null) return unsupported;
         if (!isReady(data)) {
             return generatingPayload();
         }
@@ -177,7 +203,7 @@ public final class MatsimPopulationCache {
 
     /** 栅格二进制表字节（GET /pt/population/grid.bin）。未就绪返回 null（Controller 侧 404）。 */
     public static byte[] readGridBytes(MatsimData data) {
-        if (!isReady(data)) {
+        if (unsupportedPayloadIfPresent(data) != null || !isReady(data)) {
             return null;
         }
         try {
@@ -195,7 +221,7 @@ public final class MatsimPopulationCache {
      * 与 transfer 的差异：本缓存的源指纹含街道资源键（streets 前缀），一并纳入哈希。
      */
     public static String gridBinTag(MatsimData data) {
-        if (!isReady(data)) {
+        if (unsupportedPayloadIfPresent(data) != null || !isReady(data)) {
             return null;
         }
         try {
@@ -236,6 +262,38 @@ public final class MatsimPopulationCache {
         );
     }
 
+    static void writeUnsupportedManifest(MatsimData data, String message) {
+        try {
+            MatsimCachePaths.recreateVersionDir(data, POPULATION_CACHE_VERSION);
+            writeJsonAtomic(manifestPath(data), manifest(data, "unsupported", message));
+            MatsimCachePaths.deleteOtherVersions(data, "population-v", POPULATION_CACHE_VERSION);
+            MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
+            MEMORY_CACHE.remove(cacheKey(streetsPath(data)));
+        } catch (Exception e) {
+            throw new RuntimeException("写入人口分布 unsupported 状态失败", e);
+        }
+    }
+
+    private static Map<String, Object> unsupportedPayloadIfPresent(MatsimData data) {
+        if (!Files.isRegularFile(manifestPath(data))) return null;
+        try {
+            Map<String, Object> manifest = JSON.readValue(manifestPath(data).toFile(), MAP_TYPE);
+            if (!"unsupported".equals(manifest.get("status"))
+                    || !POPULATION_CACHE_VERSION.equals(manifest.get("cacheVersion"))
+                    || !sameSources(data, manifest)) {
+                return null;
+            }
+            return Map.of(
+                    "status", "unsupported",
+                    "cacheVersion", POPULATION_CACHE_VERSION,
+                    "reason", String.valueOf(manifest.getOrDefault("message", "缺少 plans 数据")),
+                    "message", String.valueOf(manifest.getOrDefault("message", "缺少 plans 数据"))
+            );
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     // ===================================================================================
     // 构建编排
     // ===================================================================================
@@ -243,17 +301,19 @@ public final class MatsimPopulationCache {
     static void storeBuiltAggregation(MatsimData data, Aggregation aggregation,
                                       StreetIndex streets, long startedAt) {
         try {
-            Files.createDirectories(cacheDir(data));
             if (aggregation.transformFailures > 0) {
                 log.warn("人口分布缓存坐标转换失败点已跳过: model={}, count={}",
                         data.getName(), aggregation.transformFailures);
             }
             Artifacts artifacts = assemble(aggregation, streets, effectiveSampleRate(data));
+            // 统计完成后再原位替换目录：不累加旧分片，也尽量缩短重建窗口。
+            MatsimCachePaths.recreateVersionDir(data, POPULATION_CACHE_VERSION);
             // 工件先落盘、manifest 最后写：manifest=ready 即三工件必然齐备
             writeBytesAtomic(gridPath(data), artifacts.gridBin);
             writeJsonAtomic(streetsPath(data), artifacts.streets);
             writeJsonAtomic(summaryPath(data), artifacts.summary);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "population-v", POPULATION_CACHE_VERSION);
             MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
             MEMORY_CACHE.remove(cacheKey(streetsPath(data)));
             log.info("人口分布缓存生成完成: model={}, persons={}, home={}, work={}, unassigned={}/{}, "
@@ -308,13 +368,9 @@ public final class MatsimPopulationCache {
         return null;
     }
 
-    /**
-     * 人口抽样比例：口径复刻自 PTDataServiceImpl.effectiveSampleRate（desc.json 的 scale，
-     * 只接受 (0,1]，异常值按全样本 1.0 处理，宁可不扩样也不放大指标）。
-     */
+    /** 数量严格按模型原始值计算；历史 scale 不参与任何数值。 */
     static double effectiveSampleRate(MatsimData data) {
-        double scale = data.getScale();
-        return scale > 0 && scale <= 1.0 ? scale : 1.0;
+        return 1.0;
     }
 
     /**
@@ -358,6 +414,8 @@ public final class MatsimPopulationCache {
         final double mercCellSize;
         /** 实际点定位器；共享扫描时为有界坐标缓存，其他路径直连 StreetIndex。 */
         private final StreetLocator streetLocator;
+        private final CoverageIndex coverageIndex;
+        private final TransitMetrics.RoadTransitContext roadTransit;
         final Long2IntOpenHashMap homeCells = new Long2IntOpenHashMap();
         final Long2IntOpenHashMap workCells = new Long2IntOpenHashMap();
         final int[] streetHome;
@@ -370,14 +428,54 @@ public final class MatsimPopulationCache {
         long unassignedHome;
         long unassignedWork;
         long transformFailures;
+        long coveredPersons;
+        long journeys;
+        long busJourneys;
+        long transitJourneys;
+        long residentBusJourneys;
+        long residentTransitJourneys;
+        long motorizedJourneys;
+        long unresolvedLegacyPtJourneys;
+        long residentUnresolvedLegacyPtJourneys;
+        long busServiceJourneys;
+        long busServiceTransitBoardings;
+        long busServiceTransfers;
+        long busRailJourneys;
+        long unresolvedBusServiceJourneys;
+        final Map<String, Long> tripModeCounts = new TreeMap<>();
+        double ptTravelSeconds;
+        double ptDistanceMeters;
+        double carTravelSeconds;
+        double carDistanceMeters;
+        double awaitSeconds;
+        long awaitSamples;
+        double busAwaitSeconds;
+        long busAwaitSamples;
+        double peakCarDistanceMeters;
+        double peakCarTravelSeconds;
+        long peakCarSamples;
 
         Aggregation(double mercCellSize, StreetIndex streets) {
-            this(mercCellSize, streets, streets);
+            this(mercCellSize, streets, streets, null, (TransitMetrics.RoadTransitContext) null);
         }
 
         Aggregation(double mercCellSize, StreetIndex streets, StreetLocator streetLocator) {
+            this(mercCellSize, streets, streetLocator, null, (TransitMetrics.RoadTransitContext) null);
+        }
+
+        Aggregation(double mercCellSize, StreetIndex streets, StreetLocator streetLocator,
+                    CoverageIndex coverageIndex) {
+            this(mercCellSize, streets, streetLocator, coverageIndex,
+                    (TransitMetrics.RoadTransitContext) null);
+        }
+
+        Aggregation(double mercCellSize, StreetIndex streets, StreetLocator streetLocator,
+                    CoverageIndex coverageIndex,
+                    TransitMetrics.RoadTransitContext roadTransit) {
             this.mercCellSize = mercCellSize;
             this.streetLocator = streetLocator;
+            this.coverageIndex = coverageIndex;
+            this.roadTransit = roadTransit;
             this.streetHome = new int[streets == null ? 0 : streets.size()];
             this.streetWork = new int[streets == null ? 0 : streets.size()];
         }
@@ -407,29 +505,134 @@ public final class MatsimPopulationCache {
                     continue;
                 }
                 String lower = type.toLowerCase(Locale.ROOT);
-                if (lower.contains("interaction")) {
+                if (org.matsim.core.router.TripStructureUtils.isStageActivityType(type)) {
                     continue; // pt interaction 等中转活动（§1）
                 }
-                if (lower.startsWith("home")) {
+                Coord coord = transformedCoord(act.getCoord(), ctf);
+                if ("home".equals(lower) || lower.startsWith("home_")) {
                     homeTypes.add(type);
-                    if (home == null) {
-                        home = transformedCoord(act.getCoord(), ctf);
-                    }
+                    if (home == null) home = coord;
                 } else if (lower.startsWith("work")) {
                     workTypes.add(type);
-                    if (work == null) {
-                        work = transformedCoord(act.getCoord(), ctf);
-                    }
+                    if (work == null) work = coord;
                 }
             }
             if (home != null) {
                 homePersons++;
+                if (coverageIndex != null && coverageIndex.covers(home)) coveredPersons++;
                 addPoint(home, true);
             }
+            accumulatePlanMetrics(plan, home != null);
             if (work != null) {
                 workPersons++;
                 addPoint(work, false);
             }
+        }
+
+        private void accumulatePlanMetrics(Plan plan, boolean resident) {
+            // 直接按“两个非 interaction 活动之间的 legs”分 trip。
+            // TripStructureUtils 对首尾恰为 stage activity 的历史/合成 plans 会抛异常，
+            // 缓存构建不应因单个非标准 person 中断整个模型。
+            List<Leg> tripLegs = new ArrayList<>();
+            boolean originSeen = false;
+            for (PlanElement element : plan.getPlanElements()) {
+                if (element instanceof Activity activity) {
+                    String type = activity.getType();
+                    if (type != null && type.toLowerCase(Locale.ROOT).contains("interaction")) {
+                        continue;
+                    }
+                    if (originSeen && !tripLegs.isEmpty()) {
+                        String mode = tripMainMode(tripLegs);
+                        tripModeCounts.merge(mode, 1L, Long::sum);
+                        journeys++;
+                        if (TransitMetrics.isMotorizedMode(mode)) motorizedJourneys++;
+                        if (TransitMetrics.isTransitMode(mode)) {
+                            transitJourneys++;
+                            if (resident) residentTransitJourneys++;
+                        }
+                        if (TransitMetrics.isExplicitRoadPublicTransportMode(mode)) {
+                            busJourneys++;
+                            if (resident) residentBusJourneys++;
+                        }
+                        if (Constant.ROUTE_MODE_PT.equals(mode)) {
+                            unresolvedLegacyPtJourneys++;
+                            if (resident) residentUnresolvedLegacyPtJourneys++;
+                        }
+                        TransitMetrics.BusServiceJourneyObservation serviceJourney =
+                                TransitMetrics.busServiceJourneyObservation(tripLegs, roadTransit);
+                        if (serviceJourney.unresolvedLegacyPt()) {
+                            unresolvedBusServiceJourneys++;
+                        }
+                        if (serviceJourney.busJourney()) {
+                            busServiceJourneys++;
+                            busServiceTransitBoardings += serviceJourney.transitBoardings();
+                            busServiceTransfers += serviceJourney.transfers();
+                            if (serviceJourney.busRailJourney()) busRailJourneys++;
+                        }
+                    }
+                    originSeen = true;
+                    tripLegs.clear();
+                } else if (element instanceof Leg leg && originSeen) {
+                    tripLegs.add(leg);
+                }
+            }
+            List<PlanElement> elements = plan.getPlanElements();
+            for (int i = 0; i < elements.size(); i++) {
+                if (!(elements.get(i) instanceof Leg leg)) continue;
+                if (leg.getRoute() != null && Double.isFinite(leg.getRoute().getDistance())
+                        && leg.getRoute().getDistance() > 0) {
+                    if (TransitMetrics.isResolvedRoadPublicTransportLeg(leg, roadTransit)) {
+                        Double inVehicleSeconds = TransitMetrics.inVehicleTravelSeconds(leg, roadTransit);
+                        if (inVehicleSeconds != null) {
+                            ptTravelSeconds += inVehicleSeconds;
+                            ptDistanceMeters += leg.getRoute().getDistance();
+                        }
+                    } else if (Constant.ROUTE_MODE_CAR.equals(leg.getMode())
+                            && leg.getTravelTime().isDefined()
+                            && Double.isFinite(leg.getTravelTime().seconds())
+                            && leg.getTravelTime().seconds() > 0) {
+                        carTravelSeconds += leg.getTravelTime().seconds();
+                        carDistanceMeters += leg.getRoute().getDistance();
+                    }
+                }
+                TransitMetrics.WaitSample wait = TransitMetrics.waitSample(elements, i);
+                if (wait != null) {
+                    awaitSeconds += wait.waitSeconds();
+                    awaitSamples++;
+                }
+                if (TransitMetrics.isResolvedRoadPublicTransportLeg(leg, roadTransit)) {
+                    Double strictBusWait = TransitMetrics.boardingWaitSeconds(leg);
+                    if (strictBusWait != null) {
+                        busAwaitSeconds += strictBusWait;
+                        busAwaitSamples++;
+                    }
+                }
+                TransitMetrics.PeakOperatingSpeedStats peakCar =
+                        TransitMetrics.peakCarLegSpeedSample(leg);
+                if (peakCar != null) {
+                    peakCarDistanceMeters += peakCar.distanceMeters();
+                    peakCarTravelSeconds += peakCar.travelSeconds();
+                    peakCarSamples += peakCar.samples();
+                }
+            }
+        }
+
+        private String tripMainMode(List<Leg> legs) {
+            String best = "walk";
+            Leg bestLeg = null;
+            int bestRank = Integer.MIN_VALUE;
+            for (Leg leg : legs) {
+                String mode = leg.getMode();
+                int rank = TransitMetrics.resolvedMainModeRank(leg, roadTransit);
+                if (rank > bestRank) {
+                    bestRank = rank;
+                    best = mode == null || mode.isBlank() ? "other" : mode;
+                    bestLeg = leg;
+                }
+            }
+            if (bestLeg == null) return best;
+            String resolved = TransitMetrics.resolvedTransitMode(bestLeg, roadTransit);
+            return resolved == null || resolved.isBlank() ? best : resolved;
         }
 
         /** 坐标为 null 跳过该点（返回 null 让上层继续向后找）；转换失败同样跳过（与坐标缺失同待遇）。 */
@@ -483,7 +686,105 @@ public final class MatsimPopulationCache {
             unassignedHome += other.unassignedHome;
             unassignedWork += other.unassignedWork;
             transformFailures += other.transformFailures;
+            coveredPersons += other.coveredPersons;
+            journeys += other.journeys;
+            busJourneys += other.busJourneys;
+            transitJourneys += other.transitJourneys;
+            residentBusJourneys += other.residentBusJourneys;
+            residentTransitJourneys += other.residentTransitJourneys;
+            motorizedJourneys += other.motorizedJourneys;
+            unresolvedLegacyPtJourneys += other.unresolvedLegacyPtJourneys;
+            residentUnresolvedLegacyPtJourneys += other.residentUnresolvedLegacyPtJourneys;
+            busServiceJourneys += other.busServiceJourneys;
+            busServiceTransitBoardings += other.busServiceTransitBoardings;
+            busServiceTransfers += other.busServiceTransfers;
+            busRailJourneys += other.busRailJourneys;
+            unresolvedBusServiceJourneys += other.unresolvedBusServiceJourneys;
+            other.tripModeCounts.forEach((mode, count) -> tripModeCounts.merge(mode, count, Long::sum));
+            ptTravelSeconds += other.ptTravelSeconds;
+            ptDistanceMeters += other.ptDistanceMeters;
+            carTravelSeconds += other.carTravelSeconds;
+            carDistanceMeters += other.carDistanceMeters;
+            awaitSeconds += other.awaitSeconds;
+            awaitSamples += other.awaitSamples;
+            busAwaitSeconds += other.busAwaitSeconds;
+            busAwaitSamples += other.busAwaitSamples;
+            peakCarDistanceMeters += other.peakCarDistanceMeters;
+            peakCarTravelSeconds += other.peakCarTravelSeconds;
+            peakCarSamples += other.peakCarSamples;
         }
+    }
+
+    /** 300m 覆盖精确索引；STRtree build 后只读，可安全供 plans worker 共享。 */
+    static final class CoverageIndex {
+        private static final double GROUND_RADIUS_METERS = 300.0;
+        private final STRtree tree = new STRtree();
+        private final boolean coordinatesSupported;
+        private int stops;
+
+        private record Stop(Coord coord, double projectedRadius) {
+        }
+
+        private CoverageIndex(Set<Coord> stopCoords,
+                              TransitMetrics.MetricCoordinateContext coordinates) {
+            this.coordinatesSupported = coordinates != null && coordinates.isSupported();
+            if (!coordinatesSupported) {
+                tree.build();
+                return;
+            }
+            if (stopCoords != null) {
+                for (Coord coord : stopCoords) {
+                    coord = coordinates.toWebMercator(coord);
+                    if (coord == null) continue;
+                    double radius = TransitMetrics.webMercatorRadiusForGroundMeters(
+                            coord.getY(), GROUND_RADIUS_METERS);
+                    if (!Double.isFinite(radius) || radius <= 0) continue;
+                    tree.insert(new Envelope(coord.getX() - radius, coord.getX() + radius,
+                            coord.getY() - radius, coord.getY() + radius), new Stop(coord, radius));
+                    stops++;
+                }
+            }
+            tree.build();
+        }
+
+        boolean covers(Coord point) {
+            if (point == null || stops == 0) return false;
+            @SuppressWarnings("unchecked")
+            List<Stop> candidates = tree.query(new Envelope(point.getX(), point.getX(), point.getY(), point.getY()));
+            for (Stop stop : candidates) {
+                double dx = point.getX() - stop.coord().getX();
+                double dy = point.getY() - stop.coord().getY();
+                if (dx * dx + dy * dy <= stop.projectedRadius() * stop.projectedRadius()) return true;
+            }
+            return false;
+        }
+
+        boolean available() {
+            return stops > 0;
+        }
+
+        boolean coordinatesSupported() {
+            return coordinatesSupported;
+        }
+    }
+
+    static CoverageIndex coverageIndex(MatsimData data) {
+        if (data == null || data.getSchedule() == null) {
+            return new CoverageIndex(Set.of(), TransitMetrics.MetricCoordinateContext.unsupported());
+        }
+        Object crs = data.getSchedule().getAttributes().getAttribute("coordinateReferenceSystem");
+        return coverageIndexForRoadTransit(
+                TransitMetrics.RoadTransitContext.from(data.getSchedule()),
+                TransitMetrics.MetricCoordinateContext.fromCrs(crs == null ? null : String.valueOf(crs)));
+    }
+
+    static CoverageIndex coverageIndexForRoadTransit(
+            TransitMetrics.RoadTransitContext roadTransit,
+            TransitMetrics.MetricCoordinateContext coordinates) {
+        if (roadTransit != null && roadTransit.coordinateTransformFailures() > 0) {
+            return new CoverageIndex(Set.of(), TransitMetrics.MetricCoordinateContext.unsupported());
+        }
+        return new CoverageIndex(roadTransit == null ? Set.of() : roadTransit.stopCoords(), coordinates);
     }
 
     // ===================================================================================
@@ -651,6 +952,19 @@ public final class MatsimPopulationCache {
         }
     }
 
+    /** 供真实数据适配器复用与仿真缓存完全相同的街道点面归属索引。 */
+    public static int locateStreet(double x, double y) {
+        return streetIndex().locate(x, y);
+    }
+
+    /** 要素顺序与 {@link #locateStreet(double, double)} 返回索引一致，可直接作为前端 district 字典。 */
+    public static List<String> streetDistricts() {
+        StreetIndex index = streetIndex();
+        List<String> districts = new ArrayList<>(index.size());
+        for (int i = 0; i < index.size(); i++) districts.add(index.street(i).district());
+        return List.copyOf(districts);
+    }
+
     /**
      * 解析街道 GeoJSON（gz 字节）并建 3857 索引：环坐标经 GeoUtil.lngLatToMercator 投影，
      * Polygon/MultiPolygon 均支持（含内环孔洞）；无效面（自相交等）用 buffer(0) 修复
@@ -772,17 +1086,17 @@ public final class MatsimPopulationCache {
         }
     }
 
-    static Artifacts assemble(Aggregation aggregation, StreetIndex streets, double scale) {
+    static Artifacts assemble(Aggregation aggregation, StreetIndex streets, double ignoredLegacyScale) {
         byte[] gridBin = encodeGrid(aggregation.homeCells, aggregation.workCells, aggregation.mercCellSize, streets);
         int gridCells = (gridBin.length - BIN_HEADER_BYTES) / BIN_BYTES_PER_CELL;
-        return new Artifacts(gridBin, buildSummary(aggregation, gridCells, scale),
+        return new Artifacts(gridBin, buildSummary(aggregation, gridCells),
                 buildStreets(aggregation, streets));
     }
 
     /**
      * population-grid.bin（§3 + v2 增列，小端）：
      * header = magic "PGRD" + version u16(=2) + count u32 + mercCellSize f64（共 18B）；
-     * record × count（18B/cell，行式）= i i32, j i32, home u32, work u32（抽样人数）,
+     * record × count（18B/cell，行式）= i i32, j i32, home u32, work u32（模型原始人数）,
      * street u16（格中心点面归属的街道要素索引，{@link #STREET_SENTINEL}=未命中；仅供前端行政区过滤，
      * 与端点级街道统计允许极少数跨界格差异）。
      * cell 写入序按打包键升序（i 升序，同 i 内 j 按无符号序）——仅为构建可复现，契约不约束顺序。
@@ -816,13 +1130,14 @@ public final class MatsimPopulationCache {
         return buffer.array();
     }
 
-    /** population-summary.json（§2 表；量为模型抽样口径，前端直出不扩样；scale 仅元信息）。 */
-    private static Map<String, Object> buildSummary(Aggregation aggregation, int gridCells, double scale) {
+    /** population-summary.json（§2 表；所有数量均为模型文件中的原始值）。 */
+    private static Map<String, Object> buildSummary(Aggregation aggregation, int gridCells) {
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("status", "ready");
         summary.put("cacheVersion", POPULATION_CACHE_VERSION);
         summary.put("generatedAt", System.currentTimeMillis());
-        summary.put("scale", scale);
+        summary.put("scale", 1.0);
+        summary.put("quantityPolicy", "model-original");
         summary.put("cellSizeMeters", (int) CELL_SIZE_METERS);
         summary.put("mercCellSize", aggregation.mercCellSize);
         summary.put("gridCells", gridCells);
@@ -833,6 +1148,87 @@ public final class MatsimPopulationCache {
         summary.put("unassignedWork", aggregation.unassignedWork);
         summary.put("homeTypes", new ArrayList<>(aggregation.homeTypes));
         summary.put("workTypes", new ArrayList<>(aggregation.workTypes));
+        boolean roadRoutesComplete = aggregation.roadTransit == null || aggregation.roadTransit.isComplete();
+        boolean coordinatesSupported = aggregation.coverageIndex != null
+                && aggregation.coverageIndex.coordinatesSupported();
+        boolean coverageAvailable = roadRoutesComplete && coordinatesSupported
+                && aggregation.coverageIndex != null
+                && aggregation.coverageIndex.available() && aggregation.homePersons > 0;
+        summary.put("coverageValidHomePersons", aggregation.homePersons);
+        summary.put("coverageMissingHomePersons", Math.max(0L, aggregation.persons - aggregation.homePersons));
+        summary.put("coordinateTransformFailures", aggregation.transformFailures);
+        summary.put("coveredPersons300m", coverageAvailable ? aggregation.coveredPersons : null);
+        summary.put("coverage300Percent", coverageAvailable
+                ? Math.round(aggregation.coveredPersons * 10_000.0 / aggregation.homePersons) / 100.0 : null);
+        summary.put("coverage300Status", !roadRoutesComplete || !coordinatesSupported ? "unsupported"
+                : coverageAvailable ? "ready" : "nodata");
+        summary.put("unresolvedRoadTransitRoutes", aggregation.roadTransit == null
+                ? 0 : aggregation.roadTransit.unresolvedRoutes());
+        summary.put("journeys", aggregation.journeys);
+        Map<String, Double> modeShare = new LinkedHashMap<>();
+        if (aggregation.journeys > 0) {
+            aggregation.tripModeCounts.forEach((mode, count) ->
+                    modeShare.put(mode, Math.round(count * 10_000.0 / aggregation.journeys) / 100.0));
+        }
+        summary.put("tripModeSharePercent", modeShare);
+        summary.put("busJourneys", aggregation.busJourneys);
+        summary.put("transitJourneys", aggregation.transitJourneys);
+        summary.put("residentBusJourneys", aggregation.residentBusJourneys);
+        summary.put("residentTransitJourneys", aggregation.residentTransitJourneys);
+        summary.put("motorizedJourneys", aggregation.motorizedJourneys);
+        summary.put("unresolvedLegacyPtJourneys", aggregation.unresolvedLegacyPtJourneys);
+        summary.put("residentUnresolvedLegacyPtJourneys",
+                aggregation.residentUnresolvedLegacyPtJourneys);
+        summary.put("busDailyTripsStatus",
+                aggregation.homePersons == 0 ? "nodata"
+                        : aggregation.residentUnresolvedLegacyPtJourneys > 0
+                        ? "unsupported" : "ready");
+        summary.put("busSharePercent", roadRoutesComplete && aggregation.journeys > 0
+                ? Math.round(aggregation.busJourneys * 10_000.0 / aggregation.journeys) / 100.0 : null);
+        summary.put("ptSharePercent", aggregation.journeys > 0
+                ? Math.round(aggregation.transitJourneys * 10_000.0 / aggregation.journeys) / 100.0 : null);
+        summary.put("publicTransportMotorizedSharePercent", aggregation.motorizedJourneys > 0
+                ? Math.round(aggregation.transitJourneys * 10_000.0 / aggregation.motorizedJourneys) / 100.0
+                : null);
+        summary.put("publicTransportShareStatus", aggregation.motorizedJourneys == 0 ? "nodata" : "ready");
+        summary.put("busShareStatus", !roadRoutesComplete || aggregation.unresolvedLegacyPtJourneys > 0
+                ? "unsupported" : aggregation.journeys == 0 ? "nodata" : "ready");
+        boolean serviceJourneySupported = roadRoutesComplete
+                && aggregation.unresolvedBusServiceJourneys == 0;
+        summary.put("busServiceJourneyStatus", !serviceJourneySupported
+                ? "unsupported" : aggregation.busServiceJourneys == 0 ? "nodata" : "ready");
+        summary.put("busServiceJourneys", aggregation.busServiceJourneys);
+        summary.put("busServiceTransitBoardings", aggregation.busServiceTransitBoardings);
+        summary.put("busServiceTransfers", aggregation.busServiceTransfers);
+        summary.put("busRailJourneys", aggregation.busRailJourneys);
+        summary.put("unresolvedBusServiceJourneys", aggregation.unresolvedBusServiceJourneys);
+        summary.put("averageBusTransfers", serviceJourneySupported && aggregation.busServiceJourneys > 0
+                ? Math.round(aggregation.busServiceTransfers * 10_000.0
+                        / aggregation.busServiceJourneys) / 10_000.0 : null);
+        summary.put("busRailFeederPercent", serviceJourneySupported && aggregation.busServiceJourneys > 0
+                ? Math.round(aggregation.busRailJourneys * 10_000.0
+                        / aggregation.busServiceJourneys) / 100.0 : null);
+        Map<String, Object> speeds = new LinkedHashMap<>();
+        // 公交高峰运营速度由 visual 缓存按 schedule 班次汇总后写入；此处只缓存 plans
+        // 的高峰小汽车空间平均速度，避免以乘客 leg 速度冒充公交车辆运营速度。
+        speeds.put("ptAvg", null);
+        speeds.put("busAvg", null);
+        speeds.put("carAvg", aggregation.peakCarTravelSeconds > 0
+                ? Math.round(aggregation.peakCarDistanceMeters
+                        / aggregation.peakCarTravelSeconds * 360.0) / 100.0 : null);
+        summary.put("speedKmh", speeds);
+        summary.put("peakCarDistanceMeters", aggregation.peakCarDistanceMeters);
+        summary.put("peakCarTravelSeconds", aggregation.peakCarTravelSeconds);
+        summary.put("peakCarSamples", aggregation.peakCarSamples);
+        summary.put("speedPeriodPolicy", "peak-0700-0900-and-1700-1900");
+        summary.put("carSpeedSpatialScope", "all-model-urban-roads");
+        summary.put("averageWaitMinutes", aggregation.awaitSamples > 0
+                ? Math.round(aggregation.awaitSeconds / aggregation.awaitSamples / 60.0 * 100.0) / 100.0 : null);
+        summary.put("waitSamples", aggregation.awaitSamples);
+        summary.put("averageBusWaitMinutes", roadRoutesComplete && aggregation.busAwaitSamples > 0
+                ? Math.round(aggregation.busAwaitSeconds / aggregation.busAwaitSamples / 60.0 * 100.0) / 100.0 : null);
+        summary.put("busWaitSamples", aggregation.busAwaitSamples);
+        summary.put("busWaitPolicy", TransitMetrics.BUS_WAIT_TIME_POLICY);
         return summary;
     }
 
@@ -841,6 +1237,12 @@ public final class MatsimPopulationCache {
      * 对账恒等式（§6）：sum(streets.home) + unassignedHome == homePersons（work 同理）。
      */
     private static Map<String, Object> buildStreets(Aggregation aggregation, StreetIndex streets) {
+        if (streets == null) {
+            return Map.of(
+                    "streets", List.of(),
+                    "totals", Map.of("home", 0L, "work", 0L)
+            );
+        }
         List<Map<String, Object>> rows = new ArrayList<>(streets.size());
         long totalHome = 0;
         long totalWork = 0;
@@ -871,20 +1273,27 @@ public final class MatsimPopulationCache {
     // ===================================================================================
 
     private static Map<String, Object> manifest(MatsimData data, boolean ready) {
+        return manifest(data, ready ? "ready" : "failed", null);
+    }
+
+    private static Map<String, Object> manifest(MatsimData data, String status, String message) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("status", ready ? "ready" : "failed");
+        result.put("status", status);
         result.put("cacheVersion", POPULATION_CACHE_VERSION);
         result.put("generatedAt", System.currentTimeMillis());
+        if (message != null && !message.isBlank()) result.put("message", message);
         sourceFingerprint(data, result);
         return result;
     }
 
     /**
-     * 源指纹：plans（居住/就业点唯一数据源；非大模型的内存 population 亦源于此文件）
+     * 源指纹：plans（居住/就业点、方式、速度与等待）+ schedule（300m 覆盖）
      * + 街道资源标识（路径 + 内容 sha256，资源升级即失效重建）。
      */
     private static void sourceFingerprint(MatsimData data, Map<String, Object> result) {
         putFileFingerprint(result, "plans", data.getOutfile() == null ? null : data.getOutfile().getPlans());
+        putFileFingerprint(result, "schedule",
+                data.getOutfile() == null ? null : data.getOutfile().getTransitSchedule());
         result.put("streetsResource", STREETS_RESOURCE);
         result.put("streetsSha256", streetsGeojsonTag());
     }
@@ -893,22 +1302,13 @@ public final class MatsimPopulationCache {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static Map<String, Object> loadCachedJson(Path path) {

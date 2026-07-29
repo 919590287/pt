@@ -12,19 +12,21 @@ import {
 
 // 按 §3 + v2 增列契约手工构造一份 bin：header(18B) + n×18B 记录，小端
 function makeGridBuffer(cells, { mercCellSize = 108.8, version = 2, magic = "PGRD" } = {}) {
-  const buffer = new ArrayBuffer(18 + cells.length * 18);
+  const recordBytes = version === 3 ? 22 : 18;
+  const buffer = new ArrayBuffer(18 + cells.length * recordBytes);
   const view = new DataView(buffer);
   for (let k = 0; k < 4; k++) view.setUint8(k, magic.charCodeAt(k));
   view.setUint16(4, version, true);
   view.setUint32(6, cells.length, true);
   view.setFloat64(10, mercCellSize, true);
   cells.forEach((cell, k) => {
-    const base = 18 + k * 18;
+    const base = 18 + k * recordBytes;
     view.setInt32(base, cell.i, true);
     view.setInt32(base + 4, cell.j, true);
     view.setUint32(base + 8, cell.home, true);
     view.setUint32(base + 12, cell.work, true);
-    view.setUint16(base + 16, cell.street ?? 0xffff, true);
+    if (version === 3) view.setUint32(base + 16, cell.resident, true);
+    view.setUint16(base + (version === 3 ? 20 : 16), cell.street ?? 0xffff, true);
   });
   return buffer;
 }
@@ -53,6 +55,20 @@ describe("parsePopulationGrid", () => {
     const truncated = makeGridBuffer([{ i: 0, j: 0, home: 1, work: 1 }]).slice(0, 20);
     expect(() => parsePopulationGrid(truncated)).toThrow(/长度/);
     expect(() => parsePopulationGrid(null)).toThrow();
+  });
+
+  it("兼容真实数据 v3 的常住人口列并累计总量", () => {
+    const buffer = makeGridBuffer([
+      { i: 104000, j: 24000, home: 12, work: 3, resident: 21, street: 42 },
+      { i: 104001, j: 24000, home: 0, work: 9, resident: 5 },
+    ], { version: 3 });
+    const grid = parsePopulationGrid(buffer);
+    expect(grid.version).toBe(3);
+    expect(Array.from(grid.resident)).toEqual([21, 5]);
+    expect(grid.homeTotal).toBe(12);
+    expect(grid.workTotal).toBe(12);
+    expect(grid.residentTotal).toBe(26);
+    expect(Array.from(grid.street)).toEqual([42, 0xffff]);
   });
 });
 
@@ -86,14 +102,14 @@ describe("densityClassIndex / buildGridColors", () => {
     expect(densityClassIndex(99999, scheme.breaks)).toBe(2);
   });
 
-  it("抽样数 ÷cell面积 得密度（不扩样）；0 值 cell 透明、低级用 alphaLow", () => {
+  it("模型原始数 ÷cell面积 得密度；0 值 cell 透明、低级用 alphaLow", () => {
     // count 10 → 1000 人/km²（第 1 级）；count 40 → 4000（最高级）
     const counts = Uint32Array.from([0, 10, 40]);
     const colors = buildGridColors(counts, scheme);
     expect(colors[3]).toBe(0); // count=0 不画
     expect([colors[4], colors[5], colors[6], colors[7]]).toEqual([26, 152, 80, 200]);
     expect([colors[8], colors[9], colors[10], colors[11]]).toEqual([215, 48, 39, 200]);
-    // 密度检算：确保 CELL_AREA_KM2 口径未被悄悄改动，且不含任何 scale 扩样因子
+    // 密度检算：确保 CELL_AREA_KM2 口径未被悄悄改动，且不含任何 scale 缩放因子
     expect(10 / CELL_AREA_KM2).toBe(1000);
   });
 

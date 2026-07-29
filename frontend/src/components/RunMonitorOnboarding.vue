@@ -651,4 +651,38 @@ onBeforeUnmount(() => {
     transition-duration: 1ms !important;
   }
 }
+
+/* ── 暗色模式（html.dark，跟随底图选择）：字面量 hover/按钮态的对应覆盖 ── */
+html.dark .rm-tour-mask {
+  background: rgba(4, 8, 14, 0.7);
+}
+
+html.dark .rm-tour-bubble,
+html.dark .rm-tour-preference {
+  box-shadow: 0 24px 64px -26px rgba(2, 6, 12, 0.8), 0 8px 24px -16px rgba(2, 6, 12, 0.5);
+}
+
+html.dark .rm-tour-skip:hover {
+  color: oklch(88% 0.02 250);
+  background: rgba(148, 180, 220, 0.12);
+}
+
+html.dark .rm-tour-secondary {
+  border-color: rgba(148, 180, 220, 0.28);
+}
+
+html.dark .rm-tour-secondary:hover:not(:disabled) {
+  border-color: rgba(148, 180, 220, 0.45);
+  background: rgba(148, 180, 220, 0.12);
+}
+
+html.dark .rm-tour-primary {
+  border-color: oklch(58% 0.17 253);
+  box-shadow: 0 8px 18px -10px rgba(2, 6, 12, 0.8);
+}
+
+html.dark .rm-tour-primary:hover {
+  border-color: oklch(66% 0.16 253);
+  background: oklch(66% 0.16 253);
+}
 </style>

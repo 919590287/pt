@@ -75,8 +75,11 @@ export const MAP_THEME = {
   transfer: {
     busToMetro: "#f97316", // 公交→地铁（橙，沿 route.up）
     metroToBus: "#0071e3", // 地铁→公交（蓝，沿 route.down）
+    stationFill: "#ffffff", // 聚焦态站点统一白心；方向只交给线路表达
+    stationStroke: "#245a70", // 中性深青蓝描边，兼顾浅色/暗色底图
     hubRing: "#33608f", // 枢纽气泡描边（钢蓝，与站点圆环同族）
     hubSelected: "#f97316", // 选中枢纽描边
+    hubFocus: "#65d8ff", // 单站聚焦：中性冰蓝光环，不与两类流向争夺方向语义
     longStroke: "#dc4c5d", // 超长换乘枢纽静态描边（与地铁红同族，不闪烁）
     warn: "#dc4c5d", // 长换乘警示（图表着色）
     hubScale: "GnYlRd", // 枢纽时间色带（colorSchemes schemeKey，沿 stationHeat 风格）
@@ -109,7 +112,7 @@ export const MAP_THEME = {
    * 出行分布监测（公交出行监测模块，人口分布的同级子模块；原起终点分布监测）。
    * 色带/透明度/街道 token 与 population 同值（同一模块族的视觉语言）；
    * 断点独立：按「单格人次 ×100 折算成人次/km²」定义（5/20/80/300/1k/3k/10k/30k 人次/格），
-   * 图例以人次/格展示。断点定于站点端口径时代（端点集中在站点格）；tripends-v4 端点改为
+   * 图例以模型原始人次/格展示。断点定于站点端口径时代（端点集中在站点格）；当前端点改为
    * 活动位置后分布更散、单格量级可能明显下降，见真实数据后按需下调。
    */
   tripEnds: {
@@ -171,11 +174,24 @@ export const MAP_THEME = {
       baseColor: "#9aa3ad",
       baseAlpha: 135,
       baseWidthPx: 0.7,
+      /**
+       * Top10 道路名标注（GJKL 与 harness 共用）：小号中字重 + 细白描边，
+       * 压在橙带/灰网上保可读；重叠按名次做屏幕空间贪心避让（selectVisibleRoadLabels，
+       * 低名次让位、moveend 重算补显；勿换回 deck CollisionFilterExtension——
+       * 中文笔画缝隙会漏字，见函数注释）。字号勿再调大——14px 粗体曾被用户否。
+       * paddingPx = 标签避让盒的四周呼吸间距。
+       */
+      label: {
+        color: "#2c3844",
+        halo: "#ffffff",
+        sizePx: 11,
+        paddingPx: 6,
+      },
     },
   },
 
   /**
-   * 线网高峰满载率着色（线路客流监测页签的着色指标切换）。
+   * 线网平均高峰满载率着色（线路客流监测页签的着色指标切换）。
    * 与客流的分位分档不同，满载率有绝对语义：<50 舒适 / 50-70 适中 / 70-85 紧张 /
    * 85-100 饱和 / >100 超载（后端 loadRate 不封顶，超载可见）——固定断点勿改分位。
    * widths 为各档线宽系数（供 line-width 乘算，与客流色阶的 widths 同语义）。

@@ -56,8 +56,8 @@ import java.util.TreeSet;
  *       'max(净时长, 长度/freespeed)' 封顶到自由流（QSim 秒级取整会让短 link 速度虚高）；</li>
  *   <li>空间平均速度：桶内 Σ长度 ÷ Σ净时长（调和口径，等权每次穿越的时间占用），
  *       非各次速度的算术平均；</li>
- *   <li>抽样平滑：输出桶 = 本桶与前后各一桶合并（滑窗 3×15min=45min，步长 15min），
- *       10% 抽样下 15 分钟班距线路每桶约 3 个样本；合并后仍无样本写 0（前端不画）；</li>
+ *   <li>稀疏观测平滑：输出桶 = 本桶与前后各一桶合并（滑窗 3×15min=45min，步长 15min）；
+ *       合并后仍无穿越观测则写 0（前端不画），不丢弃任何已加载事件；</li>
  *   <li>方向保留：链路为**有向**（不做走廊式无向合并），早晚高峰方向性是拥堵核心信息；</li>
  *   <li>制式判定复用 {@link MatsimCorridorCache#isBusTransportMode}（tram/地铁/轨道不计）；
  *       非运营车辆（社会车辆）一律不计；</li>
@@ -65,13 +65,14 @@ import java.util.TreeSet;
  *       （vehicleEntersTraffic 进入的链、leavesTraffic 中断的链）不计；</li>
  *   <li>路名解析链与街道归属复用走廊缓存（属性→边车表→无名；中点点面归属）。</li>
  * </ul>
- * 速度为模型仿真口径（10% 抽样时交通负荷偏轻，速度整体偏乐观），展示侧需注明。
+ * 速度为已加载模型的仿真原值，平台不推断或修正模型生成时的交通需求口径。
  */
 @Slf4j
 public final class MatsimLinkSpeedCache {
 
     // v1: 首版口径：bus 运营车辆 + 净行驶速度（扣站点停靠、freespeed 封顶）+ 96×15min 桶 ±1 桶平滑。
-    public static final String LINK_SPEED_CACHE_VERSION = "link-speed-v1";
+    // v2: 数据口径明确为已加载事件全量原值，不再声明或推断抽样比例。
+    public static final String LINK_SPEED_CACHE_VERSION = "link-speed-v2";
 
     /** 时间桶：96×900s；输出值为 ±1 桶滑窗合并（45min 窗、15min 步长）。 */
     public static final int BUCKET_COUNT = 96;
@@ -112,8 +113,12 @@ public final class MatsimLinkSpeedCache {
     // ===================================================================================
 
     public static void prepareOnModelLoad(MatsimData data) {
+        prepareOnModelLoad(data, null);
+    }
+
+    public static void prepareOnModelLoad(MatsimData data, FastEventReader.ProgressListener progress) {
         synchronized (ModelBuildLocks.lockFor("link-speed", data)) {
-            ensureLinkSpeedCacheLocked(data);
+            ensureLinkSpeedCacheLocked(data, progress);
         }
     }
 
@@ -188,18 +193,20 @@ public final class MatsimLinkSpeedCache {
     // 构建编排
     // ===================================================================================
 
-    private static void ensureLinkSpeedCacheLocked(MatsimData data) {
+    private static void ensureLinkSpeedCacheLocked(MatsimData data,
+                                                   FastEventReader.ProgressListener progress) {
         if (isReady(data)) {
             return;
         }
         try {
-            Files.createDirectories(cacheDir(data));
             long start = System.currentTimeMillis();
-            SpeedAggregator aggregator = aggregateFromEvents(data);
+            SpeedAggregator aggregator = aggregateFromEvents(data, progress);
             Artifacts artifacts = assemble(aggregator, MatsimPopulationCache.streetIndex());
+            MatsimCachePaths.recreateVersionDir(data, LINK_SPEED_CACHE_VERSION);
             writeBytesAtomic(matrixPath(data), artifacts.matrixBin);
             writeJsonAtomic(summaryPath(data), artifacts.summary);
             writeJsonAtomic(manifestPath(data), manifest(data, true));
+            MatsimCachePaths.deleteOtherVersions(data, "link-speed-v", LINK_SPEED_CACHE_VERSION);
             MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
             log.info("链路车速缓存生成完成: model={}, busVehicles={}, links={}, traversals={}, "
                             + "dropped={}, bin={}B, 耗时={}ms",
@@ -217,7 +224,8 @@ public final class MatsimLinkSpeedCache {
     }
 
     /** schedule 制式表 + 单遍 events 流（独立解压一次；仅公交运营车辆事件进入状态机）。 */
-    private static SpeedAggregator aggregateFromEvents(MatsimData data) throws Exception {
+    private static SpeedAggregator aggregateFromEvents(MatsimData data,
+                                                       FastEventReader.ProgressListener progress) throws Exception {
         Network network = data.getNetwork();
         SpeedAggregator aggregator = new SpeedAggregator(linkMetaResolver(network));
         Set<String> busRouteKeys = busRouteKeys(data.getSchedule());
@@ -251,7 +259,7 @@ public final class MatsimLinkSpeedCache {
                 default -> {
                 }
             }
-        });
+        }, progress);
         return aggregator;
     }
 
@@ -502,7 +510,7 @@ public final class MatsimLinkSpeedCache {
         params.put("mean", "space-mean"); // Σ长度/Σ时长（调和口径）
         params.put("window", "3x" + BUCKET_SECONDS + "s"); // ±1 桶滑窗合并
         params.put("direction", "directed"); // 有向链路，不做无向合并
-        params.put("sampling", "model-sample-not-scaled"); // 模型抽样口径，交通负荷偏轻速度偏乐观
+        params.put("quantityPolicy", "model-original"); // 所有已加载穿越事件原样统计
 
         Map<String, Object> summary = new LinkedHashMap<>();
         summary.put("status", "ready");
@@ -630,22 +638,13 @@ public final class MatsimLinkSpeedCache {
         result.put(key + "File", filePath);
         result.put(key + "Modified", lastModified(filePath));
         result.put(key + "Size", fileSize(filePath));
+        result.put(key + "Signature", MatsimSourceFingerprint.signature(filePath));
     }
 
     private static boolean sameSources(MatsimData data, Map<String, Object> manifest) {
         Map<String, Object> current = new LinkedHashMap<>();
         sourceFingerprint(data, current);
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            Object oldValue = manifest.get(entry.getKey());
-            if (entry.getValue() instanceof Number number) {
-                if (!(oldValue instanceof Number oldNumber) || oldNumber.longValue() != number.longValue()) {
-                    return false;
-                }
-            } else if (!String.valueOf(entry.getValue()).equals(String.valueOf(oldValue))) {
-                return false;
-            }
-        }
-        return true;
+        return MatsimSourceFingerprint.sameFlatFingerprint(current, manifest);
     }
 
     private static Map<String, Object> loadCachedJson(Path path) {

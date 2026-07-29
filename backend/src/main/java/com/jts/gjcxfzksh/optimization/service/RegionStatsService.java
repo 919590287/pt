@@ -42,6 +42,9 @@ public class RegionStatsService {
         } catch (Exception e) {
             throw new BusinessException("母本模型未加载，请先在右上角加载模型");
         }
+        if (!data.hasFullRoadNetwork()) {
+            throw new BusinessException("大模型当前仅加载公交子路网，不支持道路优化区域统计");
+        }
 
         double centerLat = centroidLat(area);
         Polygon polygon = GeoUtil.toPolygon(area.getPolygon(), null, true);

@@ -60,7 +60,7 @@ public class TripEndsController {
             @RequestParam(value = "v", required = false) String v,
             @RequestHeader(value = "If-None-Match", required = false) String ifNoneMatch) {
         MatsimData data = Datasource.data(datasource).matsim_data();
-        String tag = MatsimTripEndsCache.gridBinTag(data);
+        String tag = MatsimTripEndsCache.odGridBinTag(data);
         if (tag == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }

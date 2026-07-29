@@ -49,8 +49,9 @@
 <script setup>
 import { onMounted, onUnmounted, ref, computed } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { getSchemeList, getModelList, loadModel } from "@/api/scheme";
+import { loadModel } from "@/api/scheme";
 import { useModelSelectionStore } from "@/stores/modelSelection";
+import { useModelRuntimeStore } from "@/stores/modelRuntime";
 import { useScenarioEditStore } from "../store";
 
 const PAGE_KEY = "scenarioedit";
@@ -59,6 +60,7 @@ const CURRENT_MODEL_KEY = "datavisualization";
 
 const store = useScenarioEditStore();
 const selectionStore = useModelSelectionStore();
+const modelRuntime = useModelRuntimeStore();
 
 const scheme = ref("");
 const modelName = ref("");
@@ -91,9 +93,9 @@ function persistSelection() {
 async function fetchSchemes() {
   loadingSchemes.value = true;
   try {
-    const res = await getSchemeList({});
+    const list = await modelRuntime.fetchSchemes();
     if (disposed) return [];
-    schemeList.value = Array.isArray(res?.data) ? res.data : [];
+    schemeList.value = list;
     return schemeList.value;
   } finally {
     if (!disposed) loadingSchemes.value = false;
@@ -107,9 +109,9 @@ async function fetchModels() {
   }
   loadingModels.value = true;
   try {
-    const res = await getModelList({ schemeName: scheme.value });
+    const list = await modelRuntime.fetchModels(scheme.value);
     if (disposed) return [];
-    modelList.value = Array.isArray(res?.data) ? res.data : [];
+    modelList.value = list;
     return modelList.value;
   } finally {
     if (!disposed) loadingModels.value = false;
@@ -403,5 +405,29 @@ onUnmounted(() => {
       width: min(100%, 220px);
     }
   }
+}
+
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .datebase_box .handle {
+  color: #c2cddd;
+}
+
+html.dark .datebase_box .bar-status {
+  background: rgba(148, 180, 220, 0.12);
+  color: #94a3b8;
+}
+html.dark .datebase_box .bar-status.ok {
+  color: #4ccd76;
+  background: rgba(76, 205, 118, 0.12);
+}
+
+html.dark .datebase_box .el-select :deep(.el-input__wrapper) {
+  background-color: rgba(17, 24, 33, 0.94) !important;
+}
+html.dark .datebase_box .el-select :deep(.el-input__wrapper:hover) {
+  box-shadow: 0 0 0 1px rgba(60, 190, 214, 0.5) inset !important;
+}
+html.dark .datebase_box .el-select :deep(.el-input__wrapper .el-input__inner::placeholder) {
+  color: #64748b;
 }
 </style>

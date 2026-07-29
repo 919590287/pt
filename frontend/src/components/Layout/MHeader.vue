@@ -218,6 +218,7 @@ const fallbackBasemapOptions = [
   {
     key: "carto-dark",
     label: "Dark",
+    dark: true,
     tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],
     background: "#111827",
   },
@@ -892,6 +893,66 @@ const headerMenus = [
   }
 }
 
+/* ── 暗色模式（html.dark，跟随底图选择）：只换色，布局不动 ── */
+html.dark .header-container {
+  --platform-ink: #e7edf6;
+  --platform-muted: #94a3b8;
+  --platform-accent: #409cff;
+  --platform-accent-strong: #74b6ff;
+  --platform-surface: #10161d;
+  --platform-border: rgba(148, 180, 220, 0.14);
+  background: #10161d;
+  background-color: #10161d;
+  border-bottom: 1px solid var(--platform-border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 28px -20px rgba(2, 6, 12, 0.6);
+}
+
+html.dark .nav-list .item:hover {
+  background: rgba(64, 156, 255, 0.12);
+}
+
+html.dark .nav-list .item.active {
+  background: linear-gradient(90deg, rgba(64, 156, 255, 0.18), rgba(64, 156, 255, 0.1));
+  box-shadow: inset 0 0 0 1px rgba(64, 156, 255, 0.24);
+}
+
+html.dark .nav-list .item.active:hover {
+  background: linear-gradient(90deg, rgba(64, 156, 255, 0.22), rgba(64, 156, 255, 0.13));
+}
+
+html.dark .header-actions.has-context-divider::before {
+  background: rgba(148, 180, 220, 0.24);
+}
+
+html.dark .help-menu-btn {
+  border-color: rgba(148, 180, 220, 0.26);
+  color: #8fb8e8;
+  background: rgba(20, 27, 37, 0.9);
+  box-shadow: 0 7px 18px -14px rgba(2, 6, 12, 0.7);
+}
+
+html.dark .help-menu-btn:hover,
+html.dark .help-menu-btn:focus-visible {
+  color: #b3d4ff;
+  border-color: rgba(64, 156, 255, 0.45);
+  background: rgba(64, 156, 255, 0.14);
+  box-shadow: 0 0 0 4px rgba(64, 156, 255, 0.12);
+}
+
+html.dark .user-profile-btn {
+  border-color: rgba(64, 156, 255, 0.3);
+  background: rgba(20, 27, 37, 0.85);
+  color: var(--platform-accent);
+  box-shadow: 0 10px 22px rgba(2, 6, 12, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+html.dark .user-profile-btn:hover,
+html.dark .user-profile-btn:focus-visible {
+  background: rgba(64, 156, 255, 0.16);
+  border-color: rgba(64, 156, 255, 0.5);
+  box-shadow: 0 14px 28px rgba(2, 6, 12, 0.55), 0 0 0 4px rgba(64, 156, 255, 0.12);
+}
+
 </style>
 
 <style lang="scss">
@@ -1267,6 +1328,121 @@ const headerMenus = [
   .el-popper__arrow::before {
     background: rgba(249, 252, 253, 0.98) !important;
     border-color: rgba(35, 50, 55, 0.12) !important;
+  }
+}
+
+/* ── 暗色模式：用户下拉/底图子菜单（teleport 到 body 的全局 popper） ── */
+html.dark .user-dropdown-popper {
+  border-color: rgba(148, 180, 220, 0.2) !important;
+  background: rgba(22, 30, 41, 0.98) !important;
+  box-shadow: 0 22px 52px rgba(2, 6, 12, 0.66) !important;
+
+  .user-menu-head {
+    border-bottom-color: rgba(255, 255, 255, 0.07) !important;
+    color: #e7edf6 !important;
+  }
+
+  .user-menu-head .user-info-text .user-menu-label {
+    color: #94a3b8 !important;
+  }
+
+  .user-menu-head .user-info-text .user-menu-name {
+    color: #e7edf6 !important;
+  }
+
+  .el-dropdown-menu__item.custom-dropdown-item {
+    color: #c2cddd !important;
+
+    .item-icon {
+      color: #7f93ad;
+    }
+
+    &:hover,
+    &:focus {
+      background-color: rgba(64, 156, 255, 0.14) !important;
+      color: #9ecbff !important;
+
+      .item-icon {
+        color: #6cb2ff;
+      }
+    }
+
+    &.logout-item {
+      color: #c2cddd !important;
+
+      .item-icon {
+        color: #7f93ad;
+      }
+
+      &:hover,
+      &:focus {
+        background-color: rgba(255, 99, 88, 0.14) !important;
+        color: #ff8a80 !important;
+
+        .item-icon {
+          color: #ff8a80;
+        }
+      }
+    }
+  }
+
+  .el-dropdown-menu__item--divided {
+    border-top-color: rgba(255, 255, 255, 0.08) !important;
+  }
+
+  .basemap-trigger {
+    color: #c2cddd !important;
+  }
+
+  .basemap-trigger .item-icon {
+    color: #7f93ad !important;
+  }
+
+  .basemap-trigger .submenu-arrow {
+    color: #64748b !important;
+  }
+
+  .basemap-flyout-wrap:hover .basemap-trigger,
+  .basemap-flyout-wrap:focus-within .basemap-trigger,
+  .basemap-flyout-wrap.is-open .basemap-trigger {
+    background-color: rgba(64, 156, 255, 0.14) !important;
+    color: #9ecbff !important;
+  }
+
+  .basemap-flyout-wrap:hover .basemap-trigger .item-icon,
+  .basemap-flyout-wrap:focus-within .basemap-trigger .item-icon,
+  .basemap-flyout-wrap.is-open .basemap-trigger .item-icon {
+    color: #6cb2ff !important;
+  }
+
+  .basemap-submenu {
+    border-color: rgba(148, 180, 220, 0.2) !important;
+    background: rgba(22, 30, 41, 0.98) !important;
+    box-shadow: 0 10px 32px rgba(2, 6, 12, 0.6) !important;
+  }
+
+  .basemap-option {
+    color: #c2cddd !important;
+
+    &:hover,
+    &:focus-visible {
+      background: rgba(64, 156, 255, 0.14) !important;
+      color: #dce9f8 !important;
+    }
+
+    &.active {
+      background: rgba(64, 156, 255, 0.18) !important;
+      color: #9ecbff !important;
+    }
+  }
+
+  .basemap-check {
+    color: #9ecbff !important;
+  }
+
+  .el-popper__arrow::before {
+    background: rgba(22, 30, 41, 0.98) !important;
+    border-color: rgba(148, 180, 220, 0.2) !important;
   }
 }
 </style>
