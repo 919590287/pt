@@ -14,6 +14,7 @@ vi.mock("@/api/scheme.js", () => api);
 vi.mock("@/utils/modelDataCache.js", () => modelCache);
 
 import { useModelRuntimeStore } from "./modelRuntime.js";
+import { useModelSelectionStore } from "./modelSelection.js";
 
 describe("modelRuntime catalog scheduling", () => {
   beforeEach(() => {
@@ -106,6 +107,31 @@ describe("modelRuntime catalog scheduling", () => {
       { name: "广州/public/v6" },
       { silentError: true },
     );
+  });
+
+  it("does not replace a persisted real-data mode when the simulation gate opens", async () => {
+    api.getSchemeList.mockResolvedValue({ data: ["广州"] });
+    api.getModelList.mockResolvedValue({
+      data: [{
+        name: "广州/public/V6",
+        cacheStatus: "ready",
+        loadStatus: true,
+      }],
+    });
+    const selectionStore = useModelSelectionStore();
+    selectionStore.setSelection("datavisualization", {
+      sourceMode: "real",
+      scheme: "广州",
+      model: "广州/public/V6",
+      realServiceDate: "2026-03-10",
+    });
+
+    await useModelRuntimeStore().bootstrap();
+
+    expect(selectionStore.getSelection("datavisualization")).toMatchObject({
+      sourceMode: "real",
+      realServiceDate: "2026-03-10",
+    });
   });
 
   it("stops model polling while the user is on an independent page", async () => {

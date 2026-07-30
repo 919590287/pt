@@ -1020,7 +1020,10 @@ async function syncRoadNetwork() {
     if (wantRoadNet.value && map()) updateRoadNetwork(map(), roadNetSegments);
   } catch (e) {
     if (seq === roadNetRequestSeq && e?.code !== "ERR_CANCELED") {
-      ElMessage.warning("编辑路网加载失败，可继续点选，但请根据寻径结果确认走向");
+      clearRoadNetwork(m);
+      store.setTool("");
+      ElMessage.error("编辑路网加载失败，已停止当前绘制操作");
+      throw new Error("编辑路网加载失败，无法继续绘制", { cause: e });
     }
   } finally {
     if (seq === roadNetRequestSeq) roadNetController = null;

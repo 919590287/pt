@@ -190,9 +190,9 @@ class MatsimAnalysisCacheLargeStreamTest {
         Map<?, ?> routeDemographics = (Map<?, ?>) route1.get("demographics");
         assertEquals(1, ((Number) routeDemographics.get("riderCount")).intValue());
         Set<String> routeActivities = activityKeys((List<?>) routeDemographics.get("activityTypes"));
-        assertTrue(routeActivities.contains("home"));
-        assertTrue(routeActivities.contains("gym"));
-        assertFalse(routeActivities.contains("work"));
+        assertEquals(Set.of(), routeActivities,
+                "缺 TransitPassengerRoute 时不得拿乘客全部活动冒充本次出行目的");
+        assertEquals("trip-purpose", routeDemographics.get("activitySource"));
 
         Map<String, Object> stationPanel = MatsimStationPanelCache.readStationPanel(data);
         Map<?, ?> stationSummary = (Map<?, ?>) stationPanel.get("summary");
@@ -202,8 +202,9 @@ class MatsimAnalysisCacheLargeStreamTest {
         Map<?, ?> stop1 = (Map<?, ?>) stations.get("stop1");
         Map<?, ?> stationDemographics = (Map<?, ?>) stop1.get("demographics");
         Set<String> stationActivities = activityKeys((List<?>) stationDemographics.get("activityTypes"));
-        assertTrue(stationActivities.contains("gym"));
-        assertFalse(stationActivities.contains("work"));
+        assertEquals(Set.of(), stationActivities,
+                "缺明确的 access stop 与目的活动映射时不得回退到全活动画像");
+        assertEquals("trip-purpose", stationDemographics.get("activitySource"));
 
         Map<String, Object> info = MatsimPrecomputedCache.readInfo(data);
         assertNotNull(info);
@@ -283,8 +284,9 @@ class MatsimAnalysisCacheLargeStreamTest {
         Map<?, ?> metroGroupDemographics = (Map<?, ?>) metroGroup.get("demographics");
         assertEquals(2, ((Number) metroGroupDemographics.get("riderCount")).intValue());
         Set<String> metroGroupActivities = activityKeys((List<?>) metroGroupDemographics.get("activityTypes"));
-        assertTrue(metroGroupActivities.contains("home"));
-        assertTrue(metroGroupActivities.contains("airport"));
+        assertEquals(Set.of(), metroGroupActivities,
+                "缺显式 TransitPassengerRoute 时不得从全活动列表猜测线路出行目的");
+        assertEquals("trip-purpose", metroGroupDemographics.get("activitySource"));
         // 佛山1号线虽与广州1号线同号，但属不同系统，必须保持独立、不被并入地铁1号线
         Map<?, ?> foshanGroup = (Map<?, ?>) lineGroups.get("metro::佛山1号线");
         assertNotNull(foshanGroup);
@@ -573,9 +575,8 @@ class MatsimAnalysisCacheLargeStreamTest {
 
         Path spatialContainer = trajectoryDir.resolve("spatial-000000.bin");
         Files.write(spatialContainer, new byte[]{'B', 'A', 'D'}, StandardOpenOption.TRUNCATE_EXISTING);
-        assertNull(MatsimAnalysisCache.readTrajectoryBinaryViewport(
-                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
-        ));
+        assertThrows(IllegalStateException.class, () -> MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0));
         assertTrue(MatsimAnalysisCache.isTrajectoryRepairRequired(data));
         Map<String, Object> repairedCorruption = MatsimAnalysisCache.ensureTrajectoryCache(data);
         assertNotEquals(repairedGeneration, String.valueOf(repairedCorruption.get("cacheGeneration")));
@@ -758,10 +759,13 @@ class MatsimAnalysisCacheLargeStreamTest {
                         data, 20, 10, "all", -10.0, -10.0, 110.0, 10.0
                 ),
                 MatsimAnalysisCache.trajectoryViewportETag(
-                        data, 28, 7, "unexpected", -10.0, -10.0, 110.0, 10.0
+                        data, 28, 7, "all", -10.0, -10.0, 110.0, 10.0
                 ),
                 "ETag 必须按实际规范化后的窗口与可见模式生成"
         );
+        assertThrows(IllegalArgumentException.class, () ->
+                MatsimAnalysisCache.trajectoryViewportETag(
+                        data, 28, 7, "unexpected", -10.0, -10.0, 110.0, 10.0));
         Map<?, ?> firstChunk = (Map<?, ?>) ((List<?>) ((Map<?, ?>) firstManifest.get("summary")).get("chunks")).get(0);
         assertEquals(2, ((Number) firstChunk.get("artifactFiles")).intValue());
         assertEquals(30, ((List<?>) firstChunk.get("globalStats")).size());

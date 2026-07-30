@@ -40,9 +40,7 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
             throw new BusinessException("大模型路网瓦片缓存尚未就绪，请稍后重试");
         }
         if (MatsimAnalysisCache.isTrajectoryBuildActive()) {
-            log.warn("轨迹缓存生成中，临时跳过全量路网返回: datasource={}, x={}, y={}",
-                    param.getDatasource(), param.getX(), param.getY());
-            return List.of();
+            throw new BusinessException("轨迹缓存生成中，路网数据暂不可用，请稍后重试");
         }
 
         Network network = data.getNetwork();
@@ -159,7 +157,7 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
             }
             log.info("读取 link 流量 {} 条: {}", flows.size(), linkstatsPath);
         } catch (Exception e) {
-            log.warn("读取 link 流量失败: {}", linkstatsPath, e);
+            throw new BusinessException("读取 link 流量失败: " + linkstatsPath, e);
         }
         return flows;
     }
@@ -230,7 +228,7 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
         try {
             return Integer.parseInt(matcher.group(2)) - Integer.parseInt(matcher.group(1)) >= 24;
         } catch (NumberFormatException e) {
-            return false;
+            throw new BusinessException("linkstats 流量列标题格式错误: " + header, e);
         }
     }
 
@@ -265,7 +263,7 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
         try {
             return Double.parseDouble(text);
         } catch (NumberFormatException e) {
-            return null;
+            throw new BusinessException("linkstats 包含非法数值: " + value, e);
         }
     }
 }

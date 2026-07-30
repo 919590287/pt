@@ -387,7 +387,7 @@ public class RunJobManager {
             }
             return result;
         } catch (Exception e) {
-            return List.of();
+            throw new BusinessException("读取 MATSim 日志失败: " + logFile, e);
         }
     }
 
@@ -405,7 +405,8 @@ public class RunJobManager {
             }
         } catch (BusinessException e) {
             throw e;
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            throw new BusinessException("检查模型目录磁盘空间失败: " + areaName, e);
         }
     }
 
@@ -432,51 +433,53 @@ public class RunJobManager {
             Files.createDirectories(staging);
             Files.writeString(staging.resolve("job.json"), JSON.toJSONString(job, JSONWriter.Feature.PrettyFormat));
         } catch (Exception e) {
-            log.debug("job.json 持久化失败: {}", job.getJobId());
+            throw new BusinessException("任务状态持久化失败: " + job.getJobId(), e);
         }
     }
 
     /** 服务重启后恢复展示中断任务 */
     private void recoverInterrupted() {
-        try {
-            for (String area : matsimConfig.areaNames()) {
-                File simDir = matsimConfig.simulationPath(area).toFile();
-                File[] scopes = simDir.listFiles(File::isDirectory);
-                if (scopes == null) {
-                    continue;
+        for (String area : matsimConfig.areaNames()) {
+            File simDir = matsimConfig.simulationPath(area).toFile();
+            File[] scopes = simDir.listFiles(File::isDirectory);
+            if (scopes == null) {
+                if (simDir.exists()) {
+                    throw new BusinessException("无法扫描仿真任务目录: " + simDir);
                 }
-                for (File scopeDir : scopes) {
-                    File staging = new File(scopeDir, "_staging");
-                    File[] jobDirs = staging.listFiles(File::isDirectory);
-                    if (jobDirs == null) {
+                continue;
+            }
+            for (File scopeDir : scopes) {
+                File staging = new File(scopeDir, "_staging");
+                if (!staging.exists()) continue;
+                File[] jobDirs = staging.listFiles(File::isDirectory);
+                if (jobDirs == null) {
+                    throw new BusinessException("无法扫描任务暂存目录: " + staging);
+                }
+                for (File jobDir : jobDirs) {
+                    File jobFile = new File(jobDir, "job.json");
+                    if (!jobFile.exists()) {
                         continue;
                     }
-                    for (File jobDir : jobDirs) {
-                        File jobFile = new File(jobDir, "job.json");
-                        if (!jobFile.exists()) {
-                            continue;
+                    try {
+                        RunJob job = JSON.parseObject(Files.readString(jobFile.toPath()), RunJob.class);
+                        if (job == null || job.getJobId() == null || job.getJobId().isBlank()) {
+                            throw new BusinessException("任务状态文件缺少 jobId: " + jobFile);
                         }
-                        try {
-                            RunJob job = JSON.parseObject(Files.readString(jobFile.toPath()), RunJob.class);
-                            if (job == null || job.getJobId() == null) {
-                                continue;
-                            }
-                            if (!job.terminal()) {
-                                job.setStage(RunJob.STAGE_FAILED);
-                                job.setError("服务重启导致任务中断，可点击重试");
-                                job.setMessage(job.getError());
-                                job.setFinishedAt(System.currentTimeMillis());
-                                Files.writeString(jobFile.toPath(), JSON.toJSONString(job, JSONWriter.Feature.PrettyFormat));
-                            }
-                            jobs.put(job.getJobId(), job);
-                        } catch (Exception e) {
-                            log.warn("恢复任务失败: {}", jobFile, e);
+                        if (!job.terminal()) {
+                            job.setStage(RunJob.STAGE_FAILED);
+                            job.setError("服务重启导致任务中断，可点击重试");
+                            job.setMessage(job.getError());
+                            job.setFinishedAt(System.currentTimeMillis());
+                            Files.writeString(jobFile.toPath(), JSON.toJSONString(job, JSONWriter.Feature.PrettyFormat));
                         }
+                        jobs.put(job.getJobId(), job);
+                    } catch (BusinessException e) {
+                        throw e;
+                    } catch (Exception e) {
+                        throw new BusinessException("恢复任务失败: " + jobFile, e);
                     }
                 }
             }
-        } catch (Exception e) {
-            log.warn("任务恢复扫描失败", e);
         }
     }
 

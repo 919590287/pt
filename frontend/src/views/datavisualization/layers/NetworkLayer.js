@@ -1,7 +1,7 @@
 import { COORDINATE_SYSTEM } from "@deck.gl/core";
 import { LineLayer, PathLayer } from "@deck.gl/layers";
 import { Layer, MAP_EVENT, webMercatorToLngLat } from "@/mymap/index.js";
-import { getTileNetwork, getTileNetworkBinary, getFullNetworkBinary } from "@/api/network.js";
+import { getTileNetworkBinary, getFullNetworkBinary } from "@/api/network.js";
 import { colorToCss, lineWidthToPixels } from "./maplibreLayerUtils.js";
 import {
   batchSharedDeckLayerUpdates,
@@ -16,7 +16,6 @@ const FULL_MODE_MAX_ZOOM = 12.0;
 const EARTH_RADIUS = 20037508.3427892;
 const TILE_BUFFER = 2;
 const MAX_VISIBLE_TILE_REQUESTS = 1600;
-const MAX_STALE_TILES = 260;
 const MAX_TILE_CACHE = 1200;
 const TILE_LOAD_CONCURRENCY = 8;
 const TILE_SCHEDULE_DELAY = {
@@ -487,17 +486,18 @@ function rejectSharedWorkerCallbacks(error) {
 }
 
 function acquireSharedNetworkWorker(layer) {
-  if (sharedNetworkWorker.broken) return null;
+  if (sharedNetworkWorker.broken) throw new Error("network data worker unavailable");
   if (!sharedNetworkWorker.worker) {
-    let worker = null;
+    let worker;
     try {
       worker = createNetworkDataWorker();
     } catch (error) {
-      console.warn("[NetworkLayer] shared worker init failed", error);
+      sharedNetworkWorker.broken = true;
+      throw new Error("network data worker initialization failed", { cause: error });
     }
     if (!worker) {
       sharedNetworkWorker.broken = true;
-      return null;
+      throw new Error("network data worker is not supported by this runtime");
     }
     worker.onmessage = (event) => {
       const message = event.data || {};
@@ -511,8 +511,7 @@ function acquireSharedNetworkWorker(layer) {
       }
     };
     worker.onerror = (error) => {
-      // worker 异常：terminate 并整体置为不可用（本会话内降级主线程同步路径），
-      // reject 全部 pending，防止后续请求对着死 worker 永久挂起
+      // worker 异常：terminate 并整体置为不可用，reject 全部 pending。
       rejectSharedWorkerCallbacks(error instanceof Error ? error : new Error(error?.message || "worker error"));
       try {
         worker.terminate();
@@ -571,7 +570,8 @@ export class NetworkLayer extends Layer {
     this.fullModeMaxZoom = Number.isFinite(Number(opt.fullModeMaxZoom)) ? Number(opt.fullModeMaxZoom) : FULL_MODE_MAX_ZOOM;
     this.tileRequest = opt.tileRequest || getTileNetworkBinary;
     this.fullRequest = opt.fullRequest || getFullNetworkBinary;
-    this.jsonFallbackRequest = opt.jsonFallbackRequest || getTileNetwork;
+    this.onError = typeof opt.onError === "function" ? opt.onError : null;
+    this.lastError = null;
     this.datasource = opt.datasource || "";
     this.tileExtraParams = opt.tileExtraParams || {};
     this.lineClipContext = opt.lineClipContext || null;
@@ -605,7 +605,6 @@ export class NetworkLayer extends Layer {
     this.combineSeq = 0;
     this.combineInFlight = false;
     this.pendingCombine = null;
-    this.combineFallbackWarned = false;
     // 粗档位优化默认开启；纯像素级精确场景可传 coarseCombineOptimization:false 关闭
     this.coarseCombineOptimization = opt.coarseCombineOptimization !== false;
     this.rawLinks = [];
@@ -629,7 +628,6 @@ export class NetworkLayer extends Layer {
   ensureWorker() {
     if (!this.workerEnabled || this.isDisposed) return null;
     const worker = acquireSharedNetworkWorker(this);
-    if (!worker) return null;
     if (this.workerAttachedTo !== worker) {
       // 首次挂到该 worker（或 worker 重建后）：先声明命名空间的 generation 与裁剪上下文，
       // FIFO 保证这两条消息先于后续任何 postWorker 请求被处理
@@ -673,7 +671,8 @@ export class NetworkLayer extends Layer {
     try {
       this.workerAttachedTo.postMessage({ id, type: "reset", ns: this.workerNs, generation: this.workerGeneration });
     } catch (error) {
-      void error; // worker 失效时静默，后续请求走同步回退
+      this.reportError(new Error(`${this.name} Worker 重置失败`, { cause: error }));
+      throw error;
     }
   }
 
@@ -690,13 +689,16 @@ export class NetworkLayer extends Layer {
         contextKey: String(this.lineClipContextKey),
       });
     } catch (error) {
-      void error;
+      this.reportError(new Error(`${this.name} Worker 裁剪上下文同步失败`, { cause: error }));
+      throw error;
     }
   }
 
   dropWorkerTiles(keys) {
     if (!keys?.length || !this.workerAlive()) return;
-    this.postWorker("dropTiles", { keys }).catch(() => {});
+    this.postWorker("dropTiles", { keys }).catch((error) => {
+      this.reportError(new Error(`${this.name} Worker 瓦片释放失败`, { cause: error }));
+    });
   }
 
   setData(data) {
@@ -721,7 +723,8 @@ export class NetworkLayer extends Layer {
       this.queueDeckUpdate();
       return;
     }
-    if (this.ensureWorker()) {
+    if (this.workerEnabled) {
+      this.ensureWorker();
       this.postWorker("setLinks", { links, version })
         .then((deckData) => {
           if (this.isDisposed || this.tileMode || version !== this.dataVersion) return;
@@ -732,10 +735,10 @@ export class NetworkLayer extends Layer {
           this.queueDeckUpdate();
         })
         .catch((error) => {
-          console.warn(`[${this.name}] worker link conversion failed`, error);
           if (this.isDisposed || this.tileMode || version !== this.dataVersion) return;
-          this.deckData = linksToBinaryData(links, version);
+          this.deckData = emptyBinaryData(version);
           this.queueDeckUpdate();
+          this.reportError(new Error(`${this.name} Worker 线网转换失败`, { cause: error }));
         });
       return;
     }
@@ -754,7 +757,8 @@ export class NetworkLayer extends Layer {
     this.fullModeMaxZoom = Number.isFinite(Number(opt.fullModeMaxZoom)) ? Number(opt.fullModeMaxZoom) : this.fullModeMaxZoom;
     this.tileRequest = opt.tileRequest || this.tileRequest || getTileNetworkBinary;
     this.fullRequest = opt.fullRequest || this.fullRequest || getFullNetworkBinary;
-    this.jsonFallbackRequest = opt.jsonFallbackRequest || this.jsonFallbackRequest || getTileNetwork;
+    this.onError = typeof opt.onError === "function" ? opt.onError : this.onError;
+    this.lastError = null;
     this.tileExtraParams = opt.tileExtraParams || {};
     this.tileLoadToken++;
     this.abortTileRequests();
@@ -832,7 +836,7 @@ export class NetworkLayer extends Layer {
     const delay = immediate ? 0 : Math.max(0, Math.min(baseDelay, TILE_SCHEDULE_MAX_WAIT - elapsed));
     this.tileUpdateTimer = setTimeout(() => {
       this.tileUpdateTimer = null;
-      this.loadVisibleTiles();
+      this.loadVisibleTiles().catch((error) => this.reportError(error));
     }, delay);
   }
 
@@ -912,7 +916,8 @@ export class NetworkLayer extends Layer {
 
   async parseTileResponseAsync(response, key, version) {
     const payload = response instanceof ArrayBuffer ? response : response?.data;
-    if (this.ensureWorker()) {
+    if (this.workerEnabled) {
+      this.ensureWorker();
       if (payload instanceof ArrayBuffer) {
         return this.postWorker("setTileBinary", { key, version, buffer: payload }, [payload]);
       }
@@ -961,33 +966,18 @@ export class NetworkLayer extends Layer {
       };
       const requestOptions = { signal: this.currentTileAbortSignal() };
       const request = tile.full ? this.fullRequest : this.tileRequest;
-      let res;
-      let parsed;
-      try {
-        res = await request(params, requestOptions);
-      } catch (binaryError) {
-        if (this.isDisposed || token !== this.tileLoadToken) return;
-        if (tile.full || !this.jsonFallbackRequest || request === this.jsonFallbackRequest) throw binaryError;
-        res = await this.jsonFallbackRequest(params, requestOptions);
-      }
+      const res = await request(params, requestOptions);
       if (this.isDisposed || token !== this.tileLoadToken) return;
-      try {
-        parsed = await this.parseTileResponseAsync(res, key, ++this.dataVersion);
-      } catch (parseError) {
-        if (tile.full || !this.jsonFallbackRequest || request === this.jsonFallbackRequest) throw parseError;
-        const fallbackRes = await this.jsonFallbackRequest(params, requestOptions);
-        if (this.isDisposed || token !== this.tileLoadToken) return;
-        parsed = await this.parseTileResponseAsync(fallbackRes, key, ++this.dataVersion);
-      }
+      const parsed = await this.parseTileResponseAsync(res, key, ++this.dataVersion);
       if (!this.isDisposed && token === this.tileLoadToken) {
         this.tileCache.set(key, parsed);
+        this.lastError = null;
         this.scheduleRefreshVisibleTileData();
       }
     } catch (error) {
       // token 已失效的失败（含主动 abort）不告警不写缓存
       if (this.isDisposed || token !== this.tileLoadToken) return;
-      console.warn(`[${this.name}] tile load failed`, tile, error);
-      this.tileCache.set(key, emptyBinaryData(++this.dataVersion));
+      throw new Error(`${this.name} 瓦片加载失败: ${key}`, { cause: error });
     } finally {
       this.loadingTiles.delete(key);
     }
@@ -1001,18 +991,8 @@ export class NetworkLayer extends Layer {
       this.refreshTimer = null;
     }
     const token = this.tileLoadToken;
-    const visibleSet = new Set(this.visibleTileKeys);
-    const hasPendingVisibleTiles = this.visibleTileKeys.some((key) => !this.tileCache.has(key));
     const loadedVisible = this.visibleTileKeys.filter((key) => this.tileCache.has(key));
-    let displayKeys = loadedVisible;
-
-    if (hasPendingVisibleTiles && this.displayTileKeys.length) {
-      const staleKeys = this.displayTileKeys
-        .filter((key) => !visibleSet.has(key) && this.tileCache.has(key))
-        .sort((a, b) => (this.tileLastSeen.get(b) || 0) - (this.tileLastSeen.get(a) || 0))
-        .slice(0, MAX_STALE_TILES);
-      displayKeys = [...new Set([...loadedVisible, ...staleKeys])];
-    }
+    const displayKeys = loadedVisible;
 
     this.displayTileKeys = displayKeys;
     const nextCombinedCacheKey = displayKeys
@@ -1033,20 +1013,14 @@ export class NetworkLayer extends Layer {
   }
 
   async combineVisibleTileData(displayKeys, version, token) {
-    if (!this.ensureWorker()) {
+    if (!this.workerEnabled) {
       this.combineSeq++;
       const combined = combineBinaryTiles(displayKeys, this.tileCache, version);
-      // worker 中途损坏时主线程缓存里是 worker 返回的摘要（无 binary 字段），合并必为空；
-      // 此时保留上一次成功渲染的数据（新瓦片会经主线程解析逐步恢复），避免静默清空路网
-      const expectingLinks = displayKeys.some((key) => (this.tileCache.get(key)?.count || 0) > 0);
-      if (!combined.count && expectingLinks) {
-        this.warnCombineDegradedOnce("tile cache holds worker summaries");
-        return;
-      }
       this.deckData = this.applyLineClipContext(combined, version);
       this.queueDeckUpdate();
       return;
     }
+    this.ensureWorker();
     // 在途合并去抖：瓦片流式到达期间每个到达都会请求一次全量合并，百万段级合并
     // 单次超百毫秒，排队执行时前面的结果全部作废（seq 检查），worker 长时间白算。
     // 只保留一个在途合并，期间的新请求记为 pending，完成后仅补跑最新一次。
@@ -1070,9 +1044,9 @@ export class NetworkLayer extends Layer {
       this.queueDeckUpdate();
     } catch (error) {
       if (this.isDisposed || token !== this.tileLoadToken || seq !== this.combineSeq) return;
-      // worker 模式下主线程缓存是摘要，回退 combineBinaryTiles 必得空集——
-      // 保留上一次成功渲染的数据并只告警一次，而不是静默清空路网
-      this.warnCombineDegradedOnce(error);
+      this.deckData = emptyBinaryData(++this.dataVersion);
+      this.queueDeckUpdate();
+      this.reportError(new Error(`${this.name} 瓦片合并失败`, { cause: error }));
     } finally {
       this.combineInFlight = false;
       const pending = this.pendingCombine;
@@ -1083,10 +1057,13 @@ export class NetworkLayer extends Layer {
     }
   }
 
-  warnCombineDegradedOnce(error) {
-    if (this.combineFallbackWarned) return;
-    this.combineFallbackWarned = true;
-    console.warn(`[${this.name}] worker tile combine failed; keeping last rendered data`, error);
+  reportError(error) {
+    this.lastError = error instanceof Error ? error : new Error(String(error));
+    if (this.onError) {
+      this.onError(this.lastError);
+      return;
+    }
+    console.error(this.lastError);
   }
 
   // 非 worker 模式的主线程裁剪：网格索引按 contextKey 缓存复用

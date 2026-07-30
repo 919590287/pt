@@ -10,7 +10,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -330,10 +329,13 @@ public class MatsimConfig {
                 });
                 return names;
             }
+            throw new BusinessException("用户列表格式无效: " + store);
         } catch (Exception e) {
-            log.warn("读取用户列表失败，跳过用户模型扫描", e);
+            if (e instanceof BusinessException businessException) {
+                throw businessException;
+            }
+            throw new BusinessException("读取用户列表失败: " + store, e);
         }
-        return Set.of();
     }
 
     private Scheme.Desc readDesc(String key, File data) {
@@ -343,10 +345,16 @@ public class MatsimConfig {
             return defaultDesc();
         }
         try {
-            return JSON.parseObject(new FileInputStream(desc), Scheme.Desc.class);
+            Scheme.Desc parsed = JSON.parseObject(Files.readString(desc.toPath()), Scheme.Desc.class);
+            if (parsed == null) {
+                throw new BusinessException("模型描述为空: " + desc);
+            }
+            return parsed;
         } catch (Exception e) {
-            log.warn("[{}]使用默认描述json", key);
-            return defaultDesc();
+            if (e instanceof BusinessException businessException) {
+                throw businessException;
+            }
+            throw new BusinessException("模型描述解析失败: " + key + " (" + desc + ")", e);
         }
     }
 

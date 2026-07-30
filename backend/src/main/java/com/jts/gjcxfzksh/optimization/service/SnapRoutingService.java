@@ -275,7 +275,7 @@ public class SnapRoutingService {
         try {
             draft = draftService.get(username, parentModel, draftId);
         } catch (Exception e) {
-            return List.of();
+            throw new BusinessException("读取草稿叠加路网失败: " + draftId, e);
         }
         List<VirtualLink> links = new ArrayList<>();
         for (EditItem edit : draft.getEdits()) {
@@ -316,6 +316,9 @@ public class SnapRoutingService {
         Node node = network.getNodes().get(Id.createNodeId(nodeId));
         if (node != null) {
             return node.getCoord();
+        }
+        if (!nodeId.startsWith("opt_n_")) {
+            throw new IllegalArgumentException("线路编辑引用了不存在的路网节点: " + nodeId);
         }
         return new Coord(fallback[0], fallback[1]);
     }

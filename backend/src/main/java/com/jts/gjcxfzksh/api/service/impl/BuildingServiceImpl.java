@@ -329,8 +329,8 @@ public class BuildingServiceImpl implements BuildingService {
         if (text.isEmpty()) return 0.0;
         try {
             return Math.max(0.0, Double.parseDouble(text));
-        } catch (NumberFormatException ignored) {
-            return 0.0;
+        } catch (NumberFormatException error) {
+            throw new BusinessException("建筑高度字段非法: " + value, error);
         }
     }
 

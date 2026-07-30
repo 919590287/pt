@@ -38,7 +38,7 @@ import java.util.zip.GZIPOutputStream;
  * 的单次 plans 扫描中，按 person 局部去重后直接聚合到 route / lineGroup /
  * station，全程不保留 Person，内存与线路、站点数量相关，而与人口规模无关。</p>
  *
- * <p>画像口径：selected plan（空时回退首 plan）中实际的
+ * <p>画像口径：只读取明确的 selected plan 中实际的
  * {@link TransitPassengerRoute}。同一人在同一线路/线路组/站点只计一次；
  * 出行目的活动仍按公交 leg 计次，与小模型既有面板口径一致。</p>
  */
@@ -46,7 +46,7 @@ import java.util.zip.GZIPOutputStream;
 public final class MatsimPassengerProfileCache {
 
     // v2: 缺 plans 时落显式 unsupported，而不是 ready 的空画像。
-    public static final String PROFILE_CACHE_VERSION = "passenger-profile-v2";
+    public static final String PROFILE_CACHE_VERSION = "passenger-profile-v3";
     private static final String PROFILE_FILE = "profiles.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
     private static final int IO_BUFFER_BYTES = 1 << 20;
@@ -80,8 +80,7 @@ public final class MatsimPassengerProfileCache {
             if ("unsupported".equals(manifest.get("status"))) return true;
             return "ready".equals(manifest.get("status")) && Files.isRegularFile(profilePath(data));
         } catch (Exception e) {
-            log.warn("客流画像缓存状态读取失败: model={}", data.getName(), e);
-            return false;
+            throw new IllegalStateException("客流画像缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -267,11 +266,9 @@ public final class MatsimPassengerProfileCache {
         void acceptPerson(Person person) {
             persons++;
             Plan plan = person == null ? null : person.getSelectedPlan();
-            if (plan == null && person != null && !person.getPlans().isEmpty()) {
-                plan = person.getPlans().getFirst();
-            }
             if (plan == null) {
-                return;
+                throw new IllegalStateException("乘客画像数据缺少 selectedPlan: person="
+                        + (person == null ? "null" : person.getId()));
             }
 
             List<PlanElement> elements = plan.getPlanElements();
@@ -401,7 +398,6 @@ public final class MatsimPassengerProfileCache {
         private long shopping;
         private long leisure;
         private long other;
-        private final Map<String, Long> fallbackActivities = new HashMap<>();
         private final Map<String, Long> tripPurposes = new HashMap<>();
 
         void addRider(PersonProfile profile) {
@@ -412,7 +408,6 @@ public final class MatsimPassengerProfileCache {
             else if (profile.shopping) shopping++;
             else if (profile.leisure) leisure++;
             else other++;
-            profile.activities.forEach(type -> fallbackActivities.merge(type, 1L, Long::sum));
         }
 
         void addPurpose(String purpose) {
@@ -427,7 +422,6 @@ public final class MatsimPassengerProfileCache {
             shopping += source.shopping;
             leisure += source.leisure;
             other += source.other;
-            source.fallbackActivities.forEach((key, value) -> fallbackActivities.merge(key, value, Long::sum));
             source.tripPurposes.forEach((key, value) -> tripPurposes.merge(key, value, Long::sum));
         }
 
@@ -442,11 +436,9 @@ public final class MatsimPassengerProfileCache {
             result.put("other", percent(other, total));
             result.put("source", "streaming-selected-plans");
             result.put("profileBasis", "selected-plan-transit-users");
-            boolean fallback = tripPurposes.isEmpty();
-            Map<String, Long> activities = fallback ? fallbackActivities : tripPurposes;
-            result.put("activitySource", fallback ? "all-activities-fallback" : "trip-purpose");
-            result.put("activityTypes", activityPayloads(activities));
-            result.put("activityTypeRatios", activityRatios(activities));
+            result.put("activitySource", "trip-purpose");
+            result.put("activityTypes", activityPayloads(tripPurposes));
+            result.put("activityTypeRatios", activityRatios(tripPurposes));
             return result;
         }
     }
@@ -499,8 +491,8 @@ public final class MatsimPassengerProfileCache {
         if (value.isBlank()) return null;
         try {
             return (int) Math.floor(Double.parseDouble(value.trim()));
-        } catch (NumberFormatException ignored) {
-            return null;
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException("乘客年龄字段非法: " + value, error);
         }
     }
 
@@ -572,7 +564,8 @@ public final class MatsimPassengerProfileCache {
                     && PROFILE_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            return false;
+            throw new IllegalStateException("读取客流画像 unsupported 状态失败: "
+                    + manifestPath(data), e);
         }
     }
 
@@ -599,16 +592,16 @@ public final class MatsimPassengerProfileCache {
         try {
             return file == null || file.isBlank() || !Files.exists(Path.of(file))
                     ? 0L : Files.getLastModifiedTime(Path.of(file)).toMillis();
-        } catch (Exception ignored) {
-            return 0L;
+        } catch (Exception e) {
+            throw new IllegalStateException("读取源文件修改时间失败: " + file, e);
         }
     }
 
     private static long fileSize(String file) {
         try {
             return file == null || file.isBlank() || !Files.exists(Path.of(file)) ? 0L : Files.size(Path.of(file));
-        } catch (Exception ignored) {
-            return 0L;
+        } catch (Exception e) {
+            throw new IllegalStateException("读取源文件大小失败: " + file, e);
         }
     }
 

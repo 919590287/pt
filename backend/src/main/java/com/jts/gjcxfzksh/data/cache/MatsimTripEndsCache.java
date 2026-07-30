@@ -59,7 +59,7 @@ import java.util.TreeMap;
  * </ul>
  * 口径契约（任何改动必须 bump {@link #TRIPENDS_CACHE_VERSION}）：
  * <ul>
- *   <li>端点（出行分布监测，v4 起活动口径）：selectedPlan（空回退首 plan，照
+ *   <li>端点（出行分布监测，v4 起活动口径）：明确 selectedPlan（照
  *       MatsimPopulationCache.acceptPerson）按「非 interaction 活动」切分 trip，trip 内含
  *       {@code mode=pt} 的 leg（判定与 TransitMetrics 同源 {@link Constant#ROUTE_MODE_PT}）
  *       即计一次公交出行——起点 = 出行前置活动坐标、终点 = 出行后置活动坐标（EPSG:3857，
@@ -91,12 +91,12 @@ public final class MatsimTripEndsCache {
     //     起终点」（plans 中含 pt leg 的 trip 两端非 interaction 活动坐标）；journeys/riders 随之
     //     改为 plans 口径；OD 工件维持 events 站点口径不变；源指纹新增 plans。
     // v5: 原模型数量直出，取消 desc.scale 扩样，并支持缺 plans 的显式 unsupported 状态。
-    public static final String TRIPENDS_CACHE_VERSION = "tripends-v5";
+    public static final String TRIPENDS_CACHE_VERSION = "tripends-v6";
     /**
      * 大模型出行端点独立工件：v2 将 TransitPassengerRoute 以及
      * pt/bus/subway/rail/tram/ferry 全制式纳入，修复 V6 仅识别 mode=pt 导致的空分布。
      */
-    public static final String TRIP_DISTRIBUTION_CACHE_VERSION = "trip-distribution-v3";
+    public static final String TRIP_DISTRIBUTION_CACHE_VERSION = "trip-distribution-v4";
 
     // ===== 口径常量（改动必须 bump 版本）=====
     /** 出行链识别时间窗（秒）。与 MatsimTransferCache.TRANSFER_WINDOW_SECONDS 仅数值一致，互不引用。 */
@@ -166,8 +166,7 @@ public final class MatsimTripEndsCache {
                     && TRIPENDS_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            log.warn("出行分布缓存状态读取失败: {}", manifestPath(data), e);
-            return false;
+            throw new IllegalStateException("出行分布缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -193,8 +192,8 @@ public final class MatsimTripEndsCache {
                     && Files.isRegularFile(endpointStreetsPath(data))
                     && Files.isRegularFile(endpointGridPath(data));
         } catch (Exception e) {
-            log.warn("大模型出行分布端点缓存状态读取失败: model={}", data.getName(), e);
-            return false;
+            throw new IllegalStateException("大模型出行分布端点缓存状态读取失败: "
+                    + endpointManifestPath(data), e);
         }
     }
 
@@ -208,8 +207,8 @@ public final class MatsimTripEndsCache {
         try {
             return loadCachedJson(endpointSummaryPath(data));
         } catch (Exception e) {
-            log.warn("读取出行分布汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取出行分布汇总缓存失败: model=" + data.getName()
+                    + ", path=" + summaryPath(data), e);
         }
     }
 
@@ -223,8 +222,8 @@ public final class MatsimTripEndsCache {
         try {
             return loadCachedJson(endpointStreetsPath(data));
         } catch (Exception e) {
-            log.warn("读取出行分布街道缓存失败: model={}, path={}", data.getName(), streetsPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取出行分布街道缓存失败: model=" + data.getName()
+                    + ", path=" + streetsPath(data), e);
         }
     }
 
@@ -236,8 +235,8 @@ public final class MatsimTripEndsCache {
         try {
             return Files.readAllBytes(endpointGridPath(data));
         } catch (Exception e) {
-            log.warn("读取出行分布栅格表失败: model={}, path={}", data.getName(), gridPath(data), e);
-            return null;
+            throw new IllegalStateException("读取出行分布栅格表失败: model=" + data.getName()
+                    + ", path=" + gridPath(data), e);
         }
     }
 
@@ -249,8 +248,8 @@ public final class MatsimTripEndsCache {
         try {
             return loadCachedJson(odStreetsPath(data));
         } catch (Exception e) {
-            log.warn("读取公交OD街道对缓存失败: model={}, path={}", data.getName(), odStreetsPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取公交OD街道对缓存失败: model=" + data.getName()
+                    + ", path=" + odStreetsPath(data), e);
         }
     }
 
@@ -262,8 +261,8 @@ public final class MatsimTripEndsCache {
         try {
             return Files.readAllBytes(odGridPath(data));
         } catch (Exception e) {
-            log.warn("读取公交OD栅格对表失败: model={}, path={}", data.getName(), odGridPath(data), e);
-            return null;
+            throw new IllegalStateException("读取公交OD栅格对表失败: model=" + data.getName()
+                    + ", path=" + odGridPath(data), e);
         }
     }
 
@@ -287,8 +286,8 @@ public final class MatsimTripEndsCache {
             });
             return sha256Hex(content.toString().getBytes(StandardCharsets.UTF_8)).substring(0, 16);
         } catch (Exception e) {
-            log.warn("出行分布栅格表 ETag 计算失败: {}", manifestPath(data), e);
-            return null;
+            throw new IllegalStateException("出行分布栅格表 ETag 计算失败: "
+                    + endpointManifestPath(data), e);
         }
     }
 
@@ -308,8 +307,7 @@ public final class MatsimTripEndsCache {
             });
             return sha256Hex(content.toString().getBytes(StandardCharsets.UTF_8)).substring(0, 16);
         } catch (Exception e) {
-            log.warn("公交OD栅格表 ETag 计算失败: {}", manifestPath(data), e);
-            return null;
+            throw new IllegalStateException("公交OD栅格表 ETag 计算失败: " + manifestPath(data), e);
         }
     }
 
@@ -352,7 +350,8 @@ public final class MatsimTripEndsCache {
                     "message", message
             );
         } catch (Exception e) {
-            return null;
+            throw new IllegalStateException("读取出行分布 unsupported 状态失败: "
+                    + endpointManifestPath(data), e);
         }
     }
 
@@ -599,18 +598,15 @@ public final class MatsimTripEndsCache {
         }
 
         /**
-         * 端点抽取一个 person（selectedPlan 空回退首 plan，照 MatsimPopulationCache.acceptPerson）：
+         * 端点抽取一个 person（必须存在明确 selectedPlan，照 MatsimPopulationCache.acceptPerson）：
          * 非 interaction 活动切分 trip，trip 内出现 TransitPassengerRoute 或
          * pt/bus/subway/rail/tram/ferry 等公交制式 leg 即计一次公交出行。
          */
         void acceptPerson(Person person, CoordinateTransformation ctf) {
             persons++;
             Plan plan = person.getSelectedPlan();
-            if (plan == null && !person.getPlans().isEmpty()) {
-                plan = person.getPlans().get(0);
-            }
             if (plan == null) {
-                return;
+                throw new IllegalStateException("出行数据缺少 selectedPlan: person=" + person.getId());
             }
             boolean rode = false;
             Activity previous = null;
@@ -669,8 +665,7 @@ public final class MatsimTripEndsCache {
             try {
                 return ctf.transform(coord);
             } catch (Exception e) {
-                transformFailures++;
-                return null;
+                throw new IllegalStateException("出行端点坐标转换失败: " + coord, e);
             }
         }
 
@@ -1289,7 +1284,7 @@ public final class MatsimTripEndsCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.getLastModifiedTime(path).toMillis() : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -1301,7 +1296,7 @@ public final class MatsimTripEndsCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.size(path) : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 

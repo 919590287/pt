@@ -160,7 +160,12 @@ public final class FastEventReader {
             return true;
         }
         String normalized = value.trim().toLowerCase(Locale.ROOT);
-        return !normalized.equals("0") && !normalized.equals("false") && !normalized.equals("no");
+        return switch (normalized) {
+            case "1", "true", "yes" -> true;
+            case "0", "false", "no" -> false;
+            default -> throw new IllegalArgumentException(
+                    PIGZ_ENABLED_PROPERTY + "/" + PIGZ_ENABLED_ENV + " 必须是布尔值: " + value);
+        };
     }
 
     private static int bufferBytes() {
@@ -174,9 +179,11 @@ public final class FastEventReader {
             return fallback;
         }
         try {
-            return Math.max(1, Integer.parseInt(value.trim()));
-        } catch (Exception e) {
-            return fallback;
+            int parsed = Integer.parseInt(value.trim());
+            if (parsed <= 0) throw new NumberFormatException("必须大于 0");
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(property + "/" + env + " 必须是正整数: " + value, e);
         }
     }
 

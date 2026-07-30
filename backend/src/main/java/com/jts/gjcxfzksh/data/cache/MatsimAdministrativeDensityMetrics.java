@@ -101,9 +101,8 @@ final class MatsimAdministrativeDensityMetrics {
                             networkMeters.get(district.name()))));
             return result;
         } catch (Exception error) {
-            log.warn("行政区密度预计算失败: model={}, boundary={}",
-                    data.getName(), boundaryFile, error);
-            return Map.of();
+            throw new IllegalStateException("行政区密度预计算失败: model=" + data.getName()
+                    + ", boundary=" + boundaryFile, error);
         }
     }
 
@@ -333,8 +332,8 @@ final class MatsimAdministrativeDensityMetrics {
                     .sorted()
                     .findFirst()
                     .orElse(null);
-        } catch (Exception ignored) {
-            return null;
+        } catch (Exception error) {
+            throw new IllegalStateException("扫描行政区边界文件失败: " + folder, error);
         }
     }
 

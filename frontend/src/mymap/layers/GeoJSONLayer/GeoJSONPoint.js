@@ -241,8 +241,7 @@ export class GeoJSONPointListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      this.valueMap = {};
-      this.setValueKey(this._valuekey);
+      throw new Error("GeoJSON 图层点属性缓冲区构建失败", { cause: error });
     }
   }
 
@@ -258,6 +257,7 @@ export class GeoJSONPointListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`GeoJSON 图层点属性切换失败: ${valueKey}`, { cause: error });
     }
   }
 }

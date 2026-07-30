@@ -64,7 +64,7 @@ public final class MatsimStationPanelCache {
     //      ⑥上下车归属统一 pt-events-v3 动态映射（TransitDriverStarts + 司机显式过滤）。
     // v16: 可达站点明细在计算完成时立即截断为前80项，仅保留精确总数和有限展示样本。
     //      旧实现为每个站点长期持有三份全量 LinkedHashSet，V6 的高连通网络会产生平方级引用并耗尽 8GB 堆。
-    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v16";
+    public static final String STATION_PANEL_CACHE_VERSION = "station-panel-v17";
 
     // 同名站点按邻近度聚类的半径（投影单位，约 0.92×米；广州为 Web Mercator）。
     // 真实同站台一般 <150m，可合并；同名异地站点相距上千米，会被拆成不同换乘点。
@@ -117,8 +117,8 @@ public final class MatsimStationPanelCache {
         try {
             return loadPanel(data);
         } catch (Exception e) {
-            log.warn("读取站点客流面板缓存失败: model={}, path={}", data.getName(), panelPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取站点客流面板缓存失败: model=" + data.getName()
+                    + ", path=" + panelPath(data), e);
         }
     }
 
@@ -279,8 +279,7 @@ public final class MatsimStationPanelCache {
                     && STATION_PANEL_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            log.warn("站点客流面板缓存状态读取失败: {}", manifestPath(data), e);
-            return false;
+            throw new IllegalStateException("站点客流面板缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -605,7 +604,7 @@ public final class MatsimStationPanelCache {
             }
             return Files.getLastModifiedTime(path).toMillis();
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -620,13 +619,13 @@ public final class MatsimStationPanelCache {
             }
             return Files.size(path);
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 
     private static int hourOf(double seconds) {
         if (Double.isNaN(seconds) || Double.isInfinite(seconds)) {
-            return 0;
+            throw new IllegalArgumentException("站点事件时刻非法: " + seconds);
         }
         // MATSim 时刻可 >86400（跨零点班次），折叠回当日小时；
         // 原 min(23,…) 会把夜间事件全部压进 23 时桶，凌晨客流恒为 0。
@@ -827,8 +826,7 @@ public final class MatsimStationPanelCache {
             collectActivityTypes(person.getSelectedPlan().getPlanElements(), result);
             return result;
         }
-        person.getPlans().forEach(plan -> collectActivityTypes(plan.getPlanElements(), result));
-        return result;
+        throw new IllegalStateException("站点画像数据缺少 selectedPlan: person=" + person.getId());
     }
 
     private static void collectActivityTypes(List<PlanElement> elements, Set<String> result) {
@@ -922,8 +920,8 @@ public final class MatsimStationPanelCache {
 
     /**
      * 任务B：客流画像（与 MatsimRoutePanelCache 同口径）。出行者属性/出行目的两个维度保持既有互斥单选逻辑；
-     * 活动画像改为“在该站上车者本次出行的出行目的活动”计数（占比合计≈100%），
-     * 无出行目的活动时退回按乘客全活动统计（仍过滤 interaction）。
+     * 活动画像只按“在该站上车者本次出行的出行目的活动”计数（占比合计≈100%）；
+     * 缺少明确目的映射时保持空画像，不用乘客全活动猜测。
      */
     private static Map<String, Object> buildDemographicsPayload(
             Population population,
@@ -932,7 +930,7 @@ public final class MatsimStationPanelCache {
     ) {
         if (population == null || riderIds.isEmpty()) {
             Map<String, Object> empty = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
-            putActivityProfile(empty, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, Map.of());
+            putActivityProfile(empty, tripPurposeCounts == null ? Map.of() : tripPurposeCounts);
             return empty;
         }
         int total = 0;
@@ -942,7 +940,6 @@ public final class MatsimStationPanelCache {
         int shopping = 0;
         int leisure = 0;
         int other = 0;
-        Map<String, Integer> fallbackCounts = new LinkedHashMap<>();
         for (String riderId : riderIds) {
             Person person = population.getPersons().get(Id.create(riderId, Person.class));
             if (person == null) {
@@ -950,11 +947,6 @@ public final class MatsimStationPanelCache {
             }
             total++;
             Set<String> activities = activityTypes(person);
-            for (String activity : activities) {
-                if (activity != null && !activity.isBlank()) {
-                    fallbackCounts.merge(activity, 1, Integer::sum);
-                }
-            }
             String attributes = allAttributeText(person);
             Integer personAge = age(person);
             boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
@@ -984,20 +976,17 @@ public final class MatsimStationPanelCache {
             }
         }
         Map<String, Object> payload = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
-        putActivityProfile(payload, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, fallbackCounts);
+        putActivityProfile(payload, tripPurposeCounts == null ? Map.of() : tripPurposeCounts);
         return payload;
     }
 
     private static void putActivityProfile(
             Map<String, Object> payload,
-            Map<String, Integer> tripPurposeCounts,
-            Map<String, Integer> fallbackCounts
+            Map<String, Integer> tripPurposeCounts
     ) {
-        boolean fallback = tripPurposeCounts.isEmpty();
-        Map<String, Integer> activityCounts = fallback ? fallbackCounts : tripPurposeCounts;
-        payload.put("activitySource", fallback ? "all-activities-fallback" : "trip-purpose");
-        payload.put("activityTypes", activityPayloads(activityCounts));
-        payload.put("activityTypeRatios", activityRatioPayload(activityCounts));
+        payload.put("activitySource", "trip-purpose");
+        payload.put("activityTypes", activityPayloads(tripPurposeCounts));
+        payload.put("activityTypeRatios", activityRatioPayload(tripPurposeCounts));
     }
 
     private static Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
@@ -1053,7 +1042,7 @@ public final class MatsimStationPanelCache {
         try {
             return (int) Math.floor(Double.parseDouble(raw.trim()));
         } catch (NumberFormatException e) {
-            return null;
+            throw new IllegalArgumentException("乘客年龄字段非法: " + raw, e);
         }
     }
 

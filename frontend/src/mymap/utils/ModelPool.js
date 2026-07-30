@@ -40,7 +40,7 @@ export class ModelPool {
     try {
       return this.modelPool.get(name).shift() || this.modelObj.get(name).clone();
     } catch (error) {
-      return null;
+      throw new Error(`模型池取用失败: ${name}`, { cause: error });
     }
   }
 
@@ -51,7 +51,7 @@ export class ModelPool {
       list[list.length] = model;
       return 1;
     } catch (error) {
-      return -1;
+      throw new Error(`模型池回收失败: ${name}`, { cause: error });
     }
   }
 

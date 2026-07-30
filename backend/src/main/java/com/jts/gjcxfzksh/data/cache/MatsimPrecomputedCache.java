@@ -62,7 +62,7 @@ public final class MatsimPrecomputedCache {
     // v9: 统计口径修复（TransitMetrics 统一实现）——车站300m覆盖率语义反转修复、
     //     车均日载客量只计上车、占位指标(ylklbl/dbczkl)移除、满载率统一口径，需重算缓存
     // v10: 常住人口密度改为全体 agent 口径；新增 万人保有量(wrbyl)、真实口径的单班次载客量(dbczkl)，需重算缓存
-    // v11: 密度类指标面积回退用站点凸包估算（desc.json 缺失时原为除以 1）；
+    // v11: 密度类指标面积口径修正；
     //      保有量/车均日载客量分母改用"高峰同时在营车辆数"车队估算，需重算缓存
     // v12: 线路摘要(lines.json)新增抽稀后的真实路网走向 geometry，
     //      前端全网线路图层按 network.xml 几何绘制（原为站点直线连接），需重算缓存
@@ -165,8 +165,7 @@ public final class MatsimPrecomputedCache {
         try {
             return JSON.readValue(infoPath(data).toFile(), MAP_TYPE);
         } catch (Exception e) {
-            log.warn("读取数据总览预计算失败: {}", infoPath(data), e);
-            return null;
+            throw new IllegalStateException("读取数据总览预计算失败: " + infoPath(data), e);
         }
     }
 
@@ -177,8 +176,7 @@ public final class MatsimPrecomputedCache {
         try {
             return readGzipJson(linesPath(data), LIST_TYPE);
         } catch (Exception e) {
-            log.warn("读取线路预计算失败: {}", linesPath(data), e);
-            return null;
+            throw new IllegalStateException("读取线路预计算失败: " + linesPath(data), e);
         }
     }
 
@@ -189,8 +187,7 @@ public final class MatsimPrecomputedCache {
         try {
             return readGzipJson(stationsPath(data), LIST_TYPE);
         } catch (Exception e) {
-            log.warn("读取站点预计算失败: {}", stationsPath(data), e);
-            return null;
+            throw new IllegalStateException("读取站点预计算失败: " + stationsPath(data), e);
         }
     }
 
@@ -239,8 +236,8 @@ public final class MatsimPrecomputedCache {
             }
             return shard.get(key);
         } catch (Exception e) {
-            log.warn("读取线路详情预计算失败: model={}, lineId={}, routeId={}", data.getName(), lineId, routeId, e);
-            return null;
+            throw new IllegalStateException("读取线路详情预计算失败: model=" + data.getName()
+                    + ", lineId=" + lineId + ", routeId=" + routeId, e);
         }
     }
 
@@ -327,8 +324,7 @@ public final class MatsimPrecomputedCache {
             }
             return ready;
         } catch (Exception e) {
-            log.warn("可视化缓存状态读取失败: {}", manifestPath, e);
-            return false;
+            throw new IllegalStateException("可视化缓存状态读取失败: " + manifestPath, e);
         }
     }
 
@@ -1052,11 +1048,6 @@ public final class MatsimPrecomputedCache {
     private static Network loadFullNetworkForVisual(MatsimData data) {
         String file = data.getOutfile() == null ? null : data.getOutfile().getNetwork();
         if (file == null || file.isBlank()) {
-            // 合成单测可直接注入内存 scenario；真实加载路径在此之前已要求 network 输入存在。
-            if (data.getNetwork() != null && !data.getNetwork().getLinks().isEmpty()) {
-                log.warn("合成大模型未配置原始 network，测试路径回退到内存网络: model={}", data.getName());
-                return data.getNetwork();
-            }
             throw new IllegalStateException("完整道路网络文件不存在，无法生成大模型路网瓦片");
         }
         if (!Files.isRegularFile(Path.of(file))) {
@@ -1374,11 +1365,7 @@ public final class MatsimPrecomputedCache {
         if (!matcher.matches()) {
             return false;
         }
-        try {
-            return Integer.parseInt(matcher.group(2)) - Integer.parseInt(matcher.group(1)) >= 24;
-        } catch (NumberFormatException e) {
-            return false;
-        }
+        return Integer.parseInt(matcher.group(2)) - Integer.parseInt(matcher.group(1)) >= 24;
     }
 
     private static boolean isFlowSeriesHeader(String header) {
@@ -1412,7 +1399,7 @@ public final class MatsimPrecomputedCache {
         try {
             return Double.parseDouble(text);
         } catch (NumberFormatException e) {
-            return null;
+            throw new IllegalArgumentException("linkstats 数值字段非法: " + value, e);
         }
     }
 
@@ -1520,8 +1507,7 @@ public final class MatsimPrecomputedCache {
         try {
             return readGzipJson(path, LIST_TYPE);
         } catch (Exception e) {
-            log.warn("读取瓦片预计算失败: {}", path, e);
-            return null;
+            throw new IllegalStateException("读取瓦片预计算失败: " + path, e);
         }
     }
 
@@ -1550,8 +1536,7 @@ public final class MatsimPrecomputedCache {
                         }
                     }
                 } catch (Exception e) {
-                    log.warn("聚合瓦片读取失败: {}", childPath, e);
-                    return null;
+                    throw new IllegalStateException("聚合瓦片读取失败: " + childPath, e);
                 }
             }
         }
@@ -1716,7 +1701,7 @@ public final class MatsimPrecomputedCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.getLastModifiedTime(path).toMillis() : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -1728,13 +1713,13 @@ public final class MatsimPrecomputedCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.size(path) : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 
     private static double round2(double value) {
         if (Double.isNaN(value) || Double.isInfinite(value)) {
-            return 0.0;
+            throw new IllegalArgumentException("指标值非法: " + value);
         }
         return Math.round(value * 100.0) / 100.0;
     }

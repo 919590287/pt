@@ -95,7 +95,7 @@ public final class MatsimLargeModelNetworkCache {
                     && number(manifest.get("requiredLinks")) > 0
                     && number(manifest.get("requiredLinks")) == number(manifest.get("writtenLinks"));
         } catch (Exception e) {
-            return false;
+            throw new IllegalStateException("大模型线网缓存状态读取失败: " + manifestPath, e);
         }
     }
 
@@ -283,7 +283,7 @@ public final class MatsimLargeModelNetworkCache {
             return Files.size(file) == number(manifest.get(prefix + "Size"))
                     && Files.getLastModifiedTime(file).toMillis() == number(manifest.get(prefix + "Modified"));
         } catch (Exception e) {
-            return false;
+            throw new IllegalStateException("校验大模型线网源文件失败: " + path, e);
         }
     }
 

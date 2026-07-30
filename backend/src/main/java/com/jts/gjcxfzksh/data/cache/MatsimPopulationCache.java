@@ -59,7 +59,7 @@ import java.util.zip.GZIPInputStream;
  * </ul>
  * 口径契约（§1，任何改动必须 bump {@link #POPULATION_CACHE_VERSION}）：
  * <ul>
- *   <li>居住点 = selectedPlan（空回退 getPlans().get(0)，照 ScenarioCutService.processPerson）中
+ *   <li>居住点 = 明确 selectedPlan 中
  *       第一个 {@code type.toLowerCase().startsWith("home")} 且坐标非空的活动；就业点同理取 {@code work*}
  *       前缀（无 work 活动的人不计入就业人口）；type 含 {@code interaction} 的中转活动一律跳过；
  *       坐标为 null 的活动跳过该点（继续向后找同前缀活动）。</li>
@@ -78,7 +78,7 @@ import java.util.zip.GZIPInputStream;
 @Slf4j
 public final class MatsimPopulationCache {
 
-    // v1: 首版口径：home*/work* 前缀 + interaction 排除 + selectedPlan 回退首 plan；
+    // v1: 首版口径：home*/work* 前缀 + interaction 排除；
     //     100m 栅格（mercCellSize 按模型中心纬度修正）；街道归属=点面 point-in-polygon（多候选取最小要素索引）。
     // v2: grid.bin 增加“格中心街道要素索引”列（16B→18B/cell，BIN_VERSION=2），
     //     供前端行政区过滤隐藏区外栅格；抽取/统计口径不变。
@@ -93,7 +93,7 @@ public final class MatsimPopulationCache {
     //     新增 residentBusJourneys 和 residentUnresolvedLegacyPtJourneys 供严格口径审计。
     // v9: 新增高峰小汽车运行速度、公交平均换乘次数、公交—轨道接驳比例的完整 OD 分母；
     //     平均候车继续按公交上车样本加权，供大小模型共用同一缓存结果。
-    public static final String POPULATION_CACHE_VERSION = "population-v9";
+    public static final String POPULATION_CACHE_VERSION = "population-v10";
 
     /** 栅格边长（地面米，§1）。栅格实际投影边长 mercCellSize 随模型中心纬度修正。 */
     static final double CELL_SIZE_METERS = 100.0;
@@ -166,8 +166,7 @@ public final class MatsimPopulationCache {
                     && Files.exists(streetsPath(data))
                     && Files.exists(gridPath(data));
         } catch (Exception e) {
-            log.warn("人口分布缓存状态读取失败: {}", manifestPath(data), e);
-            return false;
+            throw new IllegalStateException("人口分布缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -181,8 +180,8 @@ public final class MatsimPopulationCache {
         try {
             return loadCachedJson(summaryPath(data));
         } catch (Exception e) {
-            log.warn("读取人口分布汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取人口分布汇总缓存失败: model=" + data.getName()
+                    + ", path=" + summaryPath(data), e);
         }
     }
 
@@ -196,8 +195,8 @@ public final class MatsimPopulationCache {
         try {
             return loadCachedJson(streetsPath(data));
         } catch (Exception e) {
-            log.warn("读取人口分布街道缓存失败: model={}, path={}", data.getName(), streetsPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取人口分布街道缓存失败: model=" + data.getName()
+                    + ", path=" + streetsPath(data), e);
         }
     }
 
@@ -209,8 +208,8 @@ public final class MatsimPopulationCache {
         try {
             return Files.readAllBytes(gridPath(data));
         } catch (Exception e) {
-            log.warn("读取人口分布栅格表失败: model={}, path={}", data.getName(), gridPath(data), e);
-            return null;
+            throw new IllegalStateException("读取人口分布栅格表失败: model=" + data.getName()
+                    + ", path=" + gridPath(data), e);
         }
     }
 
@@ -235,8 +234,7 @@ public final class MatsimPopulationCache {
             });
             return sha256Hex(content.toString().getBytes(StandardCharsets.UTF_8)).substring(0, 16);
         } catch (Exception e) {
-            log.warn("人口分布栅格表 ETag 计算失败: {}", manifestPath(data), e);
-            return null;
+            throw new IllegalStateException("人口分布栅格表 ETag 计算失败: " + manifestPath(data), e);
         }
     }
 
@@ -290,7 +288,8 @@ public final class MatsimPopulationCache {
                     "message", String.valueOf(manifest.getOrDefault("message", "缺少 plans 数据"))
             );
         } catch (Exception e) {
-            return null;
+            throw new IllegalStateException("读取人口分布 unsupported 状态失败: "
+                    + manifestPath(data), e);
         }
     }
 
@@ -481,18 +480,15 @@ public final class MatsimPopulationCache {
         }
 
         /**
-         * 抽取一个 person：selectedPlan 空回退首 plan（照 ScenarioCutService.processPerson）；
+         * 抽取一个 person：必须存在明确 selectedPlan；
          * 跳过 interaction 中转活动；home / work 前缀各取第一个坐标非空的活动；
          * 活动类型集合（homeTypes/workTypes）收集全部匹配前缀的原始 type。
          */
         void acceptPerson(Person person, CoordinateTransformation ctf) {
             persons++;
             Plan plan = person.getSelectedPlan();
-            if (plan == null && !person.getPlans().isEmpty()) {
-                plan = person.getPlans().get(0);
-            }
             if (plan == null) {
-                return;
+                throw new IllegalStateException("人口数据缺少 selectedPlan: person=" + person.getId());
             }
             Coord home = null;
             Coord work = null;
@@ -646,8 +642,7 @@ public final class MatsimPopulationCache {
             try {
                 return ctf.transform(coord);
             } catch (Exception e) {
-                transformFailures++;
-                return null;
+                throw new IllegalStateException("人口分布坐标转换失败: " + coord, e);
             }
         }
 
@@ -782,7 +777,8 @@ public final class MatsimPopulationCache {
             TransitMetrics.RoadTransitContext roadTransit,
             TransitMetrics.MetricCoordinateContext coordinates) {
         if (roadTransit != null && roadTransit.coordinateTransformFailures() > 0) {
-            return new CoverageIndex(Set.of(), TransitMetrics.MetricCoordinateContext.unsupported());
+            throw new IllegalStateException("公交站点坐标转换存在失败记录: "
+                    + roadTransit.coordinateTransformFailures());
         }
         return new CoverageIndex(roadTransit == null ? Set.of() : roadTransit.stopCoords(), coordinates);
     }
@@ -1399,7 +1395,7 @@ public final class MatsimPopulationCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.getLastModifiedTime(path).toMillis() : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -1411,7 +1407,7 @@ public final class MatsimPopulationCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.size(path) : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 }

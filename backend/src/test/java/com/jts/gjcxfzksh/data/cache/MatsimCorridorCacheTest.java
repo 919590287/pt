@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -215,7 +216,8 @@ class MatsimCorridorCacheTest {
     @Test
     void 制式判定_bus之外不计入() {
         assertTrue(MatsimCorridorCache.isBusTransportMode("bus"));
-        assertTrue(MatsimCorridorCache.isBusTransportMode(null), "transportMode 缺失按 bus（复刻 transfer 口径）");
+        assertThrows(IllegalArgumentException.class,
+                () -> MatsimCorridorCache.isBusTransportMode(null));
         assertFalse(MatsimCorridorCache.isBusTransportMode("subway"));
         assertFalse(MatsimCorridorCache.isBusTransportMode("tram"));
         assertFalse(MatsimCorridorCache.isBusTransportMode("rail"));
@@ -226,7 +228,8 @@ class MatsimCorridorCacheTest {
         assertEquals(101330L, MatsimCorridorCache.linkBaseId("road_101330_0_e2s"));
         assertEquals(46L, MatsimCorridorCache.linkBaseId("road_46_12_s2e"));
         assertNull(MatsimCorridorCache.linkBaseId("siwei_12_0_0_s2e"), "非 road_ 前缀不解析");
-        assertNull(MatsimCorridorCache.linkBaseId("road_abc_0_e2s"));
+        assertThrows(IllegalArgumentException.class,
+                () -> MatsimCorridorCache.linkBaseId("road_abc_0_e2s"));
         assertNull(MatsimCorridorCache.linkBaseId(null));
     }
 }

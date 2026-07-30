@@ -14,12 +14,6 @@ const ACTIVITY_CATEGORIES = [
 ];
 const UNKNOWN_ACTIVITY = { key: "other-purpose", label: "其他", color: "#94a3b8" };
 
-const PURPOSE_ITEMS = [
-  { key: "commuter", label: "通勤", color: "#0071e3" },
-  { key: "shopping", label: "购物", color: "#7c3aed" },
-  { key: "leisure", label: "休闲", color: "#1a8a3f" },
-];
-
 const ATTRIBUTE_ITEMS = [
   { key: "student", label: "学生", color: "#2f75d6" },
   { key: "elderly", label: "老人", color: "#b06a00" },
@@ -166,22 +160,6 @@ function fixedPercentGroup(demo, key, title, definitions) {
   return { key, title, sumLabel: "合计 100%", items: normalizeDisplayPercents(items) };
 }
 
-// 样本量优先取 riderCount；缺失/为 0 时回退到"各活动计数之和"，
-// 避免因后端某些口径未下发 riderCount 就让客流画像整体空白（原先 total<=0 直接返回空）。
-function activityCountSum(demographics = {}) {
-  const source = demographics?.activityTypes || demographics?.activities;
-  if (Array.isArray(source)) {
-    return source.reduce((sum, item) => sum + Math.max(0, toFiniteNumber(item?.count, 0)), 0);
-  }
-  if (source && typeof source === "object") {
-    return Object.values(source).reduce((sum, value) => {
-      const count = value && typeof value === "object" ? value.count : value;
-      return sum + Math.max(0, toFiniteNumber(count, 0));
-    }, 0);
-  }
-  return 0;
-}
-
 function cardPassengerGroup(demographics = {}, total = 0) {
   const source = demographics?.passengerGroups;
   if (!Array.isArray(source) || !source.length) return null;
@@ -208,9 +186,11 @@ function cardPassengerGroup(demographics = {}, total = 0) {
 }
 
 export function passengerProfileRiderCount(demographics = {}) {
-  const direct = toFiniteNumber(demographics?.riderCount, 0);
-  if (direct > 0) return direct;
-  return activityCountSum(demographics);
+  const direct = Number(demographics?.riderCount);
+  if (!Number.isFinite(direct) || direct < 0) {
+    throw new Error("客流画像缺少有效的 riderCount");
+  }
+  return direct;
 }
 
 export function buildPassengerProfileGroups(demographics = {}) {
@@ -224,6 +204,9 @@ export function buildPassengerProfileGroups(demographics = {}) {
   // 保证各类相加恰为 100%，而不是逐类除以样本人数的“出现率”（一人多活动会使总和超 100%）
   let activityItems = activityItemsFromDemographics(demographics, total);
   if (activityItems.length) {
+    if (demographics.activitySource && demographics.activitySource !== "trip-purpose") {
+      throw new Error(`客流画像活动口径非法: ${demographics.activitySource}`);
+    }
     const countSum = activityItems.reduce((sum, item) => sum + Math.max(0, toFiniteNumber(item.count, 0)), 0);
     const valueSum = activityItems.reduce((sum, item) => sum + Math.max(0, toFiniteNumber(item.value, 0)), 0);
     const useCount = countSum > 0;
@@ -236,13 +219,10 @@ export function buildPassengerProfileGroups(demographics = {}) {
     }
     groups.push({
       key: "activity-types",
-      title: demographics.activitySource === "all-activities-fallback" ? "活动类型（回退口径）" : "出行目的",
+      title: "出行目的",
       sumLabel: "合计 100%",
       items: activityItems,
     });
-  } else {
-    const purpose = fixedPercentGroup(demographics, "purpose", "出行目的", PURPOSE_ITEMS);
-    if (purpose) groups.push(purpose);
   }
 
   if (!cardGroup) {

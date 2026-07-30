@@ -202,44 +202,20 @@ const renameRules = {
   ],
 };
 const userInitial = computed(() => (currentUsername.value || "用").slice(0, 1).toUpperCase());
-const fallbackBasemapOptions = [
-  {
-    key: "configured",
-    label: "默认",
-    tiles: [window.APP_CONFIG?.mapTileUrlTemplate || "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"],
-    background: "#f6f8fb",
-  },
-  {
-    key: "carto-light",
-    label: "Light",
-    tiles: ["https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"],
-    background: "#f6f8fb",
-  },
-  {
-    key: "carto-dark",
-    label: "Dark",
-    dark: true,
-    tiles: ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],
-    background: "#111827",
-  },
-  {
-    key: "carto-voyager",
-    label: "Voyager",
-    tiles: ["https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}@2x.png"],
-    background: "#f4f0e8",
-  },
-];
 const basemapStorageKey = window.BASEMAP_STORAGE_KEY || "gjcxfzksh:basemap";
 const basemapOptions = computed(() => {
   const configuredOptions = Array.isArray(window.BASEMAP_OPTIONS) ? window.BASEMAP_OPTIONS : [];
-  return configuredOptions.length ? configuredOptions : fallbackBasemapOptions;
+  if (!configuredOptions.length) {
+    throw new Error("未配置 BASEMAP_OPTIONS，无法初始化底图");
+  }
+  return configuredOptions;
 });
 const selectedBasemapKey = ref(readStoredBasemapKey());
 const basemapSubmenuOpen = ref(false);
 
 watch(basemapOptions, (options) => {
   if (!options.length || options.some((option) => option.key === selectedBasemapKey.value)) return;
-  selectedBasemapKey.value = window.DEFAULT_BASEMAP_KEY || options[0].key;
+  throw new Error(`底图配置中不存在选项: ${selectedBasemapKey.value}`);
 }, { immediate: true });
 
 function readStoredBasemapKey() {

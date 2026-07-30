@@ -24,19 +24,23 @@ export const useModelSelectionStore = defineStore("modelSelection", () => {
   function getSelection(pageKey) {
     const selection = selections.value?.[pageKey] || {};
     return {
-      sourceMode: selection.sourceMode || "simulation",
+      sourceMode: selection.sourceMode === "real" ? "real" : "simulation",
       scheme: selection.scheme || "",
       model: selection.model || "",
+      realServiceDate: selection.realServiceDate || "average",
     };
   }
 
   function setSelection(pageKey, selection = {}) {
+    const previous = selections.value?.[pageKey] || {};
+    const next = { ...previous, ...selection };
     selections.value = {
       ...selections.value,
       [pageKey]: {
-        sourceMode: selection.sourceMode || "simulation",
-        scheme: selection.scheme || "",
-        model: selection.model || "",
+        sourceMode: next.sourceMode === "real" ? "real" : "simulation",
+        scheme: next.scheme || "",
+        model: next.model || "",
+        realServiceDate: next.realServiceDate || "average",
       },
     };
     writeSelections(selections.value);

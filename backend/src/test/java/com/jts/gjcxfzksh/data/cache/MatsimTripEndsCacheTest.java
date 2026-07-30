@@ -22,11 +22,12 @@ import java.util.Map;
 import java.util.Random;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * 出行分布缓存纯单测（不依赖 Spring/数据盘）。
  * 端点侧（plans 活动出行口径，v4）：非 interaction 活动切分 trip、mode=pt leg 判定、
- * 端点=trip 两端活动坐标、缺坐标端点跳过、selectedPlan 回退、journeys/riders 计数。
+ * 端点=trip 两端活动坐标、缺坐标端点跳过、selectedPlan 缺失即失败、journeys/riders 计数。
  * OD 侧（events 站点口径，不随 v4 改动）：enter/leave 配对与 dropped 口径、
  * 30min/800m 链接（含边界值）、缺坐标保守断链、OD 配对聚合与 PGOD 编码
  * （人次降序 / Top-K 截断 / 自环 / 街道哨兵列）。
@@ -249,13 +250,14 @@ class MatsimTripEndsCacheTest {
     }
 
     @Test
-    void selectedPlan为空回退首plan() {
+    void selectedPlan为空时拒绝猜测首plan() {
         Population population = population();
         Person person = person(population, "p1", act("home", 0.0), "pt", act("work", 5000.0));
         person.setSelectedPlan(null);
-        MatsimTripEndsCache.Aggregation agg = aggregatePlans(population);
-        assertEquals(1, agg.journeys);
-        assertEquals(1, cellCount(agg.originCells, 0, 0));
+        MatsimTripEndsCache.Aggregation aggregation =
+                new MatsimTripEndsCache.Aggregation(CELL, null, Map.of());
+
+        assertThrows(IllegalStateException.class, () -> aggregation.acceptPerson(person, null));
     }
 
     @Test

@@ -359,8 +359,7 @@ public final class MatsimAnalysisCache {
             }
             return manifest;
         } catch (Exception e) {
-            log.warn("轨迹缓存状态读取失败: {}", manifestPath, e);
-            return null;
+            throw new IllegalStateException("轨迹缓存状态读取失败: " + manifestPath, e);
         }
     }
 
@@ -494,9 +493,9 @@ public final class MatsimAnalysisCache {
             return null;
         }
         try (InputStream in = Files.newInputStream(manifestPath);
-             JsonParser parser = JSON.getFactory().createParser(in)) {
+            JsonParser parser = JSON.getFactory().createParser(in)) {
             if (parser.nextToken() != JsonToken.START_OBJECT) {
-                return null;
+                throw new IllegalStateException("轨迹缓存 manifest 根节点不是对象: " + manifestPath);
             }
             Map<String, Object> manifest = new LinkedHashMap<>();
             while (parser.nextToken() != JsonToken.END_OBJECT) {
@@ -511,8 +510,7 @@ public final class MatsimAnalysisCache {
             manifest = lightweightTrajectoryManifest(manifest);
             return isReadyTrajectoryManifest(data, manifest) ? manifest : null;
         } catch (Exception e) {
-            log.warn("轨迹缓存轻量状态读取失败: {}", manifestPath, e);
-            return null;
+            throw new IllegalStateException("轨迹缓存轻量状态读取失败: " + manifestPath, e);
         }
     }
 
@@ -613,10 +611,8 @@ public final class MatsimAnalysisCache {
 
         Path chunkPath = trajectoryCacheDir(data).resolve(chunkFileName(chunkStart));
         if (!Files.exists(chunkPath)) {
-            Map<String, Object> result = new LinkedHashMap<>(manifest);
-            result.put("vehicles", List.of());
-            result.put("chunk", chunkInfo(chunkStart, 0, 0));
-            return result;
+            markTrajectoryGenerationBroken(data, manifest, "轨迹分块缺失: " + chunkPath.getFileName());
+            throw new IllegalStateException("轨迹 manifest 声明的分块不存在: " + chunkPath);
         }
 
         try {
@@ -627,13 +623,8 @@ public final class MatsimAnalysisCache {
             result.put("summary", manifest.get("summary"));
             return result;
         } catch (Exception e) {
-            log.warn("轨迹分块读取失败: {}", chunkPath, e);
-            Map<String, Object> result = new LinkedHashMap<>(manifest);
-            result.put("vehicles", List.of());
-            result.put("chunk", chunkInfo(chunkStart, 0, 0));
-            result.put("status", "failed");
-            result.put("message", "轨迹分块读取失败");
-            return result;
+            markTrajectoryGenerationBroken(data, manifest, "轨迹分块读取失败: " + e.getMessage());
+            throw new IllegalStateException("轨迹分块读取失败: " + chunkPath, e);
         }
     }
 
@@ -656,22 +647,24 @@ public final class MatsimAnalysisCache {
                         List.of()
                 );
             } catch (IOException e) {
-                log.warn("空轨迹二进制分块生成失败: start={}", chunkStart, e);
-                return null;
+                throw new IllegalStateException("空轨迹二进制分块生成失败: start=" + chunkStart, e);
             }
         }
 
         Path chunkPath = trajectorySpatialContainerPath(data, chunkStart);
         if (!Files.exists(chunkPath)) {
-            return null;
+            markTrajectoryGenerationBroken(data, manifest, "轨迹二进制分块缺失: " + chunkPath.getFileName());
+            throw new IllegalStateException("轨迹 manifest 声明的二进制分块不存在: " + chunkPath);
         }
 
         try {
-            if (Files.size(chunkPath) > TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) return null;
+            if (Files.size(chunkPath) > TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) {
+                throw new IllegalStateException("轨迹整块超过接口上限，请使用视口分块接口: " + chunkPath);
+            }
             return Files.readAllBytes(chunkPath);
         } catch (Exception e) {
-            log.warn("轨迹二进制分块读取失败: {}", chunkPath, e);
-            return null;
+            markTrajectoryGenerationBroken(data, manifest, "轨迹二进制分块读取失败: " + e.getMessage());
+            throw new IllegalStateException("轨迹二进制分块读取失败: " + chunkPath, e);
         }
     }
 
@@ -844,10 +837,10 @@ public final class MatsimAnalysisCache {
             selectedRows.writeTo(result);
             return result.toByteArray();
         } catch (Exception e) {
-            log.warn("轨迹空间块读取失败: model={}, chunk={}, bounds=[{},{},{},{}]",
-                    data.getName(), chunkStart, requestedMinX, requestedMinY, requestedMaxX, requestedMaxY, e);
             markTrajectoryGenerationBroken(data, manifest, "轨迹空间工件校验失败: " + e.getMessage());
-            return null;
+            throw new IllegalStateException("轨迹空间块读取失败: model=" + data.getName()
+                    + ", chunk=" + chunkStart + ", bounds=[" + requestedMinX + "," + requestedMinY
+                    + "," + requestedMaxX + "," + requestedMaxY + "]", e);
         }
     }
 
@@ -897,7 +890,7 @@ public final class MatsimAnalysisCache {
             );
             return out.toByteArray();
         } catch (IOException e) {
-            return null;
+            throw new IllegalStateException("构造空轨迹二进制响应失败", e);
         }
     }
 
@@ -915,16 +908,12 @@ public final class MatsimAnalysisCache {
     }
 
     private static String normalizeTrajectoryVisibility(String visibilityMode) {
-        String normalized = visibilityMode == null ? "all" : visibilityMode.toLowerCase(Locale.ROOT);
-        return "public".equals(normalized) || "private".equals(normalized) ? normalized : "all";
-    }
-
-    private static int intValue(Object value, int fallback) {
-        return value instanceof Number number ? number.intValue() : fallback;
-    }
-
-    private static double doubleValue(Object value, double fallback) {
-        return value instanceof Number number ? number.doubleValue() : fallback;
+        if (visibilityMode == null || visibilityMode.isBlank()) return "all";
+        String normalized = visibilityMode.toLowerCase(Locale.ROOT);
+        if ("all".equals(normalized) || "public".equals(normalized) || "private".equals(normalized)) {
+            return normalized;
+        }
+        throw new IllegalArgumentException("未知轨迹可见性模式: " + visibilityMode);
     }
 
     private static SpatialContainerIndex readSpatialTrajectoryIndex(Path path, int expectedChunkStart) throws IOException {
@@ -1046,7 +1035,7 @@ public final class MatsimAnalysisCache {
                     ? chunkPath
                     : null;
         } catch (IOException e) {
-            return null;
+            throw new IllegalStateException("读取轨迹分块大小失败: " + chunkPath, e);
         }
     }
 
@@ -1152,7 +1141,8 @@ public final class MatsimAnalysisCache {
             Object value = manifest.get("trackCount");
             return value instanceof Number number ? number.longValue() : -1L;
         } catch (Exception e) {
-            return -1L;
+            throw new IllegalStateException("读取乘客明细数量失败: "
+                    + personTrackManifestPath(data), e);
         }
     }
 
@@ -1193,8 +1183,7 @@ public final class MatsimAnalysisCache {
             log.info("读取乘客上下车轻量缓存: model={}, tracks={}", data.getName(), tracks.size());
             return true;
         } catch (Exception e) {
-            log.warn("乘客上下车缓存读取失败: {}", tracksPath, e);
-            return false;
+            throw new IllegalStateException("乘客上下车缓存读取失败: " + tracksPath, e);
         }
     }
 
@@ -1217,8 +1206,7 @@ public final class MatsimAnalysisCache {
             }
             return true;
         } catch (Exception e) {
-            log.warn("乘客上下车缓存状态读取失败: {}", manifestPath, e);
-            return false;
+            throw new IllegalStateException("乘客上下车缓存状态读取失败: " + manifestPath, e);
         }
     }
 
@@ -2503,7 +2491,7 @@ public final class MatsimAnalysisCache {
             }
             return Files.getLastModifiedTime(path).toMillis();
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -2518,7 +2506,7 @@ public final class MatsimAnalysisCache {
             }
             return Files.size(path);
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 
@@ -2541,13 +2529,13 @@ public final class MatsimAnalysisCache {
         try {
             return Double.parseDouble(value);
         } catch (Exception e) {
-            return 0.0;
+            throw new IllegalArgumentException("乘客明细数值字段非法: " + value, e);
         }
     }
 
     private static int roundTime(Double time) {
         if (time == null || Double.isNaN(time) || Double.isInfinite(time)) {
-            return 0;
+            throw new IllegalArgumentException("轨迹事件时刻非法: " + time);
         }
         return Math.max(0, (int) Math.round(time));
     }
@@ -2715,7 +2703,8 @@ public final class MatsimAnalysisCache {
         return switch (code) {
             case 0 -> "bus";
             case 1 -> "subway";
-            default -> "car";
+            case 2 -> "car";
+            default -> throw new IllegalArgumentException("未知轨迹模式编码: " + code);
         };
     }
 
@@ -2749,9 +2738,11 @@ public final class MatsimAnalysisCache {
             return fallback;
         }
         try {
-            return Math.max(1, Integer.parseInt(value.trim()));
-        } catch (Exception e) {
-            return fallback;
+            int parsed = Integer.parseInt(value.trim());
+            if (parsed <= 0) throw new NumberFormatException("必须大于 0");
+            return parsed;
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(property + "/" + env + " 必须是正整数: " + value, e);
         }
     }
 

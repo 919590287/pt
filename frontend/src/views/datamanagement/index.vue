@@ -1247,8 +1247,7 @@ function setBuiltUpOverride(area, scope, value) {
   }
 }
 
-// 当前范围（全市 / 某行政区）的覆盖率视图：分子取被服务面积，分母优先用建成区覆写，否则用行政区/分区面积；
-// 分子缺失（如后端未下发分区覆盖）时回退后端速率，避免直接"暂无"
+// 当前范围（全市 / 某行政区）的覆盖率视图：只用服务面积与当前分母计算。
 const coverageView = computed(() => {
   const scope = selectedDisplayRange.value || DISPLAY_RANGE_ALL;
   const isCity = scope === DISPLAY_RANGE_ALL;
@@ -1256,19 +1255,11 @@ const coverageView = computed(() => {
   const covered300 = isCity ? nullableNumber(overviewStats.stationCoverage300Km2) : nullableNumber(district?.coverage300Km2);
   const covered500 = isCity ? nullableNumber(overviewStats.stationCoverage500Km2) : nullableNumber(district?.coverage500Km2);
   const defaultAreaKm2 = isCity ? nullableNumber(overviewStats.adminAreaKm2) : nullableNumber(district?.areaKm2);
-  const backend300 = isCity ? nullableNumber(overviewStats.stationCoverage300Rate) : nullableNumber(district?.coverage300Rate);
-  const backend500 = isCity ? nullableNumber(overviewStats.stationCoverage500Rate) : nullableNumber(district?.coverage500Rate);
   const override = builtUpOverrideFor(selectedArea.value, scope);
   const denom = override != null ? override : defaultAreaKm2;
   const rateOf = (covered) => (covered != null && denom != null && denom > 0 ? (covered / denom) * 100 : null);
-  const rawRate = (covered, backend) => {
-    const value = rateOf(covered);
-    if (value != null) return value;
-    // 有覆写却拿不到分子 → 无法计算；无覆写 → 回退后端速率
-    return override != null ? null : backend;
-  };
-  const raw300 = rawRate(covered300, backend300);
-  const raw500 = rawRate(covered500, backend500);
+  const raw300 = rateOf(covered300);
+  const raw500 = rateOf(covered500);
   // 建成区面积 < 服务footprint 时原始值可能 >100%，显示封顶到 100% 并标注
   const cap = (rate) => (rate != null && rate > 100 ? 100 : rate);
   return {
@@ -1932,7 +1923,7 @@ function invalidateRenderedRealDataSources(options = {}) {
 // 统一集合突变入口：对 realDataAllCollections 的一切本地修改都应经由此函数，由它成对完成
 // 「区划缓存失效 + 图源/索引失效 + 重新应用过滤」，新增编辑路径不再需要记住手工调用顺序。
 // sourceDiffs: { datasetType: () => diff }（在 mutate 之后求值）；全市视图下尝试 MapLibre
-// updateData 增量更新，成功的数据集保留图源数据引用（跳过全量 setData 重切片），失败自动回退。
+// updateData 增量更新，成功的数据集保留图源数据引用（跳过全量 setData 重切片）。
 function mutateRealDataCollections(mutate, options = {}) {
   const { datasets = EDIT_DATASET_TYPES, clearSelection: shouldClearSelection = false, sourceDiffs = null } = options;
   if (typeof mutate === "function") mutate();
@@ -1955,9 +1946,8 @@ function applyGeoJsonSourceDiff(datasetType, diff) {
   try {
     source.updateData(diff);
     return true;
-  } catch {
-    // 源中缺 id 等情况：回退全量 setData
-    return false;
+  } catch (error) {
+    throw new Error(`地图源增量更新失败: ${datasetType}`, { cause: error });
   }
 }
 
@@ -2791,17 +2781,12 @@ function applyDisplayRangeFilter(options = {}) {
     activeEntry = { source: realDataAllCollections, collections: realDataCollections };
     displayRangeFilterCache.set(cacheKey, activeEntry);
   } else {
-    // 未缓存的行政区：优先交给 worker 后台计算（保持当前集合渲染，结果写入缓存后重入本函数走命中路径）；
-    // worker 不可用或构建失败时同步回退
-    if (scheduleDistrictWorkerFilter(context, cacheKey)) {
-      if (shouldClearSelection) {
-        clearSelectionState();
-      }
-      return;
+    // 未缓存的行政区交给 worker 后台计算，失败时显式进入错误态。
+    scheduleDistrictWorkerFilter(context, cacheKey);
+    if (shouldClearSelection) {
+      clearSelectionState();
     }
-    realDataCollections = filterCollectionsByDistrict(realDataAllCollections, context);
-    activeEntry = { source: realDataAllCollections, collections: realDataCollections };
-    displayRangeFilterCache.set(cacheKey, activeEntry);
+    return;
   }
   // 区级总览统计（去重计数+线网长度积分）随缓存条目存储：区间来回切换不再全量重算
   if (!context) {
@@ -2876,36 +2861,39 @@ let activeDistrictFilterToken = 0;
 const pendingDistrictFilterResolvers = new Map();
 
 function districtFilterWorkerInstance() {
-  if (districtWorkerFailed) return null;
+  if (districtWorkerFailed) throw new Error("行政区裁剪 Worker 不可用");
   if (districtWorker) return districtWorker;
   try {
     districtWorker = new Worker(new URL("./districtFilter.worker.js", import.meta.url), { type: "module" });
     districtWorker.onmessage = (event) => {
       const message = event?.data || {};
       if (message.type !== "filterResult") return;
-      const resolve = pendingDistrictFilterResolvers.get(message.requestId);
-      if (resolve) {
+      const pending = pendingDistrictFilterResolvers.get(message.requestId);
+      if (pending) {
         pendingDistrictFilterResolvers.delete(message.requestId);
-        resolve(message.collections || null);
+        if (message.collections) pending.resolve(message.collections);
+        else pending.reject(new Error(message.error || "行政区裁剪 Worker 未返回结果"));
       }
     };
-    districtWorker.onerror = () => {
+    districtWorker.onerror = (event) => {
       districtWorkerFailed = true;
-      pendingDistrictFilterResolvers.forEach((resolve) => resolve(null));
+      const error = new Error(event?.message || "行政区裁剪 Worker 运行失败");
+      pendingDistrictFilterResolvers.forEach((pending) => pending.reject(error));
       pendingDistrictFilterResolvers.clear();
       districtWorker?.terminate?.();
       districtWorker = null;
+      displayRangeError.value = error.message;
     };
-  } catch {
+  } catch (error) {
     districtWorkerFailed = true;
     districtWorker = null;
+    throw new Error("行政区裁剪 Worker 初始化失败", { cause: error });
   }
   return districtWorker;
 }
 
 function scheduleDistrictWorkerFilter(context, cacheKey) {
   const worker = districtFilterWorkerInstance();
-  if (!worker) return false;
   try {
     if (districtWorkerSource !== realDataAllCollections || districtWorkerDataStale) {
       worker.postMessage({
@@ -2920,35 +2908,35 @@ function scheduleDistrictWorkerFilter(context, cacheKey) {
       districtWorkerSource = realDataAllCollections;
       districtWorkerDataStale = false;
     }
-  } catch {
+  } catch (error) {
     districtWorkerFailed = true;
-    return false;
+    throw new Error("向行政区裁剪 Worker 同步数据失败", { cause: error });
   }
   const requestId = ++districtWorkerRequestSeq;
   const token = ++activeDistrictFilterToken;
   const source = realDataAllCollections;
-  new Promise((resolve) => {
-    pendingDistrictFilterResolvers.set(requestId, resolve);
-    worker.postMessage({
-      type: "filter",
-      requestId,
-      context: { name: context.name, polygons: context.polygons, bounds: context.bounds },
-    });
+  new Promise((resolve, reject) => {
+    pendingDistrictFilterResolvers.set(requestId, { resolve, reject });
+    try {
+      worker.postMessage({
+        type: "filter",
+        requestId,
+        context: { name: context.name, polygons: context.polygons, bounds: context.bounds },
+      });
+    } catch (error) {
+      pendingDistrictFilterResolvers.delete(requestId);
+      reject(error);
+    }
   }).then((collections) => {
     if (token !== activeDistrictFilterToken) return;
     if (source !== realDataAllCollections) return;
     if (activeDisplayRangeContext()?.name !== context.name) return;
-    if (!collections) {
-      // worker 侧异常：同步回退一次，保证区选最终可用
-      displayRangeFilterCache.set(cacheKey, {
-        source,
-        collections: filterCollectionsByDistrict(realDataAllCollections, context),
-      });
-      applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
-      return;
-    }
     displayRangeFilterCache.set(cacheKey, { source, collections });
     applyDisplayRangeFilter({ updateSources: true, clearSelection: false });
+  }).catch((error) => {
+    if (token !== activeDistrictFilterToken) return;
+    displayRangeError.value = error?.message || "行政区裁剪失败";
+    loadError.value = displayRangeError.value;
   });
   return true;
 }

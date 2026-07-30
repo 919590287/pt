@@ -487,8 +487,8 @@ public class ModelCacheManager {
                     && MatsimCorridorCache.isReady(data)
                     && MatsimLinkSpeedCache.isReady(data);
         } catch (Exception e) {
-            log.warn("模型组件缓存状态读取失败: model={}", scheme == null ? "" : scheme.getName(), e);
-            return false;
+            throw new IllegalStateException("模型组件缓存状态读取失败: model="
+                    + (scheme == null ? "" : scheme.getName()), e);
         }
     }
 

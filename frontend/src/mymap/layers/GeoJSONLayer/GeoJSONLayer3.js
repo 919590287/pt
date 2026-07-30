@@ -75,7 +75,7 @@ export class ColorBar2D {
       }
       return "#00000000";
     } catch (error) {
-      return "#00000000";
+      throw new Error("颜色分段计算失败", { cause: error });
     }
   }
 
@@ -1129,8 +1129,7 @@ export class GeoJSONPointListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      this.valueMap = {};
-      this.setValueKey(this._valuekey);
+      throw new Error("点图层属性缓冲区构建失败", { cause: error });
     }
   }
 
@@ -1146,6 +1145,7 @@ export class GeoJSONPointListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`点图层属性切换失败: ${valueKey}`, { cause: error });
     }
   }
 }
@@ -1433,8 +1433,7 @@ export class GeoJSONLineListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      this.valueMap = {};
-      this.setValueKey(this._valuekey);
+      throw new Error("线图层属性缓冲区构建失败", { cause: error });
     }
   }
 
@@ -1450,6 +1449,7 @@ export class GeoJSONLineListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`线图层属性切换失败: ${valueKey}`, { cause: error });
     }
   }
 }
@@ -1911,9 +1911,7 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
       this.setValueKey(this._valuekey);
       this.setValue3DKey(this._value3Dkey);
     } catch (error) {
-      this.valueMap = {};
-      this.setValueKey(this._valuekey);
-      this.setValue3DKey(this._value3Dkey);
+      throw new Error("多边形图层属性缓冲区构建失败", { cause: error });
     }
   }
 
@@ -1929,6 +1927,7 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`多边形图层属性切换失败: ${valueKey}`, { cause: error });
     }
   }
 
@@ -1944,6 +1943,7 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value3D", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`多边形图层三维属性切换失败: ${value3DKey}`, { cause: error });
     }
   }
 }
@@ -2233,9 +2233,7 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
       this.setValueKey(this._valuekey);
       this.setValue3DKey(this._value3Dkey);
     } catch (error) {
-      this.valueMap = {};
-      this.setValueKey(this._valuekey);
-      this.setValue3DKey(this._value3Dkey);
+      throw new Error("多边形边界属性缓冲区构建失败", { cause: error });
     }
   }
 
@@ -2251,6 +2249,7 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`多边形边界属性切换失败: ${valueKey}`, { cause: error });
     }
   }
 
@@ -2266,6 +2265,7 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value3D", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`多边形边界三维属性切换失败: ${value3DKey}`, { cause: error });
     }
   }
 }

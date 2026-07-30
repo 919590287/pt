@@ -13,7 +13,6 @@ import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.prep.PreparedGeometry;
-import org.locationtech.jts.operation.distance.DistanceOp;
 import org.matsim.api.core.v01.Coord;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.Scenario;
@@ -190,27 +189,23 @@ public class ScenarioCutService {
                 && f.getName().endsWith(".xml")
                 && f.getName().toLowerCase().contains("config")
                 && !f.getName().toLowerCase().contains("reduced"));
-        if (files != null) {
-            java.util.Arrays.sort(files, java.util.Comparator.comparing(java.io.File::getName));
-            for (java.io.File f : files) {
-                try {
-                    ConfigUtils.loadConfig(f.getAbsolutePath());
-                    return f.getAbsolutePath();
-                } catch (Exception e) {
-                    try { // 老版本 config：走平台既有的版本转换
-                        String converted = MatsimOutFile.config15to2024(f.getAbsolutePath(), parent.getCache());
-                        ConfigUtils.loadConfig(converted);
-                        return converted;
-                    } catch (Exception ignored) {
-                        log.warn("完整 config 加载失败，尝试下一候选: {}", f.getName());
-                    }
-                }
-            }
+        if (files == null) {
+            throw new BusinessException("无法扫描母本模型目录: " + dir);
         }
-        log.warn("未找到可用的完整 config，回退精简版: {}", outfile.getConfig());
-        // MatsimOutFile 的目录扫描现在延迟解析；真正使用精简配置前仍需触发旧版本兼容转换。
-        outfile.loadConfig();
-        return outfile.getConfig();
+        java.util.Arrays.sort(files, java.util.Comparator.comparing(java.io.File::getName));
+        if (files.length == 0) {
+            throw new BusinessException("未找到完整 MATSim config，拒绝使用展示用精简配置生成派生模型");
+        }
+        if (files.length > 1) {
+            throw new BusinessException("发现多个完整 MATSim config，无法确定唯一输入: "
+                    + java.util.Arrays.stream(files).map(java.io.File::getName).toList());
+        }
+        try {
+            ConfigUtils.loadConfig(files[0].getAbsolutePath());
+            return files[0].getAbsolutePath();
+        } catch (Exception e) {
+            throw new BusinessException("完整 MATSim config 加载失败: " + files[0], e);
+        }
     }
 
     // ==================== 坐标系上下文 ====================
@@ -269,8 +264,7 @@ public class ScenarioCutService {
             try {
                 return TransformationFactory.getCoordinateTransformation(from, to);
             } catch (Exception e) {
-                log.warn("坐标系转换器创建失败 {} -> {}，按同坐标系处理", from, to);
-                return null;
+                throw new BusinessException("坐标系转换器创建失败: " + from + " -> " + to, e);
             }
         }
 
@@ -344,8 +338,6 @@ public class ScenarioCutService {
                         if (newRoute != null) {
                             cut.truncateBaseIndex.put(key(line.getId(), route.getId()), from);
                             result.setLinesTruncated(result.getLinesTruncated() + 1);
-                        } else {
-                            newRoute = route; // 截断失败（数据不一致）→ 整条保留，保守处理
                         }
                     }
                 }
@@ -426,9 +418,8 @@ public class ScenarioCutService {
                     }
                 }
                 if (idx < 0) {
-                    log.warn("线路截断失败（站点 link 不在走向序列上），整条保留: route={}, stop={}",
-                            route.getId(), stops.get(i).getStopFacility().getId());
-                    return null;
+                    throw new BusinessException("线路截断失败：站点 link 不在走向序列上，route="
+                            + route.getId() + ", stop=" + stops.get(i).getStopFacility().getId());
                 }
                 stopLinkIdx[i] = idx;
                 cursor = idx;
@@ -455,8 +446,10 @@ public class ScenarioCutService {
             }
             return newRoute;
         } catch (Exception e) {
-            log.warn("线路截断失败，整条保留: route={}, error={}", route.getId(), e.getMessage());
-            return null;
+            if (e instanceof BusinessException businessException) {
+                throw businessException;
+            }
+            throw new BusinessException("线路截断失败: route=" + route.getId(), e);
         }
     }
 
@@ -490,7 +483,7 @@ public class ScenarioCutService {
                 }
             }
         } catch (Exception e) {
-            log.warn("最小换乘时间拷贝失败（忽略）: {}", e.getMessage());
+            throw new BusinessException("最小换乘时间拷贝失败", e);
         }
     }
 
@@ -518,10 +511,7 @@ public class ScenarioCutService {
             try {
                 processPerson(person, factory, output, network, schedule, crs, result);
             } catch (Exception e) {
-                result.setPersonsDropped(result.getPersonsDropped() + 1);
-                if (result.getPersonsDropped() < 20) {
-                    log.warn("出行者切分失败已跳过: person={}, error={}", person.getId(), e.getMessage());
-                }
+                throw new BusinessException("出行者切分失败: person=" + person.getId(), e);
             }
         });
         reader.readFile(plansFile);
@@ -537,7 +527,8 @@ public class ScenarioCutService {
         // 拷贝 population 级属性（坐标系声明等）
         try {
             AttributesUtils.copyAttributesFromTo(readScenario.getPopulation(), output);
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            throw new BusinessException("拷贝 population 属性失败", e);
         }
         return output;
     }
@@ -545,12 +536,8 @@ public class ScenarioCutService {
     private void processPerson(Person person, PopulationFactory factory, Population output,
                                Network network, TransitSchedule schedule, CrsCtx crs, CutResult result) {
         Plan plan = person.getSelectedPlan();
-        if (plan == null && !person.getPlans().isEmpty()) {
-            plan = person.getPlans().get(0);
-        }
         if (plan == null) {
-            result.setPersonsDropped(result.getPersonsDropped() + 1);
-            return;
+            throw new BusinessException("出行者缺少 selectedPlan: " + person.getId());
         }
         List<TripStructureUtils.Trip> trips = TripStructureUtils.getTrips(plan);
         List<Activity> acts = realActivities(plan, trips);
@@ -640,7 +627,7 @@ public class ScenarioCutService {
         for (int i = 0; i < acts.size(); i++) {
             Activity cleaned = cleanActivity(acts.get(i), factory, network, crs);
             if (cleaned == null) {
-                return null;
+                throw new BusinessException("区域内活动缺少坐标: person=" + origin.getId());
             }
             newPlan.addActivity(cleaned);
             if (i < trips.size()) {
@@ -666,7 +653,7 @@ public class ScenarioCutService {
             if (in[i]) {
                 Activity cleaned = cleanActivity(acts.get(i), factory, network, crs);
                 if (cleaned == null) {
-                    return null;
+                    throw new BusinessException("穿越活动缺少坐标: person=" + origin.getId());
                 }
                 if (!first) {
                     // 与上一个已输出活动之间的 leg：使用连接 trip 的主模式
@@ -691,10 +678,11 @@ public class ScenarioCutService {
                 // 后接区域内活动：以再入 trip 的过界锚点/时刻折叠
                 TripStructureUtils.Trip entering = trips.get(j);
                 Crossing cr = computeCrossing(entering, acts.get(j), acts.get(j + 1), network, schedule, crs);
-                Coord anchor = cr != null && cr.entryAnchor != null ? cr.entryAnchor
-                        : fallbackAnchor(acts.get(j), acts.get(j + 1), network, crs);
-                Double endTime = cr != null && cr.entryTime != null ? cr.entryTime
-                        : activityEndTime(acts.get(j));
+                if (cr == null || cr.entryAnchor == null || cr.entryTime == null) {
+                    throw new BusinessException("无法确定再入区域的边界锚点: person=" + origin.getId());
+                }
+                Coord anchor = cr.entryAnchor;
+                Double endTime = cr.entryTime;
                 outsideAct = factory.createActivityFromCoord(OUTSIDE, anchor);
                 if (endTime != null) {
                     outsideAct.setEndTime(endTime);
@@ -704,8 +692,10 @@ public class ScenarioCutService {
                 // 计划尾段在区域外：以离开 trip 的过界锚点折叠（无 endTime）
                 TripStructureUtils.Trip exiting = trips.get(i - 1);
                 Crossing cr = computeCrossing(exiting, acts.get(i - 1), acts.get(i), network, schedule, crs);
-                Coord anchor = cr != null && cr.exitAnchor != null ? cr.exitAnchor
-                        : fallbackAnchor(acts.get(i), acts.get(i - 1), network, crs);
+                if (cr == null || cr.exitAnchor == null) {
+                    throw new BusinessException("无法确定离开区域的边界锚点: person=" + origin.getId());
+                }
+                Coord anchor = cr.exitAnchor;
                 outsideAct = factory.createActivityFromCoord(OUTSIDE, anchor);
             }
             newPlan.addActivity(outsideAct);
@@ -718,7 +708,7 @@ public class ScenarioCutService {
         pruneTrailingLeg(newPlan);
         ensureMonotonicTimes(newPlan);
         if (countActivities(newPlan) < 2) {
-            return null;
+            throw new BusinessException("切分后的穿越计划不足两个活动: person=" + origin.getId());
         }
         newPerson.addPlan(newPlan);
         newPerson.setSelectedPlan(newPlan);
@@ -780,10 +770,6 @@ public class ScenarioCutService {
         return cleaned;
     }
 
-    private Double activityEndTime(Activity act) {
-        return act.getEndTime().isDefined() ? act.getEndTime().seconds() : null;
-    }
-
     private String mainMode(TripStructureUtils.Trip trip) {
         for (Leg leg : trip.getLegsOnly()) {
             String routingMode = TripStructureUtils.getRoutingMode(leg);
@@ -793,13 +779,13 @@ public class ScenarioCutService {
         }
         try {
             String m = TripStructureUtils.identifyMainMode(trip.getTripElements());
-            if (m != null) {
+            if (m != null && !m.isBlank()) {
                 return m;
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            throw new BusinessException("识别行程主方式失败", e);
         }
-        List<Leg> legs = trip.getLegsOnly();
-        return legs.isEmpty() ? "walk" : legs.get(legs.size() - 1).getMode();
+        throw new BusinessException("行程缺少明确主方式");
     }
 
     private void pruneTrailingLeg(Plan plan) {
@@ -825,31 +811,11 @@ public class ScenarioCutService {
             if (el instanceof Activity act && act.getEndTime().isDefined()) {
                 double end = act.getEndTime().seconds();
                 if (end <= last + 60) {
-                    end = last + 60;
-                    act.setEndTime(end);
+                    throw new BusinessException("活动结束时间非单调: previous=" + last + ", current=" + end);
                 }
                 last = end;
             }
         }
-    }
-
-    private Coord fallbackAnchor(Activity outsideAct, Activity insideAct, Network network, CrsCtx crs) {
-        Coord out = activityCoord(outsideAct, network, crs);
-        Coord in = activityCoord(insideAct, network, crs);
-        if (out != null && in != null) {
-            Coord inter = GeoUtil.firstIntersection(crs.zonePlansGeom, out, in);
-            if (inter != null) {
-                return inter;
-            }
-        }
-        Coord ref = out != null ? out : in;
-        if (ref == null) {
-            Coordinate c = crs.zonePlansGeom.getCentroid().getCoordinate();
-            return new Coord(c.x, c.y);
-        }
-        Coordinate[] nearest = DistanceOp.nearestPoints(crs.zonePlansGeom.getBoundary(),
-                GF.createPoint(new Coordinate(ref.getX(), ref.getY())));
-        return new Coord(nearest[0].x, nearest[0].y);
     }
 
     // ==================== 过界点/过界时刻 ====================
@@ -948,7 +914,7 @@ public class ScenarioCutService {
             }
             return crossing;
         } catch (Exception e) {
-            return null;
+            throw new BusinessException("计算穿越研究区域的行程失败", e);
         }
     }
 
@@ -1037,7 +1003,8 @@ public class ScenarioCutService {
         target.setEffectiveLaneWidth(origin.getEffectiveLaneWidth());
         try {
             target.setEffectiveCellSize(origin.getEffectiveCellSize());
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            throw new BusinessException("复制路网 effectiveCellSize 失败", e);
         }
 
         for (Link link : origin.getLinks().values()) {
@@ -1077,21 +1044,13 @@ public class ScenarioCutService {
         }
 
         // 分模式连通性清理（保持 qsim 主模式路由可行）
-        Set<String> mainModes = new HashSet<>();
-        try {
-            mainModes.addAll(parentConfig.qsim().getMainModes());
-        } catch (Exception ignored) {
-        }
+        Set<String> mainModes = new HashSet<>(parentConfig.qsim().getMainModes());
         mainModes.add("car");
         MultimodalNetworkCleaner cleaner = new MultimodalNetworkCleaner(target);
         for (String mode : mainModes) {
             boolean present = target.getLinks().values().stream().anyMatch(l -> l.getAllowedModes().contains(mode));
             if (present) {
-                try {
-                    cleaner.run(Set.of(mode));
-                } catch (Exception e) {
-                    log.warn("路网连通性清理失败 mode={}: {}", mode, e.getMessage());
-                }
+                cleaner.run(Set.of(mode));
             }
         }
         cleaner.removeNodesWithoutLinks();
@@ -1174,8 +1133,7 @@ public class ScenarioCutService {
             new MatsimVehicleWriter(target).writeFile(outDir.resolve("vehicles.xml.gz").toString());
             return true;
         } catch (Exception e) {
-            log.warn("私家车辆文件筛选失败，跳过: {}", e.getMessage());
-            return false;
+            throw new BusinessException("私家车辆文件筛选失败", e);
         }
     }
 
@@ -1197,18 +1155,9 @@ public class ScenarioCutService {
         config.transit().setTransitScheduleFile("transitSchedule.xml.gz");
         config.transit().setVehiclesFile("transitVehicles.xml.gz");
         config.facilities().setInputFile(null);
-        try {
-            config.counts().setInputFile(null);
-        } catch (Exception ignored) {
-        }
-        try {
-            config.households().setInputFile(null);
-        } catch (Exception ignored) {
-        }
-        try {
-            config.network().setChangeEventsInputFile(null);
-        } catch (Exception ignored) {
-        }
+        config.counts().setInputFile(null);
+        config.households().setInputFile(null);
+        config.network().setChangeEventsInputFile(null);
         if (hasPersonalVehicles) {
             config.vehicles().setVehiclesFile("vehicles.xml.gz");
         } else {
@@ -1222,10 +1171,7 @@ public class ScenarioCutService {
         config.controller().setWriteEventsInterval(Math.max(1, iterations));
         config.controller().setWritePlansInterval(Math.max(1, iterations));
 
-        try {
-            config.replanning().setFractionOfIterationsToDisableInnovation(0.8);
-        } catch (Exception ignored) {
-        }
+        config.replanning().setFractionOfIterationsToDisableInnovation(0.8);
 
         // 修复平台 config15to2024 全文替换的副作用：策略名 "TimeAllocationMutator"（大写开头）
         // 会被误改成模块名 "timeAllocationMutator"（平台只读展示从不运行，因此未暴露）

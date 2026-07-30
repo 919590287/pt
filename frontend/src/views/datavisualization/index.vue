@@ -848,7 +848,11 @@
                 </div>
                 <!-- 开着开关但图没出来时给出去向：生成中轮询 / 模型无数据 -->
                 <p v-if="linkSpeedEnabled && linkSpeedStatus !== 'ready'" class="layer-mode-note" role="status">
-                  {{ linkSpeedStatus === 'empty' ? '该模型无公交车速数据' : '车速缓存生成中，就绪后自动上图…' }}
+                  {{ linkSpeedStatus === 'empty'
+                    ? '该模型无公交车速数据'
+                    : linkSpeedStatus === 'error'
+                      ? '公交车速数据加载失败'
+                      : '车速缓存生成中，就绪后自动上图…' }}
                 </p>
                 <div v-if="linkSpeedEnabled" class="slider-row">
                   <span class="label">
@@ -1172,6 +1176,7 @@ import { useModelRuntimeStore } from "@/stores/modelRuntime.js";
 import { useDisplayRangeStore } from "@/stores/displayRange.js";
 import { abortOtherModelDataRequests, getCachedFacilityAll, getCachedLineAll, getCachedRoutePanel, getCachedStationPanel, peekCachedRoutePanel, warmModelInteractionCache } from "@/utils/modelDataCache.js";
 import { createDebouncedMirror, runWhenIdle } from "./utils/panelShared.js";
+import { displayRangeNetworkState } from "./utils/displayRangeReadiness.js";
 import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
 import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
 import {
@@ -1499,13 +1504,9 @@ async function ensureInteractionCacheForModel(modelName) {
     interactionCacheMessage.value = "客流交互缓存已就绪";
   } catch (error) {
     if (seq !== interactionCacheSeq || selectModel.value?.name !== key) return;
-    interactionCacheStatus.value = "ready";
-    interactionCacheError.value = error?.message || "客流交互缓存预热失败，已降级为按需加载";
+    interactionCacheStatus.value = "error";
+    interactionCacheError.value = error?.message || "客流交互缓存预热失败";
   }
-}
-
-function pickReadyModel(list, excludedName = "") {
-  return (Array.isArray(list) ? list : []).find((item) => item.name !== excludedName && isModelReadyForView(item)) || null;
 }
 
 function clearBackgroundTask(name = "") {
@@ -1601,8 +1602,8 @@ async function handleUnloadModel(item) {
     await unloadModel({ name: item.name }, { silentError: true });
     const list = await handleGetModelList({ silent: true });
     if (isActive) {
-      const fallback = pickReadyModel(list, item.name);
-      setActiveModel(fallback?.name || "");
+      setActiveModel("");
+      loadError.value = "当前模型已卸载，请明确选择新的模型";
     }
     clearBackgroundTask(item.name);
     ElMessage.success("模型已卸载");
@@ -1624,8 +1625,12 @@ watch(
     if (!scheme) return;
     const list = await handleGetModelList();
     if (list.length && !datebase.value.model) {
-      const preferred = list.find((item) => item.name === restoringModel) || pickReadyModel(list) || list[0];
-      setActiveModel(preferred.name);
+      const restored = list.find((item) => item.name === restoringModel);
+      if (restoringModel && !restored) {
+        loadError.value = `原选择模型不存在或已被移除：${restoringModel}`;
+      } else if (restored) {
+        setActiveModel(restored.name);
+      }
     }
     isRestoringSelection = false;
   },
@@ -1644,7 +1649,10 @@ async function handleGetSchemeList(options = {}) {
     if (autoSelect && !datebase.value.scheme && list.length) {
       datebase.value.scheme = list[0];
     } else if (datebase.value.scheme && !list.includes(datebase.value.scheme)) {
-      datebase.value.scheme = list[0] || "";
+      const missingScheme = datebase.value.scheme;
+      datebase.value.scheme = "";
+      setActiveModel("");
+      loadError.value = `原选择方案不存在或已被移除：${missingScheme}`;
     }
     if (!silent && !list.length) {
       loadError.value = "暂无可用方案";
@@ -1654,7 +1662,7 @@ async function handleGetSchemeList(options = {}) {
     if (seq === schemeRequestSeq && !silent) {
       loadError.value = error?.message || "方案列表加载失败，请检查后端服务";
     }
-    return [];
+    throw error;
   } finally {
     if (seq === schemeRequestSeq && !silent) {
       isLoadingSchemes.value = false;
@@ -1881,8 +1889,9 @@ async function handleGetModelList(options = {}) {
     if (seq !== modelRequestSeq) return modelList.value;
     modelList.value = list;
     if (datebase.value.model && !list.some((item) => item.name === datebase.value.model)) {
-      const fallback = pickReadyModel(list);
-      setActiveModel(fallback?.name || "");
+      const missingModel = datebase.value.model;
+      setActiveModel("");
+      loadError.value = `原选择模型不存在或已被移除：${missingModel}`;
     }
     if (backgroundModelName.value && !list.some((item) => item.name === backgroundModelName.value)) {
       clearBackgroundTask(backgroundModelName.value);
@@ -1895,7 +1904,7 @@ async function handleGetModelList(options = {}) {
     if (seq === modelRequestSeq && !silent) {
       loadError.value = error?.message || "模型列表加载失败，请检查后端服务";
     }
-    return [];
+    throw error;
   } finally {
     if (seq === modelRequestSeq && !silent) {
       isLoadingModels.value = false;
@@ -2585,12 +2594,13 @@ const activeDisplayRangeContext = computed(() =>
 );
 let busNetworkRawLines = [];
 let busNetworkRawFacilities = [];
+let busNetworkRawModel = "";
 const busNetworkRevision = ref(0);
 
 // ===== 行政区计算 Worker：全网求交与线要素裁剪下沉后台线程 =====
 // 原先 displayRangeSelection 是同步 computed，选区瞬间对全部线路×逐 link 做线段-多边形求交，
 // 主线程冻结数百 ms~秒级。现改为：全网坐标在模型加载后的空闲期打包传入 Worker 常驻，
-// 选区时仅发送 district 上下文，结果按 (model, district, revision) 记忆化；Worker 不可用时回退同步计算。
+// 选区时仅发送 district 上下文，结果按 (model, district, revision) 记忆化。
 let displayRangeWorker = null;
 let displayRangeWorkerBroken = false;
 // 卸载后拒绝重建：慢请求的回调若在卸载后触发 postDisplayRangeWorker，
@@ -2614,7 +2624,9 @@ function displayRangeContextPayload(context) {
 }
 
 function ensureDisplayRangeWorker() {
-  if (displayRangeWorkerBroken || displayRangeWorkerDisposed) return null;
+  if (displayRangeWorkerBroken || displayRangeWorkerDisposed) {
+    throw new Error("display range worker unavailable");
+  }
   if (displayRangeWorker) return displayRangeWorker;
   try {
     displayRangeWorker = new Worker(new URL("./displayRange.worker.js", import.meta.url), { type: "module" });
@@ -2622,7 +2634,7 @@ function ensureDisplayRangeWorker() {
     displayRangeContextSentKeys.clear();
   } catch (error) {
     displayRangeWorkerBroken = true;
-    return null;
+    throw new Error("display range worker initialization failed", { cause: error });
   }
   displayRangeWorker.onmessage = (event) => {
     const msg = event.data || {};
@@ -2644,7 +2656,6 @@ function ensureDisplayRangeWorker() {
 
 function postDisplayRangeWorker(payload, transfer = []) {
   const worker = ensureDisplayRangeWorker();
-  if (!worker) return Promise.reject(new Error("display range worker unavailable"));
   return new Promise((resolve, reject) => {
     if (payload.seq != null) displayRangeWorkerPending.set(payload.seq, { resolve, reject });
     try {
@@ -2707,68 +2718,75 @@ function packDisplayRangeNetwork(modelName) {
 }
 
 // 网络数据与线要素集喂给 Worker（同一模型同一版本只发一次）
-function warmDisplayRangeWorker(modelName) {
-  if (displayRangeWorkerBroken || !busNetworkRawLines.length || !modelName) return;
+async function warmDisplayRangeWorker(modelName) {
+  if (displayRangeWorkerBroken) throw new Error("display range worker unavailable");
+  const networkState = displayRangeNetworkState(modelName, busNetworkRawModel, busNetworkRawLines);
+  if (networkState === "pending") return false;
+  if (networkState === "empty") throw new Error("当前数据源没有可用于行政区筛选的线路");
   const sentKey = `${modelName}::${busNetworkRevision.value}`;
-  if (displayRangeNetworkSentKey === sentKey) return;
-  try {
-    const payload = packDisplayRangeNetwork(modelName);
-    postDisplayRangeWorker(payload, [payload.segBuf, payload.routeFacBuf, payload.stationBuf]).catch(() => {});
+  if (displayRangeNetworkSentKey === sentKey) return true;
+  const payload = packDisplayRangeNetwork(modelName);
+  await Promise.all([
+    postDisplayRangeWorker(payload, [payload.segBuf, payload.routeFacBuf, payload.stationBuf]),
     postDisplayRangeWorker({
       type: "setLines",
       model: modelName,
       linesRev: busNetworkRevision.value,
       collection: busNetworkCollections.lines,
-    }).catch(() => {});
-    displayRangeNetworkSentKey = sentKey;
-  } catch (error) {
-    displayRangeWorkerBroken = true;
-  }
-}
-
-// Worker 不可用时的同步回退（与原 computed 逻辑一致）
-function computeDisplayRangeSelectionSync(context) {
-  const routeIds = new Set();
-  const lineNames = new Set();
-  const stationNames = new Set();
-  for (const line of busNetworkRawLines) {
-    const lineId = String(line?.lineId || "");
-    let lineHasRoute = false;
-    for (const route of Array.isArray(line?.routes) ? line.routes : []) {
-      if (routeIntersectsDisplayRange(route, context)) {
-        lineHasRoute = true;
-        const routeId = String(route?.routeId || "");
-        routeIds.add(lineId && routeId ? `${lineId}::${routeId}` : routeId);
-      }
-    }
-    if (lineHasRoute && line?.lineName) lineNames.add(String(line.lineName));
-  }
-  routeIds.delete("");
-  for (const facility of busNetworkRawFacilities) {
-    if (facility?.facilityName && modelCoordInDisplayRange(facility?.coord, context)) {
-      stationNames.add(String(facility.facilityName));
-    }
-  }
-  return { routeIds, lineNames, stationNames };
+    }),
+  ]);
+  displayRangeNetworkSentKey = sentKey;
+  return true;
 }
 
 const displayRangeSelection = shallowRef(null);
 const displayRangeSelectionMemo = new Map(); // `${model}::${district}::${rev}` -> { routeIds, lineNames, stationNames }
 let displayRangeQueryToken = 0;
+let displayRangeLoadError = "";
+
+function reportDisplayRangeError(error, fallback) {
+  displayRangeLoadError = error?.message || fallback;
+  loadError.value = displayRangeLoadError;
+}
+
+function clearDisplayRangeError() {
+  if (displayRangeLoadError && loadError.value === displayRangeLoadError) loadError.value = "";
+  displayRangeLoadError = "";
+}
 
 watch(
-  [activeDisplayRangeContext, busNetworkRevision],
-  ([context]) => {
+  [activeDisplayRangeContext, busNetworkRevision, () => selectModel.value?.name],
+  ([context, , selectedModelName]) => {
     if (!context) {
       displayRangeQueryToken += 1;
       displayRangeSelection.value = null;
+      clearDisplayRangeError();
       return;
     }
-    const modelName = selectModel.value?.name || "";
+    const modelName = selectedModelName || "";
+    const networkState = displayRangeNetworkState(modelName, busNetworkRawModel, busNetworkRawLines);
+    if (networkState === "pending") {
+      // 刷新/切源时线网仍在请求中；busNetworkRevision 会在数据到达后自动重试。
+      displayRangeQueryToken += 1;
+      displayRangeSelection.value = null;
+      clearDisplayRangeError();
+      return;
+    }
+    if (networkState === "empty") {
+      displayRangeQueryToken += 1;
+      displayRangeSelection.value = {
+        routeIds: new Set(),
+        lineNames: new Set(),
+        stationNames: new Set(),
+      };
+      reportDisplayRangeError(null, "当前数据源没有可用于行政区筛选的线路");
+      return;
+    }
     const memoKey = `${modelName}::${context.name}::${busNetworkRevision.value}`;
     const cached = displayRangeSelectionMemo.get(memoKey);
     if (cached) {
       displayRangeSelection.value = cached;
+      clearDisplayRangeError();
       return;
     }
     const token = ++displayRangeQueryToken;
@@ -2779,9 +2797,15 @@ watch(
       }
       // 结果落地前保持旧值（stale-while-revalidate），避免过滤态闪跳
       displayRangeSelection.value = result;
+      clearDisplayRangeError();
     };
-    warmDisplayRangeWorker(modelName);
-    postDisplayRangeWorker({ type: "query", seq: ++displayRangeMsgSeq, model: modelName, ...displayRangeContextPayload(context) })
+    void warmDisplayRangeWorker(modelName)
+      .then(() => postDisplayRangeWorker({
+        type: "query",
+        seq: ++displayRangeMsgSeq,
+        model: modelName,
+        ...displayRangeContextPayload(context),
+      }))
       .then((msg) => {
         if (token !== displayRangeQueryToken) return;
         if (!msg?.ok) throw new Error("display range worker has no network yet");
@@ -2791,9 +2815,10 @@ watch(
           stationNames: new Set(msg.stationNames),
         });
       })
-      .catch(() => {
+      .catch((error) => {
         if (token !== displayRangeQueryToken) return;
-        remember(computeDisplayRangeSelectionSync(context));
+        displayRangeSelection.value = null;
+        reportDisplayRangeError(error, "行政区线网筛选失败");
       });
   },
   { immediate: true },
@@ -3326,13 +3351,15 @@ const lineOperationStats = computed(() => {
       .flatMap((panel) => Array.isArray(panel?.metrics?.vehicleIds) ? panel.metrics.vehicleIds : [])
       .map((id) => String(id || "")).filter(Boolean),
   );
-  const vehicles = selectedVehicleIds.size > 0 ? selectedVehicleIds.size : combinedMetric("vehicles");
-  const perTrip = departures > 0 ? passenger / departures : combinedMetric("perTripFlow");
-  const perVehicle = vehicles > 0 ? passenger / vehicles : combinedMetric("perVehicleFlow");
-  const peakHeadway = positiveMetric(selectedLinePanel.value, "peakHeadwayMin")
-    || positiveMetric(selectedReverseLinePanel.value, "peakHeadwayMin");
-  const offPeakHeadway = positiveMetric(selectedLinePanel.value, "offPeakHeadwayMin")
-    || positiveMetric(selectedReverseLinePanel.value, "offPeakHeadwayMin");
+  const declaredVehicles = combinedMetric("vehicles");
+  if (declaredVehicles > 0 && selectedVehicleIds.size === 0) {
+    throw new Error("线路运营指标声明了车辆数但缺少 vehicleIds");
+  }
+  const vehicles = selectedVehicleIds.size;
+  const perTrip = departures > 0 ? passenger / departures : 0;
+  const perVehicle = vehicles > 0 ? passenger / vehicles : 0;
+  const peakHeadway = positiveMetric(selectedLinePanel.value, "peakHeadwayMin");
+  const offPeakHeadway = positiveMetric(selectedLinePanel.value, "offPeakHeadwayMin");
   const routePanels = selectedLinePanelIsGroup.value
     ? [selectedLinePanel.value]
     : [selectedLinePanel.value, selectedReverseLinePanel.value].filter(Boolean);
@@ -3349,7 +3376,7 @@ const lineOperationStats = computed(() => {
     (sum, panel) => sum + positiveMetric(panel, "peakMissingCapacityDepartures"), 0);
   const peakLoadRate = peakMissingCapacity === 0 && peakSamples > 0
     ? peakRateWeighted / peakSamples
-    : positiveMetric(selectedLinePanel.value, "peakAverageLoadRate");
+    : 0;
   return [
     { label: "日发车班次", ...formatLineCountStat(departures, "班") },
     { label: "车辆数", ...formatLineCountStat(vehicles, "辆") },
@@ -3785,7 +3812,6 @@ function routePanelToOverallBusOps(panel = {}, routeIds = null) {
   const ops = { vehicles: 0, departures: 0, operatedKm: 0, operators: [] };
   const operatorMap = new Map();
   const vehicleIds = new Set();
-  let fallbackVehicles = 0;
   const routeEntries = panel?.routes && typeof panel.routes === "object" ? Object.entries(panel.routes) : [];
   routeEntries.forEach(([routeId, route]) => {
     if (routeModeKey(route) !== "bus") return;
@@ -3794,35 +3820,35 @@ function routePanelToOverallBusOps(panel = {}, routeIds = null) {
     const departures = Number(metrics.departures) || 0;
     const passenger = sumHourlyFlowArray(route?.hourlyFlow);
     const company = String(route?.operator || metrics.company || "未知企业");
-    const operatedKm = Number(metrics.operatingVehicleKm)
-      || Number(metrics.operatedKm)
-      || (departures * (Number(metrics.routeDist) || 0)) / 1000;
+    const operatedKm = Number(metrics.operatingVehicleKm);
+    if (!Number.isFinite(operatedKm) || operatedKm < 0) {
+      throw new Error(`线路 ${routeId} 缺少有效 operatingVehicleKm`);
+    }
     const routeVehicleIds = Array.isArray(metrics.vehicleIds)
       ? metrics.vehicleIds.map((id) => String(id || "")).filter(Boolean)
       : [];
-    if (routeVehicleIds.length) routeVehicleIds.forEach((id) => vehicleIds.add(id));
-    else fallbackVehicles += Number(metrics.vehicles) || 0;
+    if (!routeVehicleIds.length && Number(metrics.vehicles) > 0) {
+      throw new Error(`线路 ${routeId} 声明了车辆数但缺少 vehicleIds`);
+    }
+    routeVehicleIds.forEach((id) => vehicleIds.add(id));
     ops.departures += departures;
     ops.operatedKm += operatedKm;
     const operator = operatorMap.get(company)
-      || { name: company, passenger: 0, vehicleIds: new Set(), fallbackVehicles: 0,
-        departures: 0, operatedKm: 0 };
+      || { name: company, passenger: 0, vehicleIds: new Set(), departures: 0, operatedKm: 0 };
     operator.passenger += passenger;
-    if (routeVehicleIds.length) routeVehicleIds.forEach((id) => operator.vehicleIds.add(id));
-    else operator.fallbackVehicles += Number(metrics.vehicles) || 0;
+    routeVehicleIds.forEach((id) => operator.vehicleIds.add(id));
     operator.departures += departures;
     operator.operatedKm += operatedKm;
     operatorMap.set(company, operator);
   });
-  ops.vehicles = vehicleIds.size + fallbackVehicles;
+  ops.vehicles = vehicleIds.size;
   ops.operators = [...operatorMap.values()].map((item) => ({
     name: item.name,
     passenger: item.passenger,
-    vehicles: item.vehicleIds.size + item.fallbackVehicles,
+    vehicles: item.vehicleIds.size,
     departures: item.departures,
     operatedKm: item.operatedKm,
-    perVehicle: (item.vehicleIds.size + item.fallbackVehicles) > 0
-      ? item.passenger / (item.vehicleIds.size + item.fallbackVehicles) : 0,
+    perVehicle: item.vehicleIds.size > 0 ? item.passenger / item.vehicleIds.size : 0,
     perTrip: item.departures > 0 ? item.passenger / item.departures : 0,
     intensity: item.operatedKm > 0 ? item.passenger / item.operatedKm : 0,
   })).sort((left, right) => right.passenger - left.passenger);
@@ -3913,9 +3939,6 @@ async function loadOverallFlow() {
   } catch (error) {
     if (seq !== overallFlowRequestSeq) return;
     if (error?.message === "请求已取消" || error?.cause?.message === "canceled") return;
-    overallFlowHourlyByMode.value = emptyModeHourlyFlow();
-    overallFlowBusOps.value = null;
-    overallFlowDailyFlow.value = [];
     overallFlowError.value = error?.message || "总体客流监测加载失败";
   } finally {
     if (seq === overallFlowRequestSeq) {
@@ -6147,40 +6170,6 @@ function modelCoordInDisplayRange(coord, context = activeDisplayRangeContext.val
   return lngLat ? lngLatInDisplayRange(lngLat, context) : false;
 }
 
-function modelLinkIntersectsDisplayRange(link, context = activeDisplayRangeContext.value) {
-  if (!context) return true;
-  const from = modelCoordToLngLat(link?.from);
-  const to = modelCoordToLngLat(link?.to);
-  return from && to ? segmentIntersectsDistrictContext(from, to, context) : false;
-}
-
-function routeIntersectsDisplayRange(route, context = activeDisplayRangeContext.value) {
-  if (!context) return true;
-  const links = Array.isArray(route?.links) ? route.links : [];
-  if (links.some((link) => modelLinkIntersectsDisplayRange(link, context))) return true;
-  return (Array.isArray(route?.facilities) ? route.facilities : [])
-    .some((facility) => modelCoordInDisplayRange(facility?.coord || facility, context));
-}
-
-function filterLineFeatureCollectionByDisplayRange(collection, context = activeDisplayRangeContext.value) {
-  if (!context) return collection;
-  const features = [];
-  (collection?.features || []).forEach((feature, featureIndex) => {
-    lineGeometryPaths(feature?.geometry).forEach((path, pathIndex) => {
-      clipLineStringToDistrictContext(path, context).forEach((coordinates, clipIndex) => {
-        if (coordinates.length < 2) return;
-        features.push({
-          type: "Feature",
-          id: [feature?.id ?? featureIndex, pathIndex, clipIndex].join("-"),
-          geometry: { type: "LineString", coordinates },
-          properties: { ...(feature?.properties || {}) },
-        });
-      });
-    });
-  });
-  return { type: "FeatureCollection", features };
-}
-
 function lineGeometryPaths(geometry) {
   if (!geometry) return [];
   if (geometry.type === "LineString") return [geometry.coordinates || []];
@@ -6287,16 +6276,29 @@ function applyBusNetworkLineClip(context) {
     return;
   }
   const modelName = selectModel.value?.name || "";
-  warmDisplayRangeWorker(modelName);
-  postDisplayRangeWorker({ type: "clipLines", seq: ++displayRangeMsgSeq, model: modelName, ...displayRangeContextPayload(context) })
+  const networkState = displayRangeNetworkState(modelName, busNetworkRawModel, busNetworkRawLines);
+  if (networkState === "pending") return;
+  if (networkState === "empty") {
+    applyClippedLineCollection(emptyFeatureCollection(), context);
+    reportDisplayRangeError(null, "当前数据源没有可用于行政区筛选的线路");
+    return;
+  }
+  void warmDisplayRangeWorker(modelName)
+    .then(() => postDisplayRangeWorker({
+      type: "clipLines",
+      seq: ++displayRangeMsgSeq,
+      model: modelName,
+      ...displayRangeContextPayload(context),
+    }))
     .then((msg) => {
       if (token !== busNetworkClipToken) return;
       if (!msg?.ok || !msg.collection) throw new Error("clip result unavailable");
       applyClippedLineCollection(msg.collection, context);
+      clearDisplayRangeError();
     })
-    .catch(() => {
+    .catch((error) => {
       if (token !== busNetworkClipToken) return;
-      applyClippedLineCollection(filterLineFeatureCollectionByDisplayRange(busNetworkCollections.lines, context), context);
+      reportDisplayRangeError(error, "行政区线网裁剪失败");
     });
 }
 
@@ -6389,6 +6391,7 @@ async function loadBusNetwork() {
     const facilities = Array.isArray(facilityRes) ? facilityRes : [];
     busNetworkRawLines = lines;
     busNetworkRawFacilities = facilities;
+    busNetworkRawModel = modelName;
     busNetworkRevision.value += 1;
     busNetworkCollections = {
       lines: buildModelLineFeatureCollection(lines),
@@ -6397,7 +6400,15 @@ async function loadBusNetwork() {
     busNetworkIndexes = buildBusNetworkIndexes(lines, busNetworkCollections);
     // 行政区 Worker 预热：空闲期打包全网坐标常驻 Worker，用户第一次选行政区即秒回
     runWhenIdle(() => {
-      if (busNetworkLoadStillCurrent(seq, modelName)) warmDisplayRangeWorker(modelName);
+      if (busNetworkLoadStillCurrent(seq, modelName)) {
+        void warmDisplayRangeWorker(modelName)
+          .then((ready) => {
+            if (ready) clearDisplayRangeError();
+          })
+          .catch((error) => {
+            reportDisplayRangeError(error, "行政区筛选线程预热失败");
+          });
+      }
     });
     const map = MapRef.value?.map;
     if (!map) return;
@@ -7607,6 +7618,7 @@ function clearBusNetworkLayers() {
   busNetworkIndexes = createEmptyBusNetworkIndexes();
   busNetworkRawLines = [];
   busNetworkRawFacilities = [];
+  busNetworkRawModel = "";
   busNetworkRevision.value += 1;
 }
 
@@ -7866,12 +7878,8 @@ async function loadDisplayRanges(options = {}) {
     nextTick(setMapCenter);
   } catch (error) {
     if (seq !== displayRangeRequestSeq) return;
-    adminDistrictCollection.value = emptyDistrictFeatureCollection();
-    displayRangeContextRev += 1;
-    displayRangeContextSentKeys.clear();
-    displayRangeList.value = [DISPLAY_RANGE_ALL];
-    selectedDisplayRange.value = DISPLAY_RANGE_ALL;
     displayRangeError.value = error?.message || "行政区范围加载失败";
+    throw error;
   } finally {
     if (seq === displayRangeRequestSeq) {
       isLoadingDisplayRanges.value = false;
@@ -7889,7 +7897,9 @@ function toggleRangePopover() {
     showLineWidthPopover.value = false;
     closeLineRoutePicker();
     if (!displayRangeOptions.value.length && !isLoadingDisplayRanges.value) {
-      loadDisplayRanges({ force: Boolean(displayRangeError.value) });
+      void loadDisplayRanges({ force: Boolean(displayRangeError.value) }).catch((error) => {
+        displayRangeError.value = error?.message || "行政区范围加载失败";
+      });
     }
   }
   showRangePopover.value = !showRangePopover.value;
@@ -8184,8 +8194,12 @@ watch(
 );
 
 function refreshSchemeAndModelLists() {
-  handleGetSchemeList({ silent: true });
-  handleGetModelList({ silent: true });
+  void Promise.all([
+    handleGetSchemeList({ silent: true }),
+    handleGetModelList({ silent: true }),
+  ]).catch((error) => {
+    loadError.value = error?.message || "方案或模型列表刷新失败";
+  });
 }
 
 // 仅当有模型处于过渡态（排队/加载/建缓存）时保持 20s 轮询；
@@ -8344,7 +8358,9 @@ onMounted(() => {
     scheduleMapResize();
   }
   if (showDisplayRangeControl.value) {
-    loadDisplayRanges();
+    void loadDisplayRanges().catch((error) => {
+      displayRangeError.value = error?.message || "行政区范围加载失败";
+    });
   }
   if (isPerfProbeEnabled) {
     startPerfProbe();
@@ -8358,8 +8374,12 @@ onMounted(() => {
     if (datebase.value.scheme && !modelList.value.length) {
       const list = await handleGetModelList();
       if (list.length && (!datebase.value.model || !list.some((item) => item.name === datebase.value.model))) {
-        const preferred = list.find((item) => item.name === restoredSelection.model) || pickReadyModel(list) || list[0];
-        setActiveModel(preferred.name);
+        const restored = list.find((item) => item.name === restoredSelection.model);
+        if (restoredSelection.model && !restored) {
+          loadError.value = `原选择模型不存在或已被移除：${restoredSelection.model}`;
+        } else if (restored) {
+          setActiveModel(restored.name);
+        }
       }
       await ensureSelectedModelReady();
     }
@@ -8369,7 +8389,9 @@ onMounted(() => {
     // 仿真首屏稳定后真实数据已在后台预热；用户首次点击“真实”通常直接命中缓存。
     ensureRealDataReady();
   }
-  bootstrapSimulation.finally(() => {
+  bootstrapSimulation.catch((error) => {
+    loadError.value = error?.message || "运行监测初始化失败";
+  }).finally(() => {
     initialModelBootstrap.value = false;
     isRestoringSelection = false;
     observeLeftPanelSize();

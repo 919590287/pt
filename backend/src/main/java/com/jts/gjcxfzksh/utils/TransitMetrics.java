@@ -98,11 +98,11 @@ public final class TransitMetrics {
             try {
                 var transformation = org.matsim.core.utils.geometry.transformations.TransformationFactory
                         .getCoordinateTransformation(normalized, "EPSG:3857");
-                // 构造器可能延迟失败；用一个中性坐标探测，非法 CRS 直接转 unsupported。
+                // 构造器可能延迟失败；用一个中性坐标探测，非法 CRS 立即报错。
                 transformation.transform(new Coord(0, 0));
                 return new MetricCoordinateContext(transformation, false, normalized);
             } catch (RuntimeException e) {
-                return unsupported();
+                throw new IllegalArgumentException("不支持的坐标系: " + normalized, e);
             }
         }
 
@@ -126,10 +126,15 @@ public final class TransitMetrics {
             if (coord == null || !isSupported()) return null;
             try {
                 Coord projected = identity ? coord : toWebMercator.transform(coord);
-                return projected != null && Double.isFinite(projected.getX())
-                        && Double.isFinite(projected.getY()) ? projected : null;
+                if (projected == null || !Double.isFinite(projected.getX())
+                        || !Double.isFinite(projected.getY())) {
+                    throw new IllegalStateException("坐标转换结果非法: sourceCrs=" + sourceCrs
+                            + ", coord=" + coord);
+                }
+                return projected;
             } catch (RuntimeException e) {
-                return null;
+                throw new IllegalStateException("坐标转换失败: sourceCrs=" + sourceCrs
+                        + ", coord=" + coord, e);
             }
         }
 
@@ -388,11 +393,8 @@ public final class TransitMetrics {
                     if (type == 3 || type == 11 || (type >= 700 && type < 800)) return true;
                     if (type == 0 || type == 1 || type == 2 || type == 4
                             || (type >= 900 && type < 1200)) return false;
-                } catch (NumberFormatException ignored) {
-                    // 非数值 route_type 继续按 mode 文本判断。
-                    String mode = normalize(String.valueOf(value));
-                    if (isExplicitRoadPublicTransportMode(mode)) return true;
-                    if (isTransitMode(mode) && !Constant.ROUTE_MODE_PT.equals(mode)) return false;
+                } catch (NumberFormatException error) {
+                    throw new IllegalArgumentException("route_type 字段必须是整数: " + value, error);
                 }
             }
         }
@@ -529,7 +531,7 @@ public final class TransitMetrics {
     }
 
     /**
-     * 常住人口口径：selected plan（缺失时回退首个 plan）中存在首个有效、非 stage 的
+     * 常住人口口径：selected plan 中存在首个有效、非 stage 的
      * {@code home/home_*} 活动坐标的人数。它不依赖公交站或坐标系识别，可直接用于
      * “常住人口密度”的分子。
      */
@@ -571,8 +573,9 @@ public final class TransitMetrics {
     private static Coord firstValidHomeCoord(Person person) {
         if (person == null) return null;
         org.matsim.api.core.v01.population.Plan plan = person.getSelectedPlan();
-        if (plan == null && !person.getPlans().isEmpty()) plan = person.getPlans().getFirst();
-        if (plan == null) return null;
+        if (plan == null) {
+            throw new IllegalStateException("人口数据缺少 selectedPlan: person=" + person.getId());
+        }
         for (PlanElement element : plan.getPlanElements()) {
             if (!(element instanceof Activity activity) || activity.getCoord() == null) continue;
             String type = activity.getType();
@@ -621,8 +624,7 @@ public final class TransitMetrics {
     }
 
     /**
-     * transit leg 的候车样本：优先使用 boardingTime。仅在缺该字段、且前序确为
-     * pt interaction 并能算出严格正值时，才用历史“leg departure - access arrival”口径兜底。
+     * transit leg 的候车样本：只接受路由中明确编码的 boardingTime。
      */
     public static WaitSample waitSample(List<? extends PlanElement> elements, int legIndex) {
         if (elements == null || legIndex < 0 || legIndex >= elements.size()
@@ -634,18 +636,7 @@ public final class TransitMetrics {
         if (routeWait != null) {
             return new WaitSample(leg.getDepartureTime().seconds(), routeWait);
         }
-        if (legIndex < 2 || !(elements.get(legIndex - 1) instanceof Activity interaction)
-                || interaction.getType() == null
-                || !TripStructureUtils.isStageActivityType(interaction.getType())
-                || !(elements.get(legIndex - 2) instanceof Leg access)
-                || !access.getDepartureTime().isDefined() || !access.getTravelTime().isDefined()) {
-            return null;
-        }
-        double start = access.getDepartureTime().seconds() + access.getTravelTime().seconds();
-        double wait = leg.getDepartureTime().seconds() - start;
-        // 缺 boardingTime 时不把结构性 0 当成真实“零候车”。
-        return start >= 0 && Double.isFinite(wait) && wait > 0
-                ? new WaitSample(start, wait) : null;
+        return null;
     }
 
     /**
@@ -1951,33 +1942,6 @@ public final class TransitMetrics {
             share.put(entry.getKey(), percent);
         }
         return share;
-    }
-
-    /**
-     * 服务区面积估算（km²）：站点坐标凸包面积。
-     * 用于模型 desc.json 未提供 area（默认占位 1.0）时的密度类指标分母回退，
-     * 坐标按项目统一投影 EPSG:3857 处理，按中心纬度做 cos² 面积畸变校正。
-     *
-     * @return km²；站点不足 3 个返回 null
-     */
-    public static Double serviceAreaKm2(Collection<Coord> stopCoords) {
-        if (stopCoords == null || stopCoords.size() < 3) {
-            return null;
-        }
-        org.locationtech.jts.geom.GeometryFactory factory = new org.locationtech.jts.geom.GeometryFactory();
-        org.locationtech.jts.geom.Coordinate[] points = stopCoords.stream()
-                .map(c -> new org.locationtech.jts.geom.Coordinate(c.getX(), c.getY()))
-                .toArray(org.locationtech.jts.geom.Coordinate[]::new);
-        org.locationtech.jts.geom.Geometry hull = factory.createMultiPointFromCoords(points).convexHull();
-        double areaM2 = hull.getArea();
-        if (!(areaM2 > 0)) {
-            return null;
-        }
-        // Web Mercator 面积畸变校正：真实面积 = 投影面积 × cos²(纬度)
-        double centroidY = hull.getCentroid().getY();
-        double lat = Math.atan(Math.sinh(centroidY / 6378137.0));
-        double corrected = areaM2 * Math.cos(lat) * Math.cos(lat);
-        return corrected / 1_000_000.0;
     }
 
     /**

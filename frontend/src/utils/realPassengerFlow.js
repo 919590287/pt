@@ -52,11 +52,36 @@ export function realServiceDateFromDatasource(value) {
 
 export function realLineGroupName(value = "") {
   const text = String(value || "").trim();
-  return text.replace(/[（(][^（）()]*[）)]\s*$/, "").trim() || text;
+  let depth = 0;
+  let outerStart = -1;
+  for (let index = 0; index < text.length; index += 1) {
+    const current = text[index];
+    if (current === "(" || current === "（") {
+      if (depth === 0) outerStart = index;
+      depth += 1;
+    } else if ((current === ")" || current === "）") && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && outerStart >= 0) {
+        const content = text.slice(outerStart + 1, index);
+        if (/(?:--|—|－|→|至)/.test(content)) {
+          return normalizeNanshaLinePrefix(text.slice(0, outerStart).trim());
+        }
+      }
+    }
+  }
+  return normalizeNanshaLinePrefix(text);
 }
 
 export function realLineGroupId(value = "") {
   return `real-line::${realLineGroupName(value)}`;
+}
+
+function normalizeNanshaLinePrefix(value = "") {
+  const text = String(value || "").trim();
+  const slashAlias = text.match(/^(\d+)路?\/南(?:沙)?(\d+)路?$/);
+  if (slashAlias && slashAlias[1] === slashAlias[2]) return `南沙${slashAlias[1]}路`;
+  if (text.startsWith("南沙")) return text;
+  return /^南(?=\d|[GKWT夜学旅游])/.test(text) ? `南沙${text.slice(1)}` : text;
 }
 
 function featureProperties(feature) {

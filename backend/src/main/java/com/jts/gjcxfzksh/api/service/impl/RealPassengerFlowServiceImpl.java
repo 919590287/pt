@@ -55,6 +55,7 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
     private static final String STOP_SEQUENCE = "站点/line_stop_sequence.csv";
     private static final String ROUTE_SHP = "线路/routes.shp";
     private static final String ROUTE_DEPARTURES = "线路/routes_departures.csv";
+    private static final String UNLOCATED_LINE_GROUP_FLOW = "线路组未定位小时客流.csv";
     private static final String REAL_EVALUATION_FORMULA_VERSION = "evaluation-v13-real-v2";
     private static final int HOURS = 24;
     private static final DateTimeFormatter DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -409,7 +410,7 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             double total = 0;
             try (SimpleFeatureIterator iterator = store.getFeatureSource().getFeatures().features()) {
                 while (iterator.hasNext()) {
-                    double area = parseNumber(featureText(iterator.next(), "F004"));
+                    double area = parseOptionalMetricNumber(featureText(iterator.next(), "F004"));
                     if (Double.isFinite(area) && area > 0) total += area;
                 }
             }
@@ -610,12 +611,14 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         loadStopSequence(data, transitRoot(area).resolve(STOP_SEQUENCE));
         loadOverall(data, root.resolve("总体小时客流.csv"));
         loadLineHours(data, root.resolve("线路小时客流.csv"));
+        loadUnlocatedLineGroupHours(data, root.resolve(UNLOCATED_LINE_GROUP_FLOW));
         loadStationHours(data, root.resolve("站点小时客流.csv"));
         loadSegments(data, root.resolve("断面小时客流.csv"));
         loadOd(data, root.resolve("线路OD日统计.csv"));
         loadDemographics(data, root.resolve("客群小时统计.csv"));
         loadTransfers(data, root.resolve("换乘明细.csv"));
         loadOperations(data, root.resolve("线路日运营统计.csv"));
+        loadVehicleIdentifiers(data, root.resolve("车辆日运营统计.csv"));
         loadSegmentDistances(data, root.resolve("区间运行时间统计.csv"));
         loadRouteMetadata(data, transitRoot(area).resolve(ROUTE_SHP));
         loadRouteDepartures(data, transitRoot(area).resolve(ROUTE_DEPARTURES));
@@ -683,6 +686,39 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             route.trips[hour] += number(row, "trip_count");
             String serviceDate = text(row, "service_date");
             if (!serviceDate.isBlank()) route.dailyBoarding.merge(serviceDate, number(row, "boarding_count"), Double::sum);
+        });
+    }
+
+    /**
+     * 车辆 ID 以体量较小的车辆日统计为准。到离站明细用于轨迹回放，文件接近 1GB，
+     * 且历史数据并非严格按日期排序，不能依赖其首个日期分块来推断整条线路的车辆集合。
+     */
+    private void loadVehicleIdentifiers(Dataset data, Path file) {
+        readCsv(file, row -> {
+            if (!data.accepts(text(row, "service_date"))) return;
+            String plateNumber = text(row, "plate_number");
+            if (plateNumber.isBlank()) return;
+            data.vehicleIds.add(plateNumber);
+            RouteAcc route = data.routes.get(text(row, "authority_line_id"));
+            if (route != null) route.vehicleIds.add(plateNumber);
+        });
+    }
+
+    private void loadUnlocatedLineGroupHours(Dataset data, Path file) {
+        readCsv(file, row -> {
+            String serviceDate = text(row, "service_date");
+            if (!data.accepts(serviceDate)) return;
+            String lineName = baseLineName(text(row, "authority_line_group_name"));
+            int hour = hour(row);
+            double count = number(row, "boarding_count");
+            if (lineName.isBlank() || hour < 0 || count <= 0) return;
+            String groupId = lineGroupId(lineName);
+            UnlocatedLineGroupAcc group = data.unlocatedLineGroups.computeIfAbsent(
+                    groupId, ignored -> new UnlocatedLineGroupAcc(groupId, lineName));
+            group.boarding[hour] += count;
+            if (!serviceDate.isBlank()) group.dailyBoarding.merge(serviceDate, count, Double::sum);
+            String company = text(row, "company_raw");
+            group.companies.merge(company.isBlank() ? "未知企业" : company, count, Double::sum);
         });
     }
 
@@ -783,8 +819,16 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             route.vehicles += number(row, "vehicle_count");
             route.departures += number(row, "trip_start_count");
             route.mileageKm += number(row, "mileage_km");
-            route.runTimeMinutes += number(row, "run_time_min");
-            route.speedWeighted += number(row, "avg_speed_kmh") * Math.max(1, number(row, "run_time_min"));
+            double runTimeMinutes = number(row, "run_time_min");
+            route.runTimeMinutes += runTimeMinutes;
+            // 无有效里程/运行时间时，生成器会有意把平均速度留空。这代表“无速度样本”，
+            // 不是整行数据损坏；车辆、班次、客流等其余真实指标仍应正常读取。
+            double speed = optionalNumber(row, "avg_speed_kmh");
+            if (Double.isFinite(speed)) {
+                double speedWeightMinutes = Math.max(1, runTimeMinutes);
+                route.speedWeighted += speed * speedWeightMinutes;
+                route.speedWeightMinutes += speedWeightMinutes;
+            }
             int first = dateTimeSeconds(text(row, "first_event_time"));
             int last = dateTimeSeconds(text(row, "last_event_time"));
             if (first >= 0) route.firstTime = Math.min(route.firstTime, first);
@@ -793,11 +837,12 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
                 int firstHour = Math.max(0, Math.min(23, first / 3600));
                 int lastHour = Math.max(firstHour, Math.min(23, last / 3600));
                 double vehicles = number(row, "vehicle_count");
-                double speed = number(row, "avg_speed_kmh");
                 for (int hour = firstHour; hour <= lastHour; hour++) {
                     data.vehicleActive[hour] += vehicles;
-                    data.vehicleSpeedSum[hour] += speed * vehicles;
-                    data.vehicleSpeedWeight[hour] += vehicles;
+                    if (Double.isFinite(speed)) {
+                        data.vehicleSpeedSum[hour] += speed * vehicles;
+                        data.vehicleSpeedWeight[hour] += vehicles;
+                    }
                 }
             }
         });
@@ -832,7 +877,6 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
                     RouteAcc route = data.routes.get(routeId);
                     if (route == null) continue;
                     route.company = featureText(feature, "company");
-                    route.scheduledIntervalMin = parseNumber(featureText(feature, "interval"));
                     route.scheduledFirstTime = clockSeconds(featureText(feature, "first"));
                     route.scheduledLastTime = clockSeconds(featureText(feature, "last"));
                     Object shape = feature.getDefaultGeometry();
@@ -1046,8 +1090,8 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
                     .filter(value -> value >= 0)
                     .sorted()
                     .toList();
-            route.peakHeadwayMin = scheduledHeadway(departures, true, route.scheduledIntervalMin);
-            route.offPeakHeadwayMin = scheduledHeadway(departures, false, route.scheduledIntervalMin);
+            route.peakHeadwayMin = scheduledHeadway(departures, true);
+            route.offPeakHeadwayMin = scheduledHeadway(departures, false);
             if (!departures.isEmpty()) {
                 route.scheduledFirstTime = departures.getFirst();
                 route.scheduledLastTime = departures.getLast();
@@ -1064,19 +1108,23 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         String text = safe(value);
         if (text.isBlank()) return -1;
         String[] parts = text.split(":");
-        if (parts.length < 2) return -1;
+        if (parts.length < 2 || parts.length > 3) {
+            throw new BusinessException("计划时刻格式非法: " + value);
+        }
         try {
             int hour = Integer.parseInt(parts[0]);
             int minute = Integer.parseInt(parts[1]);
             int second = parts.length > 2 ? Integer.parseInt(parts[2]) : 0;
-            if (hour < 0 || hour > 24 || minute < 0 || minute > 59 || second < 0 || second > 59) return -1;
+            if (hour < 0 || hour > 24 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+                throw new BusinessException("计划时刻超出范围: " + value);
+            }
             return hour * 3600 + minute * 60 + second;
-        } catch (NumberFormatException ignored) {
-            return -1;
+        } catch (NumberFormatException error) {
+            throw new BusinessException("计划时刻格式非法: " + value, error);
         }
     }
 
-    private static double scheduledHeadway(List<Integer> departures, boolean peak, double fallback) {
+    private static Double scheduledHeadway(List<Integer> departures, boolean peak) {
         double total = 0;
         int count = 0;
         for (int index = 1; index < departures.size(); index++) {
@@ -1090,10 +1138,13 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             total += minutes;
             count++;
         }
-        return count > 0 ? round(total / count, 2) : (Double.isFinite(fallback) && fallback > 0 ? round(fallback, 2) : 0);
+        return count > 0 ? round(total / count, 2) : null;
     }
 
-    /** 日期模式回放所选服务日；平均值模式用首个服务日作为代表日。文件已按日期排序。 */
+    /**
+     * 日期模式回放所选服务日；平均值模式用首个服务日作为代表日。
+     * 历史明细存在日期回跳，必须扫描完整文件，不能在遇到下一日期时提前结束。
+     */
     private void loadVehicleEvents(Dataset data, Path file) {
         if (!Files.isRegularFile(file)) return;
         try (BufferedReader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
@@ -1109,12 +1160,7 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
                 List<String> values = parseCsv(line);
                 String serviceDate = csvValue(values, indexes, "service_date");
                 if (selectedDate.isBlank()) selectedDate = data.selectedDate.isBlank() ? serviceDate : data.selectedDate;
-                int order = serviceDate.compareTo(selectedDate);
-                if (order < 0) continue;
-                if (order > 0) {
-                    if (!data.vehicleEvents.isEmpty()) break;
-                    continue;
-                }
+                if (!selectedDate.equals(serviceDate)) continue;
                 int seconds = dateTimeSeconds(csvValue(values, indexes, "arrival_time"));
                 double lon = parseNumber(csvValue(values, indexes, "lon"));
                 double lat = parseNumber(csvValue(values, indexes, "lat"));
@@ -1159,7 +1205,6 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         panel.put("hourlyFlow", averageList(route.boarding, data.serviceDays));
         panel.put("boardingByHour", averageList(route.boarding, data.serviceDays));
         panel.put("alightingByHour", averageList(route.alighting, data.serviceDays));
-        panel.put("capacityByHour", zeros());
         panel.put("dailyFlow", dailyFlow(route.dailyBoarding));
         panel.put("segments", segmentPanels(data, route.segments.values()));
         panel.put("metrics", routeMetrics(data, route));
@@ -1185,13 +1230,16 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         panel.put("lineGroup", true);
         panel.put("routeKeys", group.routes.stream().map(RouteAcc::routeKey).toList());
         double[] boarding = sumArrays(group.routes.stream().map(route -> route.boarding).toList());
+        addInto(boarding, group.unlocatedBoarding);
         double[] alighting = sumArrays(group.routes.stream().map(route -> route.alighting).toList());
         panel.put("hours", hours());
         panel.put("hourlyFlow", averageList(boarding, data.serviceDays));
         panel.put("boardingByHour", averageList(boarding, data.serviceDays));
         panel.put("alightingByHour", averageList(alighting, data.serviceDays));
-        panel.put("dailyFlow", dailyFlow(mergeDailyFlow(group.routes)));
-        panel.put("segments", segmentPanels(data, group.routes.stream().flatMap(route -> route.segments.values().stream()).toList()));
+        panel.put("dailyFlow", dailyFlow(mergeDailyFlow(group)));
+        panel.put("segments", group.routes.stream()
+                .flatMap(route -> segmentPanels(data, route.segments.values()).stream())
+                .toList());
         panel.put("metrics", groupMetrics(data, group));
         if (!summary) {
             Map<String, Double> demo = new HashMap<>();
@@ -1286,8 +1334,6 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             item.put("flowByHour", hourly);
             item.put("totalFlow", total);
             item.put("flow", total);
-            item.put("loadRateByHour", zeros());
-            item.put("peakLoadRate", 0);
             item.put("distanceMeters", round(segment.distanceMeters, 1));
             item.put("runTimeMinutes", round(segment.runTimeMinutes, 2));
             return item;
@@ -1332,13 +1378,12 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             item.put("flow", hourly.stream().mapToInt(Integer::intValue).sum());
             item.put("ratio", total > 0 ? round(od.count * 100 / total, 2) : 0);
             if (counterpart != null) {
-                double[] point = webMercator(counterpart.lon, counterpart.lat);
                 if (od.direction.equals("out")) {
-                    item.put("destinationX", point[0]);
-                    item.put("destinationY", point[1]);
+                    item.put("destinationX", counterpart.lon);
+                    item.put("destinationY", counterpart.lat);
                 } else {
-                    item.put("originX", point[0]);
-                    item.put("originY", point[1]);
+                    item.put("originX", counterpart.lon);
+                    item.put("originY", counterpart.lat);
                 }
             }
             return item;
@@ -1381,8 +1426,8 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
 
     private Map<String, Object> routeMetrics(Dataset data, RouteAcc route) {
         double passenger = route.totalBoarding() / data.serviceDays;
-        double vehicles = route.vehicleIds.isEmpty()
-                ? route.vehicles / data.serviceDays : route.vehicleIds.size();
+        requireVehicleIds(route);
+        double vehicles = route.vehicleIds.size();
         double departures = route.departures / data.serviceDays;
         double operatedKm = route.mileageKm / data.serviceDays;
         Map<String, Object> metrics = new LinkedHashMap<>();
@@ -1394,10 +1439,6 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         metrics.put("lc", 0);
         metrics.put("passenger", Math.round(passenger));
         metrics.put("loadRate", null);
-        // 真实数据当前没有“方向×小时×断面”的投入运力，不能用全天峰值冒充平均高峰满载率。
-        metrics.put("peakAverageLoadRate", null);
-        metrics.put("peakPassengerOnSegments", null);
-        metrics.put("peakCapacityOnSegments", null);
         metrics.put("passengerStrength", operatedKm > 0 ? round(passenger / operatedKm, 3) : 0);
         metrics.put("operatingVehicleKm", round(operatedKm, 2));
         metrics.put("departures", round(departures, 2));
@@ -1409,19 +1450,19 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         metrics.put("offPeakHeadwayMin", route.offPeakHeadwayMin);
         metrics.put("operatedKm", round(operatedKm, 2));
         metrics.put("company", safe(route.company).isBlank() ? "未知企业" : route.company);
-        metrics.put("avgSpeedKmh", route.runTimeMinutes > 0 ? round(route.speedWeighted / route.runTimeMinutes, 2) : 0);
+        metrics.put("avgSpeedKmh", route.speedWeightMinutes > 0
+                ? round(route.speedWeighted / route.speedWeightMinutes, 2) : 0);
         return metrics;
     }
 
     private Map<String, Object> groupMetrics(Dataset data, LineGroup group) {
-        double passenger = group.routes.stream().mapToDouble(RouteAcc::totalBoarding).sum() / data.serviceDays;
+        double passenger = group.totalBoarding() / data.serviceDays;
         Set<String> vehicleIds = new LinkedHashSet<>();
-        double fallbackVehicles = 0;
         for (RouteAcc route : group.routes) {
-            if (route.vehicleIds.isEmpty()) fallbackVehicles += route.vehicles / data.serviceDays;
-            else vehicleIds.addAll(route.vehicleIds);
+            requireVehicleIds(route);
+            vehicleIds.addAll(route.vehicleIds);
         }
-        double vehicles = vehicleIds.size() + fallbackVehicles;
+        double vehicles = vehicleIds.size();
         double totalDepartures = group.routes.stream().mapToDouble(route -> route.departures).sum();
         double departures = totalDepartures / data.serviceDays;
         double operatedKm = group.routes.stream().mapToDouble(route -> route.mileageKm).sum() / data.serviceDays;
@@ -1436,9 +1477,6 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         metrics.put("passenger", Math.round(passenger));
         metrics.put("passengerStrength", operatedKm > 0 ? round(passenger / operatedKm, 3) : 0);
         metrics.put("operatingVehicleKm", round(operatedKm, 2));
-        metrics.put("peakAverageLoadRate", null);
-        metrics.put("peakPassengerOnSegments", null);
-        metrics.put("peakCapacityOnSegments", null);
         metrics.put("departures", round(departures, 2));
         metrics.put("vehicles", round(vehicles, 2));
         metrics.put("vehicleIds", new ArrayList<>(vehicleIds));
@@ -1501,12 +1539,11 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
 
     private Map<String, Object> operationSummary(Dataset data) {
         Set<String> vehicleIds = new LinkedHashSet<>();
-        double fallbackVehicles = 0;
         for (RouteAcc route : data.routes.values()) {
-            if (route.vehicleIds.isEmpty()) fallbackVehicles += route.vehicles / data.serviceDays;
-            else vehicleIds.addAll(route.vehicleIds);
+            requireVehicleIds(route);
+            vehicleIds.addAll(route.vehicleIds);
         }
-        double vehicles = vehicleIds.size() + fallbackVehicles;
+        double vehicles = vehicleIds.size();
         double departures = data.routes.values().stream().mapToDouble(route -> route.departures).sum() / data.serviceDays;
         double operatedKm = data.routes.values().stream().mapToDouble(route -> route.mileageKm).sum() / data.serviceDays;
         return Map.of("vehicles", round(vehicles, 2), "departures", round(departures, 2), "operatedKm", round(operatedKm, 2));
@@ -1518,15 +1555,25 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             String name = safe(route.company).isBlank() ? "未知企业" : route.company;
             OperatorAcc item = operators.computeIfAbsent(name, OperatorAcc::new);
             item.passenger += route.totalBoarding();
-            if (route.vehicleIds.isEmpty()) item.fallbackVehicles += route.vehicles;
-            else item.vehicleIds.addAll(route.vehicleIds);
+            requireVehicleIds(route);
+            item.vehicleIds.addAll(route.vehicleIds);
             item.departures += route.departures;
             item.operatedKm += route.mileageKm;
+        }
+        for (LineGroup group : data.lineGroups.values()) {
+            group.unlocatedCompanies.forEach((name, count) ->
+                    operators.computeIfAbsent(name, OperatorAcc::new).passenger += count);
         }
         return operators.values().stream()
                 .map(item -> item.toMap(data.serviceDays))
                 .sorted(Comparator.comparingDouble((Map<String, Object> item) -> ((Number) item.get("passenger")).doubleValue()).reversed())
                 .toList();
+    }
+
+    private static void requireVehicleIds(RouteAcc route) {
+        if (route.vehicleIds.isEmpty() && route.vehicles > 0) {
+            throw new BusinessException("线路存在车辆计数但缺少车辆 ID: " + route.authorityId);
+        }
     }
 
     /** 与仿真 TransitMetrics 同口径的三项公交运营效率公式。 */
@@ -1548,20 +1595,23 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
                 .toList();
     }
 
-    private static Map<String, Double> mergeDailyFlow(List<RouteAcc> routes) {
+    private static Map<String, Double> mergeDailyFlow(LineGroup group) {
         Map<String, Double> values = new LinkedHashMap<>();
-        routes.forEach(route -> route.dailyBoarding.forEach((date, count) -> values.merge(date, count, Double::sum)));
+        group.routes.forEach(route -> route.dailyBoarding.forEach(
+                (date, count) -> values.merge(date, count, Double::sum)));
+        group.unlocatedDailyBoarding.forEach(
+                (date, count) -> values.merge(date, count, Double::sum));
         return values;
     }
 
     private Map<String, Object> routeLeaderboard(Dataset data) {
         List<Map<String, Object>> bus = data.lineGroups.values().stream()
-                .sorted(Comparator.comparingDouble((LineGroup group) -> group.routes.stream().mapToDouble(RouteAcc::totalBoarding).sum()).reversed())
+                .sorted(Comparator.comparingDouble(LineGroup::totalBoarding).reversed())
                 .limit(50)
                 .map(group -> Map.<String, Object>of(
                         "lineId", group.groupId,
                         "lineName", group.lineName,
-                        "passengerFlow", average(group.routes.stream().mapToDouble(RouteAcc::totalBoarding).sum(), data.serviceDays),
+                        "passengerFlow", average(group.totalBoarding(), data.serviceDays),
                         "desc", group.routes.isEmpty() ? "" : group.routes.getFirst().routeName))
                 .toList();
         return Map.of("leaderboard", Map.of("bus", bus, "subway", List.of()));
@@ -1586,7 +1636,7 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
 
     private String signature(Path root, Path transitRoot) {
         StringBuilder value = new StringBuilder();
-        for (String file : List.of("总体小时客流.csv", "线路小时客流.csv", "站点小时客流.csv", "断面小时客流.csv",
+        for (String file : List.of("总体小时客流.csv", "线路小时客流.csv", UNLOCATED_LINE_GROUP_FLOW, "站点小时客流.csv", "断面小时客流.csv",
                 "线路OD日统计.csv", "客群小时统计.csv", "换乘明细.csv", "线路日运营统计.csv", "区间运行时间统计.csv",
                 "车辆到离站明细.csv")) {
             appendSignature(value, root.resolve(file));
@@ -1615,17 +1665,24 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
             List<String> headers = parseCsv(headerLine);
             if (!headers.isEmpty()) headers.set(0, headers.getFirst().replace("\uFEFF", ""));
             String line;
+            int lineNumber = 1;
             while ((line = reader.readLine()) != null) {
+                lineNumber++;
                 if (line.isBlank()) continue;
                 List<String> values = parseCsv(line);
                 Map<String, String> row = new HashMap<>(headers.size() * 2);
                 for (int index = 0; index < headers.size(); index++) {
                     row.put(headers.get(index), index < values.size() ? values.get(index) : "");
                 }
-                consumer.accept(row);
+                try {
+                    consumer.accept(row);
+                } catch (RuntimeException error) {
+                    throw new BusinessException("真实客流文件数据无效: " + file.getFileName()
+                            + " 第 " + lineNumber + " 行", error);
+                }
             }
         } catch (IOException error) {
-            throw new BusinessException("读取真实客流文件失败: " + file.getFileName());
+            throw new BusinessException("读取真实客流文件失败: " + file.getFileName(), error);
         }
     }
 
@@ -1662,11 +1719,42 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
     }
 
     private static double number(Map<String, String> row, String key) {
-        try { return Double.parseDouble(text(row, key)); } catch (RuntimeException ignored) { return 0; }
+        String value = text(row, key);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("必需数值字段为空: " + key);
+        }
+        try {
+            double parsed = Double.parseDouble(value);
+            if (!Double.isFinite(parsed)) throw new NumberFormatException("非有限数");
+            return parsed;
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException("数值字段格式错误: " + key + "=" + value, error);
+        }
+    }
+
+    static double optionalNumber(Map<String, String> row, String key) {
+        return parseNumber(text(row, key));
     }
 
     private static double parseNumber(String value) {
-        try { return Double.parseDouble(safe(value)); } catch (RuntimeException ignored) { return Double.NaN; }
+        String text = safe(value);
+        if (text.isBlank()) return Double.NaN;
+        try {
+            double parsed = Double.parseDouble(text);
+            if (!Double.isFinite(parsed)) throw new NumberFormatException("非有限数");
+            return parsed;
+        } catch (NumberFormatException error) {
+            throw new IllegalArgumentException("数值格式错误: " + text, error);
+        }
+    }
+
+    private static double parseOptionalMetricNumber(String value) {
+        String text = safe(value);
+        if (text.isBlank() || "/".equals(text) || "-".equals(text) || "--".equals(text)
+                || "null".equalsIgnoreCase(text) || "n/a".equalsIgnoreCase(text)) {
+            return Double.NaN;
+        }
+        return parseNumber(text);
     }
 
     private static String csvValue(List<String> values, Map<String, Integer> indexes, String key) {
@@ -1680,23 +1768,64 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
 
     private static int hour(Map<String, String> row) {
         int value = integer(row, "hour");
-        return value >= 0 && value < HOURS ? value : -1;
+        if (value < 0 || value >= HOURS) {
+            throw new IllegalArgumentException("小时字段超出范围: " + value);
+        }
+        return value;
     }
 
     private static int dateTimeHour(String value) {
-        try { return LocalDateTime.parse(value, DATE_TIME).getHour(); } catch (RuntimeException ignored) { return 0; }
+        String text = safe(value);
+        if (text.isBlank()) throw new IllegalArgumentException("日期时间字段为空");
+        try {
+            return LocalDateTime.parse(text, DATE_TIME).getHour();
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException("日期时间格式错误: " + text, error);
+        }
     }
 
     private static int dateTimeSeconds(String value) {
+        String text = safe(value);
+        if (text.isBlank()) return -1;
         try {
-            LocalTime time = LocalDateTime.parse(value, DATE_TIME).toLocalTime();
+            LocalTime time = LocalDateTime.parse(text, DATE_TIME).toLocalTime();
             return time.toSecondOfDay();
-        } catch (RuntimeException ignored) { return -1; }
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException("日期时间格式错误: " + text, error);
+        }
     }
 
-    private static String baseLineName(String value) {
+    static String baseLineName(String value) {
         String text = safe(value);
-        return text.replaceFirst("[（(][^（）()]*[）)]\\s*$", "").trim();
+        int depth = 0;
+        int outerStart = -1;
+        for (int index = 0; index < text.length(); index++) {
+            char current = text.charAt(index);
+            if (current == '(' || current == '（') {
+                if (depth == 0) outerStart = index;
+                depth++;
+            } else if ((current == ')' || current == '）') && depth > 0) {
+                depth--;
+                if (depth == 0 && outerStart >= 0) {
+                    String content = text.substring(outerStart + 1, index);
+                    if (content.contains("--") || content.contains("—")
+                            || content.contains("－") || content.contains("→")
+                            || content.contains("至")) {
+                        return normalizeNanshaLinePrefix(text.substring(0, outerStart).trim());
+                    }
+                }
+            }
+        }
+        return normalizeNanshaLinePrefix(text.trim());
+    }
+
+    private static String normalizeNanshaLinePrefix(String value) {
+        if (value.matches("^(\\d+)路?/南(?:沙)?\\1路?$")) {
+            return "南沙" + value.replaceFirst("路?/.*$", "") + "路";
+        }
+        if (value.startsWith("南沙")) return value;
+        if (value.matches("^南(?=\\d|[GKWT夜学旅游]).*")) return "南沙" + value.substring(1);
+        return value;
     }
 
     private static String lineGroupId(String routeName) {
@@ -1729,8 +1858,12 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
 
     private static double[] sumArrays(List<double[]> values) {
         double[] result = new double[HOURS];
-        for (double[] source : values) for (int hour = 0; hour < HOURS; hour++) result[hour] += source[hour];
+        for (double[] source : values) addInto(result, source);
         return result;
+    }
+
+    private static void addInto(double[] target, double[] source) {
+        for (int hour = 0; hour < HOURS; hour++) target[hour] += source[hour];
     }
 
     private static List<Integer> distribute(double total, StationFlow basis) {
@@ -1794,6 +1927,7 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         String vehicleServiceDate = "";
         final Map<String, RouteAcc> routes = new LinkedHashMap<>();
         final Map<String, LineGroup> lineGroups = new LinkedHashMap<>();
+        final Map<String, UnlocatedLineGroupAcc> unlocatedLineGroups = new LinkedHashMap<>();
         final Map<String, StationAcc> stations = new LinkedHashMap<>();
         final Map<String, StationAcc> stationById = new HashMap<>();
         final Map<String, StopMeta> stopsById = new HashMap<>();
@@ -1838,6 +1972,15 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
                 lineGroups.computeIfAbsent(groupId, ignored -> new LineGroup(groupId, route.baseName())).routes.add(route);
                 if (route.routeDistanceMeters <= 0) route.routeDistanceMeters = route.geometricDistance(this);
             }
+            for (UnlocatedLineGroupAcc pending : unlocatedLineGroups.values()) {
+                LineGroup group = lineGroups.computeIfAbsent(
+                        pending.groupId, ignored -> new LineGroup(pending.groupId, pending.lineName));
+                addInto(group.unlocatedBoarding, pending.boarding);
+                pending.dailyBoarding.forEach(
+                        (date, count) -> group.unlocatedDailyBoarding.merge(date, count, Double::sum));
+                pending.companies.forEach(
+                        (name, count) -> group.unlocatedCompanies.merge(name, count, Double::sum));
+            }
             if (Double.isFinite(minLon)) {
                 centerLon = (minLon + maxLon) / 2.0;
                 centerLat = (minLat + maxLat) / 2.0;
@@ -1864,14 +2007,14 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         double mileageKm;
         double runTimeMinutes;
         double speedWeighted;
+        double speedWeightMinutes;
         double routeDistanceMeters;
         int firstTime = Integer.MAX_VALUE;
         int lastTime;
         int scheduledFirstTime = -1;
         int scheduledLastTime = -1;
-        double scheduledIntervalMin;
-        double peakHeadwayMin;
-        double offPeakHeadwayMin;
+        Double peakHeadwayMin;
+        Double offPeakHeadwayMin;
         List<double[]> geometry = List.of();
 
         RouteAcc(String authorityId, String routeName) { this.authorityId = authorityId; this.routeName = routeName; }
@@ -1949,11 +2092,32 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         final String groupId;
         final String lineName;
         final List<RouteAcc> routes = new ArrayList<>();
+        final double[] unlocatedBoarding = new double[HOURS];
+        final Map<String, Double> unlocatedDailyBoarding = new LinkedHashMap<>();
+        final Map<String, Double> unlocatedCompanies = new LinkedHashMap<>();
         LineGroup(String groupId, String lineName) { this.groupId = groupId; this.lineName = lineName; }
         String key() { return "bus::" + groupId; }
+        double totalBoarding() {
+            return routes.stream().mapToDouble(RouteAcc::totalBoarding).sum()
+                    + Arrays.stream(unlocatedBoarding).sum();
+        }
         String operator() {
-            return routes.stream().map(route -> safe(route.company)).filter(value -> !value.isBlank()).distinct()
+            Stream<String> located = routes.stream().map(route -> safe(route.company));
+            Stream<String> unlocated = unlocatedCompanies.keySet().stream();
+            return Stream.concat(located, unlocated).filter(value -> !value.isBlank()).distinct()
                     .reduce((left, right) -> left + " / " + right).orElse("未知企业");
+        }
+    }
+
+    private static final class UnlocatedLineGroupAcc {
+        final String groupId;
+        final String lineName;
+        final double[] boarding = new double[HOURS];
+        final Map<String, Double> dailyBoarding = new LinkedHashMap<>();
+        final Map<String, Double> companies = new LinkedHashMap<>();
+        UnlocatedLineGroupAcc(String groupId, String lineName) {
+            this.groupId = groupId;
+            this.lineName = lineName;
         }
     }
 
@@ -1987,14 +2151,13 @@ public class RealPassengerFlowServiceImpl implements RealPassengerFlowService {
         final String name;
         double passenger;
         final Set<String> vehicleIds = new LinkedHashSet<>();
-        double fallbackVehicles;
         double departures;
         double operatedKm;
         OperatorAcc(String name) { this.name = name; }
         Map<String, Object> toMap(int days) {
             double divisor = Math.max(1, days);
             double dailyPassenger = passenger / divisor;
-            double dailyVehicles = vehicleIds.size() + fallbackVehicles / divisor;
+            double dailyVehicles = vehicleIds.size();
             double dailyDepartures = departures / divisor;
             double dailyKm = operatedKm / divisor;
             OperationRatios ratios = operationRatios(

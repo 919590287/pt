@@ -129,14 +129,12 @@ class PanelStationOdAndTripPurposeTest {
         assertEquals(50.0, ((Number) ratios.get("work")).doubleValue(), 1e-9);
         assertEquals(50.0, ((Number) ratios.get("shopping")).doubleValue(), 1e-9);
 
-        // 任务B 兜底：route "down"（p2 的 plan 无 TransitPassengerRoute）退回全活动统计，但 interaction 仍被过滤。
+        // route "down" 的 plan 无 TransitPassengerRoute：不得拿全活动统计冒充出行目的。
         Map<?, ?> downDemographics = (Map<?, ?>) down.get("demographics");
         assertEquals(1, ((Number) downDemographics.get("riderCount")).intValue());
-        assertEquals("all-activities-fallback", downDemographics.get("activitySource"));
+        assertEquals("trip-purpose", downDemographics.get("activitySource"));
         Map<String, Map<?, ?>> downActivities = activityByKey((List<?>) downDemographics.get("activityTypes"));
-        assertEquals(Set.of("home", "gym"), downActivities.keySet());
-        assertEquals(50.0, ((Number) downActivities.get("home").get("ratio")).doubleValue(), 1e-9);
-        assertEquals(50.0, ((Number) downActivities.get("gym").get("ratio")).doubleValue(), 1e-9);
+        assertEquals(Set.of(), downActivities.keySet());
     }
 
     @Test
@@ -287,13 +285,13 @@ class PanelStationOdAndTripPurposeTest {
         assertEquals(Set.of("shopping"), metroActivities.keySet());
         assertEquals(100.0, ((Number) metroActivities.get("shopping").get("ratio")).doubleValue(), 1e-9);
 
-        // 兜底：乙站没有任何“出行目的”上车记录 → 全活动统计，interaction 被过滤。
+        // 乙站没有任何明确“出行目的”上车记录：返回空目的画像，不猜测全活动。
         Map<?, ?> other = (Map<?, ?>) stations.get("乙站");
         Map<?, ?> otherDemographics = (Map<?, ?>) other.get("demographics");
-        assertEquals("all-activities-fallback", otherDemographics.get("activitySource"));
+        assertEquals("trip-purpose", otherDemographics.get("activitySource"));
         Map<String, Map<?, ?>> otherActivities = activityByKey((List<?>) otherDemographics.get("activityTypes"));
-        assertFalse(otherActivities.containsKey("pt interaction"));
-        assertNull(((Map<?, ?>) otherDemographics.get("activityTypeRatios")).get("pt interaction"));
+        assertEquals(Set.of(), otherActivities.keySet());
+        assertEquals(Map.of(), otherDemographics.get("activityTypeRatios"));
     }
 
     private MatsimData buildData(String datasource) throws Exception {

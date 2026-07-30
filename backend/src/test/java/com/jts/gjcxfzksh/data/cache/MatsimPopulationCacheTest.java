@@ -35,11 +35,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 人口分布缓存纯单测（不依赖 Spring/数据盘）：§1 提取口径（home/work 前缀、interaction 排除、
- * 首点规则、null 坐标跳过、selectedPlan 回退）、栅格分箱（含负坐标 floor 语义）、
+ * 首点规则、null 坐标跳过、selectedPlan 缺失即失败）、栅格分箱（含负坐标 floor 语义）、
  * grid.bin 布局逐字节回读（§3 契约）、街道资源完整性（176/南沙9）与点面归属自反性、
  * streets 总和 + unassigned 对账恒等式、ctf 复刻语义、端到端落盘幂等。
  */
@@ -134,28 +135,24 @@ class MatsimPopulationCacheTest {
         person(population, "p5",
                 "home", null,
                 "home", new Coord(510.0, 510.0));
-        // p6: selectedPlan 为空 → 回退 getPlans().get(0)
-        Person p6 = person(population, "p6", "home", new Coord(10.0, 10.0));
-        p6.setSelectedPlan(null);
-
         MatsimPopulationCache.Aggregation aggregation =
                 new MatsimPopulationCache.Aggregation(100.0, null);
         for (Person person : population.getPersons().values()) {
             aggregation.acceptPerson(person, null);
         }
 
-        assertEquals(6, aggregation.persons);
-        assertEquals(5, aggregation.homePersons);  // p1/p2/p3/p5/p6
+        assertEquals(5, aggregation.persons);
+        assertEquals(4, aggregation.homePersons);  // p1/p2/p3/p5
         assertEquals(2, aggregation.workPersons);  // p1/p3
         // 无街道索引：全部点计入 unassigned（对账口径 home/work 分开）
-        assertEquals(5, aggregation.unassignedHome);
+        assertEquals(4, aggregation.unassignedHome);
         assertEquals(2, aggregation.unassignedWork);
         // 类型集合：收集全部匹配前缀的原始 type；interaction 类型绝不入集
         assertEquals(List.of("Home_night", "home"), List.copyOf(aggregation.homeTypes));
         assertEquals(List.of("Work_shift2", "work"), List.copyOf(aggregation.workTypes));
 
-        // 栅格归属：cell(0,0) 有 p1/p2/p6 的 home；(9000,9000)/(9100,9100) 的陷阱点不存在
-        assertEquals(3, aggregation.homeCells.get(MatsimPopulationCache.packCell(0, 0)));
+        // 栅格归属：cell(0,0) 有 p1/p2 的 home；(9000,9000)/(9100,9100) 的陷阱点不存在
+        assertEquals(2, aggregation.homeCells.get(MatsimPopulationCache.packCell(0, 0)));
         assertEquals(1, aggregation.homeCells.get(MatsimPopulationCache.packCell(-1, -1))); // p3 (-50,-50)
         assertEquals(1, aggregation.homeCells.get(MatsimPopulationCache.packCell(5, 5)));   // p5 (510,510)
         assertEquals(0, aggregation.homeCells.get(MatsimPopulationCache.packCell(90, 90)));
@@ -164,6 +161,17 @@ class MatsimPopulationCacheTest {
         assertEquals(1, aggregation.workCells.get(MatsimPopulationCache.packCell(3, 3)));   // p3 (310,310)
         assertEquals(3, aggregation.homeCells.size());
         assertEquals(2, aggregation.workCells.size());
+    }
+
+    @Test
+    void extractionRejectsMissingSelectedPlan() {
+        Population population = newPopulation();
+        Person invalid = person(population, "missing-selected", "home", new Coord(10.0, 10.0));
+        invalid.setSelectedPlan(null);
+        MatsimPopulationCache.Aggregation aggregation =
+                new MatsimPopulationCache.Aggregation(100.0, null);
+
+        assertThrows(IllegalStateException.class, () -> aggregation.acceptPerson(invalid, null));
     }
 
     // ---------------------------------------------------------------- 栅格分箱
@@ -196,7 +204,7 @@ class MatsimPopulationCacheTest {
     }
 
     @Test
-    void populationV9PersistsPeakSpeedAndCompleteBusJourneyDenominators() {
+    void populationV10PersistsPeakSpeedAndCompleteBusJourneyDenominators() {
         MatsimPopulationCache.Aggregation aggregation =
                 new MatsimPopulationCache.Aggregation(100.0, null);
         aggregation.busServiceJourneys = 4;
@@ -209,7 +217,7 @@ class MatsimPopulationCacheTest {
         Map<String, Object> summary =
                 MatsimPopulationCache.assemble(aggregation, null, 1.0).summary;
 
-        assertEquals("population-v9", summary.get("cacheVersion"));
+        assertEquals("population-v10", summary.get("cacheVersion"));
         assertEquals("ready", summary.get("busServiceJourneyStatus"));
         assertEquals(0.75, ((Number) summary.get("averageBusTransfers")).doubleValue(), 1e-9);
         assertEquals(25.0, ((Number) summary.get("busRailFeederPercent")).doubleValue(), 1e-9);

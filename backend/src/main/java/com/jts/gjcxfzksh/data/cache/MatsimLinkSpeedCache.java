@@ -133,8 +133,7 @@ public final class MatsimLinkSpeedCache {
                     && LINK_SPEED_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            log.warn("链路车速缓存状态读取失败: {}", manifestPath(data), e);
-            return false;
+            throw new IllegalStateException("链路车速缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -150,8 +149,8 @@ public final class MatsimLinkSpeedCache {
         try {
             return loadCachedJson(summaryPath(data));
         } catch (Exception e) {
-            log.warn("读取链路车速汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取链路车速汇总缓存失败: model=" + data.getName()
+                    + ", path=" + summaryPath(data), e);
         }
     }
 
@@ -163,8 +162,8 @@ public final class MatsimLinkSpeedCache {
         try {
             return Files.readAllBytes(matrixPath(data));
         } catch (Exception e) {
-            log.warn("读取链路车速矩阵失败: model={}, path={}", data.getName(), matrixPath(data), e);
-            return null;
+            throw new IllegalStateException("读取链路车速矩阵失败: model=" + data.getName()
+                    + ", path=" + matrixPath(data), e);
         }
     }
 
@@ -184,8 +183,7 @@ public final class MatsimLinkSpeedCache {
             });
             return sha256Hex(content.toString().getBytes(StandardCharsets.UTF_8)).substring(0, 16);
         } catch (Exception e) {
-            log.warn("链路车速矩阵 ETag 计算失败: {}", manifestPath(data), e);
-            return null;
+            throw new IllegalStateException("链路车速矩阵 ETag 计算失败: " + manifestPath(data), e);
         }
     }
 
@@ -731,7 +729,7 @@ public final class MatsimLinkSpeedCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.getLastModifiedTime(path).toMillis() : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -743,7 +741,7 @@ public final class MatsimLinkSpeedCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.size(path) : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 }

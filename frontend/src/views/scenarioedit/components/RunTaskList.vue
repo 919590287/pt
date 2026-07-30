@@ -4,6 +4,7 @@
       <span class="title">运行任务</span>
       <el-button link size="small" @click="store.refreshJobs()">刷新</el-button>
     </div>
+    <div v-if="store.jobsError" class="empty" role="alert">{{ store.jobsError }}</div>
     <div v-if="!store.jobs.length" class="empty">暂无任务</div>
     <div v-for="job in store.jobs" :key="job.jobId" class="job-card" :class="job.stage">
       <div class="job-head">

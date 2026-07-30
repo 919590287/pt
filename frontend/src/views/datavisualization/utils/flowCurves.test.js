@@ -43,4 +43,17 @@ describe("OD desire lines", () => {
     expect(coordinates.at(-1)).toEqual(to);
     expect(midpoint[1]).toBeGreaterThan(23.005);
   });
+
+  it("keeps opposite-direction OD curves on the same side of the route", () => {
+    const result = buildFlowCurveFeatureCollection([
+      { from: [113.2, 23.0], to: [113.4, 23.0], value: 18 },
+      { from: [113.4, 23.0], to: [113.2, 23.0], value: 12 },
+    ], { curvature: 0.24, consistentSide: true, segments: 20 });
+
+    const firstMidpoint = result.features[0].geometry.coordinates[10];
+    const reverseMidpoint = result.features[1].geometry.coordinates[10];
+
+    expect(firstMidpoint[1]).toBeGreaterThan(23.005);
+    expect(reverseMidpoint[1]).toBeGreaterThan(23.005);
+  });
 });

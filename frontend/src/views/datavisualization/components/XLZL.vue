@@ -549,7 +549,6 @@ import {
   buildLineRankEntries,
   lineRankValueText,
 } from "@/utils/rightPanelRanking.js";
-import { webMercatorToLngLat } from "@/mymap/index.js";
 import { injectSync } from "@/utils";
 
 const props = defineProps({
@@ -1011,21 +1010,15 @@ const routeMetrics = computed(() => {
   const info = route.info || {};
   // 需求12：指标优先取全线（上下行合并）组的 metrics
   const panelMetrics = statsPanel.value?.metrics || {};
-  const length = toFiniteNumber(panelMetrics.routeDist ?? info.routeDist, 0);
+  const length = toFiniteNumber(panelMetrics.routeDist, 0);
   // 整线（多服务模式合并）：后端 facNum 是按交路重复计数的虚高值，改用归并后的物理站点数。
   const stationCount = route.lineGroup
     ? toFiniteNumber(route.facilities?.length, 0)
-    : toFiniteNumber(panelMetrics.facNum ?? info.facNum ?? route.facilities?.length, 0);
-  const avgStationDistance = toFiniteNumber(panelMetrics.facDist ?? info.facDist, 0);
-  const fallbackStationDistance = stationCount > 1 && Number.isFinite(length) && length > 0
-    ? length / (stationCount - 1)
-    : 0;
-  const directness = toFiniteNumber(panelMetrics.lc ?? info.lc, 0);
-  const passenger = toFiniteNumber(panelMetrics.passenger ?? info.passenger, 0);
-  const panelLoadRate = toFiniteNumber(panelMetrics.loadRate, NaN);
-  const loadRate = Number.isFinite(panelLoadRate)
-    ? panelLoadRate
-    : toFiniteNumber(info.takeRate, 0) * 100;
+    : toFiniteNumber(panelMetrics.facNum, 0);
+  const avgStationDistance = toFiniteNumber(panelMetrics.facDist, 0);
+  const directness = toFiniteNumber(panelMetrics.lc, 0);
+  const passenger = toFiniteNumber(panelMetrics.passenger, 0);
+  const loadRate = toFiniteNumber(panelMetrics.loadRate, NaN);
   return {
     length: Number.isFinite(length) && length > 0 ? `${(length / 1000).toFixed(2)} km` : "--",
     firstTime: formatSecondsToTime(panelMetrics.firstTime ?? info.firstTime),
@@ -1034,7 +1027,7 @@ const routeMetrics = computed(() => {
     stationCount: stationCount > 0 ? `${stationCount} 个` : "--",
     avgStationDistance: Number.isFinite(avgStationDistance) && avgStationDistance > 0
       ? `${Math.round(avgStationDistance)} m`
-      : fallbackStationDistance > 0 ? `${Math.round(fallbackStationDistance)} m` : "--",
+      : "--",
     passenger: Number.isFinite(passenger) && passenger > 0 ? `${Math.round(passenger).toLocaleString()} 人次` : "--",
     loadRate: Number.isFinite(loadRate) && loadRate > 0 ? `${loadRate.toFixed(1)}%` : "--",
   };
@@ -1051,8 +1044,6 @@ const isRealCardProfile = computed(() => statsPanel.value?.demographics?.source 
 const demographicsScopeText = computed(() =>
   isRealCardProfile.value
     ? "上下行合并 · 票卡客群"
-    : statsPanel.value?.demographics?.activitySource === "all-activities-fallback"
-    ? "上下行合并 · 乘客活动类型（回退口径）"
     : "上下行合并 · 本次出行终点活动"
 );
 const demographicsSampleText = computed(() =>
@@ -2165,7 +2156,7 @@ watch(
   { immediate: true },
 );
 
-// ===== 需求7：站点乘降 · 站间OD客流直线（上行 + 下行同一色阶，黄→红） =====
+// ===== 需求7：站点乘降 · 站间OD客流曲线（上行 + 下行同一色阶，黄→红） =====
 const PFA_OD_CURVE_SOURCE_ID = "pfa-station-od-curve-source";
 const PFA_OD_CURVE_LAYER_ID = "pfa-station-od-curve-layer";
 const PFA_OD_CURVE_CASING_LAYER_ID = "pfa-station-od-curve-casing-layer";
@@ -2182,16 +2173,15 @@ const PFA_OD_MAX_WIDTH = 2.8;
 const odFlowScale = ref(createColorScaleConfig("ylorrd", 5));
 const showOdScalePopover = ref(false);
 
-// 后端契约为经纬度；若拿到疑似 web mercator 坐标则兜底转换
+// 后端契约为经纬度；违反契约时显式失败。
 function odPointToLngLat(x, y) {
   const numX = Number(x);
   const numY = Number(y);
-  if (!Number.isFinite(numX) || !Number.isFinite(numY)) return null;
+  if (!Number.isFinite(numX) || !Number.isFinite(numY)) {
+    throw new TypeError(`站间 OD 坐标必须是有限数值: ${x}, ${y}`);
+  }
   if (Math.abs(numX) <= 180 && Math.abs(numY) <= 90) return [numX, numY];
-  const converted = webMercatorToLngLat(numX, numY);
-  return Array.isArray(converted) && converted.length >= 2 && converted.every(Number.isFinite)
-    ? [converted[0], converted[1]]
-    : null;
+  throw new RangeError(`站间 OD 坐标不符合经纬度契约: ${numX}, ${numY}`);
 }
 
 // 站点乘降：地图上叠选中线路各站点的站间OD曲线（谁上/谁下），配左下角色阶图例
@@ -2273,9 +2263,12 @@ const stationOdRender = computed(() => {
   });
   // 低流量先画、高流量后画（叠在上层更醒目）
   curveInputs.sort((a, b) => a.value - b.value);
-  // OD 是起点直达目的地的期望线，不沿真实公交线路走向折转。
-  // 色阶、线宽、描边与透明度仍由仿真模式同款图层属性控制。
-  const curves = buildFlowCurveFeatureCollection(curveInputs, { curvature: 0 });
+  // 适度弧度呈现站间 OD 期望线；真实/仿真共用此配置。
+  // consistentSide 让上、下行曲线统一偏向线路同一侧，避免两侧交织。
+  const curves = buildFlowCurveFeatureCollection(curveInputs, {
+    curvature: 0.24,
+    consistentSide: true,
+  });
   const stationFeatures = new Map();
   flows.forEach((flow) => {
     [[flow.from, flow.fromName], [flow.to, flow.toName]].forEach(([coord, name]) => {

@@ -98,7 +98,9 @@ export function getRoutePanelDetail(data, config = {}) {
 }
 
 export function getRouteCandidates(data, config = {}) {
-  if (isRealDatasource(data?.datasource)) return Promise.resolve({ data: [] });
+  if (isRealDatasource(data?.datasource)) {
+    return Promise.reject(new Error("真实数据源不支持线路候选接口"));
+  }
   return request({
     url: `/pt/route/routeCandidates`,
     method: 'POST',

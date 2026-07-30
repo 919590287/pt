@@ -242,7 +242,7 @@ public final class MatsimPlansDerivedCache {
         try {
             return Files.isRegularFile(Path.of(plans)) && Files.isReadable(Path.of(plans));
         } catch (Exception e) {
-            return false;
+            throw new IllegalStateException("检查 plans 文件可读性失败: " + plans, e);
         }
     }
 

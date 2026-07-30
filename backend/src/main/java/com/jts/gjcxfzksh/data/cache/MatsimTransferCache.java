@@ -143,8 +143,7 @@ public final class MatsimTransferCache {
                     && TRANSFER_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            log.warn("换乘分析缓存状态读取失败: {}", manifestPath(data), e);
-            return false;
+            throw new IllegalStateException("换乘分析缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -156,8 +155,8 @@ public final class MatsimTransferCache {
         try {
             return loadCachedJson(summaryPath(data), false);
         } catch (Exception e) {
-            log.warn("读取换乘汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取换乘汇总缓存失败: model=" + data.getName()
+                    + ", path=" + summaryPath(data), e);
         }
     }
 
@@ -169,8 +168,8 @@ public final class MatsimTransferCache {
         try {
             return loadCachedJson(dictPath(data), true);
         } catch (Exception e) {
-            log.warn("读取换乘字典缓存失败: model={}, path={}", data.getName(), dictPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取换乘字典缓存失败: model=" + data.getName()
+                    + ", path=" + dictPath(data), e);
         }
     }
 
@@ -182,8 +181,8 @@ public final class MatsimTransferCache {
         try {
             return Files.readAllBytes(eventsPath(data));
         } catch (Exception e) {
-            log.warn("读取换乘事件表失败: model={}, path={}", data.getName(), eventsPath(data), e);
-            return null;
+            throw new IllegalStateException("读取换乘事件表失败: model=" + data.getName()
+                    + ", path=" + eventsPath(data), e);
         }
     }
 
@@ -205,8 +204,7 @@ public final class MatsimTransferCache {
             });
             return sha256Hex(content.toString()).substring(0, 16);
         } catch (Exception e) {
-            log.warn("换乘事件表 ETag 计算失败: {}", manifestPath(data), e);
-            return null;
+            throw new IllegalStateException("换乘事件表 ETag 计算失败: " + manifestPath(data), e);
         }
     }
 
@@ -255,8 +253,6 @@ public final class MatsimTransferCache {
         TransitSchedule schedule = data.getSchedule();
 
         Map<String, RouteRef> byLineRoute = new HashMap<>();
-        Map<String, RouteRef> byRouteOnly = new HashMap<>();
-        Set<String> conflictedRouteIds = new java.util.HashSet<>();
         Map<String, String> lineNames = new HashMap<>();
         Map<String, String> routeNames = new HashMap<>();
         // TreeSet：聚类按 facilityId 字典序处理，结果可复现
@@ -272,12 +268,6 @@ public final class MatsimTransferCache {
                 TransitRoute route = routeEntry.getValue();
                 RouteRef ref = new RouteRef(lineId, effectiveMode(classifyTransportMode(route.getTransportMode())));
                 byLineRoute.put(routeKey(lineId, routeId), ref);
-                // routeId 不保证全局唯一（PTHandler/RoutePanelCache v11 同注）：
-                // 冲突的 routeId 在 lineId 缺失时不可归属，登记后按未知制式处理
-                RouteRef previous = byRouteOnly.putIfAbsent(routeId, ref);
-                if (previous != null && !previous.equals(ref)) {
-                    conflictedRouteIds.add(routeId);
-                }
                 // route 显示名沿用 RoutePanelCache 习惯：description 优先，空则 routeId
                 routeNames.put(routeKey(lineId, routeId), nonBlank(route.getDescription(), routeId));
                 if (MODE_SUBWAY.equals(ref.mode())) {
@@ -301,17 +291,10 @@ public final class MatsimTransferCache {
 
         HubClusters hubs = clusterHubs(railFacilityIds, coordByFacility, nameByFacility);
         BiFunction<String, String, RouteRef> resolver = (lineId, routeId) -> {
-            if (routeId == null) {
+            if (lineId == null || routeId == null) {
                 return null;
             }
-            if (lineId != null) {
-                RouteRef ref = byLineRoute.get(routeKey(lineId, routeId));
-                if (ref != null) {
-                    return ref;
-                }
-            }
-            // lineId 缺失（vlMap 未命中）时按 routeId 兜底，跨线冲突则视为未知制式
-            return conflictedRouteIds.contains(routeId) ? null : byRouteOnly.get(routeId);
+            return byLineRoute.get(routeKey(lineId, routeId));
         };
         TransferComputation computation = computeTransfers(data, resolver, coordByFacility);
         return assemble(computation, hubs, lineNames, routeNames, nameByFacility, coordByFacility,
@@ -331,14 +314,20 @@ public final class MatsimTransferCache {
      * transportMode 缺失时与 routeModeIndex 一致按 bus 处理（广州模型 transportMode 全覆盖）。
      */
     static String classifyTransportMode(String transportMode) {
-        String text = transportMode == null ? "" : transportMode.toLowerCase(Locale.ROOT);
+        if (transportMode == null || transportMode.isBlank()) {
+            throw new IllegalArgumentException("线路缺少 transportMode");
+        }
+        String text = transportMode.toLowerCase(Locale.ROOT);
         if (text.contains("tram") || text.contains("有轨") || text.contains("apm")) {
             return MODE_TRAM;
         }
         if (text.matches(".*(subway|metro|rail|train|轨道|地铁).*")) {
             return MODE_SUBWAY;
         }
-        return MODE_BUS;
+        if (text.matches(".*(bus|trolleybus|brt|公交|巴士|汽电车).*")) {
+            return MODE_BUS;
+        }
+        throw new IllegalArgumentException("无法识别线路 transportMode: " + transportMode);
     }
 
     /** tramAsRail 开关生效点：true 时 tram 归轨道（v1 固定 false，翻转必须 bump 版本）。 */
@@ -1244,7 +1233,7 @@ public final class MatsimTransferCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.getLastModifiedTime(path).toMillis() : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -1256,14 +1245,14 @@ public final class MatsimTransferCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.size(path) : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 
     private static double safeTime(PTPersonTrack track) {
         Double time = track.getTime();
         if (time == null || Double.isNaN(time) || Double.isInfinite(time)) {
-            return 0.0;
+            throw new IllegalArgumentException("换乘事件时刻非法: " + time);
         }
         return time;
     }

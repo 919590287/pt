@@ -355,7 +355,9 @@ EOF
 build_backend() {
   require_cmd "$MVN_CMD"
   say "Building backend..."
-  "$MVN_CMD" -f "$BACKEND_DIR/pom.xml" -DskipTests package
+  # target/classes may have been written by an IDE compiler. A clean build prevents
+  # unresolved/error bytecode from being mistaken for an up-to-date Maven output.
+  "$MVN_CMD" -f "$BACKEND_DIR/pom.xml" -DskipTests clean package
 }
 
 install_frontend_deps_if_needed() {

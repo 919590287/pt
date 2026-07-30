@@ -718,8 +718,7 @@ public class RealDataServiceImpl implements RealDataService {
             overviewMap.forEach((key, value) -> result.put(String.valueOf(key), value));
             return result;
         } catch (Exception error) {
-            log.warn("读取真实数据概览缓存失败，将重新计算: {}", file, error);
-            return null;
+            throw new BusinessException("读取真实数据概览缓存失败: " + file, error);
         }
     }
 
@@ -896,7 +895,7 @@ public class RealDataServiceImpl implements RealDataService {
                     .filter(name -> !name.startsWith("._"))
                     .anyMatch(name -> name.equalsIgnoreCase(baseName + extension));
         } catch (IOException error) {
-            return false;
+            throw new BusinessException("扫描 SHP 配套文件失败: " + folder, error);
         }
     }
 
@@ -2258,11 +2257,12 @@ public class RealDataServiceImpl implements RealDataService {
         if (value instanceof Number number) {
             return number.longValue();
         }
+        String text = safeText(value);
+        if (text.isBlank()) return fallback;
         try {
-            String text = safeText(value);
-            return text.isBlank() ? fallback : Long.parseLong(text);
+            return Long.parseLong(text);
         } catch (NumberFormatException error) {
-            return fallback;
+            throw new IllegalStateException("版本状态字段必须是整数: " + text, error);
         }
     }
 
@@ -2755,8 +2755,8 @@ public class RealDataServiceImpl implements RealDataService {
             if (Float.class.equals(binding) || float.class.equals(binding)) return Float.parseFloat(text);
             if (Short.class.equals(binding) || short.class.equals(binding)) return Short.parseShort(text);
             if (Boolean.class.equals(binding) || boolean.class.equals(binding)) return Boolean.parseBoolean(text);
-        } catch (NumberFormatException ignored) {
-            return null;
+        } catch (NumberFormatException error) {
+            throw new BusinessException("上传属性值与目标字段类型不匹配: " + text, error);
         }
         return text;
     }
@@ -3334,7 +3334,7 @@ public class RealDataServiceImpl implements RealDataService {
             String text = safeText(value);
             return text.isBlank() ? null : Double.parseDouble(text);
         } catch (NumberFormatException error) {
-            return null;
+            throw new BusinessException("数值字段非法: " + value, error);
         }
     }
 

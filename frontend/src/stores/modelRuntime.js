@@ -50,10 +50,14 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
 
   function rememberSelection(scheme, model) {
     try {
+      const current = restoredSelection();
       useModelSelectionStore().setSelection("datavisualization", {
-        sourceMode: "simulation",
+        // 模型门禁只记忆下次切回仿真时使用的方案/模型，不得覆盖
+        // 用户当前选中的真实数据模式与真实日期。
+        sourceMode: current.sourceMode,
         scheme,
         model,
+        realServiceDate: current.realServiceDate,
       });
     } catch {
       /* sessionStorage 不可用时忽略 */
@@ -115,7 +119,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
 
   async function refreshAllSchemes() {
     const list = schemes.value.length ? schemes.value : await fetchSchemes();
-    await Promise.all(list.map((scheme) => fetchModels(scheme).catch(() => [])));
+    await Promise.all(list.map((scheme) => fetchModels(scheme)));
   }
 
   function pickTargetModel(list, preferredName = "") {
@@ -164,13 +168,16 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
           onGateOpened();
           return;
         }
-        // 目标模型可能被别人卸载/删除，兜底重挑
+        // 目标模型被卸载/删除时保持原选择并显式报错，禁止静默切到另一数据源。
         if (gateTarget.value && !gateModels.value.some((item) => item.name === gateTarget.value)) {
-          const next = pickTargetModel(gateModels.value);
-          if (next) await activateTarget(gateScheme.value, next.name);
+          gateError.value = `目标模型不存在或已被移除：${gateTarget.value}`;
+          stopPolling();
+          return;
         }
-      } catch {
-        /* 静默重试 */
+      } catch (error) {
+        gateError.value = error?.message || "模型状态刷新失败";
+        stopPolling();
+        return;
       }
       attempt += 1;
       pollTimer = setTimeout(tick, pollDelay(attempt));
@@ -193,8 +200,8 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
           if (target) await activateTarget(gateScheme.value || schemes.value[0] || "", target.name);
           startGatePolling();
         }
-      } catch {
-        /* 心跳失败忽略，下轮再试 */
+      } catch (error) {
+        gateError.value = error?.message || "模型状态心跳失败";
       }
     }, 30_000);
   }
@@ -225,6 +232,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
       await loadModel({ name: modelName }, { silentError: true });
     } catch (error) {
       gateError.value = error?.message || "模型后台加载启动失败，请重试";
+      throw error;
     } finally {
       isSwitchingTarget.value = false;
     }
@@ -235,7 +243,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     if (!scheme || scheme === gateScheme.value) return;
     gateScheme.value = scheme;
     gateTarget.value = "";
-    const list = await fetchModels(scheme).catch(() => []);
+    const list = await fetchModels(scheme);
     const target = pickTargetModel(list, restoredSelection().model);
     if (target) await activateTarget(scheme, target.name);
   }
@@ -301,10 +309,10 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
         startHeartbeat();
       }
       // 其他方案在用户真正切换时才取目录，避免首载期间对外置盘做无关缓存校验。
-    } catch {
+    } catch (error) {
+      gateError.value = error?.message || "模型目录初始化失败";
       bootstrapped.value = true;
-      startGatePolling();
-      startHeartbeat();
+      throw error;
     } finally {
       booting = false;
     }

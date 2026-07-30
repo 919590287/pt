@@ -8,6 +8,7 @@ import com.jts.gjcxfzksh.data.ModelLoadStatus;
 import com.jts.gjcxfzksh.data.cache.ModelCacheManager;
 import com.jts.gjcxfzksh.data.cache.ModelCacheStatus;
 import com.jts.gjcxfzksh.data.entry.Scheme;
+import com.jts.gjcxfzksh.exception.BusinessException;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -80,14 +81,16 @@ public class SchemeServiceImpl implements SchemeService {
     public boolean loadModel(String username, String name) {
         Scheme scheme = findAccessibleScheme(username, name);
         if (scheme == null) {
-            return false;
+            throw new BusinessException("模型不存在或无权访问: " + name);
         }
         try {
             Datasource.loadAsync(scheme);
             modelCacheManager.enqueueIfMissing(scheme);
         } catch (Exception e) {
-            log.error("加载失败{}", name, e);
-            return false;
+            if (e instanceof BusinessException businessException) {
+                throw businessException;
+            }
+            throw new BusinessException("模型加载启动失败: " + name, e);
         }
         return true;
     }

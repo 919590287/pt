@@ -15,6 +15,7 @@ import {
   isRealDatasource,
   realAreaFromDatasource,
   realDatasource,
+  realLineGroupName,
   realServiceDateFromDatasource,
 } from "./realPassengerFlow.js";
 import {
@@ -40,6 +41,19 @@ describe("realPassengerFlow datasource", () => {
     const datasource = realDatasource("广州市", "2026-03-10");
     expect(realAreaFromDatasource(datasource)).toBe("广州市");
     expect(realServiceDateFromDatasource(datasource)).toBe("2026-03-10");
+  });
+
+  it("真实线路分组兼容南/南沙别名和端点中的嵌套括号", () => {
+    expect(realLineGroupName("南10路(新兴村委总站--地铁万顷沙站)"))
+      .toBe("南沙10路");
+    expect(realLineGroupName("南沙10路(地铁万顷沙站--新兴村委总站)"))
+      .toBe("南沙10路");
+    expect(realLineGroupName("南14路(香港科技大学(广州)站--横沥地铁站公交总站)"))
+      .toBe("南沙14路");
+    expect(realLineGroupName("南沙65路(大站快线)(大岗公交总站--市桥汽车站西门站)"))
+      .toBe("南沙65路(大站快线)");
+    expect(realLineGroupName("40路/南40路(大岗公交总站--新兴村委总站)"))
+      .toBe("南沙40路");
   });
 
   it("无客流现行线路保留绘图记录，并以名称哨兵排除右侧排名", () => {

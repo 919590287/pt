@@ -146,8 +146,7 @@ public final class MatsimCorridorCache {
                     && CORRIDOR_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            log.warn("走廊缓存状态读取失败: {}", manifestPath(data), e);
-            return false;
+            throw new IllegalStateException("走廊缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -159,8 +158,8 @@ public final class MatsimCorridorCache {
         try {
             return loadCachedJson(summaryPath(data));
         } catch (Exception e) {
-            log.warn("读取走廊汇总缓存失败: model={}, path={}", data.getName(), summaryPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取走廊汇总缓存失败: model=" + data.getName()
+                    + ", path=" + summaryPath(data), e);
         }
     }
 
@@ -172,8 +171,8 @@ public final class MatsimCorridorCache {
         try {
             return loadCachedJson(namesPath(data));
         } catch (Exception e) {
-            log.warn("读取走廊路名缓存失败: model={}, path={}", data.getName(), namesPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取走廊路名缓存失败: model=" + data.getName()
+                    + ", path=" + namesPath(data), e);
         }
     }
 
@@ -185,8 +184,8 @@ public final class MatsimCorridorCache {
         try {
             return Files.readAllBytes(linksPath(data));
         } catch (Exception e) {
-            log.warn("读取走廊路段表失败: model={}, path={}", data.getName(), linksPath(data), e);
-            return null;
+            throw new IllegalStateException("读取走廊路段表失败: model=" + data.getName()
+                    + ", path=" + linksPath(data), e);
         }
     }
 
@@ -206,8 +205,7 @@ public final class MatsimCorridorCache {
             });
             return sha256Hex(content.toString().getBytes(StandardCharsets.UTF_8)).substring(0, 16);
         } catch (Exception e) {
-            log.warn("走廊路段表 ETag 计算失败: {}", manifestPath(data), e);
-            return null;
+            throw new IllegalStateException("走廊路段表 ETag 计算失败: " + manifestPath(data), e);
         }
     }
 
@@ -269,15 +267,12 @@ public final class MatsimCorridorCache {
     // ===================================================================================
 
     /**
-     * 制式判定：复刻自 MatsimTransferCache.classifyTransportMode 的 bus 侧结论
-     * （tram/APM/有轨与 subway/rail 系不算公交，transportMode 缺失按 bus）。独立版本化。
+     * 制式判定：复刻自 MatsimTransferCache.classifyTransportMode 的 bus 侧结论。
+     * 缺失或无法识别的 transportMode 不再猜测为公交。
      */
     static boolean isBusTransportMode(String transportMode) {
-        String text = transportMode == null ? "" : transportMode.toLowerCase(Locale.ROOT);
-        if (text.contains("tram") || text.contains("有轨") || text.contains("apm")) {
-            return false;
-        }
-        return !text.matches(".*(subway|metro|rail|train|轨道|地铁).*");
+        return MatsimTransferCache.MODE_BUS.equals(
+                MatsimTransferCache.classifyTransportMode(transportMode));
     }
 
     /** link id 形如 road_{base}_{seg}_{dir} 时返回 base，否则 null（边车表键）。 */
@@ -293,7 +288,7 @@ public final class MatsimCorridorCache {
         try {
             return Long.parseLong(linkId.substring(start, end));
         } catch (NumberFormatException e) {
-            return null;
+            throw new IllegalArgumentException("路段 ID 不符合 road_<数字>_* 约定: " + linkId, e);
         }
     }
 
@@ -348,31 +343,19 @@ public final class MatsimCorridorCache {
         }
     }
 
-    /** 路线上下文注册表：lineId::routeId 精确键 + routeId 兜底（冲突 routeId 不兜底，复刻 transfer 语义）。 */
+    /** 路线上下文注册表：只接受 lineId::routeId 精确键。 */
     static final class RouteCtxRegistry {
         final Map<String, RouteFlowCtx> byLineRoute = new HashMap<>();
-        final Map<String, RouteFlowCtx> byRouteOnly = new HashMap<>();
-        final Set<String> conflictedRouteIds = new HashSet<>();
 
         void register(String lineId, String routeId, RouteFlowCtx ctx) {
             byLineRoute.put(lineId + "::" + routeId, ctx);
-            RouteFlowCtx previous = byRouteOnly.putIfAbsent(routeId, ctx);
-            if (previous != null && previous != ctx) {
-                conflictedRouteIds.add(routeId);
-            }
         }
 
         RouteFlowCtx resolve(String lineId, String routeId) {
-            if (routeId == null) {
+            if (lineId == null || routeId == null) {
                 return null;
             }
-            if (lineId != null) {
-                RouteFlowCtx ctx = byLineRoute.get(lineId + "::" + routeId);
-                if (ctx != null) {
-                    return ctx;
-                }
-            }
-            return conflictedRouteIds.contains(routeId) ? null : byRouteOnly.get(routeId);
+            return byLineRoute.get(lineId + "::" + routeId);
         }
 
         Collection<RouteFlowCtx> all() {
@@ -1021,7 +1004,7 @@ public final class MatsimCorridorCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.getLastModifiedTime(path).toMillis() : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -1033,7 +1016,7 @@ public final class MatsimCorridorCache {
             Path path = Path.of(filePath);
             return Files.exists(path) ? Files.size(path) : 0L;
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 }

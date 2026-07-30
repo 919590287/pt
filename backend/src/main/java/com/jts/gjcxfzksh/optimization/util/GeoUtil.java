@@ -154,7 +154,7 @@ public final class GeoUtil {
             }
             return best == null ? null : new Coord(best.x, best.y);
         } catch (Exception e) {
-            return null;
+            throw new IllegalStateException("计算线段与区域边界交点失败", e);
         }
     }
 

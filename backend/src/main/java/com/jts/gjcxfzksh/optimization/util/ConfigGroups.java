@@ -80,23 +80,20 @@ public final class ConfigGroups {
             } else {
                 origSet = scoring.getScoringParameters(origSubpopulation);
             }
+            if (origSet == null) {
+                throw new IllegalStateException("缺少原子人群 scoring 参数集: " + origSubpopulation);
+            }
             // 不能用 getOrCreateScoringParameters：它先 add（此时 subpopulation 仍为 null）再改名，
             // add 阶段会把默认(null)子人群的参数集顶掉。必须先拷参数、先设名、最后 add。
             ScoringConfigGroup.ScoringParameterSet lockSet = (ScoringConfigGroup.ScoringParameterSet)
                     scoring.createParameterSet(ScoringConfigGroup.ScoringParameterSet.SET_TYPE);
-            if (origSet != null) {
-                copyInto(origSet, lockSet, "subpopulation");
-            }
+            copyInto(origSet, lockSet, "subpopulation");
             lockSet.setSubpopulation(lock);
             scoring.addParameterSet(lockSet);
             if (origSet != null && scoring.getScoringParametersPerSubpopulation().values().stream()
                     .noneMatch(s -> s.getSubpopulation() == null || "default".equals(s.getSubpopulation()))
                     && (origSubpopulation == null || origSubpopulation.isBlank())) {
-                // 兜底：若默认参数集仍被顶掉，恢复一份
-                ScoringConfigGroup.ScoringParameterSet restored = (ScoringConfigGroup.ScoringParameterSet)
-                        scoring.createParameterSet(ScoringConfigGroup.ScoringParameterSet.SET_TYPE);
-                copyInto(origSet, restored, "subpopulation");
-                scoring.addParameterSet(restored);
+                throw new IllegalStateException("新增锁定子人群后默认 scoring 参数集丢失");
             }
         }
 
@@ -149,7 +146,7 @@ public final class ConfigGroups {
             outside.setScoringThisActivityAtAll(false);
             set.addActivityParams(outside);
         });
-        // 顶层（无子人群参数集时的兜底）
+        // 没有子人群参数集时，outside 必须配置在顶层参数集。
         if (config.scoring().getScoringParametersPerSubpopulation().isEmpty()
                 && config.scoring().getActivityParams(OUTSIDE_ACT_TYPE) == null) {
             ScoringConfigGroup.ActivityParams outside = new ScoringConfigGroup.ActivityParams(OUTSIDE_ACT_TYPE);

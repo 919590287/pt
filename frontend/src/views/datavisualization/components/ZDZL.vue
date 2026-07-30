@@ -664,6 +664,7 @@ import { classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorS
 import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
 import { injectSync } from "@/utils";
 import { compareZh, createDebouncedMirror, isCanceledRequest, runWhenIdle } from "../utils/panelShared.js";
+import { filterStationOutboundOdRows, stationOdCoordinateToLngLat } from "../utils/stationOd.js";
 import { webMercatorToLngLat } from "@/mymap/index.js";
 import { isMetroLine } from "@/utils/transitMode.js";
 import { getStationPanelDetail } from "@/api/facility.js";
@@ -996,8 +997,7 @@ function facilityPanelById(stationPanel, id) {
   return index.get(key) || null;
 }
 
-function stationPanelForSide(stationName, facilityId = "", options = {}) {
-  const { fallbackToAggregate = true } = options || {};
+function stationPanelForSide(stationName, facilityId = "") {
   const stationPanel = stationPanelByName(stationName);
   if (!stationPanel) return null;
   const id = String(facilityId || "");
@@ -1007,7 +1007,7 @@ function stationPanelForSide(stationName, facilityId = "", options = {}) {
     const matched = facilityPanelById(stationPanel, id);
     if (matched) return mergedSidePanel(stationPanel, matched, stationName);
   }
-  return fallbackToAggregate ? stationPanel : null;
+  return id ? null : stationPanel;
 }
 
 const currentStationPanel = computed(() => {
@@ -1017,13 +1017,11 @@ const currentStationPanel = computed(() => {
     // selectedStationDetail 由请求序号与当前选中站绑定，直接采用明细；
     // 不再因后端返回的物理站名与地图显示名不同而退回轻量摘要。
     if (selectedStationDetail.value) return selectedStationDetail.value;
-    const aggregatePanel = stationPanelByName(stationName);
-    if (aggregatePanel) return aggregatePanel;
+    if (!selectedStationFacilityId.value) return stationPanelByName(stationName);
+    return null;
   }
   const isDirectionalPair = Boolean(selectedReverseStationName.value || selectedReverseStationFacilityId.value);
-  const sidePanel = stationPanelForSide(stationName, selectedStationFacilityId.value, {
-    fallbackToAggregate: !isDirectionalPair && !selectedStationFacilityId.value,
-  });
+  const sidePanel = stationPanelForSide(stationName, selectedStationFacilityId.value);
   if (sidePanel) return sidePanel;
   const stations = stationPanelData.value?.stations || {};
   const facilityId = String(selectedStationFacilityId.value || "");
@@ -1038,7 +1036,6 @@ const currentReverseStationPanel = computed(() => {
   return stationPanelForSide(
     selectedReverseStationName.value || selectedStationName.value,
     selectedReverseStationFacilityId.value,
-    { fallbackToAggregate: false },
   );
 });
 
@@ -1106,8 +1103,6 @@ const isStationRealCardProfile = computed(() => currentStationPanel.value?.demog
 const stationDemographicsScopeText = computed(() =>
   isStationRealCardProfile.value
     ? "本站上车乘客 · 票卡客群"
-    : currentStationPanel.value?.demographics?.activitySource === "all-activities-fallback"
-    ? "本站关联乘客 · 活动类型（回退口径）"
     : "本站上车乘客 · 本次出行终点活动"
 );
 const stationDemographicsSampleText = computed(() =>
@@ -1677,7 +1672,7 @@ const SELECTED_STATION_RING_LAYER_ID = "selected-station-ring-layer";
 const REACHABILITY_SOURCE_ID = "station-reachability-source";
 const REACHABILITY_LAYER_PREFIX = "station-reachability-line";
 const REACHABILITY_LEVEL_KEYS = ["direct", "transfer1", "transfer2"];
-// 需求8：客流OD地图直线（起点 → 目的地 + 对端站名标签）
+// 需求8：客流OD地图曲线（本站上车 → 下车点 + 对端站名标签）
 const OD_CURVE_SOURCE_ID = "station-od-curve-source";
 const OD_CURVE_LAYER_ID = "station-od-curve-layer";
 const OD_CURVE_CASING_LAYER_ID = "station-od-curve-casing-layer";
@@ -2103,7 +2098,7 @@ function applyReachabilityLevelVisibility() {
   });
 }
 
-// —— 需求8：客流OD地图直线 ——
+// —— 需求8：客流OD地图曲线 ——
 function odCurveOverlayActive() {
   return shouldRenderPfaRightPanel.value && pfaStationSection.value === "od" && Boolean(selectedStationName.value);
 }
@@ -2188,8 +2183,6 @@ function odCurveOverlayData() {
   const labelFeatures = [];
   items.forEach((item) => {
     const remote = [item.lng, item.lat];
-    // direction === "both" 固定以本站为起点，避免曲线几何方向随数据顺序漂移
-    const inbound = item.direction === "inbound";
     const classIndex = classifyByBreaks(item.flow, breaks);
     const width = Math.round(Math.max(OD_MIN_WIDTH, OD_BASE_WIDTH * (widths[classIndex] || 1)) * 10) / 10;
     const properties = {
@@ -2202,8 +2195,8 @@ function odCurveOverlayData() {
       direction: item.direction,
     };
     flows.push({
-      from: inbound ? remote : selfCoord,
-      to: inbound ? selfCoord : remote,
+      from: selfCoord,
+      to: remote,
       value: item.flow,
       properties,
     });
@@ -2216,11 +2209,8 @@ function odCurveOverlayData() {
     }
   });
   return {
-    curves: {
-      type: "FeatureCollection",
-      // 起点直达目的地，不采用真实公交线路 path；图层样式继续与仿真模式共用。
-      features: buildFlowCurveFeatureCollection(flows, { curvature: 0 }).features,
-    },
+    // 期望线直接连接本站与下车点，但以弧线表达，避免多条 OD 退化成重叠的平行直线。
+    curves: buildFlowCurveFeatureCollection(flows, { curvature: 0.22 }),
     labels: { type: "FeatureCollection", features: labelFeatures },
   };
 }
@@ -2926,12 +2916,18 @@ function buildStationBoardingChartOption({ fullscreen = false } = {}) {
 const boardingAlightingChartOption = computed(() => buildStationBoardingChartOption());
 const boardingBarFullscreenChartOption = computed(() => buildStationBoardingChartOption({ fullscreen: true }));
 
+// 站点 OD 统一按“本站上车 → 下车点”取数；真实数据中混合返回的到站记录不参与本区块。
+const outboundStationOdRows = computed(() => filterStationOutboundOdRows(
+  currentStationPanel.value?.od,
+  [selectedStationName.value, currentStationPanel.value?.stationName],
+));
+
 // 站点OD分析
 const odTableData = computed(() => {
   const startHour = debouncedSegmentTimeRange.value[0];
   const endHour = debouncedSegmentTimeRange.value[1];
 
-  const rows = (currentStationPanel.value?.od || []).map((item) => {
+  const rows = outboundStationOdRows.value.map((item) => {
     const flow = sumHourSlice(item.flowByHour, startHour, endHour);
     const routeDesc = item.routeDesc || item.direction || "";
     const routeLabel = [item.lineName, routeDesc || item.routeName].filter(Boolean).join(" · ");
@@ -3106,7 +3102,7 @@ const odChartOption = computed(() => {
 });
 
 // —— 需求8：客流OD地图曲线数据 ——
-// 与右侧图表同口径：同一对端站多条线路、到站/出站记录合并为一条曲线（flow 求和）。
+// 与右侧图表同口径：同一下车站的多条上车线路合并为一条曲线（flow 求和）。
 // 坐标缺失时按站名回退到站点坐标索引，只有实在无坐标的条目才跳过。
 const odCurveEntries = computed(() => {
   // 仅 OD 区块激活时计算：作为多个 watch 的源，非激活态被强制求值等于每次时段变化白跑全表聚合
@@ -3115,34 +3111,22 @@ const odCurveEntries = computed(() => {
   if (!selfName) return { direction: "all", items: [] };
   const startHour = debouncedSegmentTimeRange.value[0];
   const endHour = debouncedSegmentTimeRange.value[1];
-  const odRows = Array.isArray(currentStationPanel.value?.od) ? currentStationPanel.value.od : [];
+  const odRows = outboundStationOdRows.value;
   const merged = new Map();
 
   odRows.forEach((item) => {
     if (!item) return;
-    const originName = String(item.origin || "").trim();
     const destinationName = String(item.destination || "").trim();
-    const counterpartName = String(
-      item.counterpart || (normalizeStationSearchName(originName) === selfName ? destinationName : originName)
-    ).trim();
+    const counterpartName = String(item.counterpart || destinationName).trim();
     if (!counterpartName) return;
 
     const flow = sumHourSlice(item.flowByHour, startHour, endHour);
     if (flow <= 0) return;
 
     const counterpartKey = normalizeStationSearchName(counterpartName);
-    const originKey = normalizeStationSearchName(originName);
-    const destinationKey = normalizeStationSearchName(destinationName);
-    const counterpartSide = counterpartKey === destinationKey
-      ? "destination"
-      : counterpartKey === originKey
-        ? "origin"
-        : originKey === selfName
-          ? "destination"
-          : "origin";
-    const direction = counterpartSide === "destination" ? "outbound" : "inbound";
-    let lng = toFiniteCoord(counterpartSide === "origin" ? item.originX : item.destinationX);
-    let lat = toFiniteCoord(counterpartSide === "origin" ? item.originY : item.destinationY);
+    const payloadPoint = stationOdCoordinateToLngLat(item.destinationX, item.destinationY);
+    let lng = payloadPoint?.[0];
+    let lat = payloadPoint?.[1];
     if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
       const coord = stationCoordByName(counterpartName);
       const ll = coord && Number.isFinite(coord.x) && Number.isFinite(coord.y) ? webMercatorToLngLat(coord.x, coord.y) : null;
@@ -3157,27 +3141,22 @@ const odCurveEntries = computed(() => {
     const existing = merged.get(key);
     if (existing) {
       existing.flow += flow;
-      existing.inboundFlow += direction === "inbound" ? flow : 0;
-      existing.outboundFlow += direction === "outbound" ? flow : 0;
-      existing.direction = existing.inboundFlow > 0 && existing.outboundFlow > 0 ? "both" : direction;
+      existing.outboundFlow += flow;
     } else {
       merged.set(key, {
         name: counterpartName,
         lng,
         lat,
         flow,
-        inboundFlow: direction === "inbound" ? flow : 0,
-        outboundFlow: direction === "outbound" ? flow : 0,
-        direction,
+        inboundFlow: 0,
+        outboundFlow: flow,
+        direction: "outbound",
       });
     }
   });
 
   const items = Array.from(merged.values()).sort((a, b) => b.flow - a.flow);
-  const hasInbound = items.some((item) => item.inboundFlow > 0);
-  const hasOutbound = items.some((item) => item.outboundFlow > 0);
-  const direction = hasInbound && hasOutbound ? "both" : hasOutbound ? "outbound" : "inbound";
-  return { direction, items };
+  return { direction: "outbound", items };
 });
 
 const odCurveMaxFlow = computed(() =>

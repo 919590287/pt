@@ -98,6 +98,7 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCa
       if (seq !== snapSeq) return;
       store.toolDraft.pathPreview = null;
       store.toolDraft.snapError = e?.message || "寻径失败，请调整锚点";
+      throw e;
     } finally {
       if (seq === snapSeq) store.toolDraft.snapBusy = false;
       refreshPreview();
@@ -119,7 +120,7 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCa
     } catch (e) {
       if (seq !== pointSeq) return null;
       store.toolDraft.snapError = e?.message || "附近没有可吸附的路段";
-      return null;
+      throw e;
     } finally {
       if (seq === pointSeq) store.toolDraft.snapBusy = false;
     }
@@ -133,7 +134,8 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCa
     try {
       return m.queryRenderedFeatures(box, { layers: [layerId] });
     } catch (e) {
-      return [];
+      store.toolDraft.snapError = e?.message || "地图要素查询失败";
+      throw e;
     }
   }
 
@@ -148,7 +150,7 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCa
     if (tool === "draw.route" || tool === "draw.gapfill") {
       store.toolDraft.anchors.push([lng, lat]);
       refreshPreview();
-      requestSnapRoute();
+      await requestSnapRoute();
       return;
     }
     if (tool === "draw.link") {
@@ -292,7 +294,11 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCa
       if ((tool === "area.draw" || tool === "draw.route" || tool === "draw.gapfill" || tool === "draw.link") && store.toolDraft.anchors.length > 0) {
         ev.preventDefault();
         store.toolDraft.anchors.pop();
-        if (tool === "draw.route" || tool === "draw.gapfill") requestSnapRoute();
+        if (tool === "draw.route" || tool === "draw.gapfill") {
+          void requestSnapRoute().catch((error) => {
+            ElMessage.error(error?.message || "寻径失败");
+          });
+        }
         refreshPreview();
         return;
       }
@@ -323,7 +329,9 @@ export function useMapTools({ MapRef, store, onPickRouteCandidates, onPickStopCa
     }
     // 补画模式：进入即先尝试两站之间直接寻径，找得到就有初始预览
     if (tool === "draw.gapfill") {
-      requestSnapRoute();
+      void requestSnapRoute().catch((error) => {
+        ElMessage.error(error?.message || "寻径失败");
+      });
     }
     refreshPreview();
   }

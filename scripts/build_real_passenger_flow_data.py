@@ -31,7 +31,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 
-import shapefile
+from osgeo import ogr
+
+ogr.UseExceptions()
 
 
 RAW_DIR = Path("/Volumes/USB DISK/数据/南沙公交数据/南沙区公交刷卡数据")
@@ -47,6 +49,27 @@ MAX_BOARD_MATCH_SECONDS = 180
 MAX_ALIGHT_MATCH_SECONDS = 4 * 3600
 MAX_TRANSFER_MINUTES = 120
 MAX_PROJECTION_METERS = 1000.0
+
+# Raw RUN direction/code triples with an independently verified current-SHP target.
+# These cover asymmetric route extensions or duplicate current IDs that station-set
+# similarity alone cannot orient safely.
+ROUTE_DIRECTION_OVERRIDES: dict[tuple[str, str, str], str] = {
+    ("南沙10路", "1", "8"): "900000213422",
+    ("南沙10路", "2", "9"): "900000213430",
+    ("南沙9路", "1", "6"): "900000216576",
+    ("南沙9路", "2", "7"): "900000216575",
+    ("南沙43路", "1", "66"): "900000029270",
+    ("南沙43路", "2", "67"): "900000029264",
+    ("南沙K6路", "1", "146"): "900000122275",
+    ("南沙K6路", "2", "145"): "900000122274",
+}
+
+LINE_GROUP_ROUTE_ALIASES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "南沙9路": (
+        "南沙9路缸瓦沙线",
+        ("900000216575", "900000216576"),
+    ),
+}
 
 
 PASSENGER_FIELDS = [
@@ -75,7 +98,12 @@ ROUTE_MAPPING_FIELDS = [
     "end_station_raw", "raw_event_count", "authority_line_id",
     "authority_route_id", "authority_route_name", "route_code_normalized",
     "station_overlap", "endpoint_score", "total_score", "score_gap",
-    "candidate_count", "mapping_status",
+    "sequence_score", "candidate_count", "mapping_method", "mapping_status",
+]
+
+UNLOCATED_LINE_GROUP_FIELDS = [
+    "service_date", "hour", "authority_line_group_name", "authority_line_ids",
+    "company_raw", "boarding_count", "inference_reason",
 ]
 
 TRANSFER_FIELDS = [
@@ -106,15 +134,28 @@ class Route:
     end: str
     company: str
 
+    @property
+    def group_name(self) -> str:
+        return normalize_line_group_name(self.label)
+
 
 @dataclass
 class GroupInfo:
     count: int = 0
     stations: collections.Counter[str] | None = None
+    station_orders: dict[int, collections.Counter[str]] | None = None
 
     def __post_init__(self) -> None:
         if self.stations is None:
             self.stations = collections.Counter()
+        if self.station_orders is None:
+            self.station_orders = collections.defaultdict(collections.Counter)
+
+
+@dataclass(frozen=True)
+class LineGroupAuthority:
+    name: str
+    line_ids: tuple[str, ...]
 
 
 def log(message: str) -> None:
@@ -127,14 +168,27 @@ def clean(value: object) -> str:
     return str(value).strip()
 
 
+def nansha_slash_alias_number(value: object) -> str:
+    """Recognize authority labels such as ``40路/南40路``."""
+    text = unicodedata.normalize("NFKC", clean(value)).upper()
+    text = re.sub(r"\s+", "", text)
+    matched = re.fullmatch(r"(\d+)路?/南(?:沙)?(\d+)路?", text)
+    if matched and matched.group(1) == matched.group(2):
+        return matched.group(1)
+    return ""
+
+
 def canonical_route_code(value: object) -> str:
     text = unicodedata.normalize("NFKC", clean(value)).upper()
+    slash_alias = nansha_slash_alias_number(text)
+    if slash_alias:
+        return slash_alias
     text = re.sub(r"[\s（）()·\-—_./]", "", text)
     if text.startswith("南沙"):
         text = text[2:]
     elif re.match(r"^南(?=\d|[GKWT夜学旅游])", text):
         text = text[1:]
-    text = text.replace("大站快线", "大站快").replace("快线", "快")
+    text = text.replace("大站快线", "快").replace("大站快", "快").replace("快线", "快")
     text = text.replace("支线", "支").replace("A线", "A").replace("B线", "B")
     text = text.replace("路", "").replace("线", "")
     return text
@@ -142,7 +196,11 @@ def canonical_route_code(value: object) -> str:
 
 def is_nansha_route_label(value: object) -> bool:
     text = re.sub(r"\s+", "", clean(value))
-    return text.startswith("南沙") or bool(re.match(r"^南(?=\d|[GKWT夜学旅游])", text))
+    return (
+        bool(nansha_slash_alias_number(text))
+        or text.startswith("南沙")
+        or bool(re.match(r"^南(?=\d|[GKWT夜学旅游])", text))
+    )
 
 
 def normalize_station(value: object) -> str:
@@ -183,6 +241,48 @@ def route_label_and_endpoints(name: str) -> tuple[str, str, str]:
             first, last = split_endpoints(content)
             return name[:start].strip(), first, last
     return name.strip(), "", ""
+
+
+def normalize_line_group_name(value: object) -> str:
+    """Return the platform line-group name using balanced endpoint parentheses."""
+    text = clean(value)
+    label, _, _ = route_label_and_endpoints(text)
+    slash_alias = nansha_slash_alias_number(label)
+    if slash_alias:
+        return f"南沙{slash_alias}路"
+    if label.startswith("南沙"):
+        return label
+    if re.match(r"^南(?=\d|[GKWT夜学旅游])", label):
+        return "南沙" + label[1:]
+    return label
+
+
+def branchless_route_code(value: object) -> str:
+    return re.sub(r"(?:A|B|支)$", "", canonical_route_code(value))
+
+
+def ordered_station_profile(info: GroupInfo) -> list[str]:
+    orders = info.station_orders or {}
+    return [
+        values.most_common(1)[0][0]
+        for _, values in sorted(orders.items())
+        if values
+    ]
+
+
+def sequence_similarity(raw: Sequence[str], authority: Sequence[str]) -> float:
+    if not raw or not authority:
+        return 0.0
+    previous = [0] * (len(authority) + 1)
+    for raw_name in raw:
+        current = [0]
+        for index, authority_name in enumerate(authority, 1):
+            if raw_name == authority_name:
+                current.append(previous[index - 1] + 1)
+            else:
+                current.append(max(current[-1], previous[index]))
+        previous = current
+    return previous[-1] / max(1, len(raw))
 
 
 def similarity(left: str, right: str) -> float:
@@ -274,46 +374,40 @@ def open_csv_writer(path: Path, fields: Sequence[str]) -> tuple[object, csv.Dict
 
 def load_authority() -> tuple[dict[str, Route], dict[str, list[Stop]], dict[str, Stop]]:
     routes: dict[str, Route] = {}
-    reader = shapefile.Reader(str(ROUTES_SHP), encoding="utf-8")
-    for record in reader.iterRecords():
-        row = record.as_dict()
-        name = clean(row.get("name"))
+    route_source = ogr.Open(str(ROUTES_SHP), 0)
+    if route_source is None:
+        raise RuntimeError(f"无法读取线路 SHP: {ROUTES_SHP}")
+    route_layer = route_source.GetLayer(0)
+    for feature in route_layer:
+        name = clean(feature.GetField("name"))
         label, start, end = route_label_and_endpoints(name)
-        line_id = clean(row.get("line_id"))
+        line_id = clean(feature.GetField("line_id"))
         routes[line_id] = Route(
             line_id=line_id,
-            route_id=clean(row.get("route_id")) or line_id,
+            route_id=clean(feature.GetField("route_id")) or line_id,
             name=name,
             label=label,
             code=canonical_route_code(label),
             start=start,
             end=end,
-            company=clean(row.get("company")),
+            company=clean(feature.GetField("company")),
         )
-    authority_stops: dict[str, tuple[str, float, float]] = {}
-    station_reader = shapefile.Reader(str(STOPS_SHP), encoding="utf-8")
-    for record in station_reader.iterRecords():
-        row = record.as_dict()
-        stop_id = clean(row.get("stop_id"))
-        authority_stops[stop_id] = (
-            clean(row.get("stop_name")), float(row.get("lon")), float(row.get("lat"))
-        )
+    route_source = None
     stops_by_line: dict[str, list[Stop]] = collections.defaultdict(list)
     stop_by_id: dict[str, Stop] = {}
     with SEQUENCE_CSV.open("r", encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
             line_id = clean(row["line_id"])
             stop_id = clean(row["stop_id"])
-            authority_stop = authority_stops.get(stop_id)
-            if line_id not in routes or authority_stop is None:
+            if line_id not in routes or not stop_id:
                 continue
             stop = Stop(
                 line_id=line_id,
                 seq=int(row["seq"]),
                 stop_id=stop_id,
-                name=authority_stop[0],
-                lon=authority_stop[1],
-                lat=authority_stop[2],
+                name=clean(row["stop_name"]),
+                lon=float(row["lon"]),
+                lat=float(row["lat"]),
             )
             stops_by_line[line_id].append(stop)
             stop_by_id.setdefault(stop.stop_id, stop)
@@ -339,6 +433,10 @@ def scan_run_groups() -> dict[tuple[str, str, str, str, str], GroupInfo]:
             position = normalize_station(row["POSITION_STATION"])
             if position:
                 info.stations[position] += 1
+                order = int_or_none(row["STATION_ORDER_NO"])
+                if order is not None and order > 0:
+                    assert info.station_orders is not None
+                    info.station_orders[order][position] += 1
             if index % 500_000 == 0:
                 log(f"RUN 第一次扫描 {index:,} 行，发现 {len(groups)} 个线路方向组")
     return groups
@@ -351,51 +449,87 @@ def build_route_mapping(
 ) -> tuple[dict[tuple[str, str, str, str, str], dict[str, object]], list[dict[str, object]]]:
     by_code: dict[str, list[Route]] = collections.defaultdict(list)
     authority_station_sets: dict[str, set[str]] = {}
+    authority_station_sequences: dict[str, list[str]] = {}
     for route in routes.values():
         if route.line_id in stops_by_line:
             by_code[route.code].append(route)
             authority_station_sets[route.line_id] = {
                 normalize_station(stop.name) for stop in stops_by_line[route.line_id]
             }
+            authority_station_sequences[route.line_id] = [
+                normalize_station(stop.name) for stop in stops_by_line[route.line_id]
+            ]
     result: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
     report: list[dict[str, object]] = []
     for key, info in groups.items():
         raw_route, direction, route_code_raw, raw_start, raw_end = key
         raw_code = canonical_route_code(raw_route)
         raw_is_nansha = is_nansha_route_label(raw_route)
-        candidates = [
-            route for code, items in by_code.items()
-            if raw_code and (code == raw_code or code.startswith(raw_code) or raw_code.startswith(code))
-            for route in items
+        exact_candidates = [
+            route for route in by_code.get(raw_code, [])
             if not raw_is_nansha or is_nansha_route_label(route.label)
         ]
+        candidates = exact_candidates
+        candidate_method = "exact_service_code"
+        if not candidates and raw_code:
+            candidates = [
+                route for code, items in by_code.items()
+                if branchless_route_code(code) == branchless_route_code(raw_code)
+                for route in items
+                if not raw_is_nansha or is_nansha_route_label(route.label)
+            ]
+            candidate_method = "branch_sequence"
         raw_stations = set(info.stations or {})
+        raw_sequence = ordered_station_profile(info)
         start_norm, end_norm = normalize_station(raw_start), normalize_station(raw_end)
-        scored: list[tuple[float, float, float, Route]] = []
+        scored: list[tuple[float, float, float, float, Route]] = []
         for route in candidates:
             authority_stations = authority_station_sets.get(route.line_id, set())
             overlap = len(raw_stations & authority_stations) / max(1, len(raw_stations))
             endpoint = (similarity(start_norm, route.start) + similarity(end_norm, route.end)) / 2
+            sequence = sequence_similarity(
+                raw_sequence, authority_station_sequences.get(route.line_id, [])
+            )
             code_score = 1.0 if route.code == raw_code else 0.72
-            total = 0.62 * overlap + 0.33 * endpoint + 0.05 * code_score
-            scored.append((total, overlap, endpoint, route))
+            total = 0.37 * sequence + 0.30 * overlap + 0.28 * endpoint + 0.05 * code_score
+            scored.append((total, overlap, endpoint, sequence, route))
         scored.sort(key=lambda item: item[0], reverse=True)
         best = scored[0] if scored else None
         second_score = scored[1][0] if len(scored) > 1 else 0.0
-        accepted = bool(
-            best
-            and (best[0] >= 0.42 or (best[1] >= 0.50 and best[0] - second_score >= 0.05))
-            and (best[1] >= 0.30 or best[2] >= 0.72)
-            and (best[0] - second_score >= 0.015 or best[0] >= 0.76)
+        override_id = ROUTE_DIRECTION_OVERRIDES.get(
+            (raw_route, direction, route_code_raw)
         )
-        route = best[3] if best and accepted else None
+        override = routes.get(override_id or "")
+        if override is not None and override.line_id in stops_by_line:
+            authority_stations = authority_station_sets.get(override.line_id, set())
+            overlap = len(raw_stations & authority_stations) / max(1, len(raw_stations))
+            endpoint = (
+                similarity(start_norm, override.start) + similarity(end_norm, override.end)
+            ) / 2
+            sequence = sequence_similarity(
+                raw_sequence, authority_station_sequences.get(override.line_id, [])
+            )
+            best = (1.0, overlap, endpoint, sequence, override)
+            second_score = 0.0
+            accepted = True
+            candidate_method = "verified_override"
+        else:
+            accepted = bool(
+                best
+                and (best[0] >= 0.48 or (best[3] >= 0.62 and best[0] - second_score >= 0.04))
+                and (best[1] >= 0.30 or best[2] >= 0.72 or best[3] >= 0.62)
+                and (best[0] - second_score >= 0.025 or best[0] >= 0.82)
+            )
+        route = best[4] if best and accepted else None
         mapping = {
             "route": route,
             "score": best[0] if best else 0.0,
             "station_overlap": best[1] if best else 0.0,
             "endpoint_score": best[2] if best else 0.0,
+            "sequence_score": best[3] if best else 0.0,
             "score_gap": (best[0] - second_score) if best else 0.0,
             "candidate_count": len(candidates),
+            "method": candidate_method if accepted else "",
             "status": "mapped" if accepted else ("ambiguous_or_low_score" if best else "no_candidate"),
         }
         result[key] = mapping
@@ -414,7 +548,9 @@ def build_route_mapping(
             "endpoint_score": round_text(best[2] if best else 0.0, 4),
             "total_score": round_text(best[0] if best else 0.0, 4),
             "score_gap": round_text((best[0] - second_score) if best else 0.0, 4),
+            "sequence_score": round_text(best[3] if best else 0.0, 4),
             "candidate_count": len(candidates),
+            "mapping_method": mapping["method"],
             "mapping_status": mapping["status"],
         })
     report.sort(key=lambda row: (-int(row["raw_event_count"]), str(row["route_name_raw"])))
@@ -553,6 +689,34 @@ def build_card_route_indexes(
         name: {key: values.most_common(1)[0][0] for key, values in index.items()}
         for name, index in counters.items()
     }
+
+
+def build_line_group_index(routes: dict[str, Route]) -> dict[str, LineGroupAuthority]:
+    grouped: dict[str, dict[str, set[str]]] = collections.defaultdict(
+        lambda: collections.defaultdict(set)
+    )
+    for route in routes.values():
+        if not is_nansha_route_label(route.label):
+            continue
+        grouped[route.code][route.group_name].add(route.line_id)
+    result: dict[str, LineGroupAuthority] = {}
+    for code, names in grouped.items():
+        if code and len(names) == 1:
+            name, line_ids = next(iter(names.items()))
+            result[code] = LineGroupAuthority(name, tuple(sorted(line_ids)))
+    return result
+
+
+def line_group_for_raw_route(
+    index: dict[str, LineGroupAuthority], raw_route: object
+) -> LineGroupAuthority | None:
+    route_name = clean(raw_route)
+    if not route_name or route_name == "无线路":
+        return None
+    alias = LINE_GROUP_ROUTE_ALIASES.get(route_name)
+    if alias is not None:
+        return LineGroupAuthority(alias[0], alias[1])
+    return index.get(canonical_route_code(route_name))
 
 
 def line_for_card(indexes: dict[str, dict[tuple[str, ...], str]], row: dict[str, str]) -> str:
@@ -701,11 +865,12 @@ def nearest_run_board(
         """
         SELECT line_id, seq, stop_id, stop_name, lon, lat, arrival_ts
         FROM run_events
-        WHERE service_date=? AND plate=? AND arrival_ts BETWEEN ? AND ?
-        ORDER BY (raw_route=?) DESC, ABS(arrival_ts-?) ASC LIMIT 1
+        WHERE service_date=? AND plate=? AND raw_route=?
+          AND arrival_ts BETWEEN ? AND ?
+        ORDER BY ABS(arrival_ts-?) ASC LIMIT 1
         """,
-        (service_date, plate, board_ts - MAX_BOARD_MATCH_SECONDS,
-         board_ts + MAX_BOARD_MATCH_SECONDS, raw_route, board_ts),
+        (service_date, plate, raw_route, board_ts - MAX_BOARD_MATCH_SECONDS,
+         board_ts + MAX_BOARD_MATCH_SECONDS, board_ts),
     ).fetchone()
     return tuple(row) if row else None
 
@@ -715,10 +880,18 @@ def process_card_boardings(
     key: bytes,
     routes: dict[str, Route],
     card_route_indexes: dict[str, dict[tuple[str, ...], str]],
+    line_group_index: dict[str, LineGroupAuthority],
     stop_mapper: StopMapper,
     quality: collections.Counter[str],
-) -> None:
+) -> tuple[
+    collections.Counter[tuple[str, int, str, str, str, str]],
+    dict[tuple[str, int], dict[str, float]],
+]:
     insert_rows: list[tuple[object, ...]] = []
+    unlocated_groups: collections.Counter[
+        tuple[str, int, str, str, str, str]
+    ] = collections.Counter()
+    overall_aggregates: dict[tuple[str, int], dict[str, float]] = {}
     with CARD_CSV.open("r", encoding="utf-8-sig", newline="") as handle:
         for source_index, row in enumerate(csv.DictReader(handle), 1):
             quality["card_raw_rows"] += 1
@@ -746,10 +919,32 @@ def process_card_boardings(
                     board_source = "nearest_run_3min"
                     quality["card_board_recovered_by_run_rows"] += 1
             if not line_id:
+                group = line_group_for_raw_route(line_group_index, raw_route)
+                if group is not None:
+                    unlocated_groups[(
+                        service_date, board_dt.hour, group.name,
+                        ";".join(group.line_ids), clean(row["COMPANY_NAME"]),
+                        "unique_current_line_group",
+                    )] += 1
+                    quality["card_group_only_boarding_rows"] += 1
+                    quality["card_group_only_direction_unresolved_rows"] += 1
+                    add_overall_flow(overall_aggregates, row, board_dt)
+                    continue
                 quality["card_unmapped_route_rows"] += 1
                 continue
             if stop is None:
                 quality["card_unmapped_board_stop_rows"] += 1
+                route = routes.get(line_id)
+                if route is not None:
+                    group = LineGroupAuthority(route.group_name, (route.line_id,))
+                    unlocated_groups[(
+                        service_date, board_dt.hour, group.name,
+                        ";".join(group.line_ids), clean(row["COMPANY_NAME"]),
+                        "mapped_direction_stop_unresolved",
+                    )] += 1
+                    quality["card_group_only_boarding_rows"] += 1
+                    quality["card_group_only_stop_unresolved_rows"] += 1
+                    add_overall_flow(overall_aggregates, row, board_dt)
                 continue
             route = routes.get(line_id)
             if route is None:
@@ -784,6 +979,7 @@ def process_card_boardings(
             elif clean(row["DOWN_STATION"]):
                 quality["card_invalid_direct_down_rows"] += 1
             quality["card_valid_boarding_rows"] += 1
+            add_overall_flow(overall_aggregates, row, board_dt)
             if len(insert_rows) >= 20_000:
                 connection.executemany(
                     "INSERT INTO boardings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -808,6 +1004,7 @@ def process_card_boardings(
         """
     )
     connection.commit()
+    return unlocated_groups, overall_aggregates
 
 
 BOARDING_SELECT = """
@@ -838,7 +1035,6 @@ def infer_alighting(
     quality: collections.Counter[str],
 ) -> None:
     inserts: list[tuple[object, ...]] = []
-    mode_counts: collections.Counter[tuple[str, str, str, str]] = collections.Counter()
     processed = 0
     cursor = connection.execute(BOARDING_SELECT)
     for _, rows in grouped_rows(cursor, (2, 3)):
@@ -880,7 +1076,6 @@ def infer_alighting(
                     int(boarding_id), chosen.stop_id, chosen.name, chosen.seq,
                     chosen.lon, chosen.lat, source, confidence, distance,
                 ))
-                mode_counts[(str(rider_id), str(line_id), str(row[5]), chosen.stop_id)] += 1
                 quality[f"alight_{source}_rows"] += 1
             processed += 1
             if len(inserts) >= 20_000:
@@ -892,49 +1087,6 @@ def infer_alighting(
     if inserts:
         connection.executemany("INSERT OR IGNORE INTO inferences VALUES (?,?,?,?,?,?,?,?,?)", inserts)
     connection.commit()
-
-    by_origin: dict[tuple[str, str, str], collections.Counter[str]] = collections.defaultdict(collections.Counter)
-    for (rider_id, line_id, board_stop_id, down_stop_id), count in mode_counts.items():
-        by_origin[(rider_id, line_id, board_stop_id)][down_stop_id] += count
-    stable_modes: dict[tuple[str, str, str], tuple[str, int, float]] = {}
-    for origin, counts in by_origin.items():
-        total = sum(counts.values())
-        down_stop_id, support = counts.most_common(1)[0]
-        share = support / total
-        if support >= 2 and share >= 0.60:
-            stable_modes[origin] = (down_stop_id, support, share)
-    log(f"形成 {len(stable_modes):,} 个同卡同线路稳定下车模式")
-    if stable_modes:
-        stop_lookup: dict[tuple[str, str], Stop] = {
-            (line_id, stop.stop_id): stop
-            for line_id, stops in stop_mapper.stops_by_line.items() for stop in stops
-        }
-        inserts = []
-        unresolved_cursor = connection.execute(
-            """
-            SELECT b.id, b.rider_id, b.line_id, b.board_stop_id, b.board_seq
-            FROM boardings b LEFT JOIN inferences i ON i.boarding_id=b.id
-            WHERE i.boarding_id IS NULL
-            """
-        )
-        for row in unresolved_cursor:
-            mode = stable_modes.get((str(row[1]), str(row[2]), str(row[3])))
-            if not mode:
-                continue
-            stop = stop_lookup.get((str(row[2]), mode[0]))
-            if not stop or stop.seq <= int(row[4]):
-                continue
-            inserts.append((
-                int(row[0]), stop.stop_id, stop.name, stop.seq, stop.lon, stop.lat,
-                "historical_mode", "low", None,
-            ))
-            quality["alight_historical_mode_rows"] += 1
-            if len(inserts) >= 20_000:
-                connection.executemany("INSERT OR IGNORE INTO inferences VALUES (?,?,?,?,?,?,?,?,?)", inserts)
-                inserts.clear()
-        if inserts:
-            connection.executemany("INSERT OR IGNORE INTO inferences VALUES (?,?,?,?,?,?,?,?,?)", inserts)
-        connection.commit()
     quality["alight_resolved_rows"] = connection.execute("SELECT COUNT(*) FROM inferences").fetchone()[0]
     quality["alight_unresolved_rows"] = quality["card_valid_boarding_rows"] - quality["alight_resolved_rows"]
 
@@ -1112,30 +1264,35 @@ def write_segment_runtime(
     return row_count
 
 
-def write_overall_flow(staging: Path) -> int:
-    """Keep all time-valid swipes for network-wide totals, even without a map position."""
-    aggregates: dict[tuple[str, int], dict[str, float]] = {}
-    with CARD_CSV.open("r", encoding="utf-8-sig", newline="") as handle:
-        for row in csv.DictReader(handle):
-            event_time = parse_datetime(row["TRAN_TIME"])
-            if event_time is None:
-                continue
-            key = (event_time.strftime("%Y-%m-%d"), event_time.hour)
-            agg = aggregates.setdefault(key, {
-                "swipes": 0, "fare": 0.0, "student": 0, "elderly": 0,
-                "concession": 0, "general": 0,
-            })
-            agg["swipes"] += 1
-            agg["fare"] += float_or_none(row["COST"]) or 0.0
-            group, _ = passenger_attributes(row["CARD_TYPE"])
-            if group == "student":
-                agg["student"] += 1
-            elif group == "elderly":
-                agg["elderly"] += 1
-            elif group == "disability_or_concession":
-                agg["concession"] += 1
-            else:
-                agg["general"] += 1
+def add_overall_flow(
+    aggregates: dict[tuple[str, int], dict[str, float]],
+    row: dict[str, str],
+    event_time: dt.datetime,
+) -> None:
+    """Accumulate a CARD row only after the primary cleaner has accepted it."""
+    key = (event_time.strftime("%Y-%m-%d"), event_time.hour)
+    agg = aggregates.setdefault(key, {
+        "swipes": 0, "fare": 0.0, "student": 0, "elderly": 0,
+        "concession": 0, "general": 0,
+    })
+    agg["swipes"] += 1
+    agg["fare"] += float_or_none(row["COST"]) or 0.0
+    group, _ = passenger_attributes(row["CARD_TYPE"])
+    if group == "student":
+        agg["student"] += 1
+    elif group == "elderly":
+        agg["elderly"] += 1
+    elif group == "disability_or_concession":
+        agg["concession"] += 1
+    else:
+        agg["general"] += 1
+
+
+def write_overall_flow(
+    staging: Path,
+    aggregates: dict[tuple[str, int], dict[str, float]],
+) -> tuple[int, int]:
+    """Write the totals accumulated by the primary CARD acceptance path."""
     fields = [
         "service_date", "hour", "all_swipe_count", "fare_amount_yuan",
         "student_count", "elderly_count", "concession_count",
@@ -1155,7 +1312,7 @@ def write_overall_flow(staging: Path) -> int:
             })
     finally:
         handle.close()
-    return len(aggregates)
+    return len(aggregates), int(sum(item["swipes"] for item in aggregates.values()))
 
 
 def write_module_availability(staging: Path) -> int:
@@ -1165,17 +1322,17 @@ def write_module_availability(staging: Path) -> int:
     ]
     rows = [
         ("运行监测", "公交出行监测-人口分布监测", "unavailable", "", "", "刷卡数据没有常住人口、居住地、性别、精确年龄和职业，不能当作人口统计"),
-        ("运行监测", "公交出行监测-站点OD监测", "partial", "乘客行程明细.csv", "上车出行分布、已解析目的地分布、时段分布", "仅保留74.51%的权威上车行程；目的地解析率54.23%"),
+        ("运行监测", "公交出行监测-站点OD监测", "partial", "乘客行程明细.csv", "上车出行分布、已解析目的地分布、时段分布", "仅使用已定位到现行SHP站点的行程；定位率与目的地解析率见数据质量报告"),
         ("运行监测", "公交出行监测-公交OD监测", "partial", "线路OD日统计.csv", "线路方向OD、站点OD、分时OD", "下车包含链式推断和历史模式，不等同于全量实测下车"),
-        ("运行监测", "总体客流监测", "available", "总体小时客流.csv", "全量刷卡人次、票款、票卡客群、小时与日期趋势", "代表刷卡客流，不含现金或其他未入库乘客"),
+        ("运行监测", "总体客流监测", "available", "总体小时客流.csv", "高置信线路级刷卡人次、票款、票卡客群、小时与日期趋势", "与线路总量采用相同清洗口径；无法可靠对应现行SHP线路组的刷卡已舍弃，比例见数据质量报告"),
         ("运行监测", "客流走廊监测-线路重复系数", "available", "公交线路站点/线路/routes.shp", "线路空间重合长度与重复系数", "该指标来自现行线路几何，本身不依赖刷卡数据"),
         ("运行监测", "客流走廊监测-公交客流走廊", "partial", "断面小时客流.csv", "高客流断面、走廊强度、分时客流", "仅使用已解析下车的行程"),
-        ("运行监测", "线路客流监测", "available_with_partial_alighting", "线路小时客流.csv", "线路上车、下车、客流趋势和线路排名", "上车为清洗后事实；下车为已解析行程"),
+        ("运行监测", "线路客流监测", "available_with_partial_alighting", "线路小时客流.csv;线路组未定位小时客流.csv", "线路上车、下车、客流趋势和线路排名", "线路组总量含可确定线路但无法确定方向/站点的刷卡；方向、站点和下车仅使用已定位行程"),
         ("运行监测", "站点客流监测", "available_with_partial_alighting", "站点小时客流.csv", "站点上车、下车、峰值和排名", "上车为清洗后事实；下车为已解析行程"),
         ("运行监测", "车辆运行监测", "available", "车辆到离站明细.csv;车辆日运营统计.csv", "车辆班次、里程、运行时长、速度和到离站事件", "只统计能映射到现行线路和站序的RUN事件"),
         ("运行监测", "体检评估分析", "partial", "线路日运营统计.csv;站点小时客流.csv", "客流强度、运营里程、班次、速度、站线负荷等数据项", "投诉、事故、成本、容量、准点阈值等外部指标仍缺失"),
         ("客流分析", "线路客流监测-断面客流", "partial", "断面小时客流.csv", "线路各相邻站断面客流及峰值", "仅使用已解析下车的行程"),
-        ("客流分析", "线路客流监测-站点乘降", "available_with_partial_alighting", "线路小时客流.csv;站点小时客流.csv", "指定线路各站乘降与分时趋势", "下车为已解析行程"),
+        ("客流分析", "线路客流监测-站点乘降", "available_with_partial_alighting", "线路小时客流.csv;线路组未定位小时客流.csv;站点小时客流.csv", "指定线路总上车及各站乘降与分时趋势", "线路总量可含仅定位到线路组的刷卡；站点和下车仅使用已定位行程"),
         ("客流分析", "线路客流监测-客流画像", "partial", "客群小时统计.csv;乘客行程明细.csv", "学生、老人、优抚/残疾、一般/未知及支付介质", "不能得到性别、精确年龄、职业和出行目的"),
         ("客流分析", "线路客流监测-关联线路", "partial", "换乘明细.csv", "关联线路、换乘量、换乘时间和步行距离", "依赖已解析下车与同卡连续乘车链"),
         ("客流分析", "站点客流监测-站点乘降", "available_with_partial_alighting", "站点小时客流.csv", "指定站点乘降、峰值和趋势", "下车为已解析行程"),
@@ -1406,6 +1563,30 @@ def write_route_mapping(staging: Path, rows: list[dict[str, object]]) -> None:
         handle.close()
 
 
+def write_unlocated_line_group_flow(
+    staging: Path,
+    values: collections.Counter[tuple[str, int, str, str, str, str]],
+) -> int:
+    handle, writer = open_csv_writer(
+        staging / "线路组未定位小时客流.csv", UNLOCATED_LINE_GROUP_FIELDS
+    )
+    try:
+        for key, count in sorted(values.items()):
+            date, hour, group_name, line_ids, company, reason = key
+            writer.writerow({
+                "service_date": date,
+                "hour": hour,
+                "authority_line_group_name": group_name,
+                "authority_line_ids": line_ids,
+                "company_raw": company,
+                "boarding_count": count,
+                "inference_reason": reason,
+            })
+    finally:
+        handle.close()
+    return len(values)
+
+
 def write_dictionary(staging: Path) -> None:
     descriptions = {
         "trip_id": "清洗后行程唯一标识", "rider_id": "原卡号经 HMAC-SHA256 化名后的稳定乘客标识",
@@ -1421,11 +1602,15 @@ def write_dictionary(staging: Path) -> None:
         "clean_status": "valid_complete 或 valid_boarding_only", "mapping_status": "权威线路映射状态",
         "passenger_count": "该线路断面在运营日/小时内的推断乘客数",
         "trip_count": "行程数", "boarding_count": "上车人次", "alighting_count": "已解析下车人次",
+        "authority_line_group_name": "由现行SHP线路名确定的线路组；未强行推断方向或站点",
+        "authority_line_ids": "该线路组在现行SHP中的候选方向line_id，以分号分隔",
+        "inference_reason": "仅定位到线路组的确定性依据",
     }
     file_fields = {
         "乘客行程明细.csv": PASSENGER_FIELDS,
         "车辆到离站明细.csv": VEHICLE_EVENT_FIELDS,
         "线路映射.csv": ROUTE_MAPPING_FIELDS,
+        "线路组未定位小时客流.csv": UNLOCATED_LINE_GROUP_FIELDS,
         "换乘明细.csv": TRANSFER_FIELDS,
         "线路小时客流.csv": ["service_date", "hour", "authority_line_id", "authority_route_name", "boarding_count", "alighting_count", "trip_count"],
         "站点小时客流.csv": ["service_date", "hour", "authority_line_id", "authority_route_name", "stop_id", "stop_name", "boarding_count", "alighting_count"],
@@ -1477,15 +1662,22 @@ def write_quality_report(
         ("card_raw_rows", quality["card_raw_rows"], "rows", "CARD原始行数"),
         ("card_valid_boarding_rows", quality["card_valid_boarding_rows"], "rows", "映射到当前权威线路/站点的有效上车行程"),
         ("card_valid_boarding_rate", round(quality["card_valid_boarding_rows"] / quality["card_raw_rows"], 6) if quality["card_raw_rows"] else 0, "ratio", "CARD有效上车率"),
+        ("card_group_only_boarding_rows", quality["card_group_only_boarding_rows"], "rows", "可确定现行SHP线路组、但不强行推断方向或站点的上车记录"),
+        ("card_line_level_accepted_rows", quality["card_valid_boarding_rows"] + quality["card_group_only_boarding_rows"], "rows", "可进入平台线路总量的上车记录"),
+        ("card_line_level_accepted_rate", round((quality["card_valid_boarding_rows"] + quality["card_group_only_boarding_rows"]) / quality["card_raw_rows"], 6) if quality["card_raw_rows"] else 0, "ratio", "CARD进入线路总量的比例"),
+        ("card_line_level_discarded_rows", quality["card_raw_rows"] - quality["card_valid_boarding_rows"] - quality["card_group_only_boarding_rows"], "rows", "无法可靠对应现行SHP线路组而舍弃的记录"),
+        ("card_line_level_discarded_rate", round((quality["card_raw_rows"] - quality["card_valid_boarding_rows"] - quality["card_group_only_boarding_rows"]) / quality["card_raw_rows"], 6) if quality["card_raw_rows"] else 0, "ratio", "CARD在线路总量层面的最终舍弃比例"),
+        ("overall_accepted_rows", quality["overall_accepted_rows"], "rows", "总体小时客流采用与线路总量一致的高置信刷卡记录数"),
+        ("card_group_only_direction_unresolved_rows", quality["card_group_only_direction_unresolved_rows"], "rows", "线路组唯一但方向/站点缺失的记录"),
+        ("card_group_only_stop_unresolved_rows", quality["card_group_only_stop_unresolved_rows"], "rows", "方向线路已确定但上车站无法定位的记录"),
         ("card_board_recovered_by_run_rows", quality["card_board_recovered_by_run_rows"], "rows", "由3分钟RUN匹配恢复的上车站"),
-        ("card_unmapped_route_rows", quality["card_unmapped_route_rows"], "rows", "权威线路无法确定的CARD记录"),
-        ("card_unmapped_board_stop_rows", quality["card_unmapped_board_stop_rows"], "rows", "权威上车站无法确定的CARD记录"),
+        ("card_unmapped_route_rows", quality["card_unmapped_route_rows"], "rows", "现行SHP线路组仍无法可靠确定、最终舍弃的CARD记录"),
+        ("card_unmapped_board_stop_rows", quality["card_unmapped_board_stop_rows"], "rows", "无法进入站点/OD明细但可继续进入线路组总量的记录"),
         ("alight_resolved_rows", quality["alight_resolved_rows"], "rows", "已获得下车站的行程"),
         ("alight_resolution_rate", round(quality["alight_resolved_rows"] / quality["card_valid_boarding_rows"], 6) if quality["card_valid_boarding_rows"] else 0, "ratio", "有效上车行程的下车解析率"),
         ("alight_direct_card_down_rows", quality["alight_direct_card_down_rows"], "rows", "CARD直接下车站"),
         ("alight_next_board_projection_rows", quality["alight_next_board_projection_rows"], "rows", "同日下一次上车链推断"),
         ("alight_daily_return_projection_rows", quality["alight_daily_return_projection_rows"], "rows", "当日往返闭环的保守推断"),
-        ("alight_historical_mode_rows", quality["alight_historical_mode_rows"], "rows", "同卡同线路稳定历史模式兜底"),
         ("alight_unresolved_rows", quality["alight_unresolved_rows"], "rows", "仅可用于上车统计、不可用于OD/断面的行程"),
         ("alight_time_vehicle_run_rows", quality["alight_time_vehicle_run_rows"], "rows", "由同车同线RUN实际到站事件确定的下车时间"),
         ("alight_time_segment_mean_rows", quality["alight_time_segment_mean_rows"], "rows", "由线路区间平均运行时间估算的下车时间"),
@@ -1507,7 +1699,7 @@ def validate_outputs(staging: Path, quality: collections.Counter[str]) -> dict[s
         "断面小时客流.csv", "线路OD日统计.csv", "换乘明细.csv", "客群小时统计.csv",
         "车辆日运营统计.csv", "线路日运营统计.csv", "线路映射.csv", "数据字典.csv",
         "区间运行时间统计.csv",
-        "总体小时客流.csv",
+        "总体小时客流.csv", "线路组未定位小时客流.csv",
         "模块可用性说明.csv",
     ]
     missing = [name for name in required if not (staging / name).is_file()]
@@ -1531,6 +1723,47 @@ def validate_outputs(staging: Path, quality: collections.Counter[str]) -> dict[s
                 break
     if sample_count == 0 or quality["card_valid_boarding_rows"] == 0:
         raise RuntimeError("没有生成有效乘客行程")
+    with (staging / "线路组未定位小时客流.csv").open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        group_only_count = sum(
+            int(row["boarding_count"]) for row in csv.DictReader(handle)
+        )
+    if group_only_count != quality["card_group_only_boarding_rows"]:
+        raise RuntimeError(
+            f"线路组未定位客流不守恒: 文件={group_only_count}, "
+            f"质量计数={quality['card_group_only_boarding_rows']}"
+        )
+    accounted = (
+        quality["card_valid_boarding_rows"]
+        + quality["card_group_only_boarding_rows"]
+        + quality["card_unmapped_route_rows"]
+        + quality["card_invalid_identity_or_time_rows"]
+    )
+    if accounted != quality["card_raw_rows"]:
+        raise RuntimeError(
+            f"CARD线路层级不守恒: 原始={quality['card_raw_rows']}, 已核算={accounted}"
+        )
+    line_level_accepted = (
+        quality["card_valid_boarding_rows"]
+        + quality["card_group_only_boarding_rows"]
+    )
+    with (staging / "总体小时客流.csv").open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        overall_count = sum(
+            int(row["all_swipe_count"]) for row in csv.DictReader(handle)
+        )
+    if overall_count != line_level_accepted:
+        raise RuntimeError(
+            f"总体与线路客流不守恒: 总体={overall_count}, "
+            f"线路高置信={line_level_accepted}"
+        )
+    if quality["overall_accepted_rows"] != line_level_accepted:
+        raise RuntimeError(
+            f"总体扫描计数不守恒: 扫描={quality['overall_accepted_rows']}, "
+            f"线路高置信={line_level_accepted}"
+        )
     return {"validation_sample_rows": sample_count, "output_file_count": len(required) + 1}
 
 
@@ -1586,10 +1819,15 @@ def main() -> int:
             connection, staging, routes, route_mapping, stop_mapper, quality
         )
         card_route_indexes = build_card_route_indexes(groups, route_mapping)
+        line_group_index = build_line_group_index(routes)
         hmac_key = read_or_create_hmac_key(key_path)
         log("清洗 CARD，并以 RUN 在3分钟窗口内补充缺失上车站")
-        process_card_boardings(
-            connection, hmac_key, routes, card_route_indexes, stop_mapper, quality
+        unlocated_line_groups, overall_aggregates = process_card_boardings(
+            connection, hmac_key, routes, card_route_indexes, line_group_index,
+            stop_mapper, quality
+        )
+        extra_group_rows = write_unlocated_line_group_flow(
+            staging, unlocated_line_groups
         )
         log("按同卡同日乘车链推断下车站")
         infer_alighting(connection, stop_mapper, quality)
@@ -1603,7 +1841,11 @@ def main() -> int:
         extra["segment_runtime_rows"] = write_segment_runtime(
             staging, routes, stops_by_line, segment_stats
         )
-        extra["overall_hour_rows"] = write_overall_flow(staging)
+        (
+            extra["overall_hour_rows"],
+            quality["overall_accepted_rows"],
+        ) = write_overall_flow(staging, overall_aggregates)
+        extra["unlocated_line_group_hour_rows"] = extra_group_rows
         extra["module_availability_rows"] = write_module_availability(staging)
         write_dictionary(staging)
         validation = validate_outputs(staging, quality)

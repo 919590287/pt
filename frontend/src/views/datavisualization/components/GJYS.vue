@@ -248,6 +248,9 @@
       <div v-else-if="congestStatus === 'generating'" class="rm-congest-state" role="status">
         <span class="rm-play-spinner" aria-hidden="true"></span>车速缓存生成中，就绪后自动显示…
       </div>
+      <div v-else-if="congestStatus === 'error'" class="rm-congest-state" role="alert">
+        {{ congestError }}
+      </div>
       <div v-else-if="congestStatus === 'empty'" class="rm-congest-state">
         {{ isRealAggregateMode ? "真实数据未包含道路分段车速" : "该模型无公交车速数据" }}
       </div>
@@ -367,7 +370,6 @@ import { computed, inject, markRaw, onMounted, onUnmounted, ref, shallowRef, wat
 import MCard from "./MCard.vue";
 import {
   dataTrajectory,
-  dataTrajectoryChunk,
   dataTrajectoryChunkBinary,
   dataTrajectoryFrameBinary,
   dataTrajectoryViewportBinary,
@@ -840,7 +842,13 @@ function handleTrajectorySamplingBoundsChange(bounds) {
 
 function ensureTrajectoryLayer() {
   if (!MapRef?.value || trajectoryLayer) return;
-  trajectoryLayer = new VehicleTrajectoryLayer({ zIndex: 1200, vehicleSize: VehicleSizeRef.value });
+  trajectoryLayer = new VehicleTrajectoryLayer({
+    zIndex: 1200,
+    vehicleSize: VehicleSizeRef.value,
+    onError: (error) => {
+      loadError.value = error?.message || "车辆轨迹处理失败";
+    },
+  });
   trajectoryLayer.setVehicleMeta(trajectoryData.value?.meta || {});
   trajectoryLayer.setVehicleVisibilityMode(VehicleVisibilityModeRef.value);
   trajectoryLayer.setSegmentBucketSeconds(segmentBucketSeconds.value);
@@ -965,9 +973,9 @@ async function applyTrajectoryStatus(data, seq) {
   ensureActiveSpatialWindow();
 
   if (cacheStatus.value === "ready") {
-    // 仿真 events 已确定：清理本模型其它版本的过期分块缓存（不阻塞首块加载）。
+    // 仿真 events 已确定：先完成本模型其它版本的过期分块清理。
     // 真实模式的小时块来自模型级内存派生缓存，不写 IndexedDB。
-    if (!isRealMode.value) pruneChunkCache(props.model, eventsTag());
+    if (!isRealMode.value) await pruneChunkCache(props.model, eventsTag());
     await loadChunkForTime(currentTime.value, seq, true);
   } else if (cacheStatus.value === "generating") {
     schedulePolling(seq);
@@ -1051,8 +1059,10 @@ async function loadChunkForTime(time, seq, force = false, options = {}) {
     rememberChunk(start, descriptor);
     commitChunkDescriptor(start, descriptor, time);
   } catch (error) {
-    // 分块加载失败或被取消（模型切换/卸载时 abort）：静默即可，
-    // 播放/拖动路径跨块时会自动重试，界面由既有加载态兜底。
+    if (seq === loadSeq && myChunkSeq === chunkSeq && myViewportSeq === viewportSeq
+        && !isCanceledRequest(error)) {
+      loadError.value = error?.message || "车辆轨迹分块加载失败";
+    }
   } finally {
     if (pendingChunkStart === start) {
       pendingChunkStart = null;
@@ -1065,7 +1075,8 @@ async function loadChunkForTime(time, seq, force = false, options = {}) {
 
 async function installChunkInWorker(start, data, activate) {
   ensureTrajectoryLayer();
-  if (!trajectoryLayer || !data || data.status !== "ready") return null;
+  if (!trajectoryLayer) throw new Error("车辆轨迹图层未初始化");
+  if (!data || data.status !== "ready") throw new Error("车辆轨迹分块未就绪");
   if (activate) {
     // 完整块已经到手后不再让较早发出的低延迟快照反向覆盖它。
     // cancel 会推进 seekSnapshotSeq；即使 fetch 已返回，其 Worker 结果也会按 stale 丢弃。
@@ -1078,7 +1089,8 @@ async function installChunkInWorker(start, data, activate) {
     ? await trajectoryLayer.setData(data)
     : await trajectoryLayer.preindexChunk(data);
   recordChunkFetch(performance.now() - installStartedAt);
-  if (!result || result.failed || result.stale || result.miss) return null;
+  if (!result) throw new Error("车辆轨迹 Worker 未返回结果");
+  if (result.stale || result.miss) return null;
   return markRaw({
     status: "ready",
     start,
@@ -1115,7 +1127,7 @@ async function applyChunkData(start, descriptor, time = currentTime.value) {
   try {
     const result = await trajectoryLayer.activateChunkKey(descriptor.workerKey, time);
     if (seq !== loadSeq || activationSeq !== chunkActivationSeq || result?.stale) return false;
-    if (result?.miss || result?.failed) {
+    if (result?.miss) {
       // Worker 字节预算淘汰后，主线程的轻量 key 会变成悬空引用。
       // 删除它并按高优先级重取，HTTP/IndexedDB 命中时无回源。
       chunkCache.delete(start);
@@ -1343,7 +1355,7 @@ async function requestTrajectoryChunk(start, options = {}) {
         return parsed;
       }
     } catch (error) {
-      // 本地缓存损坏则回退网络。
+      throw new Error("本地车辆轨迹缓存损坏", { cause: error });
     }
   }
 
@@ -1375,18 +1387,9 @@ async function requestTrajectoryChunk(start, options = {}) {
       return parsed;
     }
   } catch (error) {
-    // 被取消的请求直接上抛，不再降级 JSON 重试（调用方按取消静默处理）。
-    if (isCanceledRequest(error)) throw error;
-    const status = error?.cause?.response?.status || error?.response?.status;
-    if (spatialMode || background || status >= 500) throw error;
-    // JSON keeps the feature usable when an old cache or browser rejects the binary path.
+    throw error;
   }
-
-  const res = await dataTrajectoryChunk({ datasource: props.model }, start, {
-    signal,
-    silentError: background,
-  });
-  return res.data || {};
+  throw new Error("轨迹二进制接口未返回有效数据");
 }
 
 function recordChunkFetch(elapsedMs) {
@@ -1546,7 +1549,9 @@ async function requestSeekSnapshot(time, seq) {
     if (result?.failed || result?.stale || seq !== seekSnapshotSeq || targetStart === currentChunkStart) return;
     syncStatsAt(time, true);
   } catch (error) {
-    // 快照是完整分块加载前的低延迟路径；取消/失败时由完整分块自然接管。
+    if (seq === seekSnapshotSeq && !isCanceledRequest(error)) {
+      loadError.value = error?.message || "车辆轨迹快照加载失败";
+    }
   } finally {
     if (seekSnapshotController === controller) seekSnapshotController = null;
   }
@@ -1859,9 +1864,8 @@ async function bootstrapLinkSpeed() {
     LinkSpeedStatusRef.value = parsed.count > 0 ? "ready" : "empty";
   } catch (error) {
     if (seq !== linkSpeedSeq || isCanceledRequest(error)) return;
-    // 后端旧版本无该接口/缓存未建：按生成中轮询，部署后自动出图
-    LinkSpeedStatusRef.value = "generating";
-    scheduleLinkSpeedPoll();
+    LinkSpeedStatusRef.value = "error";
+    console.error("[车辆运行监测] 链路车速加载失败", error);
   }
 }
 
@@ -1890,7 +1894,8 @@ watch(LinkSpeedOpacityRef, (value) => {
 // 数据与车速图层共享同一份 summary/matrix 缓存（modelDataCache 去重），但状态机独立：
 // 面板信息不被"默认关闭"的图层开关卡住，图层后开时命中缓存秒出。
 const CONGEST_TOP_LIMIT = rightPanelRankLimit;
-const congestStatus = ref("loading"); // loading | generating | ready | empty
+const congestStatus = ref("loading"); // loading | generating | ready | empty | error
+const congestError = ref("");
 const congestSummary = shallowRef(null); // { names: 路名字典, districts: 街道→行政区 }
 const congestData = shallowRef(null); // parseLinkSpeedMatrix 结果（与图层共享 markRaw 对象）
 const congestFreeflow = shallowRef(null); // 每链路自由流基准（全天最大桶速，模型级派生缓存）
@@ -2009,6 +2014,7 @@ async function bootstrapCongestion() {
   if (congestStatus.value !== "generating") {
     congestStatus.value = "loading";
   }
+  congestError.value = "";
   try {
     const summary = await getCachedLinkSpeedSummary(model);
     if (seq !== congestSeq || props.model !== model) return;
@@ -2035,9 +2041,8 @@ async function bootstrapCongestion() {
     congestStatus.value = parsed.count > 0 ? "ready" : "empty";
   } catch (error) {
     if (seq !== congestSeq || isCanceledRequest(error)) return;
-    // 后端旧版本无该接口/缓存未建：按生成中轮询，部署后自动出榜（与车速图层同一容错口径）
-    congestStatus.value = "generating";
-    scheduleCongestPoll();
+    congestStatus.value = "error";
+    congestError.value = error?.message || "拥堵路段数据加载失败";
   }
 }
 

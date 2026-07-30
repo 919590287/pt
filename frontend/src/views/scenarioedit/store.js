@@ -137,10 +137,10 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
         return true;
       } catch (e) {
         saveState.value = "error";
-        return false;
+        throw e;
       }
     };
-    saveQueue = saveQueue.catch(() => true).then(run);
+    saveQueue = saveQueue.then(run, run);
     return saveQueue;
   }
 
@@ -578,14 +578,17 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
 
   // ---------- 运行任务 ----------
   const jobs = ref([]);
+  const jobsError = ref("");
   let jobTimer = null;
 
   async function refreshJobs() {
     try {
       const res = await optJobStatus({});
       jobs.value = Array.isArray(res?.data) ? res.data : [];
+      jobsError.value = "";
     } catch (e) {
-      /* 静默 */
+      jobsError.value = e?.message || "任务状态加载失败";
+      throw e;
     }
     const active = jobs.value.some((j) => !["done", "failed", "canceled"].includes(j.stage));
     if (jobTimer) clearTimeout(jobTimer);
@@ -637,6 +640,6 @@ export const useScenarioEditStore = defineStore("scenarioEdit", () => {
     endLineSession, cancelLineSession, sessionAutoConnect, beginStopReplace, beginStopDelete, beginInsertBefore, beginInsertAfter, beginSegmentEdit,
     activeFormKind, formRequest, requestForm,
     selection, selectRoute, selectStop, clearSelection, selectedRoute, selectedStop,
-    jobs, refreshJobs, startJobPolling, stopJobPolling,
+    jobs, jobsError, refreshJobs, startJobPolling, stopJobPolling,
   };
 });

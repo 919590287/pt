@@ -35,6 +35,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -430,7 +431,16 @@ class TransitMetricsTest {
         plan.addLeg(walk);
         plan.addActivity(factory.createActivityFromCoord("pt interaction", new Coord(10, 10)));
         Leg pt = factory.createLeg(mode);
-        pt.setDepartureTime(walkDeparture + walkTravel + await);
+        double arrivalAtStop = walkDeparture + walkTravel;
+        pt.setDepartureTime(arrivalAtStop);
+        DefaultTransitPassengerRoute passengerRoute = new DefaultTransitPassengerRoute(
+                Id.createLinkId("a"), Id.createLinkId("b"),
+                Id.create("s1", TransitStopFacility.class),
+                Id.create("s2", TransitStopFacility.class),
+                Id.create("line-" + id, TransitLine.class),
+                Id.create("route-" + id, TransitRoute.class));
+        passengerRoute.setBoardingTime(arrivalAtStop + await);
+        pt.setRoute(passengerRoute);
         plan.addLeg(pt);
         plan.addActivity(factory.createActivityFromCoord("work", new Coord(500, 500)));
         person.addPlan(plan);
@@ -729,7 +739,8 @@ class TransitMetricsTest {
                 new Coord(113.2644, 23.1291), new Coord(113.2673, 23.1291));
         assertEquals(296.7, distance, 4.0,
                 "WGS84 应先投影到3857再做地面尺度校正，不能把经纬度或已投影坐标二次转换");
-        assertTrue(!TransitMetrics.MetricCoordinateContext.fromCrs("unknown-crs").isSupported());
+        assertThrows(IllegalArgumentException.class,
+                () -> TransitMetrics.MetricCoordinateContext.fromCrs("unknown-crs"));
     }
 
     @Test

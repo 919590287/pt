@@ -129,8 +129,8 @@ public final class MatsimPersonTrackStore {
             }
             return true;
         } catch (Exception e) {
-            log.warn("乘客明细分区缓存状态读取失败: model={}", data.getName(), e);
-            return false;
+            throw new IllegalStateException("乘客明细分区缓存状态读取失败: "
+                    + manifestPath, e);
         }
     }
 
@@ -220,7 +220,9 @@ public final class MatsimPersonTrackStore {
 
     static PTPersonTrack parse(String line) {
         String[] parts = line.split("\t", -1);
-        if (parts.length < 8) return null;
+        if (parts.length < 8) {
+            throw new IllegalArgumentException("乘客明细记录字段不足: expected=8, actual=" + parts.length);
+        }
         PTPersonTrack track = new PTPersonTrack();
         track.setTime(parseDouble(parts[0]));
         track.setEnter(Boolean.parseBoolean(parts[1]));
@@ -241,8 +243,8 @@ public final class MatsimPersonTrackStore {
     private static double parseDouble(String value) {
         try {
             return Double.parseDouble(value);
-        } catch (Exception ignored) {
-            return 0.0;
+        } catch (Exception error) {
+            throw new IllegalArgumentException("乘客明细时间字段非法: " + value, error);
         }
     }
 

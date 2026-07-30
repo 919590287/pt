@@ -73,15 +73,13 @@ class MatsimSourceFingerprintTest {
     }
 
     @Test
-    void legacyManifestWithoutSignatureStillUsesMetadata() {
+    void legacyManifestWithoutSignatureIsRejected() {
         Map<String, Object> expected = flatFingerprint("/model/events.xml", 200L, 20L, "content-a");
         Map<String, Object> stored = new LinkedHashMap<>();
         stored.put("eventsFile", "/model/events.xml");
         stored.put("eventsModified", 20L);
         stored.put("eventsSize", 200L);
 
-        assertTrue(MatsimSourceFingerprint.sameFlatFingerprint(expected, stored));
-        stored.put("eventsModified", 21L);
         assertFalse(MatsimSourceFingerprint.sameFlatFingerprint(expected, stored));
     }
 

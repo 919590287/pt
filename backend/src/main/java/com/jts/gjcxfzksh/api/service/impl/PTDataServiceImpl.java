@@ -13,6 +13,7 @@ import com.jts.gjcxfzksh.data.cache.MatsimSourceFingerprint;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
 import com.jts.gjcxfzksh.data.id.RouteId;
 import com.jts.gjcxfzksh.data.id.VehicleId;
+import com.jts.gjcxfzksh.exception.BusinessException;
 import com.jts.gjcxfzksh.utils.DistanceUtil;
 import com.jts.gjcxfzksh.utils.TransitMetrics;
 import lombok.extern.slf4j.Slf4j;
@@ -537,10 +538,12 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
 
     private static Map<?, ?> densityForDistrict(Map<String, Object> info, String district) {
         if (info.get("densityByDistrict") instanceof Map<?, ?> byDistrict) {
-            Object exact = byDistrict.get(normalizeDistrict(district));
+            String normalized = normalizeDistrict(district);
+            Object exact = byDistrict.get(normalized);
             if (exact instanceof Map<?, ?> row) return row;
-            Object city = byDistrict.get("全市");
-            if (city instanceof Map<?, ?> row) return row;
+            if (!"全市".equals(normalized)) {
+                throw new BusinessException("行政区密度指标不存在: " + normalized);
+            }
         }
         return Map.of();
     }
@@ -1170,7 +1173,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                 }
                 return Files.getLastModifiedTime(path).toMillis();
             } catch (Exception e) {
-                return 0L;
+                throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
             }
         }
 
@@ -1185,7 +1188,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
                 }
                 return Files.size(path);
             } catch (Exception e) {
-                return 0L;
+                throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
             }
         }
     }

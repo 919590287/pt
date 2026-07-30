@@ -434,86 +434,47 @@ export function pxtorem(px) {
   return Number(px / 75).toFixed(6);
 }
 
+function decimalLength(value) {
+  const text = String(value);
+  const point = text.indexOf(".");
+  return point < 0 ? 0 : text.length - point - 1;
+}
+
+function integerDigits(value) {
+  return Number(String(value).replace(".", ""));
+}
+
 //加
 Number.prototype.add = function (n) {
-  function multiply(a, b) {
-    var _m = 0,
-      _s1 = String(a),
-      _s2 = String(b),
-      _r1,
-      _r2;
-    try {
-      _m += _s1.split(".")[1].length;
-    } catch (e) {}
-    try {
-      _m += _s2.split(".")[1].length;
-    } catch (e) {}
-    _r1 = Number(_s1.replace(".", ""));
-    _r2 = Number(_s2.replace(".", ""));
-    return Number((_r1 * _r2) / Math.pow(10, _m));
-  }
-
-  var r1, r2, m;
-  try {
-    r1 = this.toString().split(".")[1].length;
-  } catch (e) {
-    r1 = 0;
-  }
-  try {
-    r2 = n.toString().split(".")[1].length;
-  } catch (e) {
-    r2 = 0;
-  }
-  m = Math.pow(10, Math.max(r1, r2));
+  const r1 = decimalLength(this);
+  const r2 = decimalLength(n);
+  const m = Math.pow(10, Math.max(r1, r2));
+  const multiply = (a, b) => {
+    const digits = decimalLength(a) + decimalLength(b);
+    return Number((integerDigits(a) * integerDigits(b)) / Math.pow(10, digits));
+  };
   return Number((multiply(this, m) + multiply(n, m)) / m);
 };
 // 减
 Number.prototype.subtract = function (n) {
-  var r1, r2, m;
-  try {
-    r1 = String(this).split(".")[1].length;
-  } catch (e) {
-    r1 = 0;
-  }
-  try {
-    r2 = String(n).split(".")[1].length;
-  } catch (e) {
-    r2 = 0;
-  }
-  m = Math.pow(10, Math.max(r1, r2));
+  const r1 = decimalLength(this);
+  const r2 = decimalLength(n);
+  const m = Math.pow(10, Math.max(r1, r2));
   return Number((this * m - n * m) / m);
 };
 // 乘
 Number.prototype.multiply = function (n) {
-  var m = 0,
-    s1 = String(this),
-    s2 = String(n),
-    r1,
-    r2;
-  try {
-    m += s1.split(".")[1].length;
-  } catch (e) {}
-  try {
-    m += s2.split(".")[1].length;
-  } catch (e) {}
-  r1 = Number(s1.replace(".", ""));
-  r2 = Number(s2.replace(".", ""));
+  const m = decimalLength(this) + decimalLength(n);
+  const r1 = integerDigits(this);
+  const r2 = integerDigits(n);
   return Number((r1 * r2) / Math.pow(10, m));
 };
 // 除
 Number.prototype.divide = function (n) {
-  var t1 = 0,
-    t2 = 0,
-    r1,
-    r2;
-  try {
-    t1 = String(this).split(".")[1].length;
-  } catch (e) {}
-  try {
-    t2 = String(n).split(".")[1].length;
-  } catch (e) {}
-  r1 = Number(String(this).replace(".", ""));
-  r2 = Number(String(n).replace(".", ""));
+  const t1 = decimalLength(this);
+  const t2 = decimalLength(n);
+  const r1 = integerDigits(this);
+  const r2 = integerDigits(n);
   return Number((r1 / r2) * Math.pow(10, t2 - t1));
 };
 

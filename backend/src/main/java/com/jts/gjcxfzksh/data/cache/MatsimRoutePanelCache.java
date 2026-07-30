@@ -63,7 +63,7 @@ public final class MatsimRoutePanelCache {
     // v11: 关联换乘线路不再只输出前 12 个，供前端完整展示全部可换乘线路与 0 值补全。
     // v12: ①新增线路站间 OD 字段 stationOd（按人配对“上车→下车”，经纬度坐标，flow 降序，上限 500）；
     //      ②客流画像活动口径改为“本次出行的出行目的活动”（selected plan 中 TransitPassengerRoute 匹配本 route，
-    //        取 leg 之后第一个非 interaction 活动，占比合计≈100%；找不到时退回全活动统计但仍过滤 interaction）；
+    //        取 leg 之后第一个非 interaction 活动，占比合计≈100%）；
     //      ③换乘识别支持对向/邻近站台（两 facility 坐标相距 ≤200m 也视为同一换乘点）；
     //      ④lineGroups 新增公交聚合（key=bus::lineId，上下行合并，单 route 也生成组），并为所有组补齐
     //        transfers/stationOd 聚合；地铁组既有聚合键与合并行为不变。需重算缓存。
@@ -79,7 +79,7 @@ public final class MatsimRoutePanelCache {
     //      ⑥lineGroup 的 lc 输出 null（原 0.0 占位会被当真值展示）、facDist 取代表方向、
     //        首末班仅统计有班次的成员；
     //      ⑦公交/地铁判定收紧（裸“N线”须带地铁/轨道前缀，接驳/巴士等公交词优先）；
-    //      ⑧出行目的兜底键仅在 routeId 全局唯一时使用；上下车归属统一 pt-events-v3 动态映射。
+    //      ⑧上下车归属统一 pt-events-v3 动态映射。
     // v15: route/lineGroup metrics 新增 peakHeadwayMin/offPeakHeadwayMin（高峰/平峰发车间隔，分钟）：
     //      时刻表自动识别，高峰窗 7-9/17-19、>2h 断档剔除（口径见 TransitMetrics），
     //      lineGroup 取“有班次的最长单向”代表方向。需重算缓存。
@@ -92,7 +92,7 @@ public final class MatsimRoutePanelCache {
     //      全网运营车辆清单，并下发标台数与统一口径标识。
     // v20: 平均高峰满载率按 DB4401/T 180—2022 改为“每班最大站段满载率”的班次均值；
     //      线路客流强度统一改为日上车人次/计划运营车公里。
-    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v20";
+    public static final String ROUTE_PANEL_CACHE_VERSION = "route-panel-v21";
 
     private static final String PANEL_FILE = "route-panel.json.gz";
     private static final String MANIFEST_FILE = "manifest.json";
@@ -170,8 +170,8 @@ public final class MatsimRoutePanelCache {
         try {
             return loadPanel(data);
         } catch (Exception e) {
-            log.warn("读取线路客流面板缓存失败: model={}, path={}", data.getName(), panelPath(data), e);
-            return Map.of();
+            throw new IllegalStateException("读取线路客流面板缓存失败: model=" + data.getName()
+                    + ", path=" + panelPath(data), e);
         }
     }
 
@@ -402,8 +402,7 @@ public final class MatsimRoutePanelCache {
                     && ROUTE_PANEL_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
         } catch (Exception e) {
-            log.warn("线路客流面板缓存状态读取失败: {}", manifestPath(data), e);
-            return false;
+            throw new IllegalStateException("线路客流面板缓存状态读取失败: " + manifestPath(data), e);
         }
     }
 
@@ -919,7 +918,7 @@ public final class MatsimRoutePanelCache {
             }
             return Files.getLastModifiedTime(path).toMillis();
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件修改时间失败: " + filePath, e);
         }
     }
 
@@ -934,7 +933,7 @@ public final class MatsimRoutePanelCache {
             }
             return Files.size(path);
         } catch (Exception e) {
-            return 0L;
+            throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
     }
 
@@ -1248,8 +1247,7 @@ public final class MatsimRoutePanelCache {
             collectActivityTypes(person.getSelectedPlan().getPlanElements(), result);
             return result;
         }
-        person.getPlans().forEach(plan -> collectActivityTypes(plan.getPlanElements(), result));
-        return result;
+        throw new IllegalStateException("线路画像数据缺少 selectedPlan: person=" + person.getId());
     }
 
     private static void collectActivityTypes(List<PlanElement> elements, Set<String> result) {
@@ -1266,8 +1264,8 @@ public final class MatsimRoutePanelCache {
 
     /**
      * 任务B：客流画像。出行者属性/出行目的两个维度保持既有互斥单选逻辑；
-     * 活动画像改为“本次出行的出行目的活动”计数（占比合计≈100%），
-     * 无出行目的活动时退回按乘客全活动统计（仍过滤 interaction）。
+     * 活动画像只按“本次出行的出行目的活动”计数（占比合计≈100%）；
+     * 缺少明确目的映射时保持空画像，不用乘客全活动猜测。
      */
     private static Map<String, Object> buildDemographicsPayload(
             Population population,
@@ -1276,7 +1274,7 @@ public final class MatsimRoutePanelCache {
     ) {
         if (population == null || riderIds.isEmpty()) {
             Map<String, Object> empty = demographicsPayload(0, 0, 0, 0, 0, 0, 0);
-            putActivityProfile(empty, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, Map.of());
+            putActivityProfile(empty, tripPurposeCounts == null ? Map.of() : tripPurposeCounts);
             return empty;
         }
         int total = 0;
@@ -1286,7 +1284,6 @@ public final class MatsimRoutePanelCache {
         int shopping = 0;
         int leisure = 0;
         int other = 0;
-        Map<String, Integer> fallbackCounts = new LinkedHashMap<>();
         for (String riderId : riderIds) {
             Person person = population.getPersons().get(Id.create(riderId, Person.class));
             if (person == null) {
@@ -1294,11 +1291,6 @@ public final class MatsimRoutePanelCache {
             }
             total++;
             Set<String> activities = activityTypes(person);
-            for (String activity : activities) {
-                if (activity != null && !activity.isBlank()) {
-                    fallbackCounts.merge(activity, 1, Integer::sum);
-                }
-            }
             String attributes = allAttributeText(person);
             Integer personAge = age(person);
             boolean isCommuter = hasActivity(activities, "home") && hasActivity(activities, "work")
@@ -1330,20 +1322,17 @@ public final class MatsimRoutePanelCache {
             }
         }
         Map<String, Object> payload = demographicsPayload(total, commuter, student, elderly, shopping, leisure, other);
-        putActivityProfile(payload, tripPurposeCounts == null ? Map.of() : tripPurposeCounts, fallbackCounts);
+        putActivityProfile(payload, tripPurposeCounts == null ? Map.of() : tripPurposeCounts);
         return payload;
     }
 
     private static void putActivityProfile(
             Map<String, Object> payload,
-            Map<String, Integer> tripPurposeCounts,
-            Map<String, Integer> fallbackCounts
+            Map<String, Integer> tripPurposeCounts
     ) {
-        boolean fallback = tripPurposeCounts.isEmpty();
-        Map<String, Integer> activityCounts = fallback ? fallbackCounts : tripPurposeCounts;
-        payload.put("activitySource", fallback ? "all-activities-fallback" : "trip-purpose");
-        payload.put("activityTypes", activityPayloads(activityCounts));
-        payload.put("activityTypeRatios", activityRatioPayload(activityCounts));
+        payload.put("activitySource", "trip-purpose");
+        payload.put("activityTypes", activityPayloads(tripPurposeCounts));
+        payload.put("activityTypeRatios", activityRatioPayload(tripPurposeCounts));
     }
 
     private static Map<String, Object> demographicsPayload(int total, int commuter, int student, int elderly,
@@ -1432,7 +1421,7 @@ public final class MatsimRoutePanelCache {
         try {
             return (int) Math.floor(Double.parseDouble(raw.trim()));
         } catch (NumberFormatException e) {
-            return null;
+            throw new IllegalArgumentException("乘客年龄字段非法: " + raw, e);
         }
     }
 
@@ -1624,21 +1613,15 @@ public final class MatsimRoutePanelCache {
                 Map<String, Integer> routeIdCounts
         ) {
             buildSegments();
-            this.tripPurposeCounts = resolveTripPurposeCounts(tripPurposeByRoute, routeIdCounts);
+            this.tripPurposeCounts = resolveTripPurposeCounts(tripPurposeByRoute);
             this.demographics = buildDemographicsPayload(population, riderIds, tripPurposeCounts);
             this.stationOdPayload = stationOdPayloads(stationOd.values(), facilityGeo);
         }
 
         private Map<String, Integer> resolveTripPurposeCounts(
-                Map<String, Map<String, Integer>> tripPurposeByRoute,
-                Map<String, Integer> routeIdCounts
+                Map<String, Map<String, Integer>> tripPurposeByRoute
         ) {
             Map<String, Integer> counts = tripPurposeByRoute.get(routeKey(lineId, routeId));
-            if (counts == null && routeIdCounts.getOrDefault(routeId, 0) <= 1) {
-                // plans 中 TransitPassengerRoute 缺失 lineId 时的兜底键——
-                // 仅当 routeId 全局唯一才可用，否则同名 route 会各自领走同一份计数、组聚合后成倍虚增。
-                counts = tripPurposeByRoute.get(routeKey(null, routeId));
-            }
             return counts == null ? Map.of() : counts;
         }
 
@@ -1769,7 +1752,7 @@ public final class MatsimRoutePanelCache {
             try {
                 return DistanceUtil.distance(route.getRoute(), network);
             } catch (Exception e) {
-                return 0.0;
+                throw new IllegalStateException("计算公交线路里程失败: route=" + route.getId(), e);
             }
         }
 

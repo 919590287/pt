@@ -220,8 +220,7 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      this.valueMap = {};
-      this.setValueKey(this._valuekey);
+      throw new Error("多边形属性缓冲区构建失败", { cause: error });
     }
   }
 
@@ -237,6 +236,7 @@ export class GeoJSONPolygonListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`多边形属性切换失败: ${valueKey}`, { cause: error });
     }
   }
 }
@@ -503,8 +503,7 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
       this.valueMap = map;
       this.setValueKey(this._valuekey);
     } catch (error) {
-      this.valueMap = {};
-      this.setValueKey(this._valuekey);
+      throw new Error("多边形边界属性缓冲区构建失败", { cause: error });
     }
   }
 
@@ -520,6 +519,7 @@ export class GeoJSONPolygonBorderListGeometry extends THREE.BufferGeometry {
         this.setAttribute("value", this.noValueAttribute);
       }
     } catch (error) {
+      throw new Error(`多边形边界属性切换失败: ${valueKey}`, { cause: error });
     }
   }
 }

@@ -100,9 +100,8 @@ final class MatsimPanelReadCache {
             }
             return result;
         } catch (Exception e) {
-            log.warn("面板分片详情读取失败: model={}, kind={}, section={}, key={}",
-                    data.getName(), kind, section, key, e);
-            return Map.of();
+            throw new IllegalStateException("面板分片详情读取失败: model=" + data.getName()
+                    + ", kind=" + kind + ", section=" + section + ", key=" + key, e);
         }
     }
 
@@ -124,9 +123,8 @@ final class MatsimPanelReadCache {
             INDEX_MEMORY.put(cacheKey, cached);
             return cached;
         } catch (Exception e) {
-            log.warn("轻量面板索引读取失败: model={}, kind={}, path={}",
-                    data.getName(), kind, panelPath, e);
-            return Map.of();
+            throw new IllegalStateException("轻量面板索引读取失败: model=" + data.getName()
+                    + ", kind=" + kind + ", path=" + panelPath, e);
         }
     }
 
@@ -284,7 +282,7 @@ final class MatsimPanelReadCache {
                     && longNumber(manifest.get("sourceSize")) == Files.size(source)
                     && longNumber(manifest.get("sourceModified")) == Files.getLastModifiedTime(source).toMillis();
         } catch (Exception e) {
-            return false;
+            throw new IllegalStateException("面板分片缓存状态读取失败: " + manifestPath, e);
         }
     }
 

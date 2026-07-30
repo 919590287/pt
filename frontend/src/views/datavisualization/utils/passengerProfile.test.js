@@ -34,13 +34,19 @@ describe("passengerProfile", () => {
     expect(purpose.items[0]).toMatchObject({ key: "shopping", label: "购物", count: 3, value: 100 });
   });
 
-  it("后端回退到全活动时明确标注为回退口径", () => {
-    const groups = buildPassengerProfileGroups({
+  it("拒绝后端以全活动冒充出行目的", () => {
+    expect(() => buildPassengerProfileGroups({
       riderCount: 1,
       activitySource: "all-activities-fallback",
       activityTypes: [{ type: "home", count: 1 }],
-    });
-    expect(groups[0].title).toBe("活动类型（回退口径）");
+    })).toThrow("客流画像活动口径非法");
+  });
+
+  it("缺少 riderCount 时不再用活动计数兜底", () => {
+    expect(() => buildPassengerProfileGroups({
+      activitySource: "trip-purpose",
+      activityTypes: [{ type: "home", count: 1 }],
+    })).toThrow("客流画像缺少有效的 riderCount");
   });
 
   it("真实刷卡画像完整展示四类票卡客群且不伪造出行目的", () => {

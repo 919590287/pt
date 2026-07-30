@@ -481,9 +481,9 @@ async function loadSchemes() {
   schemesLoading.value = true;
   try {
     schemeList.value = await modelRuntime.fetchSchemes();
-    if (!area.value && schemeList.value.length) area.value = schemeList.value[0];
   } catch (error) {
-    schemeList.value = [];
+    gateError.value = error?.message || "方案列表加载失败";
+    throw error;
   } finally {
     schemesLoading.value = false;
   }
@@ -499,12 +499,15 @@ async function loadModels() {
     const list = await modelRuntime.fetchModels(requestedArea);
     if (seq !== modelsRequestSeq || requestedArea !== area.value) return;
     models.value = list;
-    if (!modelName.value || !models.value.find((m) => m.name === modelName.value)) {
-      const loaded = models.value.find((m) => m.loadStatus && m.cacheStatus === "ready");
-      modelName.value = loaded?.name || models.value[0]?.name || "";
+    if (modelName.value && !models.value.find((m) => m.name === modelName.value)) {
+      modelName.value = "";
+      throw new Error("原选择的模型不存在或已被移除，请重新选择");
     }
   } catch (error) {
-    if (seq === modelsRequestSeq) models.value = [];
+    if (seq === modelsRequestSeq) {
+      gateError.value = error?.message || "模型列表加载失败";
+    }
+    throw error;
   } finally {
     if (seq === modelsRequestSeq) modelsLoading.value = false;
   }
@@ -512,7 +515,9 @@ async function loadModels() {
 function onAreaChange() {
   modelName.value = "";
   models.value = [];
-  loadModels();
+  void loadModels().catch((error) => {
+    gateError.value = error?.message || "模型列表加载失败";
+  });
 }
 
 /* ================= 数据管线：模型就绪 → summary → dict+bin → worker ================= */
@@ -596,7 +601,7 @@ async function startPipeline() {
     transferPhase.value = "model";
     let item = models.value.find((m) => m.name === name);
     if (!item || !(item.loadStatus && item.cacheStatus === "ready")) {
-      loadModel({ name }, { silentError: true }).catch(() => {});
+      await loadModel({ name }, { silentError: true });
       const POLL_BUDGET_MS = 2 * 3600 * 1000;
       const startedAt = Date.now();
       for (let attempt = 0; Date.now() - startedAt < POLL_BUDGET_MS; attempt++) {
@@ -615,7 +620,7 @@ async function startPipeline() {
       if (!(item?.loadStatus && item?.cacheStatus === "ready")) throw new Error("模型缓存仍在后台生成，请稍后再试");
     }
     if (seq !== pipelineSeq) return;
-    setMapCenter(name);
+    await setMapCenter(name);
 
     // 2) 换乘汇总（未就绪 status=generating 时轮询；generating 不落前端缓存，重取即重查）
     transferPhase.value = "summary";
@@ -640,13 +645,12 @@ async function startPipeline() {
     if (!sum || sum.status === "error") throw new Error("换乘汇总获取失败");
     summary.value = sum;
 
-    // 3) 字典 + 事件表 + 地铁线网几何并行。线网复用客流分析已有的 lineAll 模型缓存；
-    // 线网失败不阻断换乘统计，避免纯展示工件拖垮主流程。
+    // 3) 字典 + 事件表 + 地铁线网几何并行。三项必须使用同一模型的完整工件。
     transferPhase.value = "bundle";
     const [dictData, buffer, lines] = await Promise.all([
       getCachedTransferDict(name),
       getCachedTransferEvents(name, String(sum.version || "")),
-      getCachedLineAll(name).catch(() => []),
+      getCachedLineAll(name),
     ]);
     if (seq !== pipelineSeq) return;
     if (!dictData || dictData.status === "generating") throw new Error("换乘字典未就绪，请稍后重试");
@@ -663,7 +667,7 @@ async function startPipeline() {
     metroLineOptions.value = (ready.metroLinesSorted || []).map((line) => ({ ...line, name: metroLineName(line.idx) }));
 
     transferPhase.value = "ready";
-    requestAggregate();
+    await requestAggregate();
   } catch (error) {
     if (seq !== pipelineSeq) return;
     gateError.value = String(error?.message || error || "数据装载失败");
@@ -685,7 +689,7 @@ async function setMapCenter(name) {
     const y = Number(res?.data?.y);
     if (Number.isFinite(x) && Number.isFinite(y)) MapRef?.value?.setCenter([x, y]);
   } catch (error) {
-    /* 静默：地图定位失败不阻断面板 */
+    throw new Error(`模型中心点加载失败: ${error?.message || error}`, { cause: error });
   }
 }
 
@@ -745,13 +749,13 @@ let nextRequestId = 0;
 const workerPending = new Map();
 
 function ensureWorker() {
-  if (taWorkerBroken) return null;
+  if (taWorkerBroken) throw new Error("transfer worker unavailable");
   if (taWorker) return taWorker;
   try {
     taWorker = new Worker(new URL("./transferData.worker.js", import.meta.url), { type: "module" });
   } catch (error) {
     taWorkerBroken = true;
-    return null;
+    throw new Error("transfer worker initialization failed", { cause: error });
   }
   taWorker.onmessage = (event) => {
     const msg = event.data || {};
@@ -774,7 +778,6 @@ function ensureWorker() {
 
 function postWorker(payload) {
   const worker = ensureWorker();
-  if (!worker) return Promise.reject(new Error("transfer worker unavailable"));
   const requestId = ++nextRequestId;
   return new Promise((resolve, reject) => {
     workerPending.set(requestId, { resolve, reject });
@@ -902,15 +905,12 @@ async function loadDisplayRanges(options = {}) {
       districtSetCache.clear();
       clearHubSelectionOutsideRange();
       fitRangeContext();
-      requestAggregate();
+      await requestAggregate();
     }
   } catch (error) {
     if (seq !== displayRangeRequestSeq) return;
-    adminDistrictCollection.value = emptyDistrictCollection();
-    displayRangeList.value = [DISPLAY_RANGE_ALL];
-    selectedDisplayRange.value = DISPLAY_RANGE_ALL;
-    syncDistrictOutline();
     displayRangeError.value = error?.message || "行政区范围加载失败";
+    throw error;
   } finally {
     if (seq === displayRangeRequestSeq) isLoadingDisplayRanges.value = false;
   }
@@ -1011,11 +1011,10 @@ function filtersFor(module) {
   return base;
 }
 
-/** 模块未选对象时降级为全网聚合（面板显示选择提示，地图仍有全网可看） */
 function effectiveModule() {
   const m = activeModule.value;
-  if (m === "hub" && selection.hubId < 0) return "overview";
-  if (m === "feeder" && selection.metroLineId < 0) return "overview";
+  if (m === "hub" && selection.hubId < 0) return null;
+  if (m === "feeder" && selection.metroLineId < 0) return null;
   return m;
 }
 
@@ -1024,6 +1023,10 @@ async function requestAggregate() {
   if (transferPhase.value !== "ready") return;
   const seq = ++aggregateSeq;
   const module = effectiveModule();
+  if (!module) {
+    agg.value = null;
+    return;
+  }
   aggBusy.value = true;
   try {
     const msg = await postWorker({ type: "aggregate", module, filters: filtersFor(module) });
@@ -1033,6 +1036,8 @@ async function requestAggregate() {
   } catch (error) {
     if (seq !== aggregateSeq) return;
     agg.value = null;
+    gateError.value = error?.message || "换乘聚合失败";
+    throw error;
   } finally {
     if (seq === aggregateSeq) aggBusy.value = false;
   }
@@ -1057,7 +1062,9 @@ watch(aggregateKey, () => {
   if (aggregateTimer) clearTimeout(aggregateTimer);
   aggregateTimer = setTimeout(() => {
     aggregateTimer = null;
-    requestAggregate();
+    void requestAggregate().catch((error) => {
+      gateError.value = error?.message || "换乘聚合失败";
+    });
   }, 180);
 });
 /* ================= 名称 / 原模型数量 / 导出等共享工具 ================= */
@@ -1172,7 +1179,11 @@ watch(
 watch(activeModule, () => {
   mapSearchFocused.value = false;
   if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
-    nextTick(() => setMapCenter(modelName.value));
+    nextTick(() => {
+      void setMapCenter(modelName.value).catch((error) => {
+        gateError.value = error?.message || "模型中心点加载失败";
+      });
+    });
   }
 });
 // CSV：UTF-8 BOM 防 Excel 中文乱码；含逗号/引号/换行按 RFC 4180 转义（平台先例）
@@ -1602,24 +1613,34 @@ onMounted(async () => {
   document.addEventListener("click", handleDocClickForPopover);
   // 恢复了非全市的行政区选区：行政区几何需就位才能过滤统计（列表在首次打开弹层时才懒加载）
   if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
-    loadDisplayRanges().catch(() => {});
+    void loadDisplayRanges().catch((error) => {
+      displayRangeError.value = error?.message || "行政区范围加载失败";
+    });
   }
   // 快路径：全局门禁打开时 modelRuntime 已拉取过方案/模型列表，直接复用即时启动管线，
   // 不再串行等两次列表接口；网络刷新放到后台校对（不阻塞、不闪加载门）
   const cachedSchemes = modelRuntime.schemes || [];
   if (cachedSchemes.length) {
     schemeList.value = [...cachedSchemes];
-    if (!area.value || !schemeList.value.includes(area.value)) area.value = schemeList.value[0] || "";
+    if (area.value && !schemeList.value.includes(area.value)) {
+      area.value = "";
+      modelName.value = "";
+      gateError.value = "原选择的方案不存在或已被移除，请重新选择";
+    }
     const cachedModels = modelRuntime.modelsByScheme?.[area.value];
     if (Array.isArray(cachedModels) && cachedModels.length) {
       models.value = cachedModels;
-      if (!modelName.value || !models.value.find((m) => m.name === modelName.value)) {
-        const loaded = models.value.find((m) => m.loadStatus && m.cacheStatus === "ready");
-        modelName.value = loaded?.name || models.value[0]?.name || "";
+      if (modelName.value && !models.value.find((m) => m.name === modelName.value)) {
+        modelName.value = "";
+        gateError.value = "原选择的模型不存在或已被移除，请重新选择";
       }
       if (modelName.value) startPipeline();
-      loadSchemes().catch(() => {});
-      loadModels().catch(() => {});
+      void loadSchemes().catch((error) => {
+        gateError.value = error?.message || "方案列表加载失败";
+      });
+      void loadModels().catch((error) => {
+        gateError.value = error?.message || "模型列表加载失败";
+      });
       return;
     }
   }
@@ -1637,7 +1658,11 @@ let hasBeenDeactivated = false;
 onActivated(() => {
   // 首次挂载走 onMounted 引导
   if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
-    nextTick(() => setMapCenter(modelName.value));
+    nextTick(() => {
+      void setMapCenter(modelName.value).catch((error) => {
+        gateError.value = error?.message || "模型中心点加载失败";
+      });
+    });
   }
   if (!hasBeenDeactivated) return;
   syncCameraState();
@@ -1649,7 +1674,9 @@ onActivated(() => {
     area.value = stored.scheme;
     models.value = [];
     modelName.value = stored.model; // watch(modelName) 自动重启管线
-    loadModels().catch(() => {});
+    void loadModels().catch((error) => {
+      gateError.value = error?.message || "模型列表加载失败";
+    });
   } else {
     modelName.value = stored.model;
   }

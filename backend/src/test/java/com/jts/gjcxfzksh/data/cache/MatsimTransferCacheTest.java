@@ -21,6 +21,7 @@ import java.util.function.BiFunction;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -526,7 +527,10 @@ class MatsimTransferCacheTest {
         assertEquals(MatsimTransferCache.MODE_TRAM, MatsimTransferCache.classifyTransportMode("tram"));
         assertEquals(MatsimTransferCache.MODE_TRAM, MatsimTransferCache.classifyTransportMode("有轨电车"));
         assertEquals(MatsimTransferCache.MODE_BUS, MatsimTransferCache.classifyTransportMode("bus"));
-        assertEquals(MatsimTransferCache.MODE_BUS, MatsimTransferCache.classifyTransportMode(null));
+        assertThrows(IllegalArgumentException.class,
+                () -> MatsimTransferCache.classifyTransportMode(null));
+        assertThrows(IllegalArgumentException.class,
+                () -> MatsimTransferCache.classifyTransportMode("pt"));
         // tramAsRail=false：tram 保持独立制式，不归轨道
         assertEquals(MatsimTransferCache.MODE_TRAM,
                 MatsimTransferCache.effectiveMode(MatsimTransferCache.MODE_TRAM));

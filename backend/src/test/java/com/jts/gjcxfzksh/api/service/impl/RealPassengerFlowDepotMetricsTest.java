@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class RealPassengerFlowDepotMetricsTest {
 
@@ -45,11 +46,29 @@ class RealPassengerFlowDepotMetricsTest {
         List<SimpleFeature> features = List.of(
                 feature(schema, geometryFactory, "18946"),
                 feature(schema, geometryFactory, "8000"),
+                feature(schema, geometryFactory, null),
                 feature(schema, geometryFactory, "/"));
         writeShapefile(shapefile, schema, features);
 
         assertEquals(26946.0,
                 RealPassengerFlowServiceImpl.depotLandAreaSquareMeters(folder));
+    }
+
+    @Test
+    void rejectsMalformedF004LandArea() throws Exception {
+        Path folder = tempDir.resolve("非法公交场站");
+        Files.createDirectories(folder);
+        Path shapefile = folder.resolve("depots.shp");
+        SimpleFeatureTypeBuilder typeBuilder = new SimpleFeatureTypeBuilder();
+        typeBuilder.setName("depots");
+        typeBuilder.add("the_geom", Point.class);
+        typeBuilder.add("F004", String.class);
+        SimpleFeatureType schema = typeBuilder.buildFeatureType();
+        GeometryFactory geometryFactory = new GeometryFactory();
+        writeShapefile(shapefile, schema, List.of(feature(schema, geometryFactory, "not-a-number")));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> RealPassengerFlowServiceImpl.depotLandAreaSquareMeters(folder));
     }
 
     private static SimpleFeature feature(SimpleFeatureType schema,

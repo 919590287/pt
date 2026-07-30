@@ -303,6 +303,7 @@ export class VehicleTrajectoryLayer extends Layer {
     this.statsCallback = null;
     this.followCallback = null;
     this.samplingBoundsCallback = null;
+    this.onError = typeof opt.onError === "function" ? opt.onError : null;
     this.followedVehicleKey = "";
     this.followedVehicleIndex = null;
     this.vehicleMeta = {};
@@ -477,12 +478,13 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   ensureWorker() {
-    if (this.worker || this.worker === false) return this.worker || null;
+    if (this.worker === false) throw new Error("vehicle trajectory worker unavailable");
+    if (this.worker) return this.worker;
     try {
       this.worker = createVehicleTrajectoryWorker();
       if (!this.worker) {
         this.worker = false;
-        return null;
+        throw new Error("vehicle trajectory worker is not supported by this runtime");
       }
       this.worker.onmessage = (event) => {
         const message = event.data || {};
@@ -496,22 +498,24 @@ export class VehicleTrajectoryLayer extends Layer {
         }
       };
       this.worker.onerror = (error) => {
+        const workerError = error instanceof Error ? error : new Error(error?.message || "worker error");
         for (const callback of this.workerCallbacks.values()) {
-          callback.reject(error instanceof Error ? error : new Error(error?.message || "worker error"));
+          callback.reject(workerError);
         }
         this.workerCallbacks.clear();
+        this.worker?.terminate();
+        this.worker = false;
+        this.reportError(workerError);
       };
       return this.worker;
     } catch (error) {
-      console.warn("[VehicleTrajectoryLayer] worker init failed", error);
       this.worker = false;
-      return null;
+      throw new Error("vehicle trajectory worker initialization failed", { cause: error });
     }
   }
 
   postWorker(type, payload = {}, transfer = []) {
     const worker = this.ensureWorker();
-    if (!worker) return Promise.reject(new Error("worker unavailable"));
     const id = ++this.workerRequestId;
     return new Promise((resolve, reject) => {
       this.workerCallbacks.set(id, { resolve, reject });
@@ -687,7 +691,7 @@ export class VehicleTrajectoryLayer extends Layer {
       this.followedVehicleKey = "";
       this.followCallback?.(null);
       if (this.worker && this.worker !== false) {
-        this.postWorker("clear").catch(() => {});
+        this.postWorker("clear").catch((error) => this.reportError(error));
       }
       this.renderVehicleLayer();
       this.statsCallback?.(this.getCurrentStats());
@@ -695,14 +699,9 @@ export class VehicleTrajectoryLayer extends Layer {
     }
 
     // 分块走 Worker：分段索引构建与逐帧采样在 Worker 中完成。切到已常驻分块仅 activateChunk
-    // （零重建，根治分块边界周期性卡顿）；否则下发整块建一次索引并常驻。Worker 不可用时回退主线程。
-    if (this.ensureWorker()) {
-      return this.activateOrAddChunkInWorker(data, true);
-    }
-
-    this.setDataOnMainThread(data);
-    this.setTime(this.currentTime);
-    return Promise.resolve({ mainThread: true, activated: true, key: this.chunkKeyOf(data) });
+    // （零重建，根治分块边界周期性卡顿）；否则下发整块建一次索引并常驻。
+    this.ensureWorker();
+    return this.activateOrAddChunkInWorker(data, true);
   }
 
   chunkKeyOf(data) {
@@ -715,7 +714,8 @@ export class VehicleTrajectoryLayer extends Layer {
 
   // 供预取调用：把相邻分块提前推给 Worker 建好索引并常驻，切块时即可秒切（双缓冲）。
   preindexChunk(data) {
-    if (!data || !this.ensureWorker()) return Promise.resolve({ failed: true, reason: "worker-unavailable" });
+    if (!data) return Promise.reject(new Error("trajectory chunk is required"));
+    this.ensureWorker();
     return this.activateOrAddChunkInWorker(data, false);
   }
 
@@ -734,7 +734,8 @@ export class VehicleTrajectoryLayer extends Layer {
   // 主线程只保留 key/字节数后，切块通过 key 激活 Worker 内的常驻块。
   // Worker 若因 LRU 已淘汰该块，返回 miss，由 GJYS 重新下载并 transfer。
   activateChunkKey(key, seconds = this.currentTime) {
-    if (key == null || !this.ensureWorker() || !this.workerChunkKeys.has(key)) {
+    this.ensureWorker();
+    if (key == null || !this.workerChunkKeys.has(key)) {
       return Promise.resolve({ miss: true, key });
     }
     const version = this.workerDataVersion;
@@ -779,7 +780,7 @@ export class VehicleTrajectoryLayer extends Layer {
         if (this.isDisposed || version !== this.workerDataVersion || activeSeq !== this.workerActiveSeq) {
           return { stale: true, key };
         }
-        return { failed: true, miss: true, key, error };
+        throw error;
       });
   }
 
@@ -825,12 +826,7 @@ export class VehicleTrajectoryLayer extends Layer {
         if (this.isDisposed || version !== this.workerDataVersion || (activate && activeSeq !== this.workerActiveSeq)) {
           return { stale: true, key, bytes: sourceBytes };
         }
-        if (activate) {
-          console.warn("[VehicleTrajectoryLayer] worker data setup failed", error);
-        }
-        // postMessage 成功后原 ArrayBuffer 已移交，不能再用分离的 view
-        // 回退主线程。返回 miss 让上层从 HTTP/IndexedDB 重取小块。
-        return { failed: true, miss: true, key, bytes: sourceBytes, error };
+        throw error;
       });
   }
 
@@ -929,7 +925,7 @@ export class VehicleTrajectoryLayer extends Layer {
   }
 
   requestWorkerTime(seconds) {
-    if (!this.ensureWorker()) return;
+    this.ensureWorker();
     this.pendingWorkerTime = Math.max(0, Number(seconds) || 0);
     if (this.workerTimeInFlight) return;
     this.flushWorkerTime();
@@ -963,14 +959,15 @@ export class VehicleTrajectoryLayer extends Layer {
           this.cacheSegmentFrame(result.segmentFrame);
         }
       })
-      .catch(() => {})
+      .catch((error) => this.reportError(error))
       .finally(() => {
         this.segmentFrameRequests.delete(key);
       });
   }
 
   flushWorkerTime() {
-    if (!this.ensureWorker() || this.pendingWorkerTime == null) return;
+    this.ensureWorker();
+    if (this.pendingWorkerTime == null) return;
     const seconds = this.pendingWorkerTime;
     this.pendingWorkerTime = null;
     this.workerTimeInFlight = true;
@@ -998,7 +995,7 @@ export class VehicleTrajectoryLayer extends Layer {
       })
       .catch((error) => {
         if (!this.isDisposed) {
-          console.warn("[VehicleTrajectoryLayer] worker time update failed", error);
+          this.reportError(error);
         }
       })
       .finally(() => {
@@ -1007,6 +1004,15 @@ export class VehicleTrajectoryLayer extends Layer {
           this.flushWorkerTime();
         }
       });
+  }
+
+  reportError(error) {
+    const resolved = error instanceof Error ? error : new Error(String(error));
+    if (this.onError) {
+      this.onError(resolved);
+      return;
+    }
+    console.error(resolved);
   }
 
   on(type, data) {

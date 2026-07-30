@@ -68,8 +68,7 @@ public final class MatsimSourceFingerprint {
             CACHE.put(path, new Cached(signature, now + Math.max(1_000L, TTL_MS)));
             return signature;
         } catch (Exception e) {
-            log.warn("源文件内容指纹计算失败: {}", path, e);
-            return "error:" + e.getClass().getSimpleName();
+            throw new IllegalStateException("源文件内容指纹计算失败: " + path, e);
         }
     }
 
@@ -86,7 +85,7 @@ public final class MatsimSourceFingerprint {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(digest.digest(joined.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
         } catch (Exception e) {
-            return Integer.toHexString(joined.hashCode());
+            throw new IllegalStateException("模型版本指纹计算失败", e);
         }
     }
 
@@ -95,8 +94,8 @@ public final class MatsimSourceFingerprint {
     }
 
     /**
-     * 比较组件 manifest 中的扁平源指纹。新清单以 Size + Signature 为准；File 和 Modified
-     * 仅保留作诊断。旧清单没有 Signature 时回退到原来的完整字段比较，完成一次平滑迁移。
+     * 比较组件 manifest 中的扁平源指纹。以 Size + Signature 为准；File 和 Modified
+     * 仅保留作诊断。缺少内容签名的旧清单直接失效并重建。
      */
     public static boolean sameFlatFingerprint(Map<String, Object> expected, Map<String, Object> actual) {
         if (expected == null || actual == null) return false;
@@ -104,14 +103,10 @@ public final class MatsimSourceFingerprint {
             String key = entry.getKey();
             String base = fingerprintBase(key);
             boolean hasCurrentSignature = base != null && expected.containsKey(base + "Signature");
-            boolean hasStoredSignature = hasCurrentSignature && actual.get(base + "Signature") != null;
-            if (hasStoredSignature && (key.endsWith("File") || key.endsWith("Modified"))) {
+            if (hasCurrentSignature && (key.endsWith("File") || key.endsWith("Modified"))) {
                 continue;
             }
             Object stored = actual.get(key);
-            if (key.endsWith("Signature") && stored == null) {
-                continue;
-            }
             if (!sameValue(entry.getValue(), stored)) return false;
         }
         return true;
@@ -121,13 +116,9 @@ public final class MatsimSourceFingerprint {
     public static boolean sameSourceItem(Map<?, ?> expected, Map<?, ?> actual) {
         if (expected == null || actual == null) return false;
         Object storedSignature = actual.get("signature");
-        if (storedSignature != null) {
-            return sameValue(expected.get("size"), actual.get("size"))
-                    && sameValue(expected.get("signature"), storedSignature);
-        }
-        return sameValue(expected.get("file"), actual.get("file"))
-                && sameValue(expected.get("size"), actual.get("size"))
-                && sameValue(expected.get("modified"), actual.get("modified"));
+        if (storedSignature == null) return false;
+        return sameValue(expected.get("size"), actual.get("size"))
+                && sameValue(expected.get("signature"), storedSignature);
     }
 
     private static String fingerprintBase(String key) {
