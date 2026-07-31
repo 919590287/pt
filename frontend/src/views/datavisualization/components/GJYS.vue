@@ -185,37 +185,7 @@
     <section :class="['rm-veh-card', 'rm-veh-status-card', isRealMode ? 'is-only-card' : '']">
       <header class="rm-veh-card-title">
         <h2>车辆运行监测</h2>
-        <span class="rm-veh-live"><span class="rm-veh-live-dot"></span>实时</span>
       </header>
-
-      <div class="rm-veh-hero">
-        <span class="rm-veh-hero-label">在途车辆</span>
-        <p class="rm-veh-hero-value">
-          <strong>{{ formatVehCount(activeVehicles) }}</strong>
-          <em>辆</em>
-        </p>
-      </div>
-
-      <!-- 在途车辆构成：占比条即图例，色块与地图上车辆点同色（VEHICLE_MODE_CONFIG）。
-           私家车常年占大头，用占比条一眼看清公交/地铁的道路占有比例 -->
-      <div class="rm-veh-split">
-        <div class="rm-veh-split-bar" role="img" :aria-label="vehicleSplitAriaLabel">
-          <span
-            v-for="mode in vehicleModeBreakdown"
-            :key="mode.key"
-            class="rm-veh-split-seg"
-            :style="{ width: `${mode.percent}%`, background: mode.color }"
-          ></span>
-        </div>
-        <div class="rm-veh-split-legend">
-          <div v-for="mode in vehicleModeBreakdown" :key="mode.key" class="rm-veh-split-row">
-            <span class="rm-veh-swatch" :style="{ background: mode.color }" aria-hidden="true"></span>
-            <span class="rm-veh-split-name">{{ mode.label }}</span>
-            <strong class="rm-veh-split-val">{{ formatVehCount(mode.count) }}</strong>
-            <span class="rm-veh-split-pct">{{ mode.percentText }}</span>
-          </div>
-        </div>
-      </div>
 
       <div class="rm-veh-metrics">
         <div class="rm-veh-metric">
@@ -237,10 +207,8 @@
          数据独立于"路段公交车速"图层开关加载（共享同一份矩阵缓存，图层开启时零额外请求） -->
     <section v-if="!isRealMode" class="rm-veh-card rm-congest-card">
       <header class="rm-veh-card-title">
-        <h2>主要拥堵路段<em class="rm-congest-top-badge">TOP10</em></h2>
-        <span v-if="congestStatus === 'ready'" class="rm-congest-window" aria-label="统计时段">{{ congestWindowText }}</span>
+        <h2>主要拥堵路段</h2>
       </header>
-      <p class="rm-congest-note">{{ congestNote }}</p>
 
       <div v-if="congestStatus === 'loading'" class="rm-congest-state" role="status">
         <span class="rm-play-spinner" aria-hidden="true"></span>车速数据加载中…
@@ -275,7 +243,6 @@
                 <i class="rm-congest-dot" :style="{ background: item.bandColor }" aria-hidden="true"></i>
                 <strong>{{ item.speedKmh }}</strong><em>km/h</em>
               </span>
-              <span class="rm-congest-drop">延误 {{ item.delayText }}</span>
             </span>
           </button>
         </li>

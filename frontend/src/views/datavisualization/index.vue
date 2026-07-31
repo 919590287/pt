@@ -68,13 +68,6 @@
   <template v-if="selectModel">
     <template v-if="isModelReady">
       <div :class="['dm-sidebar', isRunMonitorLeftCollapsed ? 'is-collapsed' : '']">
-        <div class="sidebar-brand">
-          <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 12h4l3-8 4 16 3-8h4"></path>
-          </svg>
-          <span class="brand-text">{{ props.mode === 'pfa' ? '客流分析' : '运行监测' }}</span>
-        </div>
-
         <nav class="sidebar-nav" :aria-label="props.mode === 'pfa' ? '客流分析导航' : '运行监测导航'" data-tour="module-navigation">
           <div v-for="item in displayMenuItems" :key="item.key" class="menu-group">
             <button
@@ -84,7 +77,6 @@
               :aria-expanded="item.children ? pfaIsExpanded(item.key) : undefined"
               @click="handleNavItemClick(item)"
             >
-              <span class="nav-icon" v-html="item.icon"></span>
               <span class="nav-label">{{ item.label }}</span>
               <span v-if="item.children" class="chevron-icon" :class="{ expanded: pfaIsExpanded(item.key) }">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -102,7 +94,6 @@
                   :class="['sub-nav-item', isPfaSubActive(item.key, sub.key) ? 'active' : '']"
                   @click.stop="handleNavSubClick(item, sub)"
                 >
-                  <span class="sub-dot"></span>
                   <span class="nav-label">{{ sub.label }}</span>
                 </button>
               </div>
@@ -226,9 +217,22 @@
         <p v-if="!lineRoutePicker.routes.length" class="picker-empty">未匹配到线路</p>
       </div>
 
+      <!-- 体检评估分析：舍弃地图底图与窄侧栏，展示高端全屏体检评估分析主看板 -->
+      <div
+        v-if="activeTab === '体检评估分析'"
+        class="tjfx-full-stage-wrapper"
+        :class="{ 'is-left-collapsed': isRunMonitorLeftCollapsed }"
+      >
+        <TJFX
+          :key="`tjfx-${selectModel.name}`"
+          :model="selectModel.name"
+          v-model:district="selectedDisplayRange"
+        />
+      </div>
+
       <!-- 监测组件宿主：仅承载数据加载 / 地图图层 / 右侧 teleport，自身界面隐藏，交互通过上方搜索框与地图完成 -->
       <div class="run-monitor-mount" aria-hidden="true">
-        <RKFB v-if="activeTab == '公交出行监测' && busTravelSection === '人口分布监测'" :key="`rkfb-${selectModel.name}`" :model="selectModel.name" :three-dimensional="is3DActive" />
+        <RKFB v-if="activeTab == '人口分布监测'" :key="`rkfb-${selectModel.name}`" :model="selectModel.name" :metric="populationSection" :three-dimensional="is3DActive" />
         <QZDFB v-else-if="activeTab == '公交出行监测' && busTravelSection === '出行分布监测'" :key="`qzdfb-${selectModel.name}`" :model="selectModel.name" :three-dimensional="is3DActive" />
         <GJOD v-else-if="activeTab == '公交出行监测' && busTravelSection === '公交OD监测'" :key="`gjod-${selectModel.name}`" :model="selectModel.name" />
         <CFXS v-else-if="activeTab == '客流走廊监测' && corridorSection === '线路重复系数'" :key="`cfxs-${selectModel.name}`" :model="selectModel.name" />
@@ -241,15 +245,9 @@
           :model="selectModel.name"
           :run-monitor-panels="true"
         />
-        <TJFX
-          v-else-if="activeTab == '体检评估分析'"
-          :key="`tjfx-${selectModel.name}`"
-          :model="selectModel.name"
-          :district="selectedDisplayRange"
-        />
       </div>
       <button
-        v-show="isRightPanelVisible"
+        v-if="isRightPanelVisible"
         type="button"
         :class="['dm-panel-collapse-tab', 'dm-right-collapse-tab', isRightCollapsed ? 'is-collapsed' : '']"
         @click="toggleRightPanel"
@@ -263,7 +261,7 @@
         </svg>
       </button>
 
-      <div id="right-info-panel" :class="['dm-overview-panel', 'run-monitor-right-panel', isRightCollapsed ? 'is-collapsed' : '']" v-show="isRightPanelVisible" data-tour="insight-panel">
+      <div v-if="isRightPanelVisible" id="right-info-panel" :class="['dm-overview-panel', 'run-monitor-right-panel', isRightCollapsed ? 'is-collapsed' : '']" data-tour="insight-panel">
         <el-scrollbar class="flex_column_scroll_box">
           <div id="datavisualization_index_box2">
             <div v-if="activeTab === '总体客流监测'" class="rm-right-card overall-flow-card">
@@ -332,39 +330,24 @@
 
               <template v-else>
                 <div class="rm-flow-hero">
-                  <div class="rm-flow-hero-head">
-                    <span class="rm-flow-hero-label">全日总客流</span>
-                    <span class="rm-flow-hero-scope" :title="`显示范围：${selectedDisplayRangeLabel}`">{{ selectedDisplayRangeLabel }}</span>
-                  </div>
                   <p class="rm-flow-hero-value">
                     <strong>{{ formatFlowNumber(overallFlowTotal) }}</strong>
-                    <em>人次</em>
+                    <em>人次/日</em>
                   </p>
                 </div>
 
                 <!-- 方式构成同时充当折线图图例：色块与 series 同色，图表内不再重复画图例 -->
                 <div class="rm-mode-split">
+                  <div class="rm-mode-head" aria-hidden="true">
+                    <span class="rm-mode-head-name">客流类型</span>
+                    <span class="rm-mode-head-value">总客流量</span>
+                    <span class="rm-mode-head-share">占比</span>
+                  </div>
                   <div v-for="mode in overallFlowModes" :key="mode.key" class="rm-mode-row">
                     <span class="rm-mode-dot" :style="{ background: mode.color }" aria-hidden="true"></span>
                     <span class="rm-mode-name">{{ mode.label }}</span>
-                    <strong class="rm-mode-value">{{ formatFlowNumber(mode.value) }}</strong>
+                    <strong class="rm-mode-value">{{ formatFlowNumber(mode.value) }}<em class="rm-mode-unit">人次/日</em></strong>
                     <span class="rm-mode-share">{{ mode.shareText }}</span>
-                  </div>
-                </div>
-
-                <!-- 公交运营效率：车均日载客量/单班次载客量 + 客流强度，口径见各格 title -->
-                <div class="rm-ops-block">
-                  <div class="rm-ops-head">
-                    <span class="rm-ops-title">公交运营效率</span>
-                    <span class="rm-ops-scope" title="仅统计常规公交（不含轨道）；车辆数与班次来自模型班次表，车公里 = Σ班次×线路长度">常规公交口径</span>
-                  </div>
-                  <div class="rm-flow-kpi-grid rm-ops-grid">
-                    <div v-for="item in overallBusOpsStats" :key="item.label" class="rm-flow-kpi-item" :title="item.title">
-                      <span class="rm-flow-kpi-label">{{ item.label }}</span>
-                      <strong class="rm-flow-kpi-value">
-                        {{ item.value }}<em v-if="item.unit">{{ item.unit }}</em>
-                      </strong>
-                    </div>
                   </div>
                 </div>
 
@@ -426,6 +409,7 @@
                 <div class="rm-ops-block rm-ops-operators">
                   <div class="rm-ops-head">
                     <span class="rm-ops-title">分企业运营指标</span>
+                    <span class="rm-ops-scope" title="仅统计常规公交（不含轨道）；车辆数与班次来自模型班次表，车公里 = Σ班次×线路长度">常规公交口径</span>
                   </div>
                   <table class="rm-ops-table" aria-label="各企业运营效率指标">
                     <thead>
@@ -439,12 +423,30 @@
                     <tbody>
                       <tr v-for="row in operatorOpsRows" :key="row.name">
                         <td>{{ row.name }}</td>
-                        <td>{{ row.perVehicle }}</td>
-                        <td>{{ row.perTrip }}</td>
-                        <td>{{ row.intensity }}</td>
+                        <td>
+                          {{ row.perVehicle.value }}<em v-if="row.perVehicle.unit" class="rm-ops-unit">{{ row.perVehicle.unit }}</em>
+                        </td>
+                        <td>
+                          {{ row.perTrip.value }}<em v-if="row.perTrip.unit" class="rm-ops-unit">{{ row.perTrip.unit }}</em>
+                        </td>
+                        <td>
+                          {{ row.intensity.value }}<em v-if="row.intensity.unit" class="rm-ops-unit">{{ row.intensity.unit }}</em>
+                        </td>
                       </tr>
                       <tr v-if="!operatorOpsRows.length">
                         <td class="rm-ops-empty" colspan="4">当前范围暂无可匹配企业运营数据</td>
+                      </tr>
+                      <tr class="rm-ops-summary-row">
+                        <td><strong>{{ overallOpsRow.name }}</strong></td>
+                        <td>
+                          <strong>{{ overallOpsRow.perVehicle.value }}</strong><em v-if="overallOpsRow.perVehicle.unit" class="rm-ops-unit">{{ overallOpsRow.perVehicle.unit }}</em>
+                        </td>
+                        <td>
+                          <strong>{{ overallOpsRow.perTrip.value }}</strong><em v-if="overallOpsRow.perTrip.unit" class="rm-ops-unit">{{ overallOpsRow.perTrip.unit }}</em>
+                        </td>
+                        <td>
+                          <strong>{{ overallOpsRow.intensity.value }}</strong><em v-if="overallOpsRow.intensity.unit" class="rm-ops-unit">{{ overallOpsRow.intensity.unit }}</em>
+                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -477,15 +479,9 @@
                 </div>
 
                 <div class="rm-flow-hero">
-                  <div class="rm-flow-hero-head">
-                    <span class="rm-flow-hero-label">日客流量</span>
-                    <span v-if="linePeakHour" class="rm-flow-peak" :title="`全天客流最高时段：${linePeakHour.label}`">
-                      高峰 {{ linePeakHour.label }}
-                    </span>
-                  </div>
                   <p class="rm-flow-hero-value">
                     <strong>{{ lineFlowTotal > 0 ? formatFlowNumber(lineFlowTotal) : '--' }}</strong>
-                    <em>人次</em>
+                    <em>人次/日</em>
                   </p>
                 </div>
 
@@ -534,10 +530,8 @@
               <div v-else class="rm-flow-rank">
                 <div class="rm-right-card-title">
                   <div class="rm-panel-title-main">
-                    <h2>{{ searchWantsMetro ? '地铁' : '公交' }}线路排名 TOP10</h2>
-                    <p class="rm-rank-hint">点击排名或地图中的线路，查看客流详情</p>
+                    <h2>线路客流监测</h2>
                   </div>
-                  <span class="rm-flow-hero-scope" :title="`显示范围：${selectedDisplayRangeLabel}`">{{ selectedDisplayRangeLabel }}</span>
                 </div>
 
                 <div class="rm-rank-metric-row">
@@ -579,9 +573,6 @@
                       </button>
                     </li>
                   </ol>
-                  <p v-if="lineFlowRank.total > lineFlowRank.rows.length" class="rm-rank-footnote">
-                    按{{ activeLineRankMetric.label }}排序，显示前 {{ lineFlowRank.rows.length }} 名（共 {{ lineFlowRank.total }} 条线路）
-                  </p>
                 </template>
 
                 <div v-else class="rm-panel-empty">
@@ -639,15 +630,9 @@
 
                 <template v-else>
                   <div class="rm-flow-hero">
-                    <div class="rm-flow-hero-head">
-                      <span class="rm-flow-hero-label">日上下车人数</span>
-                      <span v-if="stationPeakHour" class="rm-flow-peak" :title="`全天上下车最高时段：${stationPeakHour.label}`">
-                        高峰 {{ stationPeakHour.label }}
-                      </span>
-                    </div>
                     <p class="rm-flow-hero-value">
                       <strong>{{ formatFlowNumber(stationFlowTotal) }}</strong>
-                      <em>人次</em>
+                      <em>人次/日</em>
                     </p>
                   </div>
 
@@ -696,10 +681,8 @@
               <div v-else class="rm-flow-rank">
                 <div class="rm-right-card-title">
                   <div class="rm-panel-title-main">
-                    <h2>{{ searchWantsMetro ? '地铁' : '公交' }}站点客流排名 TOP10</h2>
-                    <p class="rm-rank-hint">点击排名或地图中的站点，查看客流详情</p>
+                    <h2>站点客流监测</h2>
                   </div>
-                  <span class="rm-flow-hero-scope" :title="`显示范围：${selectedDisplayRangeLabel}`">{{ selectedDisplayRangeLabel }}</span>
                 </div>
 
                 <div v-if="!stationFlowRank" class="rm-flow-state rm-flow-skeleton" aria-hidden="true">
@@ -714,16 +697,13 @@
                         <span class="rm-rank-main">
                           <span class="rm-rank-head">
                             <span class="rm-rank-name">{{ row.name }}</span>
-                            <span class="rm-rank-value">{{ formatFlowNumber(row.flow) }}<em>人次</em></span>
+                            <span class="rm-rank-value">{{ formatFlowNumber(row.flow) }}<em>人次/日</em></span>
                           </span>
                           <span class="rm-rank-bar" aria-hidden="true"><i :style="{ width: row.barWidth }"></i></span>
                         </span>
                       </button>
                     </li>
                   </ol>
-                  <p v-if="stationFlowRank.total > stationFlowRank.rows.length" class="rm-rank-footnote">
-                    按全天上下车客流排序，显示前 {{ stationFlowRank.rows.length }} 名（共 {{ stationFlowRank.total }} 个站点）
-                  </p>
                 </template>
 
                 <div v-else class="rm-panel-empty">
@@ -755,6 +735,7 @@
 
       <!-- Floating Map Controls Toolbar -->
       <div
+        v-if="activeTab !== '体检评估分析'"
         :class="['map-controls-toolbar', (isRightPanelVisible && !isRightCollapsed) ? 'with-panel' : 'without-panel']"
         data-tour="map-controls"
       >
@@ -1095,6 +1076,25 @@
           </div>
         </div>
       </div>
+
+      <!-- 线路/站点客流监测未选中时的中部底部悬浮提示 -->
+      <Transition name="rm-toast-fade">
+        <div
+          v-if="unselectedBottomHintText"
+          class="rm-bottom-hint-toast"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="rm-hint-toast-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="12" y1="16" x2="12" y2="12"></line>
+              <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+          </span>
+          <span class="rm-hint-toast-text">{{ unselectedBottomHintText }}</span>
+        </div>
+      </Transition>
     </template>
     <!-- 选中模型未就绪：与全局门禁一致的居中单窗口（替代原先左侧面板 + 中间弹窗两个窗口） -->
     <div v-else class="model-loading-gate page-model-loading" role="status" aria-live="polite" aria-busy="true">
@@ -1177,6 +1177,7 @@ import { useDisplayRangeStore } from "@/stores/displayRange.js";
 import { abortOtherModelDataRequests, getCachedFacilityAll, getCachedLineAll, getCachedRoutePanel, getCachedStationPanel, peekCachedRoutePanel, warmModelInteractionCache } from "@/utils/modelDataCache.js";
 import { createDebouncedMirror, runWhenIdle } from "./utils/panelShared.js";
 import { displayRangeNetworkState } from "./utils/displayRangeReadiness.js";
+import { hidesTransitNetwork } from "./utils/baseMapVisibility.js";
 import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/index.js";
 import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
 import {
@@ -1912,11 +1913,17 @@ async function handleGetModelList(options = {}) {
   }
 }
 
-// 公交出行监测：出行需求侧监测模块（人口分布 / 出行分布 / 公交OD），后续子模块在此追加
+// 人口分布监测：三种口径由左侧次级导航切换，右侧面板只展示当前口径。
+const POPULATION_SECTIONS = [
+  { key: "resident", label: "常住人口分布" },
+  { key: "home", label: "通勤人口居住地分布" },
+  { key: "work", label: "通勤人口就业地分布" },
+];
+
+// 公交出行监测：出行分布 / 客流流向，后续子模块在此追加
 const BUS_TRAVEL_SECTIONS = [
-  { key: "人口分布监测", label: "人口分布监测" },
-  { key: "出行分布监测", label: "站点OD监测" },
-  { key: "公交OD监测", label: "公交OD监测" },
+  { key: "出行分布监测", label: "出行分布" },
+  { key: "公交OD监测", label: "客流流向" },
 ];
 
 // 客流走廊监测：供给侧走廊诊断模块（线路重复系数 / 公交客流走廊），后续子模块在此追加
@@ -1926,6 +1933,12 @@ const CORRIDOR_SECTIONS = [
 ];
 
 const runMonitorMenuItems = [
+  {
+    key: "人口分布监测",
+    label: "人口分布监测",
+    icon: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 20c0-3 2.4-5 5.5-5s5.5 2 5.5 5"></path><circle cx="17" cy="10" r="2.4"></circle><path d="M15.4 20c.2-2.4 1.8-4 3.8-4 1 0 1.9.3 2.6 1"></path></svg>`,
+    children: POPULATION_SECTIONS,
+  },
   {
     key: "公交出行监测",
     label: "公交出行监测",
@@ -1965,7 +1978,8 @@ const runMonitorMenuItems = [
   },
 ];
 
-const activeTab = ref(props.mode === "pfa" ? "线路客流监测" : "公交出行监测");
+const activeTab = ref(props.mode === "pfa" ? "线路客流监测" : "人口分布监测");
+const populationSection = ref(POPULATION_SECTIONS[0].key);
 // 公交出行监测的活动子模块
 const busTravelSection = ref(BUS_TRAVEL_SECTIONS[0].key);
 // 客流走廊监测的活动子模块（当前仅线路重复系数）
@@ -1991,8 +2005,8 @@ const runMonitorOnboardingSteps = [
   },
   {
     id: "modules",
-    title: "七类监测模块",
-    description: "公交出行监测呈现人口分布等需求底图；总体客流、走廊、线路、站点用于定位问题；车辆监测回放运行过程，体检评估综合判断服务表现。",
+    title: "八类监测模块",
+    description: "人口分布独立展示常住与通勤人口空间特征；公交出行、总体客流、走廊、线路、站点用于定位问题；车辆监测回放运行过程，体检评估综合判断服务表现。",
     target: '[data-tour="module-navigation"]',
     placement: "right",
     padding: 10,
@@ -2092,8 +2106,8 @@ function saveRunMonitorOnboardingPreference(value) {
 
 function handleRunMonitorOnboardingStep(step) {
   const tabByStep = {
-    model: "公交出行监测",
-    modules: "公交出行监测",
+    model: "人口分布监测",
+    modules: "人口分布监测",
     overview: "总体客流监测",
     "line-station": "线路客流监测",
     "map-controls": "线路客流监测",
@@ -2151,7 +2165,8 @@ watch(
   () => props.mode,
   (mode) => {
     invalidateFeatureInteractions();
-    activeTab.value = mode === "pfa" ? "线路客流监测" : "公交出行监测";
+    activeTab.value = mode === "pfa" ? "线路客流监测" : "人口分布监测";
+    if (mode !== "pfa") populationSection.value = POPULATION_SECTIONS[0].key;
     if (mode !== "pfa") busTravelSection.value = BUS_TRAVEL_SECTIONS[0].key;
     pfaExpandedKeys.value = mode === "pfa"
       ? ["线路客流监测", "站点客流监测"]
@@ -2192,7 +2207,9 @@ const displayMenuItems = computed(() => {
   }
   if (isSimulationMode.value) return runMonitorMenuItems;
   const childCapability = {
-    "公交出行监测::人口分布监测": "公交出行监测-人口分布监测",
+    "人口分布监测::resident": "公交出行监测-人口分布监测",
+    "人口分布监测::home": "公交出行监测-人口分布监测",
+    "人口分布监测::work": "公交出行监测-人口分布监测",
     "公交出行监测::出行分布监测": "公交出行监测-站点OD监测",
     "公交出行监测::公交OD监测": "公交出行监测-公交OD监测",
     "客流走廊监测::线路重复系数": "客流走廊监测-线路重复系数",
@@ -2212,10 +2229,11 @@ const displayMenuItems = computed(() => {
   }).filter((item) => item && (!item.children || item.children.length));
 });
 
+
 function realCapabilityAvailable(platform, panel) {
   if (!panel) return false;
   const modules = realDataCapabilities.value?.modules;
-  if (!Array.isArray(modules)) return panel !== "公交出行监测-人口分布监测";
+  if (!Array.isArray(modules)) return true;
   const match = modules.find((item) => item?.platformModule === platform && item?.leftPanelModule === panel);
   return Boolean(match?.available);
 }
@@ -2231,6 +2249,10 @@ function syncActiveMenuWithAvailability() {
   if (active.key === "公交出行监测" && active.children?.length
       && !active.children.some((item) => item.key === busTravelSection.value)) {
     busTravelSection.value = active.children[0].key;
+  }
+  if (active.key === "人口分布监测" && active.children?.length
+      && !active.children.some((item) => item.key === populationSection.value)) {
+    populationSection.value = active.children[0].key;
   }
   if (active.key === "客流走廊监测" && active.children?.length
       && !active.children.some((item) => item.key === corridorSection.value)) {
@@ -2255,6 +2277,7 @@ const isNavItemActive = (item) => {
 };
 const isPfaSubActive = (itemKey, subKey) => {
   if (activeTab.value !== itemKey) return false;
+  if (itemKey === "人口分布监测") return populationSection.value === subKey;
   if (itemKey === "公交出行监测") return busTravelSection.value === subKey;
   if (itemKey === "客流走廊监测") return corridorSection.value === subKey;
   if (itemKey === "线路客流监测") return pfaLineSection.value === subKey;
@@ -2277,7 +2300,9 @@ function handleNavItemClick(item) {
 }
 function handleNavSubClick(item, sub) {
   closeLineRoutePicker();
-  if (item.key === "公交出行监测") {
+  if (item.key === "人口分布监测") {
+    populationSection.value = sub.key;
+  } else if (item.key === "公交出行监测") {
     busTravelSection.value = sub.key;
   } else if (item.key === "客流走廊监测") {
     corridorSection.value = sub.key;
@@ -2426,13 +2451,13 @@ function tabHasPersistentRightPanel(tab = effectiveTab.value) {
   return [
     "数据总览",
     "出行分析",
+    "人口分布监测",
     "公交出行监测",
     "总体客流监测",
     "客流走廊监测",
     "线路客流监测",
     "站点客流监测",
     "车辆运行监测",
-    "体检评估分析",
   ].includes(tab);
 }
 
@@ -2518,7 +2543,7 @@ const vehicleVisibilityOptions = [
   { label: "私家车", value: "car" },
 ];
 
-const isRightPanelVisible = computed(() => showRightPanel.value && rightPanelHasContent.value);
+const isRightPanelVisible = computed(() => showRightPanel.value && rightPanelHasContent.value && effectiveTab.value !== "体检评估分析");
 const isInfoActive = computed(() => isRightPanelVisible.value);
 const is3DActive = ref(false);
 
@@ -2950,15 +2975,27 @@ const overallBusOpsStats = computed(() => {
   ];
 });
 
+const overallOpsRow = computed(() => {
+  const ops = overallFlowBusOps.value || {};
+  const busTotal = overallFlowBusTotal.value;
+  const { perVehicle, perTrip, intensity } = busOperationRatios(busTotal, ops);
+  return {
+    name: "总体",
+    perVehicle: formatLineRatioStat(perVehicle, "人次/车·日"),
+    perTrip: formatLineRatioStat(perTrip, "人次/班"),
+    intensity: formatLineRatioStat(intensity, "人次/车公里"),
+  };
+});
+
 // 分企业与总体指标共用 busOperationRatios，不直接采信数据源中的预计算比值，
 // 防止真实模式与仿真模式在接口层各自演化出不同公式。
 const operatorOpsRows = computed(() => (overallFlowBusOps.value?.operators || []).map((item) => {
   const ratios = busOperationRatios(item?.passenger, item);
   return {
     name: String(item?.name || "未知企业"),
-    perVehicle: formatLineRatioStat(ratios.perVehicle, "").value,
-    perTrip: formatLineRatioStat(ratios.perTrip, "").value,
-    intensity: formatLineRatioStat(ratios.intensity, "").value,
+    perVehicle: formatLineRatioStat(ratios.perVehicle, "人次/车·日"),
+    perTrip: formatLineRatioStat(ratios.perTrip, "人次/班"),
+    intensity: formatLineRatioStat(ratios.intensity, "人次/车公里"),
   };
 }));
 
@@ -3382,9 +3419,9 @@ const lineOperationStats = computed(() => {
     { label: "车辆数", ...formatLineCountStat(vehicles, "辆") },
     { label: "高峰发车间隔", ...formatLineRatioStat(peakHeadway, "分") },
     { label: "平峰发车间隔", ...formatLineRatioStat(offPeakHeadway, "分") },
-    { label: "单班次客流", ...formatLineRatioStat(perTrip, "人次") },
-    { label: "车日均客流", ...formatLineRatioStat(perVehicle, "人次") },
-    { label: "客流强度", ...formatLineRatioStat(strength, "人次/车公里") },
+    { label: "单班次客流", ...formatLineRatioStat(perTrip, "人次/班") },
+    { label: "车日均客流", ...formatLineRatioStat(perVehicle, "人次/车·日") },
+    { label: "客流强度", ...formatLineRatioStat(strength, "人次/车公里·日") },
     { label: "平均高峰满载率", ...formatLinePercentStat(peakLoadRate) },
   ];
 });
@@ -3744,9 +3781,20 @@ function combinedStationMetric(key) {
 }
 
 const stationBoardingStats = computed(() => [
-  { label: "上车人数", ...formatLineCountStat(combinedStationMetric("boardingByHour"), "人次") },
-  { label: "下车人数", ...formatLineCountStat(combinedStationMetric("alightingByHour"), "人次") },
+  { label: "上车人数", ...formatLineCountStat(combinedStationMetric("boardingByHour"), "人次/日") },
+  { label: "下车人数", ...formatLineCountStat(combinedStationMetric("alightingByHour"), "人次/日") },
 ]);
+
+const unselectedBottomHintText = computed(() => {
+  if (activeTab.value === "线路客流监测") {
+    const isSelected = props.mode === "pfa" ? Boolean(selectedLineName.value) : Boolean(selectedLinePanel.value);
+    if (!isSelected) return "可点击地图中的线路或右侧排行榜选择线路，具体查看客流信息";
+  } else if (activeTab.value === "站点客流监测") {
+    const isSelected = Boolean(selectedStationName.value);
+    if (!isSelected) return "可点击地图中的站点或右侧排行榜选择站点，具体查看客流信息";
+  }
+  return "";
+});
 
 const stationFlowChartSeriesNames = computed(() => stationFlowLegend.value.map((side) => side.label));
 const stationFlowChartOption = computed(() =>
@@ -4918,9 +4966,8 @@ const lineSelectionActiveState = computed(() =>
   )
 );
 
-// 总体客流监测、线路客流监测、体检评估分析共用同一套线网着色，图例与色阶设置同步展示
-// （线路客流监测的着色口径随右侧排名依据切换，其余页签恒为客流）
-const LINE_FLOW_LEGEND_TABS = ["线路客流监测", "总体客流监测", "体检评估分析"];
+// 总体客流监测与线路客流监测共用同一套线网着色，图例与色阶设置同步展示
+const LINE_FLOW_LEGEND_TABS = ["线路客流监测", "总体客流监测"];
 
 const showLineFlowLegend = computed(() =>
   LINE_FLOW_LEGEND_TABS.includes(effectiveTab.value)
@@ -5960,10 +6007,10 @@ function syncBaseMapLayerVisibilityNow() {
   // 线路客流监测：地图只显示线路；站点客流监测：只显示站点；总体客流监测不显示站点；车辆运行监测两者都不显示。
   const tab = effectiveTab.value;
   const isVehicleTab = tab === "车辆运行监测" || tab === "轨迹演示";
-  // 公交出行监测（栅格/街道/OD 专题图）与客流走廊监测（自绘重复系数线网）：公交线网与站点一并退场
-  const isPopulationTab = tab === "公交出行监测" || tab === "客流走廊监测";
+  // 人口/公交出行专题图与客流走廊自绘图层：公共公交、地铁线网及站点一并退场。
+  const isThematicMapTab = hidesTransitNetwork(tab);
   // 体检评估分析与总体客流监测一样：地图给出按客流着色的线网底图（含行政区裁剪与区外灰底）
-  const isLinesTab = !isVehicleTab && !isPopulationTab && tab !== "站点客流监测";
+  const isLinesTab = !isVehicleTab && !isThematicMapTab && tab !== "站点客流监测";
   const showLines = showBusNetwork && isLinesTab;
   const showMetroLines = showMetroNetwork && isLinesTab;
   // 断面客流/站点乘降：随选中线路显示当前方向的站点（空心圈）与站名，经 applySelectedLineStationFilter 过滤
@@ -7908,7 +7955,8 @@ function toggleRangePopover() {
 function selectDisplayRange(rangeName) {
   const nextRange = String(rangeName || "").trim();
   if (!nextRange) return;
-  if (nextRange === selectedDisplayRange.value) {
+  if (nextRange === selectedDisplayRange.value && nextRange !== DISPLAY_RANGE_ALL) {
+    selectedDisplayRange.value = DISPLAY_RANGE_ALL;
     closeRangePopover();
     return;
   }
@@ -8247,8 +8295,8 @@ let hasBeenDeactivated = false;
 const pendingLayerAdds = [];
 
 function syncDistributionBuildingSuppression() {
-  const isDistributionGrid = activeTab.value === "公交出行监测"
-    && (busTravelSection.value === "人口分布监测" || busTravelSection.value === "出行分布监测");
+  const isDistributionGrid = activeTab.value === "人口分布监测"
+    || (activeTab.value === "公交出行监测" && busTravelSection.value === "出行分布监测");
   const shouldSuppress = pageActive.value && is3DActive.value && isDistributionGrid;
   const buildingLayer = MapRef.value?.layers?.find((layer) => layer?.name === "CityBuildingsLayer");
   buildingLayer?.setSuppressed?.(shouldSuppress);
@@ -9610,9 +9658,6 @@ onUnmounted(() => {
 
 .rm-flow-hero {
   margin-top: 14px;
-  padding: 13px 15px 14px;
-  border-radius: var(--dm2-radius);
-  background: var(--dm2-surface-sunken);
 }
 
 .rm-flow-hero-head {
@@ -9643,7 +9688,7 @@ onUnmounted(() => {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  margin: 5px 0 0;
+  margin: 0;
 
   strong {
     color: var(--dm2-ink);
@@ -9665,7 +9710,32 @@ onUnmounted(() => {
 }
 
 .rm-mode-split {
-  margin-top: 10px;
+  margin-top: 12px;
+}
+
+.rm-mode-head {
+  display: grid;
+  grid-template-columns: 8px auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 6px;
+  border-bottom: 1px solid var(--dm2-line-faint);
+  color: var(--dm2-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.rm-mode-head-name {
+  grid-column: 1 / span 2;
+}
+
+.rm-mode-head-value {
+  text-align: right;
+}
+
+.rm-mode-head-share {
+  min-width: 44px;
+  text-align: right;
 }
 
 .rm-mode-row {
@@ -9695,11 +9765,19 @@ onUnmounted(() => {
 .rm-mode-value {
   color: var(--dm2-ink);
   font-family: var(--dm2-font-num);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 780;
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+}
+
+.rm-mode-unit {
+  margin-left: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  font-style: normal;
+  color: var(--dm2-muted);
 }
 
 .rm-mode-share {
@@ -9842,6 +9920,15 @@ onUnmounted(() => {
     }
   }
 
+  .rm-ops-unit {
+    margin-left: 3px;
+    color: var(--dm2-muted);
+    font-family: inherit;
+    font-size: 10.5px;
+    font-style: normal;
+    font-weight: 600;
+  }
+
   .rm-ops-empty {
     padding: 14px 10px;
     color: var(--dm2-muted);
@@ -9849,6 +9936,16 @@ onUnmounted(() => {
     font-size: 12px;
     font-weight: 600;
     text-align: center;
+  }
+
+  .rm-ops-summary-row {
+    background: rgba(0, 113, 227, 0.04);
+
+    td {
+      border-top: 1px solid var(--dm2-line-faint);
+      color: var(--dm2-ink);
+      font-weight: 800;
+    }
   }
 }
 
@@ -10395,5 +10492,80 @@ onUnmounted(() => {
       flex-wrap: wrap;
     }
   }
+}
+
+/* 线路/站点客流监测未选中状态：中部底部高级悬浮提示 Toast */
+.rm-bottom-hint-toast {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px 8px 14px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  box-shadow: 0 8px 28px -6px rgba(0, 113, 227, 0.18), 0 2px 10px rgba(0, 0, 0, 0.08);
+  color: var(--dm2-ink, #1d1d1f);
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  pointer-events: auto;
+  user-select: none;
+}
+
+.rm-hint-toast-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #0071e3;
+}
+
+.rm-hint-toast-text {
+  white-space: nowrap;
+}
+
+:global(html.dark .rm-bottom-hint-toast) {
+  background: #1c1c1e;
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #f5f5f7;
+  box-shadow: 0 8px 30px -4px rgba(0, 0, 0, 0.5);
+}
+
+.rm-toast-fade-enter-active,
+.rm-toast-fade-leave-active {
+  transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.rm-toast-fade-enter-from,
+.rm-toast-fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 14px);
+}
+
+/* 体检评估分析：全屏主界面容器（完全填满底图面板，类似数据管理历史数据模块） */
+.tjfx-full-stage-wrapper {
+  position: fixed;
+  top: var(--app-header-height, 58px);
+  left: 260px;
+  right: 0;
+  bottom: 0;
+  z-index: 100;
+  background: var(--app-surface-soft, #f8fafc);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: left 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+
+  &.is-left-collapsed {
+    left: 0;
+  }
+}
+
+:global(html.dark .tjfx-full-stage-wrapper) {
+  background: #0b1120;
 }
 </style>

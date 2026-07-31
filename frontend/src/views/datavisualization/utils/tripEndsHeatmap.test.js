@@ -16,7 +16,7 @@ function gridFixture() {
 }
 
 describe("buildTripEndsHeatmapFeatureCollection", () => {
-  it("取单元中心坐标，并以平方根压缩后的真实客流归一权重生成热力点", () => {
+  it("取单元中心坐标，并以平方根压缩后的客流归一权重生成热力点", () => {
     const result = buildTripEndsHeatmapFeatureCollection(
       gridFixture(),
       Uint32Array.from([25, 100, 0]),
@@ -55,4 +55,3 @@ describe("filterTripEndsHeatmapFeatureCollection", () => {
     expect(filtered.collection.features[0].properties.weight).toBe(0.5);
   });
 });
-

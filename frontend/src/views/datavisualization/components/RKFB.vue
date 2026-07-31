@@ -1,15 +1,14 @@
-<!-- 人口分布监测（公交出行监测模块首个子模块）
+<!-- 人口分布监测（运行监测独立模块）
      地图：100m 人口栅格（deck.gl GridCellLayer，rm-population-grid）+ 街道边界/名称占比标注（maplibre，rm-population-street-*）。
-     右侧：居住/就业切换 + 按街道榜单，teleport 到 index.vue 的右侧容器（同 TJFX 模式）；
+     右侧：按街道榜单，展示口径由左侧次级导航传入；
      栅格密度图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
-     口径：居住=plans 首个 home 活动、就业=首个 work 活动；一律直出已加载模型的原始人数，不做任何数量缩放；
+     口径：常住人口=有 home 活动的人；通勤人口=同时有 home/work 活动的人，分别按居住地和就业地定位；
      密度=人口/街道辖区面积。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
-    <div class="rk-card" aria-label="人口分布监测面板">
+    <div class="rk-card" :aria-label="`${submoduleTitle}面板`">
       <div class="rk-title">
-        <h2>人口分布监测</h2>
-        <span class="rk-scope" :title="`显示范围：${scopeLabel}`">{{ scopeLabel }}</span>
+        <h2>{{ submoduleTitle }}</h2>
       </div>
 
       <!-- 状态机：生成中 / 加载 / 失败 整块替换正文，避免状态浮在 0 值上 -->
@@ -49,29 +48,24 @@
       </div>
 
       <div v-else-if="status === 'loading'" class="rk-skeleton" aria-hidden="true">
-        <div class="rk-sk rk-sk-segment"></div>
         <div class="rk-sk rk-sk-hero"></div>
         <div class="rk-sk rk-sk-row" v-for="n in 6" :key="n"></div>
       </div>
 
       <template v-else>
-        <div :class="['rk-metric-switch', { 'is-three': metricOptions.length === 3 }]" role="group" aria-label="人口指标切换">
-          <button
-            v-for="option in metricOptions"
-            :key="option.key"
-            type="button"
-            :class="['rk-metric-btn', { active: metric === option.key }]"
-            :aria-pressed="metric === option.key"
-            @click="metric = option.key"
-          >
-            {{ option.label }}
-          </button>
+        <div v-if="metricRequiresUpgrade" class="rk-status" role="status">
+          <span class="rk-status-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"></circle>
+              <polyline points="12 7 12 12 15.5 14"></polyline>
+            </svg>
+          </span>
+          <p class="rk-status-title">通勤人口居住地口径生成中</p>
+          <p class="rk-status-desc">旧数据的居住人口已归入常住人口；当前正按有 work 出行目的的人重新统计其居住地。</p>
         </div>
 
+        <template v-else>
         <div class="rk-hero">
-          <div class="rk-hero-head">
-            <span class="rk-hero-label">{{ metricLabel }}总量</span>
-          </div>
           <p class="rk-hero-value">
             <strong>{{ formatInt(scopeTotal) }}</strong>
             <em>人</em>
@@ -119,10 +113,8 @@
               </button>
             </li>
           </ol>
-          <p v-if="streetRows.length > visibleStreetRows.length" class="rk-rank-footnote">
-            按{{ metricLabel }}排序，显示前 {{ visibleStreetRows.length }} 名（共 {{ streetRows.length }} 个街道）
-          </p>
         </div>
+        </template>
       </template>
     </div>
   </teleport>
@@ -146,12 +138,12 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shal
 import { GridCellLayer } from "@deck.gl/layers";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
-import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 import {
   getCachedPopulationGrid,
   getCachedPopulationStreets,
   getCachedPopulationSummary,
   getModelDerived,
+  invalidateCachedPopulationBundle,
 } from "@/utils/modelDataCache.js";
 import { fetchStreetsGeojsonOnce } from "../utils/streetsGeojson.js";
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
@@ -167,45 +159,53 @@ import {
 
 const props = defineProps({
   model: String,
+  metric: {
+    type: String,
+    default: "resident",
+  },
   threeDimensional: Boolean,
 });
 
 const MapRef = inject("MapRef", ref(null));
 const rightPanelRankLimit = inject("rightPanelRankLimit", 10);
 
-const SIMULATION_METRIC_OPTIONS = [
-  { key: "home", label: "居住人口" },
-  { key: "work", label: "就业人口" },
-];
-const REAL_METRIC_OPTIONS = [
-  { key: "home", label: "通勤居住人口" },
-  { key: "work", label: "通勤就业人口" },
-  { key: "resident", label: "常住人口" },
-];
+const METRIC_LABELS = {
+  resident: "常住人口",
+  home: "通勤人口居住地",
+  work: "通勤人口就业地",
+};
+const SUBMODULE_NAMES = {
+  resident: "常住人口分布",
+  home: "通勤人口居住地分布",
+  work: "通勤人口就业地分布",
+};
 const GRID_LAYER_KEY = "rm-population-grid";
 const STREET_SOURCE_ID = "rm-population-streets";
 const STREET_LINE_ID = "rm-population-street-line";
 const STREET_LABEL_ID = "rm-population-street-label";
 const GENERATING_POLL_MS = 8000;
+const SIMULATION_POPULATION_CACHE_VERSION = "population-v11";
 // 3D 柱高 = 人口密度（人/km²） ÷ 系数。
 const POPULATION_HEIGHT_DIVISOR = 10;
 
 const status = ref("loading"); // loading | generating | unsupported | error | ready
 const errorMessage = ref("");
-const metric = ref("home");
+const metric = computed(() => (props.metric in METRIC_LABELS ? props.metric : "resident"));
+const submoduleTitle = computed(() => SUBMODULE_NAMES[metric.value] || "人口分布监测");
 const summary = shallowRef(null);
 const streetStats = shallowRef(null); // { streets:[{code,name,district,areaKm2,home,work}], totals }
 const grid = shallowRef(null); // parsePopulationGrid 结果（markRaw）
 const streetsGeojson = shallowRef(null); // 模型无关街道面
 
 const displayRange = useDisplayRangeStore();
-const isRealMode = computed(() => isRealDatasource(props.model));
-const metricOptions = computed(() => (
-  isRealMode.value ? REAL_METRIC_OPTIONS : SIMULATION_METRIC_OPTIONS
-));
 const scopeLabel = computed(() => displayRange.selected || DISPLAY_RANGE_ALL);
-const metricLabel = computed(() => (
-  metricOptions.value.find((option) => option.key === metric.value)?.label || "人口"
+const metricLabel = computed(() => METRIC_LABELS[metric.value] || "人口");
+const isLegacySimulationPopulation = computed(() => (
+  !isRealDatasourceModel(props.model)
+  && summary.value?.cacheVersion !== SIMULATION_POPULATION_CACHE_VERSION
+));
+const metricRequiresUpgrade = computed(() => (
+  isLegacySimulationPopulation.value && metric.value === "home"
 ));
 
 const legendItems = buildDensityLegendItems(
@@ -217,6 +217,10 @@ const legendItems = buildDensityLegendItems(
 function formatInt(value) {
   if (!Number.isFinite(value)) return "--";
   return Math.round(value).toLocaleString("zh-CN");
+}
+
+function isRealDatasourceModel(model) {
+  return String(model || "").startsWith("real::");
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +253,7 @@ function bootstrap() {
   requestSeq += 1;
   const seq = requestSeq;
   const model = props.model;
-  if (status.value !== "generating") status.value = "loading";
+  if (status.value !== "generating" && status.value !== "ready") status.value = "loading";
   errorMessage.value = "";
 
   getCachedPopulationSummary(model)
@@ -271,7 +275,7 @@ function bootstrap() {
       const version = String(payload.generatedAt || payload.cacheVersion || "");
       return Promise.all([
         getCachedPopulationGrid(model, version),
-        getCachedPopulationStreets(model),
+        getCachedPopulationStreets(model, version),
         fetchStreetsGeojsonOnce(),
       ]).then(([gridBuffer, streetsPayload, geojson]) => {
         if (seq !== requestSeq || props.model !== model) return null;
@@ -280,11 +284,16 @@ function bootstrap() {
           schedulePoll();
           return null;
         }
-        grid.value = getModelDerived(model, "populationGrid", () => markRaw(parsePopulationGrid(gridBuffer)));
+        grid.value = getModelDerived(model, `populationGrid:${version}`, () => markRaw(parsePopulationGrid(gridBuffer)));
         streetStats.value = streetsPayload;
         streetsGeojson.value = geojson;
         status.value = "ready";
         refreshMapLayers();
+        if (!isRealDatasourceModel(model) && payload.cacheVersion !== SIMULATION_POPULATION_CACHE_VERSION) {
+          // 旧 home 仅作常住人口兼容展示；后台持续查询 v11，绝不把它冒充通勤居住地。
+          invalidateCachedPopulationBundle(model);
+          schedulePoll();
+        }
         return null;
       });
     })
@@ -313,7 +322,11 @@ const streetRows = computed(() => {
   const rows = [];
   for (const street of streets) {
     if (scope !== DISPLAY_RANGE_ALL && street.district !== scope) continue;
-    const value = Number(street[key]) || 0;
+    // v2 历史数据的 home=常住人口；只能作 resident 兼容，不得作通勤居住地。
+    const rawValue = key === "resident" && street.resident == null
+      ? street.home
+      : street[key];
+    const value = Number(rawValue) || 0;
     if (!value) continue;
     const areaKm2 = Number(street.areaKm2);
     rows.push({
@@ -368,11 +381,11 @@ const scopeStreetMask = computed(() => {
 function gridLayerInstance() {
   const data = grid.value;
   const model = props.model;
-  if (!data || !model) return null;
+  if (!data || !model || metricRequiresUpgrade.value) return null;
   const positions = getModelDerived(model, "populationGridPositions", () => markRaw(buildGridPositions(data)));
   const counts = metric.value === "home"
     ? data.home
-    : metric.value === "work" ? data.work : data.resident;
+    : metric.value === "work" ? data.work : (data.resident || data.home);
   if (!counts) return null;
   const baseColors = getModelDerived(model, `populationGridColors:${metric.value}`, () =>
     markRaw(buildGridColors(counts, MAP_THEME.population)),
@@ -502,6 +515,7 @@ function refreshMapLayers() {
     map.getSource(STREET_SOURCE_ID)?.setData(geojson);
     const layer = gridLayerInstance();
     if (layer) setSharedDeckLayer(wrapper, GRID_LAYER_KEY, layer, 0);
+    else removeSharedDeckLayer(wrapper, GRID_LAYER_KEY);
     pendingLayerRefresh = false;
   } catch (error) {
     // 地图尚未就绪（样式加载中等）时静默，数据/指标变化会再次触发
@@ -602,8 +616,6 @@ onUnmounted(() => {
 .rk-title {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--dm2-space-3, 12px);
   padding: 0 0 10px;
   border-bottom: 1px solid var(--dm2-line-faint);
 
@@ -613,68 +625,6 @@ onUnmounted(() => {
     font-size: 18px;
     line-height: 1.18;
     font-weight: 780;
-  }
-}
-
-.rk-scope {
-  flex-shrink: 0;
-  max-width: 108px;
-  margin-top: 2px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--dm2-line-faint);
-  color: var(--dm2-muted);
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* —— 指标切换 —— */
-.rk-metric-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin-top: 12px;
-  padding: 3px;
-  border-radius: 10px;
-  background: rgba(28, 32, 36, 0.05);
-
-  &.is-three {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-
-    .rk-metric-btn {
-      padding-inline: 2px;
-      font-size: 11.5px;
-    }
-  }
-}
-
-.rk-metric-btn {
-  appearance: none;
-  border: 0;
-  border-radius: 8px;
-  padding: 7px 0;
-  background: transparent;
-  color: var(--dm2-muted);
-  font-size: 12.5px;
-  font-weight: 720;
-  cursor: pointer;
-  transition: background 0.18s ease, color 0.18s ease;
-
-  &:hover {
-    color: var(--dm2-ink);
-  }
-
-  &.active {
-    background: #fff;
-    color: var(--dm2-accent-strong, #0071e3);
-    box-shadow: 0 1px 4px rgba(28, 32, 36, 0.12);
-  }
-
-  &:active {
-    transform: scale(0.98);
   }
 }
 
@@ -991,10 +941,6 @@ onUnmounted(() => {
   animation: rk-shimmer 1.4s ease-in-out infinite;
 }
 
-.rk-sk-segment {
-  height: 34px;
-}
-
 .rk-sk-hero {
   height: 62px;
   margin-top: 12px;
@@ -1026,13 +972,6 @@ onUnmounted(() => {
 }
 
 /* ── 暗色模式（html.dark，跟随底图选择） ── */
-html.dark .rk-metric-switch {
-  background: rgba(148, 180, 220, 0.1);
-}
-html.dark .rk-metric-btn.active {
-  background: #1a2431;
-  box-shadow: 0 1px 4px rgba(2, 6, 12, 0.32);
-}
 html.dark .rk-rank-row:hover {
   background: rgba(64, 156, 255, 0.09);
 }

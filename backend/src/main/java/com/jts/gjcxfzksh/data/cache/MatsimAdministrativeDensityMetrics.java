@@ -204,8 +204,9 @@ final class MatsimAdministrativeDensityMetrics {
         int version = Short.toUnsignedInt(buffer.getShort());
         int count = buffer.getInt();
         double cellSize = buffer.getDouble();
-        if (version != 2 || count < 0 || !Double.isFinite(cellSize) || cellSize <= 0
-                || bytes.length < 18L + count * 18L) return Map.of();
+        int recordBytes = version == 3 ? 22 : version == 2 ? 18 : 0;
+        if (recordBytes == 0 || count < 0 || !Double.isFinite(cellSize) || cellSize <= 0
+                || bytes.length < 18L + count * (long) recordBytes) return Map.of();
 
         STRtree index = districtIndex(districts);
         Map<String, Long> result = new HashMap<>();
@@ -214,15 +215,16 @@ final class MatsimAdministrativeDensityMetrics {
             int j = buffer.getInt();
             long home = Integer.toUnsignedLong(buffer.getInt());
             buffer.getInt(); // work
+            long resident = version == 3 ? Integer.toUnsignedLong(buffer.getInt()) : home;
             buffer.getShort(); // street
-            if (home == 0) continue;
+            if (resident == 0) continue;
             Point point = GEOMETRY_FACTORY.createPoint(
                     new Coordinate((i + 0.5) * cellSize, (j + 0.5) * cellSize));
             @SuppressWarnings("unchecked")
             List<District> candidates = index.query(point.getEnvelopeInternal());
             for (District district : candidates) {
                 if (district.preparedMercator().covers(point)) {
-                    result.merge(district.name(), home, Long::sum);
+                    result.merge(district.name(), resident, Long::sum);
                     break;
                 }
             }

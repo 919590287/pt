@@ -14,10 +14,17 @@ vi.mock("@/api/data.js", () => ({
     data: { status: "ready", values: { czrkmd: 1 } },
   })),
 }));
+vi.mock("@/api/population.js", () => ({
+  getPopulationSummary: vi.fn(() => Promise.resolve({ data: { status: "ready", cacheVersion: "population-v11" } })),
+  getPopulationStreets: vi.fn(() => Promise.resolve({ data: { status: "ready", streets: [] } })),
+  getPopulationGridBinary: vi.fn(() => Promise.resolve({ data: new ArrayBuffer(18) })),
+}));
 
 import {
   getCachedEvaluation,
   getCachedLineAll,
+  getCachedPopulationGrid,
+  getCachedPopulationStreets,
   getModelDerived,
   invalidateModelDerived,
   getModelScopedMap,
@@ -28,6 +35,7 @@ import {
 } from "./modelDataCache.js";
 import { getLineAll } from "@/api/route.js";
 import { dataEvaluation } from "@/api/data.js";
+import { getPopulationGridBinary, getPopulationStreets } from "@/api/population.js";
 
 beforeEach(() => {
   for (const key of __modelCacheKeys()) clearModelDataCache(key);
@@ -112,6 +120,18 @@ describe("modelDataCache 请求缓存 markRaw", () => {
     expect(reactive(a)).toBe(a); // markRaw 生效：reactive() 原样返回
     const holder = ref(a);
     expect(isReactive(holder.value)).toBe(false);
+  });
+
+  it("人口 streets/grid 按缓存版本隔离，不复用旧口径", async () => {
+    await getCachedPopulationStreets("m1", "population-v10");
+    await getCachedPopulationStreets("m1", "population-v10");
+    await getCachedPopulationStreets("m1", "population-v11");
+    expect(getPopulationStreets).toHaveBeenCalledTimes(2);
+
+    await getCachedPopulationGrid("m1", "population-v10");
+    await getCachedPopulationGrid("m1", "population-v10");
+    await getCachedPopulationGrid("m1", "population-v11");
+    expect(getPopulationGridBinary).toHaveBeenCalledTimes(2);
   });
 
   it("旧请求结束不会移除清缓存后启动的新请求控制器", async () => {

@@ -34,20 +34,8 @@
       </el-select>
     </div>
 
-    <!-- 左侧：模块导航 + 通用筛选（复用 tokens.css 的 dm-sidebar 骨架） -->
+    <!-- 左侧：模块导航（学习运行监测面板，去除图标与换乘分析标题） -->
     <div :class="['dm-sidebar', 'ta-sidebar', leftCollapsed ? 'is-collapsed' : '']">
-      <div class="sidebar-brand">
-        <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M8 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
-          <path d="M6 8h12" />
-          <circle cx="9" cy="13" r="1" />
-          <circle cx="15" cy="13" r="1" />
-          <path d="M9 16l-2 4" />
-          <path d="M15 16l2 4" />
-        </svg>
-        <span class="brand-text">换乘分析</span>
-      </div>
-
       <nav class="sidebar-nav" aria-label="换乘分析模块导航">
         <div v-for="item in NAV" :key="item.key" class="menu-group">
           <button
@@ -56,7 +44,6 @@
             :aria-current="activeModule === item.key ? 'page' : undefined"
             @click="activeModule = item.key"
           >
-            <span class="nav-icon" v-html="item.icon"></span>
             <span class="nav-label">{{ item.label }}</span>
           </button>
         </div>
@@ -413,17 +400,14 @@ const NAV = [
   {
     key: "overview",
     label: "换乘总览",
-    icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 3v9l6 3"></path></svg>',
   },
   {
     key: "hub",
     label: "换乘站点分析",
-    icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.4"></circle><path d="M12 2.5v4"></path><path d="M12 17.5v4"></path><path d="M2.5 12h4"></path><path d="M17.5 12h4"></path></svg>',
   },
   {
     key: "feeder",
     label: "换乘线路分析",
-    icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"></rect><circle cx="7.5" cy="11" r="1.1"></circle><circle cx="16.5" cy="11" r="1.1"></circle><path d="M6 17v2"></path><path d="M18 17v2"></path></svg>',
   },
 ];
 const activeModule = ref("overview");
@@ -1731,9 +1715,6 @@ onUnmounted(() => {
     pointer-events: auto;
   }
 
-  .sidebar-brand .brand-icon {
-    color: var(--dm2-accent);
-  }
 }
 
 /* ---- 左侧模块导航（通用筛选已迁至右侧面板头部与地图设置弹层） ---- */

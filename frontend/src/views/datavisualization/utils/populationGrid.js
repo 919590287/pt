@@ -1,8 +1,8 @@
 // 人口分布监测：population-grid.bin 解析与栅格渲染数据构建（纯函数，Worker 可复用）。
 // 二进制契约见 docs/公交出行监测人口分布模块设计方案.md §3 + v2 增列（与后端 MatsimPopulationCache 对齐，小端）：
 //   header: magic "PGRD"(4B) + version u16 + count u32 + mercCellSize f64 = 18B
-//   v2 record（仿真，18B/cell）: i i32, j i32, home u32, work u32, street u16
-//   v3 record（真实，22B/cell）: i i32, j i32, home u32, work u32, resident u32, street u16
+//   v2 record（历史兼容/出行端点，18B/cell）: i i32, j i32, home u32, work u32, street u16
+//   v3 record（仿真与真实人口，22B/cell）: i i32, j i32, home u32, work u32, resident u32, street u16
 //   —— 人数为源数据原始量，展示侧不做缩放；street 为格中心街道要素索引
 //     （资源文件序，0xFFFF=未命中，行政区过滤用）。
 // cell 西南角 = (i*cs, j*cs)（EPSG:3857）。出行分布监测复用本契约（home 列=出行起点、work 列=出行终点）。

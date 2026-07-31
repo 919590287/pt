@@ -10,7 +10,6 @@
     <div class="cfx-card" aria-label="线路重复系数面板">
       <div class="cfx-title">
         <h2>线路重复系数</h2>
-        <span class="cfx-scope" :title="`显示范围：${scopeLabel}`">{{ scopeLabel }}</span>
       </div>
 
       <!-- 状态机：生成中 / 加载 / 失败 整块替换正文，避免状态浮在 0 值上 -->
@@ -46,17 +45,6 @@
       </div>
 
       <template v-else>
-        <div class="cfx-hero">
-          <div class="cfx-hero-head">
-            <span class="cfx-hero-label">最大线路重复系数</span>
-          </div>
-          <p class="cfx-hero-value">
-            <strong>{{ formatInt(scopeMaxCoeff) }}</strong>
-            <em>条线路</em>
-          </p>
-          <p class="cfx-hero-sub">{{ scopeLabel }}内公交经过路段 {{ formatInt(scopeSegmentCount) }} 段</p>
-        </div>
-
         <template v-if="!isRealMode">
           <div v-if="!rankRows.length" class="cfx-status" role="status">
             <span class="cfx-status-icon" aria-hidden="true">
@@ -92,9 +80,6 @@
                 </button>
               </li>
             </ol>
-            <p class="cfx-rank-footnote">
-              按{{ corridorUnitLabel }}最高重复系数排序，显示前 {{ rankRows.length }} 名（{{ scopeLabel }}内共 {{ namedRoadCount }} 个{{ corridorUnitLabel }}）
-            </p>
           </div>
         </template>
       </template>
@@ -549,6 +534,7 @@ onUnmounted(() => {
 .cfx-rank-head {
   display: flex;
   align-items: baseline;
+  gap: 6px;
   padding: 0 2px 6px;
   border-bottom: 1px solid var(--dm2-line-faint);
   color: var(--dm2-muted);
@@ -558,9 +544,11 @@ onUnmounted(() => {
 
 .cfx-rank-head-name {
   flex: 1;
+  min-width: 0;
 }
 
 .cfx-rank-head-value {
+  flex-shrink: 0;
   width: 72px;
   text-align: right;
 }

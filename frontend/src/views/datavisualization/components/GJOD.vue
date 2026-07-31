@@ -1,5 +1,5 @@
 <!-- 公交OD监测（公交出行监测模块第三子模块）
-     地图：整段公交出行 OD 期望线（仿真用 LineLayer；真实数据用贝塞尔 PathLayer），可切换街道质心 / 栅格中心连线
+     地图：整段公交出行 OD 期望线（仿真与真实数据均使用 LineLayer 直线），可切换街道质心 / 栅格中心连线
      （栅格粒度 100m–2km 可调、间隔 100m，由 100m 格对前端聚合成超格）；
      线色/线宽按当前显示流量集合的分位分级（绿→黄→红，参考期望线制图惯例）；
      街道边界/名称标注（maplibre，rm-busod-street-*），行政区模式只显示范围内街道。
@@ -10,10 +10,9 @@
      一律直出已加载模型的原始人次，不做任何数量缩放；地图线为双向合计（自环不画），榜单为有向对。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
-    <div class="gjod-card" aria-label="公交OD监测面板">
+    <div class="gjod-card" aria-label="客流流向面板">
       <div class="gjod-title">
-        <h2>公交OD监测</h2>
-        <span class="gjod-scope" :title="`显示范围：${scopeLabel}`">{{ scopeLabel }}</span>
+        <h2>客流流向</h2>
       </div>
 
       <!-- 状态机：生成中 / 加载 / 失败 整块替换正文，避免状态浮在 0 值上 -->
@@ -24,7 +23,7 @@
             <polyline points="12 7 12 12 15.5 14"></polyline>
           </svg>
         </span>
-        <p class="gjod-status-title">公交OD缓存生成中</p>
+        <p class="gjod-status-title">客流流向缓存生成中</p>
         <p class="gjod-status-desc">后端正在为当前模型聚合整段公交出行 OD，就绪后将自动展示。</p>
       </div>
 
@@ -36,7 +35,7 @@
             <line x1="12" y1="17" x2="12.01" y2="17"></line>
           </svg>
         </span>
-        <p class="gjod-status-title">公交OD数据加载失败</p>
+        <p class="gjod-status-title">客流流向数据加载失败</p>
         <p class="gjod-status-desc">{{ errorMessage }}</p>
         <button type="button" class="gjod-retry" @click="bootstrap">重新加载</button>
       </div>
@@ -75,9 +74,6 @@
         </div>
 
         <div class="gjod-hero">
-          <div class="gjod-hero-head">
-            <span class="gjod-hero-label">公交出行OD总量</span>
-          </div>
           <p class="gjod-hero-value">
             <strong>{{ formatInt(scopeTotal) }}</strong>
             <em>人次</em>
@@ -122,9 +118,6 @@
               </button>
             </li>
           </ol>
-          <p v-if="rankRows.length > visibleRankRows.length" class="gjod-rank-footnote">
-            按人次排序，显示前 {{ visibleRankRows.length }} 对（共 {{ rankRows.length }} 对，不含同街道内部出行）
-          </p>
         </div>
       </template>
     </div>
@@ -159,10 +152,9 @@
 
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch, inject, markRaw } from "vue";
-import { LineLayer, PathLayer } from "@deck.gl/layers";
+import { LineLayer } from "@deck.gl/layers";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
-import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 import {
   getCachedTripEndsOdGrid,
   getCachedTripEndsOdStreets,
@@ -174,7 +166,6 @@ import { fetchStreetsGeojsonOnce, streetCentroidsByCode } from "../utils/streets
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import { mercatorToLngLat, densityClassIndex, buildDensityLegendItems } from "../utils/populationGrid.js";
 import { OD_STREET_UNASSIGNED, parseBusOdGrid, quantileBreaks } from "../utils/busOdGrid.js";
-import { curvedLineCoordinates } from "../utils/flowCurves.js";
 
 const props = defineProps({
   model: String,
@@ -465,38 +456,7 @@ function odLineLayerInstance() {
   // 流量升序绘制：主走廊后画压在细线之上（deck 按数据顺序渲染）
   const ordered = [...lines].sort((a, b) => a.flow - b.flow);
 
-  // 真实客流的站点/栅格非常密集，直连会把相邻 OD 画成成排平行线，既难辨识
-  // 起讫关系也容易误读为实际道路。改用 Web Mercator 空间计算的期望曲线；
-  // 仿真数据继续保留既有直线表现，避免无关视觉口径变化。
-  if (isRealDatasource(props.model)) {
-    const paths = ordered.map((line) => {
-      const cls = densityClassIndex(line.flow, breaks);
-      const [r, g, b] = rgb[Math.min(cls, rgb.length - 1)];
-      return {
-        path: curvedLineCoordinates(line.from, line.to, {
-          curvature: 0.16,
-          segments: 20,
-          side: 1,
-        }),
-        color: [r, g, b, theme.alpha],
-        width: widths[Math.min(cls, widths.length - 1)],
-      };
-    });
-    return new PathLayer({
-      id: OD_LINE_LAYER_KEY,
-      beforeId: STREET_LABEL_ID,
-      data: paths,
-      getPath: (item) => item.path,
-      getColor: (item) => item.color,
-      getWidth: (item) => item.width,
-      widthUnits: "pixels",
-      widthMinPixels: 1,
-      capRounded: true,
-      jointRounded: true,
-      pickable: false,
-    });
-  }
-
+  // 仿真与真实模式共用同一组直线几何、分级色带和线宽。
   const count = ordered.length;
   const source = new Float64Array(count * 2);
   const target = new Float64Array(count * 2);
@@ -869,6 +829,7 @@ onUnmounted(() => {
 .gjod-rank-head {
   display: flex;
   align-items: baseline;
+  gap: 6px;
   padding: 0 2px 6px;
   border-bottom: 1px solid var(--dm2-line-faint);
   color: var(--dm2-muted);
@@ -878,14 +839,17 @@ onUnmounted(() => {
 
 .gjod-rank-head-name {
   flex: 1;
+  min-width: 0;
 }
 
 .gjod-rank-head-value {
+  flex-shrink: 0;
   width: 84px;
   text-align: right;
 }
 
 .gjod-rank-head-share {
+  flex-shrink: 0;
   width: 56px;
   text-align: right;
 }

@@ -213,8 +213,8 @@ export function getCachedPopulationSummary(model) {
   return sharedModelPanelRequest(model, "populationSummary", getPopulationSummary);
 }
 
-export function getCachedPopulationStreets(model) {
-  return sharedModelPanelRequest(model, "populationStreets", getPopulationStreets);
+export function getCachedPopulationStreets(model, version = "") {
+  return sharedModelPanelRequest(model, `populationStreets@${String(version)}`, getPopulationStreets);
 }
 
 // 人口栅格二进制：按模型键控缓存 ArrayBuffer + 并发去重（与换乘事件表同构）。
@@ -222,8 +222,9 @@ export function getCachedPopulationGrid(model, version = "") {
   const key = modelKey(model);
   if (!key) return Promise.resolve(null);
   const entry = entryFor(key);
-  const dataKey = "populationGridData";
-  const promiseKey = "populationGridPromise";
+  const versionKey = String(version);
+  const dataKey = `populationGridData@${versionKey}`;
+  const promiseKey = `populationGridPromise@${versionKey}`;
   if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
   if (entry[promiseKey]) return entry[promiseKey];
 
@@ -255,6 +256,26 @@ export function getCachedPopulationGrid(model, version = "") {
     });
 
   return entry[promiseKey];
+}
+
+/** 人口缓存契约升级时只清理人口工件，不影响同模型的线路/站点等大缓存。 */
+export function invalidateCachedPopulationBundle(model) {
+  const key = modelKey(model);
+  const entry = modelCache.get(key);
+  if (!key || !entry) return;
+  for (const field of Object.keys(entry)) {
+    if (field.startsWith("populationSummary")
+        || field.startsWith("populationStreets")
+        || field.startsWith("populationGrid")) {
+      delete entry[field];
+    }
+  }
+  for (const [pendingKey, controller] of pendingControllers.entries()) {
+    if (pendingKey.startsWith(`${key}::population`)) {
+      controller.abort();
+      pendingControllers.delete(pendingKey);
+    }
+  }
 }
 
 export function getCachedTripEndsSummary(model) {

@@ -14,7 +14,6 @@
     <div class="gkl-card" aria-label="公交客流走廊面板">
       <div class="gkl-title">
         <h2>公交客流走廊</h2>
-        <span class="gkl-scope" :title="`显示范围：${scopeLabel}`">{{ scopeLabel }}</span>
       </div>
 
       <!-- 状态机：生成中 / 加载 / 失败 整块替换正文，避免状态浮在 0 值上 -->
@@ -50,17 +49,6 @@
       </div>
 
       <template v-else>
-        <div class="gkl-hero">
-          <div class="gkl-hero-head">
-            <span class="gkl-hero-label">最大断面客流</span>
-          </div>
-          <p class="gkl-hero-value">
-            <strong>{{ formatInt(scopeMaxFlow) }}</strong>
-            <em>人次</em>
-          </p>
-          <p class="gkl-hero-sub">{{ scopeLabel }}内公交经过路段 {{ formatInt(scopeSegmentCount) }} 段</p>
-        </div>
-
         <template v-if="!isRealMode">
           <div v-if="!rankRows.length" class="gkl-status" role="status">
             <span class="gkl-status-icon" aria-hidden="true">
@@ -76,7 +64,7 @@
           <div v-else class="gkl-road-rank">
             <div class="gkl-rank-head" aria-hidden="true">
               <span class="gkl-rank-head-name">{{ corridorUnitLabel }}</span>
-              <span class="gkl-rank-head-value">断面客流</span>
+              <span class="gkl-rank-head-value">客流</span>
             </div>
             <ol class="gkl-rank-list">
               <li v-for="row in rankRows" :key="row.nameIdx">
@@ -88,7 +76,7 @@
                 >
                   <span class="gkl-rank-main">
                     <span class="gkl-rank-name">{{ row.name }}</span>
-                    <span class="gkl-rank-value">{{ formatInt(row.flow) }}</span>
+                    <span class="gkl-rank-value">{{ formatInt(row.flow) }} <em class="gkl-rank-unit">人次/日</em></span>
                   </span>
                   <span class="gkl-rank-bar" aria-hidden="true">
                     <span class="gkl-rank-bar-fill" :style="{ width: row.barWidth }"></span>
@@ -96,9 +84,6 @@
                 </button>
               </li>
             </ol>
-            <p class="gkl-rank-footnote">
-              按{{ corridorUnitLabel }}最高断面客流排序，显示前 {{ rankRows.length }} 名（{{ scopeLabel }}内共 {{ namedRoadCount }} 个{{ corridorUnitLabel }}）
-            </p>
           </div>
         </template>
       </template>
@@ -726,6 +711,7 @@ onUnmounted(() => {
 .gkl-rank-head {
   display: flex;
   align-items: baseline;
+  gap: 6px;
   padding: 0 2px 6px;
   border-bottom: 1px solid var(--dm2-line-faint);
   color: var(--dm2-muted);
@@ -735,10 +721,12 @@ onUnmounted(() => {
 
 .gkl-rank-head-name {
   flex: 1;
+  min-width: 0;
 }
 
 .gkl-rank-head-value {
-  width: 88px;
+  flex-shrink: 0;
+  width: 116px;
   text-align: right;
 }
 
@@ -788,12 +776,20 @@ onUnmounted(() => {
 
 .gkl-rank-value {
   flex-shrink: 0;
-  width: 88px;
+  width: 116px;
   text-align: right;
   color: var(--dm2-ink);
   font-size: 12.5px;
   font-weight: 760;
   font-variant-numeric: tabular-nums;
+}
+
+.gkl-rank-unit {
+  margin-left: 3px;
+  color: var(--dm2-muted);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 600;
 }
 
 .gkl-rank-bar {

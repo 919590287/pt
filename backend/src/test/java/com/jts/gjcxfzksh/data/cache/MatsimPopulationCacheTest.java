@@ -84,32 +84,35 @@ class MatsimPopulationCacheTest {
 
     /** 按 §3 布局逐字段回读 grid.bin。 */
     private record DecodedGrid(int version, int count, double mercCellSize,
-                               int[] i, int[] j, long[] home, long[] work, int[] street) {
+                               int[] i, int[] j, long[] home, long[] work, long[] resident, int[] street) {
     }
 
     private static DecodedGrid decode(byte[] bin) {
-        assertEquals(0, (bin.length - 18) % 18, "记录区必须是 18B 的整数倍");
         ByteBuffer buffer = ByteBuffer.wrap(bin).order(ByteOrder.LITTLE_ENDIAN);
         byte[] magic = new byte[4];
         buffer.get(magic);
         assertArrayEquals(new byte[]{'P', 'G', 'R', 'D'}, magic, "magic 必须为 ASCII PGRD");
         int version = Short.toUnsignedInt(buffer.getShort());
+        int recordBytes = version == 3 ? 22 : 18;
+        assertEquals(0, (bin.length - 18) % recordBytes, "记录区必须是单行字节数的整数倍");
         int count = buffer.getInt();
         double mercCellSize = buffer.getDouble();
         int[] i = new int[count];
         int[] j = new int[count];
         long[] home = new long[count];
         long[] work = new long[count];
+        long[] resident = new long[count];
         int[] street = new int[count];
         for (int r = 0; r < count; r++) {
             i[r] = buffer.getInt();
             j[r] = buffer.getInt();
             home[r] = Integer.toUnsignedLong(buffer.getInt());
             work[r] = Integer.toUnsignedLong(buffer.getInt());
+            resident[r] = version == 3 ? Integer.toUnsignedLong(buffer.getInt()) : home[r];
             street[r] = Short.toUnsignedInt(buffer.getShort());
         }
         assertEquals(0, buffer.remaining(), "bin 不得有多余字节（无对齐填充）");
-        return new DecodedGrid(version, count, mercCellSize, i, j, home, work, street);
+        return new DecodedGrid(version, count, mercCellSize, i, j, home, work, resident, street);
     }
 
     // ---------------------------------------------------------------- 提取口径（§1）
@@ -143,6 +146,7 @@ class MatsimPopulationCacheTest {
 
         assertEquals(5, aggregation.persons);
         assertEquals(4, aggregation.homePersons);  // p1/p2/p3/p5
+        assertEquals(2, aggregation.commuterHomePersons); // 仅 p1/p3 同时有 home/work
         assertEquals(2, aggregation.workPersons);  // p1/p3
         // 无街道索引：全部点计入 unassigned（对账口径 home/work 分开）
         assertEquals(4, aggregation.unassignedHome);
@@ -159,7 +163,10 @@ class MatsimPopulationCacheTest {
         assertEquals(0, aggregation.homeCells.get(MatsimPopulationCache.packCell(91, 91)));
         assertEquals(1, aggregation.workCells.get(MatsimPopulationCache.packCell(2, 2)));   // p1 (210,210)
         assertEquals(1, aggregation.workCells.get(MatsimPopulationCache.packCell(3, 3)));   // p3 (310,310)
+        assertEquals(1, aggregation.commuterHomeCells.get(MatsimPopulationCache.packCell(0, 0))); // p1
+        assertEquals(1, aggregation.commuterHomeCells.get(MatsimPopulationCache.packCell(-1, -1))); // p3
         assertEquals(3, aggregation.homeCells.size());
+        assertEquals(2, aggregation.commuterHomeCells.size());
         assertEquals(2, aggregation.workCells.size());
     }
 
@@ -217,7 +224,7 @@ class MatsimPopulationCacheTest {
         Map<String, Object> summary =
                 MatsimPopulationCache.assemble(aggregation, null, 1.0).summary;
 
-        assertEquals("population-v10", summary.get("cacheVersion"));
+        assertEquals("population-v11", summary.get("cacheVersion"));
         assertEquals("ready", summary.get("busServiceJourneyStatus"));
         assertEquals(0.75, ((Number) summary.get("averageBusTransfers")).doubleValue(), 1e-9);
         assertEquals(25.0, ((Number) summary.get("busRailFeederPercent")).doubleValue(), 1e-9);
@@ -394,19 +401,25 @@ class MatsimPopulationCacheTest {
         assertEquals(index.street(0).code(), rows.get(0).get("code"));
         assertEquals(index.street(0).name(), rows.get(0).get("name"));
         assertEquals(1, rows.get(0).get("home"));
-        assertEquals(2, rows.get(1).get("home"));
+        assertEquals(1, rows.get(1).get("home"));
+        assertEquals(1, rows.get(0).get("resident"));
+        assertEquals(2, rows.get(1).get("resident"));
         assertEquals(1, rows.get(2).get("work"));
 
         long sumHome = rows.stream().mapToLong(r -> ((Number) r.get("home")).longValue()).sum();
         long sumWork = rows.stream().mapToLong(r -> ((Number) r.get("work")).longValue()).sum();
+        long sumResident = rows.stream().mapToLong(r -> ((Number) r.get("resident")).longValue()).sum();
         Map<String, Object> totals = (Map<String, Object>) streetsPayload.get("totals");
         assertEquals(sumHome, ((Number) totals.get("home")).longValue());
         assertEquals(sumWork, ((Number) totals.get("work")).longValue());
+        assertEquals(sumResident, ((Number) totals.get("resident")).longValue());
 
         Map<String, Object> summary = artifacts.summary;
         // §6 对账恒等式：streets 总和 + unassigned == homePersons/workPersons
+        assertEquals(((Number) summary.get("commuterHomePersons")).longValue(),
+                sumHome + ((Number) summary.get("unassignedCommuterHome")).longValue());
         assertEquals(((Number) summary.get("homePersons")).longValue(),
-                sumHome + ((Number) summary.get("unassignedHome")).longValue());
+                sumResident + ((Number) summary.get("unassignedHome")).longValue());
         assertEquals(((Number) summary.get("workPersons")).longValue(),
                 sumWork + ((Number) summary.get("unassignedWork")).longValue());
         assertEquals(4L, ((Number) summary.get("persons")).longValue());
@@ -415,17 +428,20 @@ class MatsimPopulationCacheTest {
         assertEquals(1L, ((Number) summary.get("unassignedHome")).longValue());
         assertEquals(1L, ((Number) summary.get("unassignedWork")).longValue());
 
-        // grid 与 summary 跨工件对账：cell home/work 总和 == homePersons/workPersons
+        // grid 与 summary 跨工件对账：home/work/resident 分别对应通勤居住地/就业地/常住人口。
         DecodedGrid grid = decode(artifacts.gridBin);
         assertEquals(((Number) summary.get("gridCells")).intValue(), grid.count());
         long gridHome = 0;
         long gridWork = 0;
+        long gridResident = 0;
         for (int r = 0; r < grid.count(); r++) {
             gridHome += grid.home()[r];
             gridWork += grid.work()[r];
+            gridResident += grid.resident()[r];
         }
-        assertEquals(4, gridHome);
+        assertEquals(2, gridHome);
         assertEquals(2, gridWork);
+        assertEquals(4, gridResident);
         assertEquals(1.0, (Double) summary.get("scale"), 1e-9);
         assertEquals(100, summary.get("cellSizeMeters"));
         assertEquals(aggregation.mercCellSize, (Double) summary.get("mercCellSize"), 0.0);
@@ -503,7 +519,7 @@ class MatsimPopulationCacheTest {
         byte[] bin = MatsimPopulationCache.readGridBytes(data);
         assertNotNull(bin);
         DecodedGrid grid = decode(bin);
-        assertEquals(2, grid.version());
+        assertEquals(3, grid.version());
         assertEquals(MatsimPopulationCache.mercCellSize(data.getCenter()), grid.mercCellSize(), 0.0);
 
         String tag = MatsimPopulationCache.gridBinTag(data);

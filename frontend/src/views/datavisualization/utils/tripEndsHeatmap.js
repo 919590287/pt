@@ -6,10 +6,10 @@ const EMPTY_COLLECTION = Object.freeze({
 });
 
 /**
- * 把真实站点起终点单元转换为核密度热力点。
+ * 把出行起终点单元转换为核密度热力点，供仿真与真实数据共用。
  *
- * 权重使用 sqrt(flow / maxFlow)：保持真实客流排序，同时压缩长尾差异，避免真实站点较少时
- * 只有最大站点可见。经纬度取 100m 单元中心，不再使用方格西南角。
+ * 权重使用 sqrt(flow / maxFlow)：保持客流排序，同时压缩长尾差异，避免只有最大流量单元可见。
+ * 经纬度取单元中心，不使用方格西南角。
  */
 export function buildTripEndsHeatmapFeatureCollection(grid, counts) {
   if (!grid || !counts || grid.count <= 0) {
@@ -68,4 +68,3 @@ export function filterTripEndsHeatmapFeatureCollection(payload, scopeStreetMask)
     collection: { type: "FeatureCollection", features },
   };
 }
-

@@ -4,10 +4,10 @@ export const RIGHT_PANEL_RANK_LIMIT = 10;
 
 /** 客流分析与运行监测共用的未选中线路排名指标。 */
 export const LINE_RANK_METRICS = Object.freeze([
-  Object.freeze({ key: "flow", label: "线路总客流量", header: "总客流量", unit: "人次", decimals: 0 }),
+  Object.freeze({ key: "flow", label: "线路总客流量", header: "总客流量", unit: "人次/日", decimals: 0 }),
   Object.freeze({ key: "perVehicleFlow", label: "车均日载客量", header: "车均日载客", unit: "人次/车·日", decimals: 0 }),
   Object.freeze({ key: "perTripFlow", label: "单班次载客量", header: "单班次载客", unit: "人次/班", decimals: 0 }),
-  Object.freeze({ key: "strength", label: "客流强度", header: "客流强度", unit: "人次/车公里", decimals: 2 }),
+  Object.freeze({ key: "strength", label: "客流强度", header: "客流强度", unit: "人次/车公里·日", decimals: 2 }),
   Object.freeze({ key: "peakLoadRate", label: "平均高峰满载率", header: "平均高峰满载率", unit: "%", decimals: 2 }),
 ]);
 

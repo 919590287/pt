@@ -48,20 +48,21 @@ import java.util.TreeSet;
 import java.util.zip.GZIPInputStream;
 
 /**
- * 公交出行监测 · 人口分布监测缓存家族（设计文档《公交出行监测人口分布模块设计方案》§1/§2/§3）。
+ * 运行监测 · 人口分布监测缓存家族。
  * <p>
  * 模型加载时从 MATSim plans 抽取每人的居住点 / 就业点，产出三个工件
  * （全部为加载模型的原始量，平台不做任何抽样、扩大或缩小）：
  * <ul>
  *   <li>{@code population-summary.json}：总量指标 + 活动类型集合（右侧首屏直出）；</li>
- *   <li>{@code population-grid.bin}：100 米栅格二进制表（§3 前后端二进制契约，行式 16B/cell）；</li>
+ *   <li>{@code population-grid.bin}：100 米栅格二进制表（v3，行式 22B/cell）；</li>
  *   <li>{@code population-streets.json}：176 街道全量统计（含 0 值）+ totals。</li>
  * </ul>
  * 口径契约（§1，任何改动必须 bump {@link #POPULATION_CACHE_VERSION}）：
  * <ul>
- *   <li>居住点 = 明确 selectedPlan 中
+ *   <li>常住人口位置 = 明确 selectedPlan 中
  *       第一个 {@code type.toLowerCase().startsWith("home")} 且坐标非空的活动；就业点同理取 {@code work*}
- *       前缀（无 work 活动的人不计入就业人口）；type 含 {@code interaction} 的中转活动一律跳过；
+ *       前缀；有 work 活动的人计入通勤人口，分别以其 home/work 坐标聚合居住地/就业地；
+ *       type 含 {@code interaction} 的中转活动一律跳过；
  *       坐标为 null 的活动跳过该点（继续向后找同前缀活动）。</li>
  *   <li>栅格：EPSG:3857 平面上 {@code mercCellSize = 100 / cos(centerLat)}（centerLat 由
  *       {@code data.getCenter()} 反算，纬度公式与 MatsimTransferCache.groundDistanceMeters 同源），
@@ -93,7 +94,9 @@ public final class MatsimPopulationCache {
     //     新增 residentBusJourneys 和 residentUnresolvedLegacyPtJourneys 供严格口径审计。
     // v9: 新增高峰小汽车运行速度、公交平均换乘次数、公交—轨道接驳比例的完整 OD 分母；
     //     平均候车继续按公交上车样本加权，供大小模型共用同一缓存结果。
-    public static final String POPULATION_CACHE_VERSION = "population-v10";
+    // v11: 人口栅格升级为 v3：home=有 work 活动者的居住地，work=其就业地，
+    //      resident=原 home 口径（常住人口），与真实人口数据三列契约统一。
+    public static final String POPULATION_CACHE_VERSION = "population-v11";
 
     /** 栅格边长（地面米，§1）。栅格实际投影边长 mercCellSize 随模型中心纬度修正。 */
     static final double CELL_SIZE_METERS = 100.0;
@@ -315,10 +318,12 @@ public final class MatsimPopulationCache {
             MatsimCachePaths.deleteOtherVersions(data, "population-v", POPULATION_CACHE_VERSION);
             MEMORY_CACHE.remove(cacheKey(summaryPath(data)));
             MEMORY_CACHE.remove(cacheKey(streetsPath(data)));
-            log.info("人口分布缓存生成完成: model={}, persons={}, home={}, work={}, unassigned={}/{}, "
+            log.info("人口分布缓存生成完成: model={}, persons={}, resident={}, commuterHome={}, commuterWork={}, "
+                            + "unassigned={}/{}/{}, "
                             + "gridCells={}, bin={}B, 耗时={}ms",
                     data.getName(), artifacts.summary.get("persons"), artifacts.summary.get("homePersons"),
-                    artifacts.summary.get("workPersons"), artifacts.summary.get("unassignedHome"),
+                    artifacts.summary.get("commuterHomePersons"), artifacts.summary.get("workPersons"),
+                    artifacts.summary.get("unassignedHome"), artifacts.summary.get("unassignedCommuterHome"),
                     artifacts.summary.get("unassignedWork"), artifacts.summary.get("gridCells"),
                     artifacts.gridBin.length, System.currentTimeMillis() - startedAt);
         } catch (Exception e) {
@@ -416,15 +421,19 @@ public final class MatsimPopulationCache {
         private final CoverageIndex coverageIndex;
         private final TransitMetrics.RoadTransitContext roadTransit;
         final Long2IntOpenHashMap homeCells = new Long2IntOpenHashMap();
+        final Long2IntOpenHashMap commuterHomeCells = new Long2IntOpenHashMap();
         final Long2IntOpenHashMap workCells = new Long2IntOpenHashMap();
         final int[] streetHome;
+        final int[] streetCommuterHome;
         final int[] streetWork;
         final TreeSet<String> homeTypes = new TreeSet<>();
         final TreeSet<String> workTypes = new TreeSet<>();
         long persons;
         long homePersons;
+        long commuterHomePersons;
         long workPersons;
         long unassignedHome;
+        long unassignedCommuterHome;
         long unassignedWork;
         long transformFailures;
         long coveredPersons;
@@ -476,6 +485,7 @@ public final class MatsimPopulationCache {
             this.coverageIndex = coverageIndex;
             this.roadTransit = roadTransit;
             this.streetHome = new int[streets == null ? 0 : streets.size()];
+            this.streetCommuterHome = new int[streets == null ? 0 : streets.size()];
             this.streetWork = new int[streets == null ? 0 : streets.size()];
         }
 
@@ -522,6 +532,10 @@ public final class MatsimPopulationCache {
             if (work != null) {
                 workPersons++;
                 addPoint(work, false);
+                if (home != null) {
+                    commuterHomePersons++;
+                    addCommuterHomePoint(home);
+                }
             }
         }
 
@@ -658,6 +672,13 @@ public final class MatsimPopulationCache {
             }
         }
 
+        private void addCommuterHomePoint(Coord coord) {
+            commuterHomeCells.addTo(cellKey(coord.getX(), coord.getY(), mercCellSize), 1);
+            int streetIdx = streetLocator == null ? -1 : streetLocator.locate(coord.getX(), coord.getY());
+            if (streetIdx >= 0) streetCommuterHome[streetIdx]++;
+            else unassignedCommuterHome++;
+        }
+
         /** worker 私有聚合结果的确定性合并。 */
         void mergeFrom(Aggregation other) {
             if (other == null) {
@@ -666,19 +687,25 @@ public final class MatsimPopulationCache {
             for (Long2IntOpenHashMap.Entry entry : other.homeCells.long2IntEntrySet()) {
                 homeCells.addTo(entry.getLongKey(), entry.getIntValue());
             }
+            for (Long2IntOpenHashMap.Entry entry : other.commuterHomeCells.long2IntEntrySet()) {
+                commuterHomeCells.addTo(entry.getLongKey(), entry.getIntValue());
+            }
             for (Long2IntOpenHashMap.Entry entry : other.workCells.long2IntEntrySet()) {
                 workCells.addTo(entry.getLongKey(), entry.getIntValue());
             }
             for (int i = 0; i < streetHome.length; i++) {
                 streetHome[i] += other.streetHome[i];
+                streetCommuterHome[i] += other.streetCommuterHome[i];
                 streetWork[i] += other.streetWork[i];
             }
             homeTypes.addAll(other.homeTypes);
             workTypes.addAll(other.workTypes);
             persons += other.persons;
             homePersons += other.homePersons;
+            commuterHomePersons += other.commuterHomePersons;
             workPersons += other.workPersons;
             unassignedHome += other.unassignedHome;
+            unassignedCommuterHome += other.unassignedCommuterHome;
             unassignedWork += other.unassignedWork;
             transformFailures += other.transformFailures;
             coveredPersons += other.coveredPersons;
@@ -1083,8 +1110,9 @@ public final class MatsimPopulationCache {
     }
 
     static Artifacts assemble(Aggregation aggregation, StreetIndex streets, double ignoredLegacyScale) {
-        byte[] gridBin = encodeGrid(aggregation.homeCells, aggregation.workCells, aggregation.mercCellSize, streets);
-        int gridCells = (gridBin.length - BIN_HEADER_BYTES) / BIN_BYTES_PER_CELL;
+        byte[] gridBin = encodePopulationGridV3(aggregation.commuterHomeCells, aggregation.workCells,
+                aggregation.homeCells, aggregation.mercCellSize, streets);
+        int gridCells = (gridBin.length - BIN_HEADER_BYTES) / 22;
         return new Artifacts(gridBin, buildSummary(aggregation, gridCells),
                 buildStreets(aggregation, streets));
     }
@@ -1126,6 +1154,38 @@ public final class MatsimPopulationCache {
         return buffer.array();
     }
 
+    /** 人口分布专用 v3：home=通勤居住地、work=通勤就业地、resident=常住人口。 */
+    static byte[] encodePopulationGridV3(Long2IntOpenHashMap homeCells, Long2IntOpenHashMap workCells,
+                                         Long2IntOpenHashMap residentCells, double mercCellSize,
+                                         StreetIndex streets) {
+        LongOpenHashSet keySet = new LongOpenHashSet(homeCells.keySet());
+        keySet.addAll(workCells.keySet());
+        keySet.addAll(residentCells.keySet());
+        long[] keys = keySet.toLongArray();
+        Arrays.sort(keys);
+        ByteBuffer buffer = ByteBuffer.allocate(BIN_HEADER_BYTES + 22 * keys.length)
+                .order(ByteOrder.LITTLE_ENDIAN);
+        buffer.put(BIN_MAGIC);
+        buffer.putShort((short) 3);
+        buffer.putInt(keys.length);
+        buffer.putDouble(mercCellSize);
+        for (long key : keys) {
+            buffer.putInt(cellI(key));
+            buffer.putInt(cellJ(key));
+            buffer.putInt(homeCells.get(key));
+            buffer.putInt(workCells.get(key));
+            buffer.putInt(residentCells.get(key));
+            int street = STREET_SENTINEL;
+            if (streets != null) {
+                int idx = streets.locate((cellI(key) + 0.5) * mercCellSize,
+                        (cellJ(key) + 0.5) * mercCellSize);
+                if (idx >= 0) street = idx;
+            }
+            buffer.putShort((short) street);
+        }
+        return buffer.array();
+    }
+
     /** population-summary.json（§2 表；所有数量均为模型文件中的原始值）。 */
     private static Map<String, Object> buildSummary(Aggregation aggregation, int gridCells) {
         Map<String, Object> summary = new LinkedHashMap<>();
@@ -1139,8 +1199,10 @@ public final class MatsimPopulationCache {
         summary.put("gridCells", gridCells);
         summary.put("persons", aggregation.persons);
         summary.put("homePersons", aggregation.homePersons);
+        summary.put("commuterHomePersons", aggregation.commuterHomePersons);
         summary.put("workPersons", aggregation.workPersons);
         summary.put("unassignedHome", aggregation.unassignedHome);
+        summary.put("unassignedCommuterHome", aggregation.unassignedCommuterHome);
         summary.put("unassignedWork", aggregation.unassignedWork);
         summary.put("homeTypes", new ArrayList<>(aggregation.homeTypes));
         summary.put("workTypes", new ArrayList<>(aggregation.workTypes));
@@ -1230,18 +1292,19 @@ public final class MatsimPopulationCache {
 
     /**
      * population-streets.json（§2 表）：176 街道全量（含 0 值，顺序 = 资源文件序）+ totals。
-     * 对账恒等式（§6）：sum(streets.home) + unassignedHome == homePersons（work 同理）。
+     * 对账恒等式：home 对 commuterHomePersons，work 对 workPersons，resident 对 homePersons。
      */
     private static Map<String, Object> buildStreets(Aggregation aggregation, StreetIndex streets) {
         if (streets == null) {
             return Map.of(
                     "streets", List.of(),
-                    "totals", Map.of("home", 0L, "work", 0L)
+                    "totals", Map.of("home", 0L, "work", 0L, "resident", 0L)
             );
         }
         List<Map<String, Object>> rows = new ArrayList<>(streets.size());
         long totalHome = 0;
         long totalWork = 0;
+        long totalResident = 0;
         for (int i = 0; i < streets.size(); i++) {
             StreetRef street = streets.street(i);
             Map<String, Object> row = new LinkedHashMap<>();
@@ -1249,15 +1312,18 @@ public final class MatsimPopulationCache {
             row.put("name", street.name());
             row.put("district", street.district());
             row.put("areaKm2", street.areaKm2());
-            row.put("home", aggregation.streetHome[i]);
+            row.put("home", aggregation.streetCommuterHome[i]);
             row.put("work", aggregation.streetWork[i]);
+            row.put("resident", aggregation.streetHome[i]);
             rows.add(row);
-            totalHome += aggregation.streetHome[i];
+            totalHome += aggregation.streetCommuterHome[i];
             totalWork += aggregation.streetWork[i];
+            totalResident += aggregation.streetHome[i];
         }
         Map<String, Object> totals = new LinkedHashMap<>();
         totals.put("home", totalHome);
         totals.put("work", totalWork);
+        totals.put("resident", totalResident);
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("streets", rows);
         payload.put("totals", totals);
