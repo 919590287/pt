@@ -6,10 +6,14 @@ import {
 } from "./adminDistrictRange.js";
 
 describe("admin district outline", () => {
-  it("全平台统一使用黑色虚线", () => {
-    const style = adminDistrictOutlineStyle();
-    expect(style.paint["line-color"]).toBe("#000000");
-    expect(style.paint["line-dasharray"]).toEqual([3.2, 2.4]);
+  it("全平台统一行政区边界描边虚线，支持暗色底图下切换为白色", () => {
+    const styleLight = adminDistrictOutlineStyle(false);
+    expect(styleLight.paint["line-color"]).toBe("#000000");
+    expect(styleLight.layout["line-cap"]).toBe("butt");
+    expect(styleLight.paint["line-dasharray"]).toEqual([2.5, 2.5]);
+
+    const styleDark = adminDistrictOutlineStyle(true);
+    expect(styleDark.paint["line-color"]).toBe("#ffffff");
   });
 
   it("将融合后的多面行政区完整转成多线描边", () => {

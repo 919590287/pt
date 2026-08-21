@@ -971,6 +971,12 @@ html.dark .dm-sidebar {
   box-shadow: 16px 0 48px -24px rgba(2, 6, 12, 0.6), var(--dm2-glass-highlight);
 }
 
+/* 暗色下右侧数据面板与左侧导航同色（统一按 .dm-sidebar 的渐变基底） */
+html.dark .dm-overview-panel,
+html.dark .dm-edit-panel {
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.97), rgba(13, 18, 25, 0.94)) !important;
+}
+
 html.dark .nav-item:hover,
 html.dark .sub-nav-item:hover {
   background: rgba(148, 180, 220, 0.08) !important;

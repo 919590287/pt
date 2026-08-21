@@ -3,6 +3,7 @@ package com.jts.gjcxfzksh.data.id;
 import lombok.Data;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 
 import java.io.Serializable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,7 +18,8 @@ public class LinkId extends Id<Link> implements Serializable {
     /**
      * 缓存重复的id不重复创建
      */
-    private static final ConcurrentMap<Id<Link>, LinkId> cache = new ConcurrentHashMap<>();
+    private static final BackendMemoryCache<Id<Link>, LinkId> cache =
+            new BackendMemoryCache<>("id-link", 16L * 1024 * 1024, ignored -> 160L);
 
     /**
      * id

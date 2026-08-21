@@ -362,6 +362,7 @@ import { useModelSelectionStore } from "@/stores/modelSelection.js";
 import { useModelRuntimeStore } from "@/stores/modelRuntime.js";
 import { useDisplayRangeStore } from "@/stores/displayRange.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { isDarkTheme } from "@/utils/uiTheme.js";
 import { isMetroLine } from "@/utils/transitMode.js";
 import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
 import {
@@ -375,13 +376,13 @@ import {
 import { lngLatToWebMercator, webMercatorToLngLat } from "@/mymap/main/MyMap.js";
 import { TransferLayerManager, emptyFeatureCollection, rampColorFor, timeRampColors } from "./layers/transferLayers.js";
 import { HubFlowDeckLayerManager, buildHubFlowPaths } from "./layers/hubFlowDeckLayers.js";
+import OverviewSection from "./sections/OverviewSection.vue";
+import HubSection from "./sections/HubSection.vue";
+import FeederSection from "./sections/FeederSection.vue";
 import { clipLineFeatureToDistrict, createBoundaryIndex } from "../datamanagement/districtFilterCore.js";
 import { fmtCount } from "./chartOptions.js";
 import "../datamanagement/tokens.css";
 
-const OverviewSection = defineAsyncComponent(() => import("./sections/OverviewSection.vue"));
-const HubSection = defineAsyncComponent(() => import("./sections/HubSection.vue"));
-const FeederSection = defineAsyncComponent(() => import("./sections/FeederSection.vue"));
 const ChartFullscreenDialog = defineAsyncComponent(() => import("./ChartFullscreenDialog.vue"));
 
 // KeepAlive 缓存名（MapLayout include）
@@ -574,6 +575,7 @@ async function startPipeline() {
   metroNetwork.value = emptyFeatureCollection();
   layerMgr?.setMetroNetwork(metroNetwork.value);
   agg.value = null;
+  aggregatePayloadCache.clear();
   hubOptions.value = [];
   metroLineOptions.value = [];
   if (!isSimulationMode.value || !name) {
@@ -650,8 +652,11 @@ async function startPipeline() {
     hubOptions.value = (ready.hubsSorted || []).map((h) => ({ ...h, name: hubName(h.idx) }));
     metroLineOptions.value = (ready.metroLinesSorted || []).map((line) => ({ ...line, name: metroLineName(line.idx) }));
 
+    // 首屏聚合也属于装载阶段：数据真正可渲染后再打开右侧面板，避免先出现空面板、
+    // 随后补数据的闪烁。后续三个模块的未选态直接复用这一份全网 payload。
+    await requestAggregate({ allowBeforeReady: true });
+    if (seq !== pipelineSeq) return;
     transferPhase.value = "ready";
-    await requestAggregate();
   } catch (error) {
     if (seq !== pipelineSeq) return;
     gateError.value = String(error?.message || error || "数据装载失败");
@@ -957,6 +962,9 @@ const agg = shallowRef(null);
 const aggBusy = ref(false);
 const hubOptions = shallowRef([]);
 const metroLineOptions = shallowRef([]);
+// Worker 返回值在主线程再保留一层轻量索引。三个模块未选对象时使用完全相同的
+// 全网聚合口径，因此共享同一份 payload，切页签无需再次跨线程复制大对象。
+const aggregatePayloadCache = new Map();
 
 function filtersFor(module) {
   const base = {
@@ -995,28 +1003,53 @@ function filtersFor(module) {
   return base;
 }
 
+// 未选对象时仍按当前模块聚合：worker 恒返回 hubs/metroLines 排名，只是不带选中详情，
+// 正是站点/线路分析未选态要渲染的排名口径。此处返回 null 会清空 agg，
+// 面板先用上一模块的 agg 渲染出排名、180ms 后又被清掉（先出现后消失）。
 function effectiveModule() {
-  const m = activeModule.value;
-  if (m === "hub" && selection.hubId < 0) return null;
-  if (m === "feeder" && selection.metroLineId < 0) return null;
-  return m;
+  return activeModule.value;
+}
+
+function aggregatePayloadKey(module, requestFilters) {
+  const isCommonOverview = requestFilters.hubId < 0 && requestFilters.metroLineId < 0;
+  return JSON.stringify([
+    isCommonOverview ? "common" : module,
+    requestFilters,
+  ]);
+}
+
+function applyAggregatePayload(payload) {
+  agg.value = payload;
+  updateMapLayers(payload);
+}
+
+function cacheAggregatePayload(key, payload) {
+  if (aggregatePayloadCache.has(key)) aggregatePayloadCache.delete(key);
+  aggregatePayloadCache.set(key, payload);
+  while (aggregatePayloadCache.size > 24) {
+    aggregatePayloadCache.delete(aggregatePayloadCache.keys().next().value);
+  }
 }
 
 let aggregateSeq = 0;
-async function requestAggregate() {
-  if (transferPhase.value !== "ready") return;
+async function requestAggregate(options = {}) {
+  if (transferPhase.value !== "ready" && !options.allowBeforeReady) return;
   const seq = ++aggregateSeq;
   const module = effectiveModule();
-  if (!module) {
-    agg.value = null;
+  const requestFilters = filtersFor(module);
+  const cacheKey = aggregatePayloadKey(module, requestFilters);
+  const cachedPayload = aggregatePayloadCache.get(cacheKey);
+  if (cachedPayload) {
+    aggBusy.value = false;
+    applyAggregatePayload(cachedPayload);
     return;
   }
   aggBusy.value = true;
   try {
-    const msg = await postWorker({ type: "aggregate", module, filters: filtersFor(module) });
+    const msg = await postWorker({ type: "aggregate", module, filters: requestFilters });
     if (seq !== aggregateSeq) return;
-    agg.value = msg.payload;
-    updateMapLayers(msg.payload);
+    cacheAggregatePayload(cacheKey, msg.payload);
+    applyAggregatePayload(msg.payload);
   } catch (error) {
     if (seq !== aggregateSeq) return;
     agg.value = null;
@@ -1162,6 +1195,15 @@ watch(
 );
 watch(activeModule, () => {
   mapSearchFocused.value = false;
+  // 全网 payload 可直接复用：切换当帧同步替换右侧数据并应用该模块的地图显隐，
+  // 不等待 180ms 防抖，也不再出现上一模块的短暂残影。
+  if (transferPhase.value === "ready") {
+    const module = effectiveModule();
+    const requestFilters = filtersFor(module);
+    const cachedPayload = aggregatePayloadCache.get(aggregatePayloadKey(module, requestFilters));
+    if (cachedPayload) applyAggregatePayload(cachedPayload);
+    else if (agg.value) updateMapLayers(agg.value);
+  }
   if (selectedDisplayRange.value !== DISPLAY_RANGE_ALL) {
     nextTick(() => {
       void setMapCenter(modelName.value).catch((error) => {
@@ -1536,6 +1578,11 @@ function updateMapLayers(payload) {
 
   applyLayerVisibility();
 }
+
+// 切底图只换 raster 图层、不重建 style，铁路制式的主线/嵌槽色需手动跟随明暗
+watch(isDarkTheme, () => {
+  layerMgr?.applyRailwayTheme(activeModule.value === "feeder" && selection.metroLineId >= 0);
+});
 
 function applyLayerVisibility() {
   if (!layerMgr) return;

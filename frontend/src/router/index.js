@@ -57,10 +57,7 @@ const router = createRouter({
         },
         {
           path: "/passengerflowanalysis",
-          name: "passengerflowanalysis",
-          component: routeComponentLoaders.passengerflowanalysis,
-          props: { mode: "pfa" },
-          meta: { requiresModel: true },
+          redirect: "/datavisualization",
         },
         {
           path: "/transferanalysis",
@@ -84,7 +81,7 @@ const router = createRouter({
           path: "/vehiclecalculation",
           name: "vehiclecalculation",
           component: routeComponentLoaders.vehiclecalculation,
-          meta: { requiresModel: true },
+          meta: { requiresModel: false, maplessWorkspace: true },
         },
       ],
     },
@@ -105,6 +102,11 @@ router.beforeEach(async (to) => {
     if (to.meta?.requiresModel !== false) {
       import("@/stores/modelRuntime.js")
         .then(({ useModelRuntimeStore }) => useModelRuntimeStore().bootstrap())
+        .catch(() => {});
+      // 仿真仍是默认展示模式，但真实数据预热必须在路由与页面代码加载期间并行开始。
+      // 这样用户看到首屏后点击“真实”时通常只做内存引用切换，不再从零等待远程面板。
+      import("@/stores/dataSourceWarmup.js")
+        .then(({ useDataSourceWarmupStore }) => useDataSourceWarmupStore().warm())
         .catch(() => {});
     }
     const pageLoader = routeComponentLoaders[to.name];

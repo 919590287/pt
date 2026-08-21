@@ -85,6 +85,8 @@ export class CityBuildingsLayer extends Layer {
     this.minZoom = opt.minZoom ?? 12;
     this.prefetchMeters = opt.prefetchMeters ?? 900;
     this.updateDelay = opt.updateDelay ?? 60;
+    this.baseRetryDelay = opt.baseRetryDelay ?? 2000;
+    this.maxRetryDelay = opt.maxRetryDelay ?? 30000;
     this.maxFeatures = opt.maxFeatures ?? 20000;
     this.maxViewDistanceScale = Number.isFinite(Number(opt.maxViewDistanceScale)) ? Number(opt.maxViewDistanceScale) : 0.9;
     this.maxViewDistanceMeters = Number.isFinite(Number(opt.maxViewDistanceMeters)) ? Number(opt.maxViewDistanceMeters) : 6000;
@@ -110,6 +112,11 @@ export class CityBuildingsLayer extends Layer {
     this.hasBuildingData = false;
     this._loadTimer = null;
     this._controller = null;
+    // 连续失败的指数退避：相机每个 move/zoom 事件都会触发 scheduleLoad，后端异常时
+    // 一次缩放能打出十几个必败请求（并弹出同样多条错误提示）。失败后推迟下一次请求，
+    // 成功即清零。
+    this._failureCount = 0;
+    this._retryAt = 0;
     this._requestId = 0;
     this._stackFrame = null;
     this._styleDataHandler = null;
@@ -325,7 +332,9 @@ export class CityBuildingsLayer extends Layer {
     const delay = !this.hasBuildingData || !containsBounds(this.loadedBounds, visibleBounds, 0)
       ? 0
       : this.updateDelay;
-    this._loadTimer = window.setTimeout(() => this.loadBuildings(), delay);
+    // 退避期内相机继续动只会不断重排同一个延时任务，窗口到期时只发一次请求
+    const backoff = Math.max(0, this._retryAt - Date.now());
+    this._loadTimer = window.setTimeout(() => this.loadBuildings(), Math.max(delay, backoff));
   }
 
   cancelPendingLoad() {
@@ -367,6 +376,8 @@ export class CityBuildingsLayer extends Layer {
         { signal: this._controller.signal },
       );
       if (requestId !== this._requestId || this.isDisposed) return;
+      this._failureCount = 0;
+      this._retryAt = 0;
       this.loadedBounds = requestBounds;
       this.loadedZoom = requestZoom;
       this.responseLimited = !!(res.data?.truncated || res.data?.culled);
@@ -383,6 +394,12 @@ export class CityBuildingsLayer extends Layer {
     } catch (error) {
       if (error?.message !== "canceled" && error?.code !== "ERR_CANCELED") {
         console.warn("[CityBuildingsLayer] failed to load buildings:", error);
+        this._failureCount += 1;
+        const wait = Math.min(this.maxRetryDelay, this.baseRetryDelay * 2 ** (this._failureCount - 1));
+        this._retryAt = Date.now() + wait;
+        // 相机静止时不会再有事件唤醒加载，这里自行安排一次重试，后端恢复后能自动补上建筑
+        window.clearTimeout(this._loadTimer);
+        this._loadTimer = window.setTimeout(() => this.loadBuildings(), wait);
       }
     } finally {
       if (requestId === this._requestId) {

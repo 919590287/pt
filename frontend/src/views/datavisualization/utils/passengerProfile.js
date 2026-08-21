@@ -186,6 +186,15 @@ function cardPassengerGroup(demographics = {}, total = 0) {
 }
 
 export function passengerProfileRiderCount(demographics = {}) {
+  if (!demographics || typeof demographics !== "object" || !Object.keys(demographics).length) {
+    return 0;
+  }
+  if (!Object.prototype.hasOwnProperty.call(demographics, "riderCount")) {
+    const values = Object.values(demographics);
+    if (values.length && values.every((value) => Number.isFinite(Number(value)) && Number(value) === 0)) {
+      return 0;
+    }
+  }
   const direct = Number(demographics?.riderCount);
   if (!Number.isFinite(direct) || direct < 0) {
     throw new Error("客流画像缺少有效的 riderCount");

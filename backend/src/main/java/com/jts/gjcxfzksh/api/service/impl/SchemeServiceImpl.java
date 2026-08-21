@@ -84,8 +84,14 @@ public class SchemeServiceImpl implements SchemeService {
             throw new BusinessException("模型不存在或无权访问: " + name);
         }
         try {
-            Datasource.loadAsync(scheme);
-            modelCacheManager.enqueueIfMissing(scheme);
+            // 缓存完整时主进程只进入 VISUAL，不加载 plans/population/facilities。
+            // 缓存缺失时只登记用户需求，完整 COMPUTE 与派生工件由临时 Builder JVM 生成。
+            if (modelCacheManager.isReady(scheme)) {
+                Datasource.loadVisualAsync(scheme);
+            } else {
+                Datasource.awaitCacheThenLoadVisual(scheme);
+                modelCacheManager.enqueueIfMissing(scheme);
+            }
         } catch (Exception e) {
             if (e instanceof BusinessException businessException) {
                 throw businessException;

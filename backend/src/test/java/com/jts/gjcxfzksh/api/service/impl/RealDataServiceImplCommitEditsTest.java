@@ -3,6 +3,7 @@ package com.jts.gjcxfzksh.api.service.impl;
 import com.alibaba.fastjson2.JSON;
 import com.jts.gjcxfzksh.api.model.params.RealDataCommitParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataParam;
+import com.jts.gjcxfzksh.api.model.params.VehicleCalculationSaveParam;
 import com.jts.gjcxfzksh.api.model.vo.RealDataExportVO;
 import com.jts.gjcxfzksh.config.MatsimConfig;
 import com.jts.gjcxfzksh.exception.BusinessException;
@@ -73,7 +74,7 @@ class RealDataServiceImplCommitEditsTest {
         Map<String, Object> first = firstService.busLineStation("广州", null);
         assertEquals(1, ((Number) mapValue(first.get("overview")).get("lineCount")).intValue());
 
-        Path cacheFile = cacheRoot.resolve("real-data-overview/广州/overview-v2.json");
+        Path cacheFile = cacheRoot.resolve("real-data-overview/广州/overview-v4.json");
         assertTrue(Files.isRegularFile(cacheFile));
         Map<String, Object> wrapper = JSON.parseObject(Files.readString(cacheFile, StandardCharsets.UTF_8));
         mapValue(wrapper.get("overview")).put("lineCount", 777);
@@ -88,6 +89,89 @@ class RealDataServiceImplCommitEditsTest {
         RealDataServiceImpl staleCacheService = serviceFor(dataRoot, cacheRoot);
         Map<String, Object> recomputed = staleCacheService.busLineStation("广州", null);
         assertEquals(1, ((Number) mapValue(recomputed.get("overview")).get("lineCount")).intValue());
+    }
+
+    @Test
+    void lineShpWithoutPlaceholderDirAndIntervalStillLoads() throws Exception {
+        Path dataRoot = tempDir.resolve("pt_data");
+        Path realDataRoot = dataRoot.resolve("广州").resolve(MatsimConfig.REAL_DATA_FOLDER);
+        Path lineFolder = realDataRoot.resolve("公交线路站点").resolve("线路");
+        Path stationFolder = realDataRoot.resolve("公交线路站点").resolve("站点");
+        Files.createDirectories(lineFolder);
+        Files.createDirectories(stationFolder);
+        writeLinesWithoutDirAndInterval(lineFolder.resolve("line_clean.shp"));
+        writeStations(stationFolder.resolve("station_clean.shp"));
+
+        MatsimConfig config = new MatsimConfig();
+        setField(config, "folder", dataRoot.toString());
+        RealDataServiceImpl service = new RealDataServiceImpl();
+        setField(service, "matsimConfig", config);
+
+        Map<String, Object> latest = service.busLineStation("广州", null);
+        List<Map<String, Object>> features = mapList(mapValue(latest.get("lines")).get("features"));
+        assertEquals(1, features.size());
+        Map<String, Object> properties = properties(features.get(0));
+        assertEquals("728路", properties.get("name"));
+        // 间隔改由高峰/平峰三列承载，占位的 dir/interval 不再是必需列
+        assertEquals("10", properties.get("am_gap"));
+        assertEquals("15", properties.get("off_gap"));
+    }
+
+    @Test
+    void overviewUsesRouteFamiliesBidirectionalAverageLengthAndPhysicalStations() throws Exception {
+        Path dataRoot = tempDir.resolve("pt_data");
+        Path realDataRoot = dataRoot.resolve("广州").resolve(MatsimConfig.REAL_DATA_FOLDER);
+        Path lineFolder = realDataRoot.resolve("公交线路站点").resolve("线路");
+        Path stationFolder = realDataRoot.resolve("公交线路站点").resolve("站点");
+        Files.createDirectories(lineFolder);
+        Files.createDirectories(stationFolder);
+        writeOverviewLines(lineFolder.resolve("line_clean.shp"));
+        writeOverviewStations(stationFolder.resolve("station_clean.shp"));
+
+        Map<String, Object> result = serviceFor(dataRoot).busLineStation("广州", null);
+        Map<String, Object> overview = mapValue(result.get("overview"));
+
+        assertEquals(2, ((Number) overview.get("lineCount")).intValue());
+        assertEquals(2, ((Number) overview.get("stationCount")).intValue());
+        double expectedKm = (distanceKm(113.1000, 23.1000, 113.1100, 23.1000)
+                + distanceKm(113.1100, 23.1000, 113.1000, 23.1000)
+                + distanceKm(113.2000, 23.2000, 113.2200, 23.2000)) / 2.0;
+        assertEquals(expectedKm, ((Number) overview.get("networkScaleKm")).doubleValue(), 0.02);
+    }
+
+    @Test
+    void vehicleCalculationAddsFleetFieldAndLeavesUnsavedRoutesEmpty() throws Exception {
+        Path dataRoot = tempDir.resolve("pt_data");
+        Path realDataRoot = dataRoot.resolve("广州").resolve(MatsimConfig.REAL_DATA_FOLDER);
+        Path lineFolder = realDataRoot.resolve("公交线路站点").resolve("线路");
+        Path stationFolder = realDataRoot.resolve("公交线路站点").resolve("站点");
+        Files.createDirectories(lineFolder);
+        Files.createDirectories(stationFolder);
+        writeFleetTestLines(lineFolder.resolve("line_clean.shp"));
+        writeStations(stationFolder.resolve("station_clean.shp"));
+
+        MatsimConfig config = new MatsimConfig();
+        setField(config, "folder", dataRoot.toString());
+        RealDataServiceImpl service = new RealDataServiceImpl();
+        setField(service, "matsimConfig", config);
+
+        Map<String, Object> current = service.busLineStation("广州", null);
+        List<Map<String, Object>> lines = mapList(mapValue(current.get("lines")).get("features"));
+        VehicleCalculationSaveParam param = new VehicleCalculationSaveParam();
+        param.setAreaName("广州");
+        param.setBaseRevision(((Number) mapValue(current.get("history")).get("revision")).longValue());
+        param.setBaseVersionId(String.valueOf(current.get("versionId")));
+        param.setRouteName("测试1路");
+        param.setFeatureIds(List.of(String.valueOf(lines.get(0).get("id")), String.valueOf(lines.get(1).get("id"))));
+        param.setVehicleCount(12);
+
+        Map<String, Object> saved = service.saveVehicleCalculationResult("tester", param);
+        Path savedShp = realDataRoot.resolve("_versions").resolve(String.valueOf(saved.get("versionId")))
+                .resolve("公交线路站点").resolve("线路").resolve("line_clean.shp");
+
+        assertTrue(shpAttributeFields(savedShp).contains("fleet_cnt"));
+        assertEquals(List.of("12", "12", "null"), shpAttributeValues(savedShp, "fleet_cnt"));
+        assertEquals(2, ((Number) saved.get("updatedFeatureCount")).intValue());
     }
 
     @Test
@@ -1025,6 +1109,83 @@ class RealDataServiceImplCommitEditsTest {
         writeShp(shpPath, schema, List.of(builder.buildFeature("line.1")));
     }
 
+    private static void writeOverviewLines(Path shpPath) throws Exception {
+        SimpleFeatureType schema = schema("line_clean", LineString.class, List.of(
+                "line_id", "route_id", "first", "last", "mode", "name", "price", "company"
+        ));
+        List<SimpleFeature> features = new ArrayList<>();
+        features.add(lineSimpleFeature(schema, "line.1", "A-up", "A路(甲站--乙站)",
+                new Coordinate(113.1000, 23.1000), new Coordinate(113.1100, 23.1000)));
+        features.add(lineSimpleFeature(schema, "line.2", "A-down", "A路(乙站--甲站)",
+                new Coordinate(113.1100, 23.1000), new Coordinate(113.1000, 23.1000)));
+        features.add(lineSimpleFeature(schema, "line.3", "B-only", "B路(丙站--丁站)",
+                new Coordinate(113.2000, 23.2000), new Coordinate(113.2200, 23.2000)));
+        writeShp(shpPath, schema, features);
+    }
+
+    private static SimpleFeature lineSimpleFeature(
+            SimpleFeatureType schema,
+            String featureId,
+            String routeId,
+            String name,
+            Coordinate... coordinates
+    ) {
+        SimpleFeatureBuilder builder = new SimpleFeatureBuilder(schema);
+        builder.add(GEOMETRY_FACTORY.createLineString(coordinates));
+        for (String value : List.of(routeId, routeId, "06:00:00", "22:00:00", "bus", name, "2", "公交公司")) {
+            builder.add(value);
+        }
+        return builder.buildFeature(featureId);
+    }
+
+    /** 现网线路 SHP 口径：无 dir/interval 占位列，发车间隔按早高峰/晚高峰/平峰分列。 */
+    private static void writeLinesWithoutDirAndInterval(Path shpPath) throws Exception {
+        SimpleFeatureType schema = schema("line_clean", LineString.class, List.of(
+                "line_id", "route_id", "first", "last", "mode", "name", "price", "company",
+                "am_peak", "pm_peak", "am_gap", "pm_gap", "off_gap"
+        ));
+        SimpleFeatureBuilder builder = new SimpleFeatureBuilder(schema);
+        builder.add(GEOMETRY_FACTORY.createLineString(new Coordinate[]{
+                new Coordinate(113.1, 23.1),
+                new Coordinate(113.2, 23.2)
+        }));
+        for (String value : List.of(
+                "440100017000", "440100017000", "06:00:00", "22:00:00", "bus", "728路", "2", "公交公司",
+                "07:00-09:00", "17:00-19:00", "10", "10", "15"
+        )) {
+            builder.add(value);
+        }
+        writeShp(shpPath, schema, List.of(builder.buildFeature("line.1")));
+    }
+
+    private static void writeFleetTestLines(Path shpPath) throws Exception {
+        SimpleFeatureType schema = schema("line_clean", LineString.class, List.of(
+                "line_id", "route_id", "first", "last", "mode", "name", "price", "company"
+        ));
+        List<SimpleFeature> features = new ArrayList<>();
+        for (int index = 1; index <= 3; index++) {
+            SimpleFeatureBuilder builder = new SimpleFeatureBuilder(schema);
+            builder.add(GEOMETRY_FACTORY.createLineString(new Coordinate[]{
+                    new Coordinate(113.0 + index * 0.1, 23.1),
+                    new Coordinate(113.1 + index * 0.1, 23.2)
+            }));
+            for (String value : List.of(
+                    "line-" + index,
+                    "route-" + index,
+                    "06:00:00",
+                    "22:00:00",
+                    "bus",
+                    index <= 2 ? "测试1路" : "未测算线路",
+                    "2",
+                    "公交公司"
+            )) {
+                builder.add(value);
+            }
+            features.add(builder.buildFeature("line." + index));
+        }
+        writeShp(shpPath, schema, features);
+    }
+
     private static void writeLinesWithExtraField(Path shpPath) throws Exception {
         SimpleFeatureType schema = schema("line_clean", LineString.class, List.of(
                 "line_id", "dir", "route_id", "first", "last",
@@ -1052,6 +1213,28 @@ class RealDataServiceImplCommitEditsTest {
                 stationSimpleFeature(schema, "station.1", "站点一", "S1", "1", 113.1, 23.1),
                 stationSimpleFeature(schema, "station.2", "站点二", "S2", "2", 113.2, 23.2)
         ));
+    }
+
+    private static void writeOverviewStations(Path shpPath) throws Exception {
+        SimpleFeatureType schema = schema("station_clean", Point.class, List.of(
+                "line_id", "dir", "stop_id", "stop_name", "seq", "lon", "lat"
+        ));
+        writeShp(shpPath, schema, List.of(
+                stationSimpleFeature(schema, "station.1", "0", "中心站", "S1", "1", 113.1000, 23.1000),
+                stationSimpleFeature(schema, "station.2", "1", "中心站(对向)", "S2", "1", 113.1005, 23.1000),
+                stationSimpleFeature(schema, "station.3", "0", "中心站", "S3", "2", 113.1100, 23.1000)
+        ));
+    }
+
+    private static double distanceKm(double firstLng, double firstLat, double secondLng, double secondLat) {
+        double earthRadiusMeters = 6_378_137.0;
+        double lat1 = Math.toRadians(firstLat);
+        double lat2 = Math.toRadians(secondLat);
+        double deltaLat = Math.toRadians(secondLat - firstLat);
+        double deltaLng = Math.toRadians(secondLng - firstLng);
+        double haversine = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2)
+                + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
+        return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine)) / 1000.0;
     }
 
     private static void writeUniqueStations(Path shpPath) throws Exception {

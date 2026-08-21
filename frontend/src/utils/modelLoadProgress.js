@@ -23,6 +23,14 @@ export function isModelUsable(item) {
   return Boolean(item?.loadStatus && item?.cacheStatus === "ready");
 }
 
+/**
+ * 模型运行态是页面门禁的唯一依据。派生缓存可以在后台补齐，
+ * 不能因为某个缓存 building/failed 就把已加载的模型当成未加载。
+ */
+export function isModelRuntimeReady(item) {
+  return Boolean(item?.loadStatus);
+}
+
 export function formatDuration(seconds) {
   const value = Number(seconds);
   if (!Number.isFinite(value) || value < 0) return "计算中";

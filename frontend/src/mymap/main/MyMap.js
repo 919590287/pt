@@ -96,7 +96,7 @@ function urlTemplateFromConfig(config = {}) {
       console.warn("[MapLibre] basemap getUrl template failed:", error);
     }
   }
-  return ["https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png"];
+  return ["https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"];
 }
 
 function createMapStyle() {
@@ -133,12 +133,16 @@ function createMapStyle() {
 }
 
 function rasterSourceConfig(config = {}) {
-  return {
+  const tiles = urlTemplateFromConfig(config);
+  const source = {
     type: "raster",
-    tiles: urlTemplateFromConfig(config),
+    tiles,
     tileSize: config.tileSize || 256,
     attribution: config.attribution || "",
   };
+  if (Number.isFinite(config.min_zoom)) source.minzoom = config.min_zoom;
+  if (Number.isFinite(config.max_zoom)) source.maxzoom = config.max_zoom;
+  return source;
 }
 
 export class MyMap extends EventListener {
@@ -175,7 +179,11 @@ export class MyMap extends EventListener {
     this._offDisplayScale = onMapDisplayScaleChange((scale) => {
       this.displayScale = scale;
       this.map?.setPixelRatio?.(mapCanvasPixelRatio(scale));
+      this.scheduleResize();
     });
+    this._resizeFrame = 0;
+    this._resizeTimer = 0;
+    this._resizeObserver = null;
 
     this.layers = [];
     this.buildingLayerId = null;
@@ -202,7 +210,8 @@ export class MyMap extends EventListener {
       zoom,
       pitch: legacyPitchToMap(pitch),
       bearing: rotation,
-      attributionControl: false,
+      // 在线底图必须展示数据来源；紧凑模式不遮挡交通分析画布。
+      attributionControl: { compact: true },
       interactive: !noControls,
       antialias: true,
       canvasContextAttributes: {
@@ -219,9 +228,30 @@ export class MyMap extends EventListener {
       maxPitch: MAP_MAX_PITCH,
     });
 
+    // 紧凑归属控件在首批带 attribution 的源加载后会自动展开；这里做一次性收起，
+    // 右下角默认只留 ⓘ 按钮，点击才展开（与 maplibre 拖图后的收起态一致，只摘 show 类）。
+    const collapseAttribution = () => {
+      const attribCtrl = this._displayHost.host.querySelector(".maplibregl-ctrl-attrib.maplibregl-compact");
+      if (!attribCtrl) return;
+      attribCtrl.classList.remove("maplibregl-compact-show");
+      this.map.off("styledata", collapseAttribution);
+      this.map.off("sourcedata", collapseAttribution);
+    };
+    this.map.on("styledata", collapseAttribution);
+    this.map.on("sourcedata", collapseAttribution);
+
     this.applyInteractionFlags();
     this.bindMapEvents();
     this.bindCustomInteractionEvents();
+    this.installResizeObserver();
+    // MapLibre measures the container during construction. The parent layout
+    // and CSS zoom are finalized one or two frames later (especially after a
+    // hard refresh), so always perform a post-layout measurement.
+    this.scheduleResize();
+    this._resizeTimer = setTimeout(() => {
+      this._resizeTimer = 0;
+      this.scheduleResize();
+    }, 250);
 
     if (import.meta.env.DEV) {
       window.__mymap = this;
@@ -270,8 +300,17 @@ export class MyMap extends EventListener {
     return new THREE.Color(--this._pickLayerColorNum);
   }
 
+  /**
+   * style 是否已经加载完成。maplibre 的 Map 对象是同步构造出来的，但在 "load" 事件之前
+   * addSource / addLayer 会抛 "Style is not done loading"。调用方拿到的是裸 map
+   * （MapRef.value.map），没法从它判断，所以这里给出与 whenReady 同口径的公开判断。
+   */
+  get styleReady() {
+    return !!(this._ready && this.map?.getStyle());
+  }
+
   whenReady(callback) {
-    if (this._ready && this.map?.getStyle()) {
+    if (this.styleReady) {
       callback(this);
       return;
     }
@@ -310,6 +349,7 @@ export class MyMap extends EventListener {
   bindMapEvents() {
     this.map.once("load", () => {
       this._ready = true;
+      this.scheduleResize();
       this._readyCallbacks.splice(0).forEach((callback) => callback(this));
       this.emit(MAP_EVENT.UPDATE_RENDERER_SIZE, this.size());
     });
@@ -337,6 +377,34 @@ export class MyMap extends EventListener {
       this.emit(MAP_EVENT.HANDLE_CLICK_RIGHT, payload);
       this.emit(MAP_EVENT.HANDLE_PICK_RIGHT, payload);
     });
+  }
+
+  installResizeObserver() {
+    if (typeof ResizeObserver !== "function") return;
+    const targets = [this.rootDoc, this._displayHost?.host].filter(Boolean);
+    this._resizeObserver = new ResizeObserver(() => this.scheduleResize());
+    targets.forEach((target) => this._resizeObserver.observe(target));
+  }
+
+  scheduleResize() {
+    if (this.isDisposed || !this.map?.resize) return;
+    if (this._resizeFrame) return;
+    const resize = () => {
+      this._resizeFrame = 0;
+      if (this.isDisposed || !this.map?.resize) return;
+      try {
+        this.map.resize();
+      } catch (error) {
+        // A resize can race MapLibre teardown during route changes. It must
+        // never break model bootstrap or leave the global gate stuck.
+        if (!this.isDisposed) console.debug("[MyMap] deferred resize skipped", error);
+      }
+    };
+    if (typeof requestAnimationFrame === "function") {
+      this._resizeFrame = requestAnimationFrame(resize);
+    } else {
+      this._resizeFrame = setTimeout(resize, 0);
+    }
   }
 
   bindCustomInteractionEvents() {
@@ -384,13 +452,13 @@ export class MyMap extends EventListener {
 
   handleCustomMouseDown(event) {
     this.rootDoc?.focus?.({ preventScroll: true });
+    // 左键平移交给 maplibre 内置 dragPan（自带惯性与拖动后点击抑制），这里只接管中键旋转
     const isMiddleRotate = event.button === 1 && this._enableRotate;
-    const isRightPan = event.button === 2 && this._enablePan;
-    if (!isMiddleRotate && !isRightPan) return;
+    if (!isMiddleRotate) return;
     event.preventDefault();
     event.stopPropagation();
     this.customDrag = {
-      mode: isMiddleRotate ? "rotate" : "pan",
+      mode: "rotate",
       lastX: event.clientX,
       lastY: event.clientY,
       moved: false,
@@ -400,7 +468,7 @@ export class MyMap extends EventListener {
   handleCustomMouseMove(event) {
     if (!this.customDrag) return;
     // clientX/Y 是视觉像素；地图坐标空间是宿主布局像素（视觉/displayScale），
-    // 不换算会导致高分屏下右键拖动的平移速度偏快/偏慢
+    // 不换算会导致高分屏下中键拖动的旋转/俯仰速度偏快/偏慢
     const scale = this.displayScale || 1;
     const dx = (event.clientX - this.customDrag.lastX) / scale;
     const dy = (event.clientY - this.customDrag.lastY) / scale;
@@ -411,13 +479,6 @@ export class MyMap extends EventListener {
     this.customDrag.lastY = event.clientY;
     event.preventDefault();
     event.stopPropagation();
-
-    if (this.customDrag.mode === "pan") {
-      if (this._enablePan) {
-        this.map.panBy([-dx, -dy], { duration: 0 });
-      }
-      return;
-    }
 
     if (!this._enableRotate) {
       this.customDrag = null;
@@ -431,7 +492,7 @@ export class MyMap extends EventListener {
 
   handleCustomMouseUp(event) {
     if (!this.customDrag) return;
-    if (event.button === 1 || event.button === 2) {
+    if (event.button === 1) {
       event.preventDefault();
       event.stopPropagation();
       this.customDrag = null;
@@ -506,7 +567,8 @@ export class MyMap extends EventListener {
     if (this.map.touchZoomRotate) {
       this._enableRotate ? this.map.touchZoomRotate.enableRotation() : this.map.touchZoomRotate.disableRotation();
     }
-    this.map.dragPan.disable();
+    // 左键拖动平移：直接用 maplibre 内置 dragPan（仅响应左键）
+    this._enablePan ? this.map.dragPan.enable() : this.map.dragPan.disable();
     if (this._enableZoom) {
       this.map.scrollZoom.enable();
       this.map.doubleClickZoom.enable();
@@ -801,6 +863,17 @@ export class MyMap extends EventListener {
   dispose() {
     this.isDisposed = true;
     this.clearKeyboardPan();
+    if (this._resizeFrame) {
+      if (typeof cancelAnimationFrame === "function") cancelAnimationFrame(this._resizeFrame);
+      else clearTimeout(this._resizeFrame);
+      this._resizeFrame = 0;
+    }
+    if (this._resizeTimer) {
+      clearTimeout(this._resizeTimer);
+      this._resizeTimer = 0;
+    }
+    this._resizeObserver?.disconnect?.();
+    this._resizeObserver = null;
     this.unbindCustomInteractionEvents();
     for (const layer of [...this.layers]) {
       layer.dispose?.();

@@ -18,6 +18,7 @@ import { useModelSelectionStore } from "./modelSelection.js";
 
 describe("modelRuntime catalog scheduling", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     setActivePinia(createPinia());
     vi.useFakeTimers();
     api.getSchemeList.mockReset();
@@ -109,6 +110,58 @@ describe("modelRuntime catalog scheduling", () => {
     );
   });
 
+  it("刷新恢复已加载模型时不因缓存失败再次调用 loadModel", async () => {
+    api.getSchemeList.mockResolvedValue({ data: ["广州"] });
+    api.getModelList.mockResolvedValue({
+      data: [{
+        name: "广州/public/V6",
+        cacheStatus: "failed",
+        cacheMessage: "某个派生缓存不可用",
+        loadStatus: true,
+        isDefault: true,
+      }],
+    });
+    const selectionStore = useModelSelectionStore();
+    selectionStore.setSelection("datavisualization", {
+      sourceMode: "simulation",
+      scheme: "广州",
+      model: "广州/public/V6",
+    });
+
+    const store = useModelRuntimeStore();
+    await store.bootstrap();
+
+    expect(store.gateVisible).toBe(false);
+    expect(api.loadModel).not.toHaveBeenCalled();
+  });
+
+  it("刷新恢复模型时在目录返回前保持门禁关闭", async () => {
+    let resolveModels;
+    api.getSchemeList.mockResolvedValue({ data: ["广州"] });
+    api.getModelList.mockReturnValue(new Promise((resolve) => {
+      resolveModels = resolve;
+    }));
+    useModelSelectionStore().setSelection("datavisualization", {
+      sourceMode: "simulation",
+      scheme: "广州",
+      model: "广州/public/V6",
+    });
+
+    const store = useModelRuntimeStore();
+    const pending = store.bootstrap();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(store.gateTarget).toBe("广州/public/V6");
+    expect(store.gateVisible).toBe(false);
+
+    resolveModels({
+      data: [{ name: "广州/public/V6", loadStatus: true, cacheStatus: "ready" }],
+    });
+    await pending;
+    expect(store.gateVisible).toBe(false);
+  });
+
   it("does not replace a persisted real-data mode when the simulation gate opens", async () => {
     api.getSchemeList.mockResolvedValue({ data: ["广州"] });
     api.getModelList.mockResolvedValue({
@@ -132,6 +185,7 @@ describe("modelRuntime catalog scheduling", () => {
       sourceMode: "real",
       realServiceDate: "2026-03-10",
     });
+    expect(useModelRuntimeStore().gateVisible).toBe(false);
   });
 
   it("stops model polling while the user is on an independent page", async () => {
@@ -152,6 +206,50 @@ describe("modelRuntime catalog scheduling", () => {
     await vi.advanceTimersByTimeAsync(35_000);
 
     expect(api.getModelList).toHaveBeenCalledTimes(callsBeforePause);
+  });
+
+  // 目录"还没取回"和"确实没有模型"必须区分开：混为一谈会让门禁误报"暂无可用模型"，
+  // 并且 gateVisible 误判为 true 会让 MapLayout 的 RouterView v-if 把整页卸载重建。
+  it("目录未取回时不亮门禁，避免整页被卸载重建", async () => {
+    api.getSchemeList.mockResolvedValue({ data: ["广州"] });
+    api.getModelList.mockResolvedValue({
+      data: [{ name: "广州/public/v6", cacheStatus: "ready", loadStatus: true }],
+    });
+    const store = useModelRuntimeStore();
+    await store.bootstrap();
+    expect(store.gateVisible).toBe(false);
+
+    // 模拟切到一个目录尚未取回的方案：gateModels 为空，但这只是"还不知道"
+    store.gateScheme = "深圳";
+    expect(store.gateCatalogKnown).toBe(false);
+    expect(store.gateVisible).toBe(false);
+  });
+
+  it("目录取回后确实为空才判定为暂无模型", async () => {
+    api.getSchemeList.mockResolvedValue({ data: ["广州"] });
+    api.getModelList.mockResolvedValue({ data: [] });
+    const store = useModelRuntimeStore();
+    await store.bootstrap();
+
+    expect(store.gateCatalogKnown).toBe(true);
+    expect(store.gateModels).toEqual([]);
+    expect(store.gateVisible).toBe(true);
+  });
+
+  it("门禁里换方案时先取目录再切，不留空窗", async () => {
+    api.getSchemeList.mockResolvedValue({ data: ["广州", "深圳"] });
+    api.getModelList.mockImplementation(async ({ schemeName }) => ({
+      data: [{ name: `${schemeName}/public/v6`, cacheStatus: "ready", loadStatus: true }],
+    }));
+    const store = useModelRuntimeStore();
+    await store.bootstrap();
+
+    const pending = store.selectGateScheme("深圳");
+    // 目录还没回来之前 gateScheme 不得先行切换，否则 gateModels 会空一拍
+    expect(store.gateScheme).toBe("广州");
+    await pending;
+    expect(store.gateScheme).toBe("深圳");
+    expect(store.gateCatalogKnown).toBe(true);
   });
 
   it("clears derived browser data when the same model cache generation changes", async () => {

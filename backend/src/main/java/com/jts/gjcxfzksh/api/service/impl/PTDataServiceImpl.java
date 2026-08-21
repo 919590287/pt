@@ -8,6 +8,7 @@ import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.api.service.PTDataService;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.cache.MatsimAnalysisCache;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimSourceFingerprint;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
@@ -36,7 +37,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -50,6 +55,13 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
     static final String BUS_NETWORK_AREA_POLICY = TransitMetrics.BUS_NETWORK_AREA_POLICY;
 
     private final ConcurrentMap<String, TrajectoryBuildState> trajectoryStates = new ConcurrentHashMap<>();
+    /**
+     * 同一视口块或时间快照的并发请求共用一次磁盘读取与 Zstd 解压。
+     * 浏览器在地图动画期间取消 HTTP 连接时，Servlet 请求线程不会自动停止计算；
+     * single-flight 避免这些过期请求重复解压同一份块数据；两类查询也共用同一并发预算。
+     */
+    private final ConcurrentMap<String, CompletableFuture<byte[]>> trajectoryQueryFlights =
+            new ConcurrentHashMap<>();
 
     /**
      * 轨迹缓存构建并发数：默认 1（保持磁盘 I/O 友好），多模型服务器可调大避免构建串行排队。
@@ -57,11 +69,16 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
     @org.springframework.beans.factory.annotation.Value("${matsim.trajectory-build-threads:1}")
     private int trajectoryBuildThreads;
 
+    @org.springframework.beans.factory.annotation.Value("${matsim.trajectory-query-concurrency:2}")
+    private int trajectoryQueryConcurrency;
+
     private ExecutorService trajectoryExecutor;
+    private Semaphore trajectoryQueryPermits;
     private final java.util.function.Consumer<MatsimData> cacheWarmupHook = this::prepareEvaluationOnModelLoad;
 
     @jakarta.annotation.PostConstruct
     void initTrajectoryExecutor() {
+        trajectoryQueryPermits = new Semaphore(Math.max(1, trajectoryQueryConcurrency), true);
         java.util.concurrent.atomic.AtomicInteger index = new java.util.concurrent.atomic.AtomicInteger();
         trajectoryExecutor = Executors.newFixedThreadPool(Math.max(1, trajectoryBuildThreads), r -> {
             Thread thread = new Thread(r, "trajectory-cache-builder-" + index.incrementAndGet());
@@ -119,7 +136,7 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         int loadVersionEnd = currentKey.indexOf('#', modelPrefix.length());
         String currentLoadPrefix = loadVersionEnd < 0
                 ? currentKey : currentKey.substring(0, loadVersionEnd + 1);
-        evaluationCache.keySet().removeIf(key ->
+        evaluationCache.removeIf(key ->
                 key.startsWith(modelPrefix) && !key.startsWith(currentLoadPrefix));
     }
 
@@ -372,7 +389,8 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
         return new PTCoord(matsim_data.getCenter());
     }
 
-    private final ConcurrentMap<String, Map<String, Object>> evaluationCache = new ConcurrentHashMap<>();
+    private final BackendMemoryCache<String, Map<String, Object>> evaluationCache =
+            new BackendMemoryCache<>("model-evaluation", 64L * 1024 * 1024, BackendMemoryCache::estimate);
 
     /**
      * 体检评估指标（全市口径）。key 与前端 evaluationStandards.js 的 modelKey 对齐；
@@ -1004,10 +1022,46 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             Double maxY
     ) {
         MatsimData data = matsim_data(param);
-        byte[] chunk = MatsimAnalysisCache.readTrajectoryBinaryViewport(
+        String queryKey = MatsimAnalysisCache.trajectoryViewportETag(
                 data, start, windowSeconds, visibilityMode, minX, minY, maxX, maxY
         );
+        byte[] chunk = executeTrajectoryQuery("viewport:" + queryKey, "轨迹视口块", () ->
+                MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                        data, start, windowSeconds, visibilityMode, minX, minY, maxX, maxY
+                ));
         if (chunk == null) trajectory(param);
+        return chunk;
+    }
+
+    byte[] executeTrajectoryQuery(String queryKey, String label, Supplier<byte[]> query) {
+        CompletableFuture<byte[]> created = new CompletableFuture<>();
+        CompletableFuture<byte[]> existing = trajectoryQueryFlights.putIfAbsent(queryKey, created);
+        CompletableFuture<byte[]> flight = existing == null ? created : existing;
+        if (existing == null) {
+            boolean acquired = false;
+            try {
+                trajectoryQueryPermits.acquire();
+                acquired = true;
+                created.complete(query.get());
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                created.completeExceptionally(new IllegalStateException(label + "请求已中断", error));
+            } catch (Throwable error) {
+                created.completeExceptionally(error);
+            } finally {
+                if (acquired) trajectoryQueryPermits.release();
+            }
+        }
+        byte[] chunk;
+        try {
+            chunk = flight.join();
+        } catch (CompletionException error) {
+            Throwable cause = error.getCause();
+            if (cause instanceof RuntimeException runtimeException) throw runtimeException;
+            throw new IllegalStateException(label + "读取失败", cause);
+        } finally {
+            if (existing == null) trajectoryQueryFlights.remove(queryKey, created);
+        }
         return chunk;
     }
 
@@ -1023,16 +1077,20 @@ public class PTDataServiceImpl extends DatasourceService implements PTDataServic
             Double maxY
     ) {
         MatsimData data = matsim_data(param);
-        byte[] frame = MatsimAnalysisCache.readTrajectoryBinaryFrame(
-                data,
-                time,
-                bucketSeconds,
-                visibilityMode,
-                minX,
-                minY,
-                maxX,
-                maxY
+        String queryKey = MatsimAnalysisCache.trajectoryFrameETag(
+                data, time, bucketSeconds, visibilityMode, minX, minY, maxX, maxY
         );
+        byte[] frame = executeTrajectoryQuery("frame:" + queryKey, "轨迹快照", () ->
+                MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                        data,
+                        time,
+                        bucketSeconds,
+                        visibilityMode,
+                        minX,
+                        minY,
+                        maxX,
+                        maxY
+                ));
         if (frame == null) {
             trajectory(param);
         }

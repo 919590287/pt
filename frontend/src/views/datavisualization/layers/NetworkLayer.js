@@ -621,6 +621,15 @@ export class NetworkLayer extends Layer {
     });
   }
 
+  // 本层的线条画在共享 deck overlay 上，而不是自己的 three 场景里。基类 onRemove
+  // 只清 three 场景并把 map 置空，deck 注册项会留在 overlay 上继续渲染——页面组切换
+  // （MapLayout.stashPageLayers 走的正是 removeLayer）后线网会跟到下一个页面。
+  // 必须在 map 被置空前先注销。
+  onRemove() {
+    removeSharedDeckLayer(this.map, this.layerId);
+    super.onRemove();
+  }
+
   ensureDeckOverlay() {
     return !!this.map?.map;
   }

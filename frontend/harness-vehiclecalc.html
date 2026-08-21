@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- 临时验证页（勿提交到生产构建）：配车测算的真实线路参数导入，vite dev 下直接访问 /harness-vehiclecalc.html -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>配车测算 harness</title>
+  <style>
+    html, body, #app { margin: 0; height: 100%; }
+    body { background: #eef3f9; }
+    .harness-bar {
+      position: fixed; inset: 0 0 auto 0; z-index: 5; display: flex; gap: 16px; align-items: center;
+      height: 32px; padding: 0 14px; background: #111827; color: #e5e7eb;
+      font: 12px/32px -apple-system, "PingFang SC", sans-serif;
+    }
+    .harness-bar button { font: inherit; line-height: 1.6; }
+    .harness-scope { opacity: .7; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/harness-vehiclecalc.mjs"></script>
+</body>
+</html>

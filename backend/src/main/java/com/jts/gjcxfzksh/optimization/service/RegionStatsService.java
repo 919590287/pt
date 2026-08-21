@@ -38,7 +38,7 @@ public class RegionStatsService {
         }
         MatsimData data;
         try {
-            data = Datasource.data(parentModel).matsim_data();
+            data = Datasource.computeData(parentModel).matsim_data();
         } catch (Exception e) {
             throw new BusinessException("母本模型未加载，请先在右上角加载模型");
         }

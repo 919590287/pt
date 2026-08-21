@@ -1,19 +1,23 @@
 <template>
   <Teleport to="body">
     <div
-      v-if="active || preferenceVisible"
+      v-if="active"
       class="rm-tour-layer"
-      :aria-label="active ? '运行监测新手引导' : '新手引导显示偏好'"
+      aria-label="运行监测新手引导"
     >
-      <template v-if="active">
+      <template v-if="currentStep?.centered">
+        <div class="rm-tour-mask rm-tour-mask-full" @pointerdown.stop.prevent @click.stop.prevent></div>
+      </template>
+      <template v-else>
         <div class="rm-tour-mask rm-tour-mask-top" :style="maskStyles.top" @pointerdown.stop.prevent @click.stop.prevent></div>
         <div class="rm-tour-mask rm-tour-mask-left" :style="maskStyles.left" @pointerdown.stop.prevent @click.stop.prevent></div>
         <div class="rm-tour-mask rm-tour-mask-right" :style="maskStyles.right" @pointerdown.stop.prevent @click.stop.prevent></div>
         <div class="rm-tour-mask rm-tour-mask-bottom" :style="maskStyles.bottom" @pointerdown.stop.prevent @click.stop.prevent></div>
+      </template>
 
-        <div class="rm-tour-spotlight" :style="spotlightStyle" aria-hidden="true"></div>
+      <div v-if="!currentStep?.centered" class="rm-tour-spotlight" :style="spotlightStyle" aria-hidden="true"></div>
 
-        <Transition name="rm-tour-bubble" mode="out-in">
+      <Transition name="rm-tour-bubble" mode="out-in">
           <section
             :key="currentStep?.id"
             ref="tooltipRef"
@@ -48,39 +52,7 @@
               </div>
             </div>
           </section>
-        </Transition>
-      </template>
-
-      <template v-else-if="preferenceVisible">
-        <div class="rm-tour-mask rm-tour-mask-full" @pointerdown.stop.prevent @click.stop.prevent></div>
-        <Transition name="rm-tour-preference" appear>
-          <section
-            ref="preferenceRef"
-            class="rm-tour-preference"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rm-tour-preference-title"
-            aria-describedby="rm-tour-preference-desc"
-            tabindex="-1"
-            @click.stop
-          >
-            <span class="rm-tour-preference-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="9"></circle>
-                <path d="M9.4 9a2.7 2.7 0 1 1 4.7 1.8c-1.1.8-2.1 1.3-2.1 2.7"></path>
-                <path d="M12 17h.01"></path>
-              </svg>
-            </span>
-            <span class="rm-tour-eyebrow">导览偏好</span>
-            <h2 id="rm-tour-preference-title">下次进入时还需要引导吗？</h2>
-            <p id="rm-tour-preference-desc">无论选择哪项，都可以从顶栏帮助菜单重新查看。</p>
-            <div class="rm-tour-preference-actions">
-              <button type="button" class="rm-tour-secondary" @click="choosePreference('show')">下次仍然显示</button>
-              <button type="button" class="rm-tour-primary" @click="choosePreference('never')">永不再显示</button>
-            </div>
-          </section>
-        </Transition>
-      </template>
+      </Transition>
     </div>
   </Teleport>
 </template>
@@ -90,15 +62,13 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 
 const props = defineProps({
   active: { type: Boolean, default: false },
-  preferenceVisible: { type: Boolean, default: false },
   steps: { type: Array, default: () => [] },
 });
 
-const emit = defineEmits(["step-change", "exit", "finish", "preference"]);
+const emit = defineEmits(["step-change", "exit", "finish"]);
 
 const currentIndex = ref(0);
 const tooltipRef = ref(null);
-const preferenceRef = ref(null);
 const targetRect = ref(emptyRect());
 const tooltipStyle = ref({ left: "16px", top: "16px" });
 const placement = ref("bottom");
@@ -154,6 +124,7 @@ function elementHasArea(element) {
 }
 
 async function findTarget(step) {
+  if (step?.centered) return null;
   const selector = step?.target;
   const fallbackSelector = step?.fallbackTarget;
   for (let attempt = 0; attempt < 45; attempt += 1) {
@@ -225,6 +196,18 @@ function paddedTargetRect() {
 
 function updatePosition() {
   if (!props.active) return;
+  if (currentStep.value?.centered) {
+    targetRect.value = emptyRect();
+    const tooltip = tooltipRef.value?.getBoundingClientRect?.();
+    const tooltipWidth = tooltip?.width || Math.min(368, window.innerWidth - 32);
+    const tooltipHeight = tooltip?.height || 244;
+    placement.value = "center";
+    tooltipStyle.value = {
+      left: `${Math.max(16, (window.innerWidth - tooltipWidth) / 2)}px`,
+      top: `${Math.max(16, (window.innerHeight - tooltipHeight) / 2)}px`,
+    };
+    return;
+  }
   const rect = paddedTargetRect();
   targetRect.value = rect;
   const tooltip = tooltipRef.value?.getBoundingClientRect?.();
@@ -287,19 +270,15 @@ function requestExit() {
   emit("exit");
 }
 
-function choosePreference(value) {
-  emit("preference", value);
-}
-
 function focusableElements() {
-  const root = props.active ? tooltipRef.value : preferenceRef.value;
+  const root = tooltipRef.value;
   if (!root) return [];
   return [...root.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])')]
     .filter((element) => !element.hasAttribute("hidden"));
 }
 
 function handleKeydown(event) {
-  if (!props.active && !props.preferenceVisible) return;
+  if (!props.active) return;
   if (event.key === "Escape" && props.active) {
     event.preventDefault();
     event.stopPropagation();
@@ -336,23 +315,6 @@ watch(
       window.clearTimeout(settleTimer);
       targetObserver?.disconnect();
       targetElement = null;
-      if (!props.preferenceVisible) {
-        document.removeEventListener("keydown", handleKeydown, true);
-        window.removeEventListener("resize", schedulePositionUpdate);
-        window.removeEventListener("scroll", schedulePositionUpdate, true);
-      }
-    }
-  },
-);
-
-watch(
-  () => props.preferenceVisible,
-  async (isVisible) => {
-    if (isVisible) {
-      document.addEventListener("keydown", handleKeydown, true);
-      await nextTick();
-      preferenceRef.value?.focus?.({ preventScroll: true });
-    } else if (!props.active) {
       document.removeEventListener("keydown", handleKeydown, true);
       window.removeEventListener("resize", schedulePositionUpdate);
       window.removeEventListener("scroll", schedulePositionUpdate, true);
@@ -405,8 +367,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 0 0 1px rgba(241, 247, 255, 0.92), 0 0 0 5px rgba(57, 140, 231, 0.18), 0 14px 34px rgba(5, 21, 40, 0.2);
 }
 
-.rm-tour-bubble,
-.rm-tour-preference {
+.rm-tour-bubble {
   position: fixed;
   z-index: 2;
   box-sizing: border-box;
@@ -433,8 +394,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.08em;
 }
 
-.rm-tour-bubble h2,
-.rm-tour-preference h2 {
+.rm-tour-bubble h2 {
   margin: 0;
   color: var(--app-ink, oklch(27% 0.025 250));
   font-size: 20px;
@@ -443,8 +403,7 @@ onBeforeUnmount(() => {
   letter-spacing: -0.02em;
 }
 
-.rm-tour-bubble p,
-.rm-tour-preference p {
+.rm-tour-bubble p {
   margin: 10px 0 0;
   color: var(--app-muted, oklch(49% 0.025 250));
   font-size: 14px;
@@ -475,7 +434,6 @@ onBeforeUnmount(() => {
 }
 
 .rm-tour-actions,
-.rm-tour-preference-actions,
 .rm-tour-nav-actions {
   display: flex;
   align-items: center;
@@ -491,8 +449,7 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
 }
 
-.rm-tour-bubble button,
-.rm-tour-preference button {
+.rm-tour-bubble button {
   min-height: 36px;
   padding: 0 14px;
   border-radius: 9px;
@@ -503,14 +460,12 @@ onBeforeUnmount(() => {
   transition: color 150ms ease-out, background-color 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out, box-shadow 150ms ease-out;
 }
 
-.rm-tour-bubble button:focus-visible,
-.rm-tour-preference button:focus-visible {
+.rm-tour-bubble button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.22);
 }
 
-.rm-tour-bubble button:active,
-.rm-tour-preference button:active {
+.rm-tour-bubble button:active {
   transform: translateY(1px);
 }
 
@@ -554,41 +509,8 @@ onBeforeUnmount(() => {
   background: oklch(49% 0.19 252);
 }
 
-.rm-tour-preference {
-  left: 50%;
-  top: 50%;
-  width: min(430px, calc(100vw - 32px));
-  padding: 26px;
-  border-radius: 18px;
-  transform: translate(-50%, -50%);
-}
-
-.rm-tour-preference-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  margin-bottom: 16px;
-  border-radius: 12px;
-  color: var(--app-blue, oklch(50% 0.17 252));
-  background: var(--app-blue-soft, oklch(94% 0.035 250));
-}
-
-.rm-tour-preference-icon svg {
-  width: 22px;
-  height: 22px;
-}
-
-.rm-tour-preference-actions {
-  justify-content: flex-end;
-  margin-top: 22px;
-}
-
 .rm-tour-bubble-enter-active,
-.rm-tour-bubble-leave-active,
-.rm-tour-preference-enter-active,
-.rm-tour-preference-leave-active {
+.rm-tour-bubble-leave-active {
   transition: opacity 150ms ease-out, transform 150ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 
@@ -598,25 +520,17 @@ onBeforeUnmount(() => {
   transform: translateY(5px) scale(0.985);
 }
 
-.rm-tour-preference-enter-from,
-.rm-tour-preference-leave-to {
-  opacity: 0;
-  transform: translate(-50%, calc(-50% + 6px)) scale(0.985);
-}
-
 @media (max-width: 640px) {
   .rm-tour-bubble {
     padding: 17px;
     border-radius: 14px;
   }
 
-  .rm-tour-bubble h2,
-  .rm-tour-preference h2 {
+  .rm-tour-bubble h2 {
     font-size: 18px;
   }
 
-  .rm-tour-bubble p,
-  .rm-tour-preference p {
+  .rm-tour-bubble p {
     font-size: 14px;
   }
 
@@ -628,16 +542,11 @@ onBeforeUnmount(() => {
     flex-wrap: wrap;
   }
 
-  .rm-tour-bubble button,
-  .rm-tour-preference button {
+  .rm-tour-bubble button {
     min-height: 44px;
     padding: 0 12px;
   }
 
-  .rm-tour-preference-actions {
-    align-items: stretch;
-    flex-direction: column;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -645,9 +554,7 @@ onBeforeUnmount(() => {
   .rm-tour-spotlight,
   .rm-tour-progress span,
   .rm-tour-bubble-enter-active,
-  .rm-tour-bubble-leave-active,
-  .rm-tour-preference-enter-active,
-  .rm-tour-preference-leave-active {
+  .rm-tour-bubble-leave-active {
     transition-duration: 1ms !important;
   }
 }
@@ -657,8 +564,7 @@ html.dark .rm-tour-mask {
   background: rgba(4, 8, 14, 0.7);
 }
 
-html.dark .rm-tour-bubble,
-html.dark .rm-tour-preference {
+html.dark .rm-tour-bubble {
   box-shadow: 0 24px 64px -26px rgba(2, 6, 12, 0.8), 0 8px 24px -16px rgba(2, 6, 12, 0.5);
 }
 

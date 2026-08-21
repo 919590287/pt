@@ -88,12 +88,12 @@
             </svg>
           </span>
           <p class="gjod-status-title">{{ scopeLabel }}范围内暂无公交出行OD</p>
-          <p class="gjod-status-desc">当前模型在该范围内没有两端都落在街道内的整段公交出行，可切换显示范围。</p>
+          <p class="gjod-status-desc">当前模型在该范围内没有两端都落在{{ granularity === 'street' ? '街道' : '栅格' }}内的整段公交出行，可切换显示范围。</p>
         </div>
 
         <div v-else class="gjod-od-rank">
           <div class="gjod-rank-head" aria-hidden="true">
-            <span class="gjod-rank-head-name">出行OD对（街道）</span>
+            <span class="gjod-rank-head-name">{{ granularity === 'street' ? '街道OD' : '栅格OD' }}</span>
             <span class="gjod-rank-head-value">人次</span>
             <span class="gjod-rank-head-share">占比</span>
           </div>
@@ -143,9 +143,6 @@
         ></span>
         <span class="gjod-map-legend-label">{{ item.label }}</span>
       </div>
-      <p v-if="granularity === 'grid'" class="gjod-map-legend-note">
-        100m–2km 各栅格档位均按双向合计流量排序，最多显示前 {{ formatInt(GRID_RENDER_LIMIT) }} 条 OD 连线。
-      </p>
     </div>
   </teleport>
 </template>
@@ -155,6 +152,7 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shal
 import { LineLayer } from "@deck.gl/layers";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { isDarkTheme } from "@/utils/uiTheme.js";
 import {
   getCachedTripEndsOdGrid,
   getCachedTripEndsOdStreets,
@@ -184,6 +182,7 @@ const STREET_LABEL_ID = "rm-busod-street-label";
 /** 100m–2km 各栅格档位的连线渲染上限：双向合并后按流量降序取 Top 1000。 */
 const GRID_RENDER_LIMIT = 1000;
 const GENERATING_POLL_MS = 8000;
+const GENERATING_POLL_MAX_ATTEMPTS = 20;
 
 const status = ref("loading"); // loading | generating | error | ready
 const errorMessage = ref("");
@@ -209,6 +208,7 @@ function formatInt(value) {
 // ---------------------------------------------------------------------------
 
 let pollTimer = null;
+let pollAttempt = 0;
 let requestSeq = 0;
 const pageActive = ref(true);
 let pendingLayerRefresh = false;
@@ -222,10 +222,17 @@ function isCanceledRequest(error) {
 
 function schedulePoll() {
   clearTimeout(pollTimer);
+  if (pollAttempt >= GENERATING_POLL_MAX_ATTEMPTS) {
+    status.value = "error";
+    errorMessage.value = "公交 OD 缓存生成超时，请稍后手动重试";
+    return;
+  }
+  pollAttempt += 1;
+  const delay = Math.min(30_000, GENERATING_POLL_MS + (pollAttempt - 1) * 1500);
   pollTimer = setTimeout(() => {
+    pollTimer = null;
     if (pageActive.value) bootstrap();
-    else schedulePoll(); // 页面失活期间不发请求，激活后由轮询补上
-  }, GENERATING_POLL_MS);
+  }, delay);
 }
 
 function bootstrap() {
@@ -234,7 +241,10 @@ function bootstrap() {
   requestSeq += 1;
   const seq = requestSeq;
   const model = props.model;
-  if (status.value !== "generating") status.value = "loading";
+  if (status.value !== "generating") {
+    status.value = "loading";
+    pollAttempt = 0;
+  }
   errorMessage.value = "";
 
   getCachedTripEndsSummary(model)
@@ -262,7 +272,8 @@ function bootstrap() {
         }
         odStreets.value = odPayload;
         streetStats.value = streetsPayload;
-        odGrid.value = getModelDerived(model, "busOdGrid", () => markRaw(parseBusOdGrid(odGridBuffer)));
+        odGrid.value = getModelDerived(model, `busOdGrid@${version}`, () => markRaw(parseBusOdGrid(odGridBuffer)));
+        pollAttempt = 0;
         streetsGeojson.value = geojson;
         status.value = "ready";
         refreshMapLayers();
@@ -272,11 +283,6 @@ function bootstrap() {
     .catch((error) => {
       if (seq !== requestSeq || props.model !== model || isCanceledRequest(error)) return;
       const message = String(error?.message || "");
-      if (/超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message)) {
-        status.value = "generating";
-        schedulePoll();
-        return;
-      }
       errorMessage.value = message || "公交OD数据加载失败";
       status.value = "error";
     });
@@ -513,7 +519,12 @@ function decoratedStreetsGeojson() {
 }
 
 function ensureStreetLayers(map) {
+  const isDark = isDarkTheme.value;
   const theme = MAP_THEME.busOd;
+  const streetLineColor = isDark ? (theme.streetLineDark || "#ffffff") : theme.streetLine;
+  const streetLabelColor = isDark ? (theme.streetLabelDark || "#f0f4f8") : theme.streetLabel;
+  const streetLabelHaloColor = isDark ? (theme.streetLabelHaloDark || "rgba(18,22,29,0.94)") : theme.streetLabelHalo;
+
   if (!map.getSource(STREET_SOURCE_ID)) {
     map.addSource(STREET_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   }
@@ -522,12 +533,20 @@ function ensureStreetLayers(map) {
       id: STREET_LINE_ID,
       type: "line",
       source: STREET_SOURCE_ID,
+      layout: {
+        "line-join": "round",
+        "line-cap": "butt",
+      },
       paint: {
-        "line-color": theme.streetLine,
+        "line-color": streetLineColor,
         "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1, 12, 1.8],
         "line-opacity": ["case", ["==", ["get", "inScope"], 1], 0.88, 0.3],
+        "line-dasharray": [1, 0],
       },
     });
+  } else {
+    map.setPaintProperty(STREET_LINE_ID, "line-color", streetLineColor);
+    map.setPaintProperty(STREET_LINE_ID, "line-dasharray", [1, 0]);
   }
   if (!map.getLayer(STREET_LABEL_ID)) {
     map.addLayer({
@@ -541,14 +560,21 @@ function ensureStreetLayers(map) {
         "text-max-width": 8,
       },
       paint: {
-        "text-color": theme.streetLabel,
-        "text-halo-color": theme.streetLabelHalo,
+        "text-color": streetLabelColor,
+        "text-halo-color": streetLabelHaloColor,
         "text-halo-width": 1.4,
         "text-opacity": ["case", ["==", ["get", "inScope"], 1], 1, 0.55],
       },
     });
+  } else {
+    map.setPaintProperty(STREET_LABEL_ID, "text-color", streetLabelColor);
+    map.setPaintProperty(STREET_LABEL_ID, "text-halo-color", streetLabelHaloColor);
   }
 }
+
+watch(isDarkTheme, () => {
+  refreshMapLayers();
+});
 
 function refreshMapLayers() {
   if (status.value !== "ready") return;
@@ -641,6 +667,7 @@ onMounted(bootstrap);
 
 onActivated(() => {
   pageActive.value = true;
+  if (status.value === "generating" && !pollTimer) schedulePoll();
   if (pendingLayerRefresh) refreshMapLayers();
 });
 

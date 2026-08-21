@@ -5,6 +5,7 @@ import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitStopFacility;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 
 import java.io.Serializable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,7 +20,8 @@ public class StopFacilityId extends Id<TransitStopFacility> implements Serializa
     /**
      * 缓存重复的id不重复创建
      */
-    private static final ConcurrentMap<Id<TransitStopFacility>, StopFacilityId> cache = new ConcurrentHashMap<>(1000);
+    private static final BackendMemoryCache<Id<TransitStopFacility>, StopFacilityId> cache =
+            new BackendMemoryCache<>("id-stop-facility", 8L * 1024 * 1024, ignored -> 160L);
 
     /**
      * id

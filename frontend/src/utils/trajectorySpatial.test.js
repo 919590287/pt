@@ -14,7 +14,17 @@ describe("trajectory spatial windows", () => {
 
   it("detects only the spatial cache protocol", () => {
     expect(supportsTrajectorySpatialChunks(manifest)).toBe(true);
+    expect(supportsTrajectorySpatialChunks({
+      spatial: {
+        layout: "indexed-zstd-spatial-blocks-v3",
+        tileSizeMeters: 4096,
+        independentBlocks: true,
+      },
+    })).toBe(true);
     expect(supportsTrajectorySpatialChunks({ chunkSeconds: 30 })).toBe(false);
+    expect(supportsTrajectorySpatialChunks({
+      spatial: { layout: "unknown-spatial-v99", tileSizeMeters: 4096 },
+    })).toBe(false);
   });
 
   it("treats exact positive and negative max bounds as exclusive tile edges", () => {

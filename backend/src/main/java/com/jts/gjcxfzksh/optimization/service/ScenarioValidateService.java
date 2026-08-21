@@ -47,7 +47,7 @@ public class ScenarioValidateService {
         MatsimData data = null;
         try {
             matsimConfig.requireSchemeAccess(draft.getParentModel(), username);
-            data = Datasource.data(draft.getParentModel()).matsim_data();
+            data = Datasource.computeData(draft.getParentModel()).matsim_data();
         } catch (Exception e) {
             issues.add(ValidationIssue.warning(null, "母本模型未加载，部分引用检查已跳过"));
         }

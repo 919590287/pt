@@ -29,8 +29,8 @@
     </div>
   </div>
 
-  <teleport v-if="!runMonitorSimplifiedRight || pfaRightPanel" to="#datavisualization_index_box2" defer>
-    <MCard2 v-if="selectedStationName" :class="['SJZL_right_card', shouldRenderPfaRightPanel ? 'pfa-station-card' : '']" :open="true">
+  <teleport v-if="shouldRenderPfaRightPanel" to="#datavisualization_index_box2" defer>
+    <MCard2 v-if="shouldRenderPfaRightPanel && selectedStationName" class="SJZL_right_card pfa-station-card" :open="true">
       <template #title>
         <div class="ranking-title-container">
           <div class="header-actions-left">
@@ -724,9 +724,9 @@ const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""))
 const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
 // 客流分析模式：即使简化（地图/选中复用运行监测），也渲染完整 MCard2 面板
 const pfaRightPanel = inject("pfaRightPanel", ref(false));
-const pfaStationSection = inject("pfaStationSection", ref("boarding"));
+const pfaStationSection = inject("pfaStationSection", ref("overview"));
 const runMonitorStationOptionFilter = inject("runMonitorStationOptionFilter", () => true);
-const shouldRenderPfaRightPanel = computed(() => Boolean(pfaRightPanel?.value ?? pfaRightPanel));
+const shouldRenderPfaRightPanel = computed(() => Boolean(pfaStationSection?.value ? (pfaRightPanel?.value ?? pfaRightPanel) : false) && pfaStationSection.value !== "overview");
 
 // 全网设施索引（byName/byId → 保序候选列表）：按模型只建一次，选站查询 O(1)
 function buildFacilityIndex(lines) {
@@ -2458,7 +2458,7 @@ function clearStationPanelRetry() {
 function scheduleStationPanelRetry(model) {
   if (stationPanelDisposed) return;
   if (!model || props.model !== model || stationPanelData.value || stationPanelRetryTimer) return;
-  if (stationPanelRetryCount >= 120) {
+  if (stationPanelRetryCount >= 20) {
     stationPanelStatus.value = "error";
     stationPanelError.value = "站点客流缓存生成超时";
     return;
@@ -2473,13 +2473,6 @@ function scheduleStationPanelRetry(model) {
       ensureStationPanelData();
     }
   }, delay);
-}
-
-function shouldRetryStationPanelError(error) {
-  if (isCanceledRequest(error)) return false;
-  if (stationPanelRetryCount < 8) return true;
-  const message = String(error?.message || "");
-  return /超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message);
 }
 
 function ensureStationPanelData(options = {}) {
@@ -2519,13 +2512,8 @@ function ensureStationPanelData(options = {}) {
       if (isCanceledRequest(error) || stationPanelDisposed) return null;
       if (props.model === model) {
         stationPanelData.value = null;
-        if (shouldRetryStationPanelError(error)) {
-          stationPanelError.value = "";
-          scheduleStationPanelRetry(model);
-        } else {
-          stationPanelStatus.value = "error";
-          stationPanelError.value = error?.message || "站点客流数据加载失败";
-        }
+        stationPanelStatus.value = "error";
+        stationPanelError.value = error?.message || "站点客流数据加载失败";
       }
       return null;
     })

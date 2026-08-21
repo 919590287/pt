@@ -43,6 +43,77 @@ export function collectionFeatures(collection) {
   return Array.isArray(collection?.features) ? collection.features : [];
 }
 
+export const PHYSICAL_STATION_CLUSTER_METERS = 200;
+
+export function normalizePhysicalStationName(value) {
+  return valueOrEmpty(value)
+    .replace(/\s*[（(][^）)]*[）)]\s*$/g, "")
+    .replace(/[\s_-]*[0-9]+$/g, "")
+    .replace(/\s*(?:总站|站)\s*$/g, "")
+    .trim();
+}
+
+function groundDistanceMeters(first, second) {
+  const earthRadiusMeters = 6_378_137;
+  const toRadians = (value) => Number(value) * Math.PI / 180;
+  const lat1 = toRadians(first[1]);
+  const lat2 = toRadians(second[1]);
+  const deltaLat = toRadians(second[1] - first[1]);
+  const deltaLng = toRadians(second[0] - first[0]);
+  const haversine = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+/**
+ * 物理站点 = 同一规范化站名下、空间距离可连通的站台簇。
+ * 道路两侧对向站台和多线共站合并，距离较远的同名站仍分开计数。
+ */
+export function countPhysicalStations(collection, thresholdMeters = PHYSICAL_STATION_CLUSTER_METERS) {
+  const groups = new Map();
+  let fallbackCount = 0;
+  for (const feature of collectionFeatures(collection)) {
+    const properties = feature?.properties || {};
+    const name = normalizePhysicalStationName(
+      properties.stop_name || properties.name || properties.station_name || properties["站点名称"],
+    );
+    const coordinate = pointCoordinates(feature?.geometry);
+    if (!name || !coordinate) {
+      fallbackCount += 1;
+      continue;
+    }
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(coordinate);
+  }
+
+  let clusterCount = fallbackCount;
+  for (const coordinates of groups.values()) {
+    const parents = coordinates.map((_, index) => index);
+    const find = (index) => {
+      let current = index;
+      while (parents[current] !== current) {
+        parents[current] = parents[parents[current]];
+        current = parents[current];
+      }
+      return current;
+    };
+    const union = (left, right) => {
+      const leftRoot = find(left);
+      const rightRoot = find(right);
+      if (leftRoot !== rightRoot) parents[rightRoot] = leftRoot;
+    };
+    for (let left = 0; left < coordinates.length; left += 1) {
+      for (let right = left + 1; right < coordinates.length; right += 1) {
+        if (groundDistanceMeters(coordinates[left], coordinates[right]) <= thresholdMeters) {
+          union(left, right);
+        }
+      }
+    }
+    clusterCount += new Set(coordinates.map((_, index) => find(index))).size;
+  }
+  return clusterCount;
+}
+
 export function pointCoordinates(geometry) {
   if (geometry?.type !== "Point" || !Array.isArray(geometry.coordinates)) return null;
   const [lng, lat] = geometry.coordinates;
@@ -362,7 +433,7 @@ export function filterCollectionsByDistrict(collections, context) {
   };
 }
 
-// 线网运营指标单遍聚合：日运营里程 = Σ(方向级日班次 dep_count × 几何长度)。
+// 计划运营指标单遍聚合：计划日运营里程 = Σ(方向级日班次 dep_count × 几何长度)。
 // dep_count 为线路 SHP 新 schema 字段（方向级日班次）；旧版本数据（如南沙筛选结果）
 // 缺失该字段——全部缺失时里程为 null（上层显示"暂无"），部分缺失时照常累计并回报缺失条数。
 // lengthMetersOf / splitCompanies 由调用方注入（索引页已有带缓存的哈弗辛积分与企业拆分），

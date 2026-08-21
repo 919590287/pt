@@ -2,28 +2,7 @@
 <template>
   <header class="header-container">
     <div class="title-box">
-      <svg class="logo-icon" viewBox="0 0 36 36" width="30" height="30" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <rect width="36" height="36" rx="9" fill="url(#logo-gradient)" class="logo-bg" />
-        <!-- Top Arch: Base Track + Pulse Flow -->
-        <path d="M10 18 C 14 13, 22 13, 26 18" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" class="route-track" />
-        <path d="M10 18 C 14 13, 22 13, 26 18" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" class="route-flow top-flow" />
-        
-        <!-- Bottom Arch: Base Track + Pulse Flow -->
-        <path d="M10 18 C 14 23, 22 23, 26 18" stroke="#9ec9ff" stroke-width="2" stroke-linecap="round" class="route-track" />
-        <path d="M10 18 C 14 23, 22 23, 26 18" stroke="#9ec9ff" stroke-width="2" stroke-linecap="round" class="route-flow bottom-flow" />
-
-        <!-- Station Nodes -->
-        <circle cx="10" cy="18" r="3.5" fill="#ffffff" class="node-point node-white" />
-        <circle cx="18" cy="15" r="3" fill="#bcd9ff" class="node-point node-pink" />
-        <circle cx="26" cy="18" r="3.5" fill="#7fb6ff" class="node-point node-cyan" />
-        <defs>
-          <linearGradient id="logo-gradient" x1="0" y1="0" x2="36" y2="36" gradientUnits="userSpaceOnUse">
-            <stop offset="0%" stop-color="#0a3f86" />
-            <stop offset="52%" stop-color="#0071e3" />
-            <stop offset="100%" stop-color="#54a8ff" />
-          </linearGradient>
-        </defs>
-      </svg>
+      <img src="@/assets/images/header/platform-logo.png" alt="平台Logo" class="logo-icon logo-img" width="30" height="30" />
       <span class="title-text">公共交通数智化治理平台</span>
     </div>
     <nav class="nav-list" aria-label="主导航">
@@ -49,7 +28,7 @@
         trigger="click"
         @command="handleHelpCommand"
       >
-        <button class="help-menu-btn" type="button" title="运行监测帮助" aria-label="打开运行监测帮助菜单">
+        <button class="help-menu-btn" type="button" data-tour="onboarding-help" title="运行监测帮助" aria-label="打开运行监测帮助菜单">
           <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="9"></circle>
             <path d="M9.6 9a2.6 2.6 0 1 1 4.5 1.8c-1.1.8-2.1 1.3-2.1 2.7"></path>
@@ -84,7 +63,7 @@
       </button>
 
       <el-dropdown class="user-menu" popper-class="user-dropdown-popper" transition="none" trigger="click" @command="handleUserCommand">
-        <button class="user-profile-btn" type="button" :title="`用户管理：${currentUsername}`" aria-label="用户管理">
+        <button class="user-profile-btn" type="button" data-tour="user-management" :title="`用户管理：${currentUsername}`" aria-label="用户管理">
           <span class="user-initial">{{ userInitial }}</span>
         </button>
         <template #dropdown>
@@ -125,21 +104,30 @@
               </svg>
             </div>
             <div class="basemap-submenu" role="radiogroup" aria-label="底图选择">
-              <button
-                v-for="option in basemapOptions"
-                :key="option.key"
-                type="button"
-                class="basemap-option"
-                :class="{ active: selectedBasemapKey === option.key }"
-                role="radio"
-                :aria-checked="selectedBasemapKey === option.key"
-                @click.stop="selectBasemap(option)"
-              >
-                <span>{{ option.label }}</span>
-                <svg v-if="selectedBasemapKey === option.key" class="basemap-check" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-              </button>
+              <div class="basemap-scroll">
+                <section v-for="group in basemapGroups" :key="group.name" class="basemap-group">
+                  <div class="basemap-group-label">{{ group.name }}</div>
+                  <button
+                    v-for="option in group.options"
+                    :key="option.key"
+                    type="button"
+                    class="basemap-option"
+                    :class="{ active: selectedBasemapKey === option.key }"
+                    role="radio"
+                    :aria-checked="selectedBasemapKey === option.key"
+                    @click.stop="selectBasemap(option)"
+                  >
+                    <span class="basemap-preview" :style="{ background: option.preview || '#e9ecef' }" aria-hidden="true"></span>
+                    <span class="basemap-copy">
+                      <strong>{{ option.label }}</strong>
+                      <small>{{ option.description }}</small>
+                    </span>
+                    <svg v-if="selectedBasemapKey === option.key" class="basemap-check" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  </button>
+                </section>
+              </div>
             </div>
           </div>
           <el-dropdown-item command="logout" divided class="custom-dropdown-item logout-item">
@@ -202,13 +190,22 @@ const renameRules = {
   ],
 };
 const userInitial = computed(() => (currentUsername.value || "用").slice(0, 1).toUpperCase());
-const basemapStorageKey = window.BASEMAP_STORAGE_KEY || "gjcxfzksh:basemap";
+const basemapStorageKey = window.BASEMAP_STORAGE_KEY || "gjcxfzksh:basemap:v2";
 const basemapOptions = computed(() => {
   const configuredOptions = Array.isArray(window.BASEMAP_OPTIONS) ? window.BASEMAP_OPTIONS : [];
   if (!configuredOptions.length) {
     throw new Error("未配置 BASEMAP_OPTIONS，无法初始化底图");
   }
-  return configuredOptions;
+  return configuredOptions.filter((option) => !option.hidden);
+});
+const basemapGroups = computed(() => {
+  const groups = new Map();
+  basemapOptions.value.forEach((option) => {
+    const name = option.group || "其他";
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(option);
+  });
+  return Array.from(groups, ([name, options]) => ({ name, options }));
 });
 const selectedBasemapKey = ref(readStoredBasemapKey());
 const basemapSubmenuOpen = ref(false);
@@ -219,10 +216,14 @@ watch(basemapOptions, (options) => {
 }, { immediate: true });
 
 function readStoredBasemapKey() {
+  const visibleOptions = (Array.isArray(window.BASEMAP_OPTIONS) ? window.BASEMAP_OPTIONS : [])
+    .filter((option) => !option.hidden);
+  const fallbackKey = window.DEFAULT_BASEMAP_KEY || visibleOptions[0]?.key || "esri-dark";
   try {
-    return window.localStorage?.getItem(basemapStorageKey) || window.DEFAULT_BASEMAP_KEY || "configured";
+    const storedKey = window.localStorage?.getItem(basemapStorageKey);
+    return visibleOptions.some((option) => option.key === storedKey) ? storedKey : fallbackKey;
   } catch (error) {
-    return window.DEFAULT_BASEMAP_KEY || "configured";
+    return fallbackKey;
   }
 }
 
@@ -329,10 +330,6 @@ const headerMenus = [
     to: { name: "datavisualization" },
   },
   {
-    title: "客流分析",
-    to: { name: "passengerflowanalysis" },
-  },
-  {
     title: "换乘分析",
     to: { name: "transferanalysis" },
   },
@@ -395,51 +392,12 @@ const headerMenus = [
   cursor: pointer;
 
   .logo-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    object-fit: cover;
     flex-shrink: 0;
     transition: transform var(--app-motion-normal) var(--app-ease-out);
-
-    .logo-bg {
-      transition: fill var(--app-motion-normal) var(--app-ease-out);
-    }
-
-    // Base paths representing the silent static pipeline structure
-    .route-track {
-      opacity: 0.22;
-      transition: opacity var(--app-motion-normal) var(--app-ease-out);
-    }
-
-    // Dynamic stream flowing along the paths
-    .route-flow {
-      stroke-dasharray: 6 16;
-      stroke-dashoffset: 22;
-      animation: flowPulse 2s linear infinite;
-      
-      &.top-flow {
-        animation-duration: 2.2s;
-      }
-      &.bottom-flow {
-        animation-duration: 1.8s;
-        animation-direction: reverse; // flows in opposite direction for dynamic balance!
-      }
-    }
-
-    // Station node points with soft physical micro-behaviors
-    .node-point {
-      transition: all 0.4s cubic-bezier(0.25, 0.8, 0.25, 1);
-      transform-origin: center;
-      
-      &.node-white {
-        animation: nodePulseWhite 3s ease-in-out infinite;
-      }
-      
-      &.node-pink {
-        animation: nodePulsePink 3s ease-in-out infinite 0.8s;
-      }
-      
-      &.node-cyan {
-        animation: nodePulseCyan 3s ease-in-out infinite 1.6s;
-      }
-    }
   }
 
   .title-text {
@@ -456,37 +414,6 @@ const headerMenus = [
   &:hover {
     .logo-icon {
       transform: scale(1.04);
-      
-      .route-track {
-        opacity: 0.4;
-      }
-      
-      .route-flow {
-        &.top-flow {
-          animation-duration: 0.9s;
-          stroke-width: 3px;
-        }
-        &.bottom-flow {
-          animation-duration: 0.75s;
-          stroke-width: 2.5px;
-        }
-      }
-      
-      .node-point {
-        filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.8));
-        
-        &.node-white {
-          transform: scale(1.18);
-        }
-        &.node-pink {
-          transform: scale(1.22) translateY(-1px);
-          fill: #ffb6c1; // slightly brighter pink
-        }
-        &.node-cyan {
-          transform: scale(1.18);
-          fill: #00ffff; // bright energetic cyan
-        }
-      }
     }
 
     .title-text {
@@ -1031,8 +958,8 @@ html.dark .user-profile-btn:focus-visible {
     position: absolute !important;
     top: 0 !important;
     right: calc(100% + 10px) !important;
-    min-width: 136px !important;
-    padding: 6px !important;
+    width: 246px !important;
+    padding: 0 !important;
     border: 1px solid rgba(21, 105, 222, 0.15) !important;
     border-radius: 10px !important;
     background: rgba(255, 255, 255, 0.98) !important;
@@ -1043,6 +970,15 @@ html.dark .user-profile-btn:focus-visible {
     transform: translateX(6px) scale(0.98) !important;
     transform-origin: right top !important;
     transition: opacity 160ms ease, transform 160ms ease !important;
+  }
+
+  .basemap-scroll {
+    max-height: min(68vh, 520px) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain !important;
+    padding: 8px !important;
+    border-radius: inherit !important;
   }
 
   .basemap-submenu::after {
@@ -1064,12 +1000,12 @@ html.dark .user-profile-btn:focus-visible {
 
   .basemap-option {
     width: 100% !important;
-    min-height: 34px !important;
+    min-height: 48px !important;
     display: grid !important;
-    grid-template-columns: minmax(0, 1fr) 14px !important;
+    grid-template-columns: 34px minmax(0, 1fr) 14px !important;
     align-items: center !important;
     gap: 8px !important;
-    padding: 7px 9px !important;
+    padding: 6px 9px !important;
     border: 0 !important;
     border-radius: 8px !important;
     background: transparent !important;
@@ -1092,6 +1028,53 @@ html.dark .user-profile-btn:focus-visible {
       background: rgba(21, 105, 222, 0.11) !important;
       color: #1569de !important;
     }
+  }
+
+  .basemap-group + .basemap-group {
+    margin-top: 7px !important;
+    padding-top: 7px !important;
+    border-top: 1px solid rgba(15, 66, 125, 0.08) !important;
+  }
+
+  .basemap-group-label {
+    padding: 3px 9px 5px !important;
+    color: #98a2b3 !important;
+    font-size: 10px !important;
+    font-weight: 750 !important;
+    letter-spacing: 0.12em !important;
+  }
+
+  .basemap-preview {
+    width: 30px !important;
+    height: 30px !important;
+    border: 1px solid rgba(16, 24, 40, 0.12) !important;
+    border-radius: 7px !important;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2) !important;
+  }
+
+  .basemap-copy {
+    min-width: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 1px !important;
+  }
+
+  .basemap-copy strong,
+  .basemap-copy small {
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+  }
+
+  .basemap-copy strong {
+    font-size: 12.5px !important;
+    font-weight: 700 !important;
+  }
+
+  .basemap-copy small {
+    color: #98a2b3 !important;
+    font-size: 10.5px !important;
+    font-weight: 560 !important;
   }
 
   .basemap-check {
@@ -1410,6 +1393,19 @@ html.dark .user-dropdown-popper {
       background: rgba(64, 156, 255, 0.18) !important;
       color: #9ecbff !important;
     }
+  }
+
+  .basemap-group + .basemap-group {
+    border-top-color: rgba(148, 180, 220, 0.12) !important;
+  }
+
+  .basemap-group-label,
+  .basemap-copy small {
+    color: #718198 !important;
+  }
+
+  .basemap-preview {
+    border-color: rgba(203, 213, 225, 0.2) !important;
   }
 
   .basemap-check {

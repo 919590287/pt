@@ -138,6 +138,7 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shal
 import { GridCellLayer } from "@deck.gl/layers";
 import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { isDarkTheme } from "@/utils/uiTheme.js";
 import {
   getCachedPopulationGrid,
   getCachedPopulationStreets,
@@ -148,7 +149,6 @@ import {
 import { fetchStreetsGeojsonOnce } from "../utils/streetsGeojson.js";
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import {
-  CELL_AREA_KM2,
   GRID_STREET_SENTINEL,
   buildDensityLegendItems,
   buildGridColors,
@@ -185,8 +185,9 @@ const STREET_LINE_ID = "rm-population-street-line";
 const STREET_LABEL_ID = "rm-population-street-label";
 const GENERATING_POLL_MS = 8000;
 const SIMULATION_POPULATION_CACHE_VERSION = "population-v11";
-// 3D 柱高 = 人口密度（人/km²） ÷ 系数。
-const POPULATION_HEIGHT_DIVISOR = 10;
+// 3D 柱高：P99 格高 1500m、最矮非零格 200m，平方根压缩高低差（见 buildGridElevations）。
+const POPULATION_HEIGHT_REFERENCE = 1500;
+const POPULATION_HEIGHT_MIN = 200;
 
 const status = ref("loading"); // loading | generating | unsupported | error | ready
 const errorMessage = ref("");
@@ -390,10 +391,10 @@ function gridLayerInstance() {
   const baseColors = getModelDerived(model, `populationGridColors:${metric.value}`, () =>
     markRaw(buildGridColors(counts, MAP_THEME.population)),
   );
-  const baseElevations = getModelDerived(model, `populationGridElevations:linear-v2:${metric.value}`, () =>
+  const baseElevations = getModelDerived(model, `populationGridElevations:q99pow-v3:${metric.value}`, () =>
     markRaw(buildGridElevations(counts, {
-      valueMultiplier: 1 / CELL_AREA_KM2,
-      heightDivisor: POPULATION_HEIGHT_DIVISOR,
+      referenceHeight: POPULATION_HEIGHT_REFERENCE,
+      minHeight: POPULATION_HEIGHT_MIN,
     })),
   );
   // 行政区模式：区外/未命中街道的格子整体隐藏（临时副本，不入缓存避免按行政区累积内存）
@@ -461,7 +462,12 @@ function decoratedStreetsGeojson() {
 }
 
 function ensureStreetLayers(map) {
+  const isDark = isDarkTheme.value;
   const theme = MAP_THEME.population;
+  const streetLineColor = isDark ? (theme.streetLineDark || "#ffffff") : theme.streetLine;
+  const streetLabelColor = isDark ? (theme.streetLabelDark || "#f0f4f8") : theme.streetLabel;
+  const streetLabelHaloColor = isDark ? (theme.streetLabelHaloDark || "rgba(18,22,29,0.94)") : theme.streetLabelHalo;
+
   if (!map.getSource(STREET_SOURCE_ID)) {
     map.addSource(STREET_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   }
@@ -470,12 +476,20 @@ function ensureStreetLayers(map) {
       id: STREET_LINE_ID,
       type: "line",
       source: STREET_SOURCE_ID,
+      layout: {
+        "line-join": "round",
+        "line-cap": "butt",
+      },
       paint: {
-        "line-color": theme.streetLine,
+        "line-color": streetLineColor,
         "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1, 12, 1.8],
         "line-opacity": ["case", ["==", ["get", "inScope"], 1], 0.88, 0.3],
+        "line-dasharray": [1, 0],
       },
     });
+  } else {
+    map.setPaintProperty(STREET_LINE_ID, "line-color", streetLineColor);
+    map.setPaintProperty(STREET_LINE_ID, "line-dasharray", [1, 0]);
   }
   if (!map.getLayer(STREET_LABEL_ID)) {
     map.addLayer({
@@ -489,14 +503,21 @@ function ensureStreetLayers(map) {
         "text-max-width": 8,
       },
       paint: {
-        "text-color": theme.streetLabel,
-        "text-halo-color": theme.streetLabelHalo,
+        "text-color": streetLabelColor,
+        "text-halo-color": streetLabelHaloColor,
         "text-halo-width": 1.4,
         "text-opacity": ["case", ["==", ["get", "inScope"], 1], 1, 0.55],
       },
     });
+  } else {
+    map.setPaintProperty(STREET_LABEL_ID, "text-color", streetLabelColor);
+    map.setPaintProperty(STREET_LABEL_ID, "text-halo-color", streetLabelHaloColor);
   }
 }
+
+watch(isDarkTheme, () => {
+  refreshMapLayers();
+});
 
 function refreshMapLayers() {
   if (status.value !== "ready") return;

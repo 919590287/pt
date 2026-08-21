@@ -140,6 +140,55 @@ class MatsimPanelReadCacheTest {
         assertTrue(detail.containsKey("facilityPanels"));
     }
 
+    @Test
+    void canonicalPromotionDeletesMonolithAndIgnoresLaterStraySource() throws Exception {
+        MatsimData data = data("canonical-route");
+        Path panel = tempDir.resolve("canonical-route-panel.json.gz");
+        Map<String, Object> route = Map.of(
+                "lineId", "L1", "lineName", "权威分片", "routeId", "R1",
+                "hourlyFlow", List.of(1, 2), "segments", List.of());
+        writeGzip(panel, Map.of("status", "ready", "routes", Map.of("L1::R1", route)));
+
+        MatsimPanelReadCache.promoteCanonical(data, panel, "route");
+
+        assertFalse(Files.exists(panel));
+        Path manifest = tempDir.resolve("panel-read-v2-route/manifest.json");
+        Map<String, Object> state = JSON.readValue(manifest.toFile(), Map.class);
+        assertEquals(Boolean.TRUE, state.get("canonical"));
+        assertEquals(Boolean.FALSE, state.get("sourceRetained"));
+        // 外部遗留的坏单体不再覆盖已原子发布的规范分片。
+        Files.writeString(panel, "broken");
+        Map<String, Object> index = MatsimPanelReadCache.readRouteIndex(data, panel);
+        Map<?, ?> routes = (Map<?, ?>) index.get("routes");
+        assertEquals("权威分片", ((Map<?, ?>) routes.get("L1::R1")).get("lineName"));
+    }
+
+    @Test
+    void acceptsAndRepairsEarlyV2ReleasedManifestWithoutCanonicalFlag() throws Exception {
+        MatsimData data = data("legacy-canonical-route");
+        Path panel = tempDir.resolve("legacy-route-panel.json.gz");
+        writeGzip(panel, Map.of(
+                "status", "ready",
+                "routes", Map.of("L1::R1", Map.of(
+                        "lineId", "L1", "lineName", "旧版规范分片", "routeId", "R1",
+                        "hourlyFlow", List.of(1), "segments", List.of()))));
+
+        MatsimPanelReadCache.readRouteIndex(data, panel);
+        Path manifest = tempDir.resolve("panel-read-v2-route/manifest.json");
+        Map<String, Object> legacy = JSON.readValue(manifest.toFile(), Map.class);
+        legacy.remove("canonical");
+        legacy.put("sourceRetained", false);
+        JSON.writeValue(manifest.toFile(), legacy);
+        Files.delete(panel);
+
+        assertTrue(MatsimPanelReadCache.canonicalReady(panel, "route"),
+                "已显式释放单体源的早期 v2 规范分片不得被误判为缺失");
+        MatsimPanelReadCache.promoteCanonical(data, panel, "route");
+        Map<String, Object> repaired = JSON.readValue(manifest.toFile(), Map.class);
+        assertEquals(Boolean.TRUE, repaired.get("canonical"));
+        assertEquals(Boolean.FALSE, repaired.get("sourceRetained"));
+    }
+
     private MatsimData data(String name) throws Exception {
         Path output = tempDir.resolve(name).resolve("output");
         Path cache = tempDir.resolve(name).resolve("cache");

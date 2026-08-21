@@ -345,7 +345,9 @@ import {
   VehicleTrajectoryLayer,
   VEHICLE_MODE_CONFIG,
   parseVehicleTrajectoryBinaryChunk,
+  trajectoryPlaybackGate,
   trajectoryPrefetchBlockCount,
+  trajectoryPrefetchConcurrency,
 } from "../layers/VehicleTrajectoryLayer.js";
 import { LinkSpeedHighlightManager, LinkSpeedLayerManager } from "../layers/LinkSpeedLayer.js";
 import { getCachedChunk, putCachedChunk, pruneChunkCache } from "@/utils/trajectoryChunkCache.js";
@@ -406,13 +408,19 @@ const MAX_CHUNK_CACHE = 6;
 const MAX_CHUNK_CACHE_BYTES = 160 * 1024 * 1024;
 const MAX_BACKGROUND_PREFETCH_BYTES = 128 * 1024 * 1024;
 const MAX_PERSISTENT_CACHE_BYTES = 64 * 1024 * 1024;
+// 与后端 matsim.trajectory-query-concurrency 默认值 2 对齐。远端 50x 播放时
+// 单请求通道无法在 200ms 的块播放时间内补齐下一块；双通道只在延迟确实需要时启用。
 const MAX_PREFETCH_CONCURRENCY = 2;
-const MAX_FORWARD_PREFETCH_BLOCKS = 4;
+// Worker 最多常驻 6 块，当前块占 1 个，因此最多向前保留 5 块。
+const MAX_FORWARD_PREFETCH_BLOCKS = 5;
 const MIN_PREFETCH_SAFETY_MS = 800;
 // 播放时滑块/时间文本的刷新节流（图层仍按 rAF 每帧驱动，UI 不必每帧重渲染）。
 const UI_SYNC_INTERVAL_MS = 120;
 const SEEK_CHUNK_LOAD_DELAY_MS = 48;
 const SEEK_SNAPSHOT_DELAY_MS = 36;
+// fitBounds/惯性平移会在数百毫秒内跨过多个 4096m 网格。等视口稳定后只请求最后一个窗口，
+// 否则每个过渡窗口都会在服务端解压一遍轨迹块，浏览器 abort 也不能取消已开始的解压。
+const VIEWPORT_RELOAD_DEBOUNCE_MS = 320;
 const loading = ref(false);
 const loadError = ref("");
 const cacheStatus = ref("idle");
@@ -433,8 +441,8 @@ const followedVehicle = shallowRef(null);
 let trajectoryLayer = null;
 let playbackFrame = null;
 // 播放时钟（普通变量，不走 Vue 响应式）：每帧直接驱动图层，currentTime ref 仅按节流回写给滑块。
-// 改为"实时锚点"驱动：simTime = anchorSim + (now-anchorReal)*speed。不再累加封顶增量，
-// 卡顿掉帧也不会丢仿真时间，从根上消除"车辆正常运行→突然大幅降速→又正常"的抖动。
+// "实时锚点"驱动：simTime = anchorSim + (now-anchorReal)*speed。渲染掉帧时不丢仿真时间；
+// 只有跨块数据未就绪时才在块边界重新锚定，避免播放时钟无限超前并制造取消风暴。
 let playbackClock = 0;
 let playbackAnchorReal = 0;
 let playbackAnchorSim = 0;
@@ -462,6 +470,7 @@ let pendingChunkStart = null;
 let pendingActivationStart = null;
 let chunkCache = new Map();
 let prefetchingChunks = new Set();
+let prefetchJobs = new Map();
 let chunkRequests = new Map();
 // 当前一代分块请求共用的取消控制器：重新加载/模型切换/卸载时统一 abort 在途请求（含预取）。
 let chunkAbortController = null;
@@ -474,6 +483,10 @@ let globalTrajectoryStats = new Map();
 // 因此默认就要提前常驻至少 3 块，慢网络下自动扩到 4 块。
 let chunkFetchEwmaMs = 400;
 let chunkFetchHighMs = 600;
+// IndexedDB 是跨会话加速层，不属于播放正确性链路。后台写入只允许保留一块级别的
+// 临时副本，避免远端连续预取时为了持久化把多个 ArrayBuffer 同时堆在主线程。
+let pendingPersistentWriteBytes = 0;
+const MAX_PENDING_PERSISTENT_WRITE_BYTES = 64 * 1024 * 1024;
 
 const summary = computed(() => trajectoryData.value?.summary || {});
 const hasTrajectory = computed(() => cacheStatus.value === "ready" && Number(summary.value.totalVehicles || 0) > 0);
@@ -573,7 +586,9 @@ const vehicleDynamicInfo = computed(() => {
   const stationState = stationPair(vehicle, stops);
   const passengerCount = isTransit ? occupancyAt(meta.passengerEvents, currentTime.value) : 0;
   const capacity = Number(meta.capacity) || 0;
-  const loadRate = capacity > 0 ? `${Math.min(999, (passengerCount / capacity) * 100).toFixed(1)}%` : "--";
+  const loadRate = capacity > 0
+    ? `${Math.min(999, (passengerCount / capacity) * 100).toFixed(1)}%`
+    : isRealMode.value ? "-" : "--";
 
   return {
     speed: formatSpeed(vehicle.speed),
@@ -790,6 +805,7 @@ function handleTrajectorySamplingBoundsChange(bounds) {
   chunkCache = new Map();
   chunkRequests = new Map();
   prefetchingChunks = new Set();
+  prefetchJobs = new Map();
 
   // 相机 move 事件可在同一帧多次到达；合并后保留当前已绘制帧，
   // 新视口块 Worker 索引完成再原子替换，平移不闪空。
@@ -804,7 +820,7 @@ function handleTrajectorySamplingBoundsChange(bounds) {
       true,
       { priority: true },
     );
-  }, 24);
+  }, VIEWPORT_RELOAD_DEBOUNCE_MS);
 }
 
 function ensureTrajectoryLayer() {
@@ -865,6 +881,7 @@ async function loadTrajectory() {
   chunkActivationSeq += 1;
   chunkCache = new Map();
   prefetchingChunks = new Set();
+  prefetchJobs = new Map();
   chunkRequests = new Map();
   // 模型切换/重新加载：中止上一代仍在途的分块请求（含预取），避免过期响应占用带宽与解析开销。
   chunkAbortController?.abort();
@@ -942,7 +959,13 @@ async function applyTrajectoryStatus(data, seq) {
   if (cacheStatus.value === "ready") {
     // 仿真 events 已确定：先完成本模型其它版本的过期分块清理。
     // 真实模式的小时块来自模型级内存派生缓存，不写 IndexedDB。
-    if (!isRealMode.value) await pruneChunkCache(props.model, eventsTag());
+    // 清理只操作独立元数据表，但远端首次打开的 IndexedDB 升级/配额扫描仍可能较慢；
+    // key 已含 eventsTag，旧代不可能误命中，因此把清理移出首块关键路径。
+    if (!isRealMode.value) {
+      void pruneChunkCache(props.model, eventsTag()).catch((error) => {
+        console.warn("[trajectory] persistent cache prune skipped", error);
+      });
+    }
     await loadChunkForTime(currentTime.value, seq, true);
   } else if (cacheStatus.value === "generating") {
     schedulePolling(seq);
@@ -1003,8 +1026,11 @@ async function loadChunkForTime(time, seq, force = false, options = {}) {
     if (activated || !chunkCache.has(start) || pendingActivationStart === start) return;
   }
   if (!force && pendingChunkStart === start) return;
+  // 块边界到达时优先接管已经在途的预取。它会先完成 Worker 预建，再由本函数激活，
+  // 避免 abort 后为同一块重新发一个前台请求，也避免同一 ArrayBuffer 被 transfer 两次。
+  const prefetchedJob = prefetchJobs.get(start) || null;
   if (priority) {
-    cancelPrefetchRequests();
+    cancelPrefetchRequests(prefetchedJob ? start : null);
     if (foregroundChunkController && pendingChunkStart !== start) {
       foregroundChunkController.abort();
     }
@@ -1012,9 +1038,21 @@ async function loadChunkForTime(time, seq, force = false, options = {}) {
   const myChunkSeq = ++chunkSeq;
   const myViewportSeq = viewportSeq;
   pendingChunkStart = start;
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let controller = !prefetchedJob && typeof AbortController !== "undefined" ? new AbortController() : null;
   foregroundChunkController = controller;
   try {
+    if (prefetchedJob) {
+      const descriptor = await prefetchedJob;
+      if (seq !== loadSeq || myChunkSeq !== chunkSeq || myViewportSeq !== viewportSeq) return;
+      if (descriptor && chunkCache.get(start)?.workerKey === descriptor.workerKey) {
+        const activated = await applyChunkData(start, descriptor, time);
+        if (activated) return;
+      }
+    }
+    if (!controller && typeof AbortController !== "undefined") {
+      controller = new AbortController();
+      foregroundChunkController = controller;
+    }
     const data = await requestTrajectoryChunkOnce(start, { signal: controller?.signal, spatialWindow });
     if (seq !== loadSeq || myChunkSeq !== chunkSeq || myViewportSeq !== viewportSeq) return;
     if (data.status !== "ready") {
@@ -1136,15 +1174,28 @@ function canBackgroundPrefetch() {
 }
 
 function forwardPrefetchBlocks() {
-  return trajectoryPrefetchBlockCount({
+  const blocks = trajectoryPrefetchBlockCount({
     chunkSeconds: chunkSeconds.value,
-    speed: isPlaying.value ? playSpeed.value : 1,
+    // 暂停时也按用户已选倍速准备。否则用户选好 50x 再点播放，前方仍只有 1x 缓冲。
+    speed: playSpeed.value,
     ewmaMs: chunkFetchEwmaMs,
     highMs: chunkFetchHighMs,
     chunkBytes: currentChunkBytes(),
     maxBytes: MAX_BACKGROUND_PREFETCH_BYTES,
     maxBlocks: MAX_FORWARD_PREFETCH_BLOCKS,
     minSafetyMs: MIN_PREFETCH_SAFETY_MS,
+  });
+  // 当前块刚装好时至少预建两个相邻块，让服务器 RTT 在用户点播放前被完全隐藏。
+  return Math.min(MAX_FORWARD_PREFETCH_BLOCKS, Math.max(2, blocks));
+}
+
+function prefetchConcurrency() {
+  return trajectoryPrefetchConcurrency({
+    chunkSeconds: chunkSeconds.value,
+    speed: playSpeed.value,
+    ewmaMs: chunkFetchEwmaMs,
+    highMs: chunkFetchHighMs,
+    maxConcurrent: MAX_PREFETCH_CONCURRENCY,
   });
 }
 
@@ -1176,26 +1227,21 @@ function isChunkStartInRange(start) {
 }
 
 function prefetchAroundTime(time) {
+  // 播放方向固定向前；暂停期同样只准备用户当前时刻之后的块，不做双向放大。
+  // 这一步把远端 RTT 隐藏在用户查看首屏的时间里，是服务器与本机同样丝滑的关键。
   if (!canBackgroundPrefetch()) return;
   const start = chunkStartOf(time);
-  if (!isPlaying.value) {
-    // 暂停/拖动时保持双向邻块，随机向前或向后拖动都能立即命中。
-    prefetchChunk(start + chunkSeconds.value, loadSeq);
-    if (prefetchingChunks.size < MAX_PREFETCH_CONCURRENCY) {
-      prefetchChunk(start - chunkSeconds.value, loadSeq);
-    }
-    return;
-  }
   const forward = forwardPrefetchBlocks();
+  const concurrency = prefetchConcurrency();
   for (let index = 1; index <= forward; index++) {
-    if (prefetchingChunks.size >= MAX_PREFETCH_CONCURRENCY) break;
+    if (prefetchingChunks.size >= concurrency) break;
     prefetchChunk(start + index * chunkSeconds.value, loadSeq);
   }
 }
 
 function scheduleChunkPrefetch(time = currentTime.value) {
   cancelScheduledPrefetch();
-  const delay = isPlaying.value ? 80 : 650;
+  const delay = isPlaying.value ? 40 : 120;
   prefetchTimer = window.setTimeout(() => {
     prefetchTimer = null;
     if (!canBackgroundPrefetch()) return;
@@ -1210,11 +1256,13 @@ function cancelScheduledPrefetch() {
   }
 }
 
-function cancelPrefetchRequests() {
+function cancelPrefetchRequests(preserveStart = null) {
   cancelScheduledPrefetch();
+  if (preserveStart != null && prefetchJobs.has(preserveStart)) return;
   prefetchAbortController?.abort();
   prefetchAbortController = null;
   prefetchingChunks = new Set();
+  prefetchJobs = new Map();
   for (const [key, promise] of chunkRequests) {
     if (String(key).startsWith("bg:")) {
       chunkRequests.delete(key);
@@ -1222,40 +1270,48 @@ function cancelPrefetchRequests() {
   }
 }
 
-async function prefetchChunk(start, seq) {
+function prefetchChunk(start, seq) {
   if (!isChunkStartInRange(start) || chunkCache.has(start) || prefetchingChunks.has(start) || pendingChunkStart === start) {
-    return;
+    return null;
   }
-  if (!canBackgroundPrefetch()) return;
-  if (prefetchingChunks.size >= MAX_PREFETCH_CONCURRENCY) return;
+  if (!canBackgroundPrefetch()) return null;
+  if (prefetchingChunks.size >= prefetchConcurrency()) return null;
   prefetchingChunks.add(start);
   const spatialWindow = ensureActiveSpatialWindow();
   const myViewportSeq = viewportSeq;
   if (!prefetchAbortController || prefetchAbortController.signal?.aborted) {
     prefetchAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
   }
-  try {
-    const data = await requestTrajectoryChunkOnce(start, {
-      background: true,
-      signal: prefetchAbortController?.signal,
-      spatialWindow,
-    });
-    if (seq === loadSeq && myViewportSeq === viewportSeq && data?.status === "ready") {
+  let job;
+  job = (async () => {
+    try {
+      const data = await requestTrajectoryChunkOnce(start, {
+        background: true,
+        signal: prefetchAbortController?.signal,
+        spatialWindow,
+      });
+      if (seq !== loadSeq || myViewportSeq !== viewportSeq || data?.status !== "ready") return null;
       // 原 ArrayBuffer 在这里直接移交 Worker 建索引；Map 仅记 key/bytes。
-      // 近邻块已常驻时，10s 边界只执行 activateChunk，不会卡顿。
+      // 前台到达同一块时等待此 job，再激活常驻 Worker 块，不重复下载或 transfer。
       const descriptor = await installChunkInWorker(start, data, false);
-      if (seq === loadSeq && myViewportSeq === viewportSeq && descriptor) rememberChunk(start, descriptor);
+      if (seq !== loadSeq || myViewportSeq !== viewportSeq || !descriptor) return null;
+      rememberChunk(start, descriptor);
+      return descriptor;
+    } catch (error) {
+      // Prefetch is opportunistic; the foreground loader will surface errors.
+      return null;
+    } finally {
+      prefetchingChunks.delete(start);
+      if (prefetchJobs.get(start) === job) prefetchJobs.delete(start);
+      // 当前请求完成后继续填满动态前瞻窗，避免高倍速只预取到最近一块。
+      if (seq === loadSeq && myViewportSeq === viewportSeq && currentChunkStart != null) {
+        const resumeTime = isPlaying.value ? playbackClock : currentTime.value;
+        queueMicrotask(() => prefetchAroundTime(resumeTime));
+      }
     }
-  } catch (error) {
-    // Prefetch is opportunistic; the foreground loader will surface errors.
-  } finally {
-    prefetchingChunks.delete(start);
-    // 前两个请求完成后继续填满动态前瞻窗，避免 50x 只预取到最近一块。
-    if (seq === loadSeq && myViewportSeq === viewportSeq && isPlaying.value) {
-      const resumeTime = playbackClock;
-      queueMicrotask(() => prefetchAroundTime(resumeTime));
-    }
-  }
+  })();
+  prefetchJobs.set(start, job);
+  return job;
 }
 
 async function requestTrajectoryChunkOnce(start, options = {}) {
@@ -1322,7 +1378,9 @@ async function requestTrajectoryChunk(start, options = {}) {
         return parsed;
       }
     } catch (error) {
-      throw new Error("本地车辆轨迹缓存损坏", { cause: error });
+      // 持久层只是可重建加速层。新域名首次打开、隐私模式、配额不足或数据库
+      // 升级被旧标签页短暂阻塞时必须直接回源，不能让播放在块边界永久停止。
+      console.warn("[trajectory] persistent cache read missed", error);
     }
   }
 
@@ -1347,8 +1405,12 @@ async function requestTrajectoryChunk(start, options = {}) {
       const parsed = parseVehicleTrajectoryBinaryChunk(res.data, trajectoryData.value || {});
       parsed.spatialKey = spatialWindow?.key || "full";
       if (cacheKey && res.data.byteLength <= MAX_PERSISTENT_CACHE_BYTES) {
-        // 等 IndexedDB 完成结构化克隆后才移交所有权，避免异步 put 读到 detached buffer。
-        await putCachedChunk(cacheKey, res.data, { ds: props.model, ver: eventsTag() });
+        // 复制一次压缩传输块并在空闲期串行写入；原 buffer 立即交给 Worker。
+        // 这样 IndexedDB 事务/配额扫描不再计入“下一块是否就绪”的播放门槛。
+        persistTrajectoryChunkLater(cacheKey, res.data, {
+          ds: props.model,
+          ver: eventsTag(),
+        });
       }
       recordChunkFetch(performance.now() - requestStartedAt);
       return parsed;
@@ -1357,6 +1419,34 @@ async function requestTrajectoryChunk(start, options = {}) {
     throw error;
   }
   throw new Error("轨迹二进制接口未返回有效数据");
+}
+
+function persistTrajectoryChunkLater(cacheKey, buffer, meta) {
+  const bytes = Number(buffer?.byteLength) || 0;
+  if (!cacheKey || !(buffer instanceof ArrayBuffer) || bytes <= 0) return;
+  if (pendingPersistentWriteBytes + bytes > MAX_PENDING_PERSISTENT_WRITE_BYTES) return;
+  let copy;
+  try {
+    copy = buffer.slice(0);
+  } catch {
+    return;
+  }
+  pendingPersistentWriteBytes += bytes;
+  const write = () => {
+    void putCachedChunk(cacheKey, copy, meta)
+      .catch((error) => {
+        console.warn("[trajectory] persistent cache write skipped", error);
+      })
+      .finally(() => {
+        pendingPersistentWriteBytes = Math.max(0, pendingPersistentWriteBytes - bytes);
+        copy = null;
+      });
+  };
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(write, { timeout: 1200 });
+  } else {
+    window.setTimeout(write, 0);
+  }
 }
 
 function recordChunkFetch(elapsedMs) {
@@ -1575,6 +1665,7 @@ function changeSpeed() {
   if (isPlaying.value) {
     anchorPlayback(playbackClock);
   }
+  scheduleChunkPrefetch(isPlaying.value ? playbackClock : currentTime.value);
 }
 
 // 分档倍速按钮（取代 el-radio-group）：设值后复用 changeSpeed 的重锚逻辑
@@ -1591,25 +1682,50 @@ function anchorPlayback(simTime, now = performance.now()) {
   playbackClock = playbackAnchorSim;
 }
 
+function isPlaybackTargetReady(time) {
+  const start = chunkStartOf(time);
+  return start === currentChunkStart || chunkCache.has(start);
+}
+
 function startPlayback() {
   stopPlayback();
   cancelSeekChunkLoad();
-  cancelPrefetchRequests();
+  // 保留暂停期已经在途的前瞻块；旧逻辑在点击播放的一刻把它们全部 abort，
+  // 远端随后只能等到边界再冷请求，正是“先动几秒然后卡住”的直接触发点。
+  cancelScheduledPrefetch();
   const startedAt = performance.now();
   lastUiSyncAt = startedAt;
   anchorPlayback(currentTime.value, startedAt);
+  prefetchAroundTime(playbackClock);
   const tick = (now) => {
     if (!isPlaying.value) return;
-    // 仿真时刻只由真实经过时间推算；某帧卡顿后下一帧直接落到正确时刻，不会"慢一截再追"。
-    const target = playbackAnchorSim + Math.max(0, (now - playbackAnchorReal) / 1000) * playSpeed.value;
+    // 已加载范围内按真实经过时间推算；跨块未就绪时停在边界并重新锚定，
+    // 防止慢请求期间仿真时钟连续跨块、逐秒 abort 前一个服务端解压任务。
+    let target = playbackAnchorSim + Math.max(0, (now - playbackAnchorReal) / 1000) * playSpeed.value;
     if (target > timeRange.value.max) {
       // 播放到末尾：回到起点并重锚，保持匀速循环。
       anchorPlayback(timeRange.value.min, now);
-    } else {
-      playbackClock = target;
+      target = playbackClock;
     }
-    // 每帧直接驱动图层（采样在 Worker 中进行），实现秒级流畅。
-    driveLayerTime(playbackClock);
+    const gate = trajectoryPlaybackGate({
+      desiredTime: target,
+      cursorTime: playbackClock,
+      chunkSeconds: chunkSeconds.value,
+      activeChunkStart: currentChunkStart,
+      targetChunkReady: isPlaybackTargetReady(target),
+      snapshotRange: activeSnapshotRange,
+    });
+    if (gate.blocked) {
+      playbackClock = gate.time;
+      loadChunkForTime(gate.loadTime, loadSeq, false, { priority: true });
+      syncStatsAt(playbackClock);
+      // 丢弃等待数据期间的墙钟时间；数据就绪后从当前边界继续，而不是跳到未来块。
+      anchorPlayback(playbackClock, now);
+    } else {
+      playbackClock = gate.time;
+      // 每帧直接驱动图层（采样在 Worker 中进行），实现秒级流畅。
+      driveLayerTime(playbackClock);
+    }
     // 滑块/时间文本按节流回写，避免每帧触发 Vue 重渲染与重复 setTime。
     if (now - lastUiSyncAt >= UI_SYNC_INTERVAL_MS && currentTime.value !== playbackClock) {
       lastUiSyncAt = now;

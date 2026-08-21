@@ -3,6 +3,7 @@ package com.jts.gjcxfzksh.data.id;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.pt.transitSchedule.api.TransitLine;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 
 import java.io.Serializable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -14,7 +15,8 @@ public class LineId extends Id<TransitLine> implements Serializable {
     /**
      * 缓存重复的id不重复创建
      */
-    private static final ConcurrentMap<Id<TransitLine>, LineId> cache = new ConcurrentHashMap<>();
+    private static final BackendMemoryCache<Id<TransitLine>, LineId> cache =
+            new BackendMemoryCache<>("id-line", 8L * 1024 * 1024, ignored -> 160L);
 
     /**
      * id

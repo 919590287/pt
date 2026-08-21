@@ -14,8 +14,8 @@ server:
     # 设置IO线程数, 它主要执行非阻塞的任务,它们会负责多个连接, 默认设置每个CPU核心一个线程
     threads:
       # 原固定 512/32 会在常规 8-16 核部署上制造过量线程与上下文切换；保留环境变量供压测后调优。
-      worker: ${UNDERTOW_WORKER_THREADS:128}
-      io: ${UNDERTOW_IO_THREADS:16}
+      worker: ${UNDERTOW_WORKER_THREADS:32}
+      io: ${UNDERTOW_IO_THREADS:4}
 
 spring:
   servlet:
@@ -44,6 +44,10 @@ matsim:
   # 任一个主数据源已达大模型量级时也进入低内存模式，避免只看 output 总体积的误判。
   large-model-plans-threshold-bytes: ${MATSIM_LARGE_MODEL_PLANS_THRESHOLD_BYTES:8589934592}
   large-model-events-threshold-bytes: ${MATSIM_LARGE_MODEL_EVENTS_THRESHOLD_BYTES:8589934592}
+  # 高压缩比分析 CSV 的解压对象数可能远大于磁盘体积；单文件超过 1GiB 即启用低内存路径。
+  large-model-analysis-table-threshold-bytes: ${MATSIM_LARGE_MODEL_ANALYSIS_TABLE_THRESHOLD_BYTES:1073741824}
+  # 已有乘客磁盘工件超过该记录数时，即便上次顶层缓存失败也保持低内存加载。
+  large-model-person-track-threshold: ${MATSIM_LARGE_MODEL_PERSON_TRACK_THRESHOLD:1500000}
   # 后台缓存生成并发数；0表示按CPU自动选择，服务器可按磁盘/内存能力调大。
   cache-build-threads: ${MATSIM_CACHE_BUILD_THREADS:0}
   # 单个模型内部的坐标转换、统计与缓存计算线程数；0=逻辑核心数-1（最多32）。
@@ -53,14 +57,37 @@ matsim:
   cache-status-probe-ttl-ms: ${MATSIM_CACHE_STATUS_PROBE_TTL_MS:10000}
   # 默认只为用户主动选择的模型生成缓存；不做周期自动失效或重建。
   cache-prebuild-on-startup: ${MATSIM_CACHE_PREBUILD_ON_STARTUP:false}
+  # 真实客流最终面板工件在服务启动后后台补齐；同一源文件指纹终身只生成一次，
+  # 后续模型缓存任务也会复用并校验同一批工件。
+  real-passenger-cache-prebuild-on-startup: ${MATSIM_REAL_PASSENGER_CACHE_PREBUILD_ON_STARTUP:false}
+  real-passenger-aggregate-builder-enabled: ${MATSIM_REAL_PASSENGER_AGGREGATE_BUILDER_ENABLED:true}
+  real-passenger-python-command: ${MATSIM_REAL_PASSENGER_PYTHON_COMMAND:python3}
+  real-passenger-service-date-start: ${MATSIM_REAL_PASSENGER_SERVICE_DATE_START:2026-07-01}
+  real-passenger-service-date-end: ${MATSIM_REAL_PASSENGER_SERVICE_DATE_END:2026-07-15}
   # 构建前的磁盘安全余量；V6 还会按 output 体量估算临时工件空间。
   cache-min-free-bytes: ${MATSIM_CACHE_MIN_FREE_BYTES:21474836480}
   cache-clean-old-versions: ${MATSIM_CACHE_CLEAN_OLD_VERSIONS:true}
+  # 规范工件发布后进入全缓存根目录的 SHA-256 内容寻址库；小文件跳过去重，避免哈希元数据反而膨胀。
+  cache-content-addressing-enabled: ${MATSIM_CACHE_CONTENT_ADDRESSING_ENABLED:true}
+  cache-content-addressing-min-bytes: ${MATSIM_CACHE_CONTENT_ADDRESSING_MIN_BYTES:65536}
+  runtime:
+    # 模型内存三级态：最多保留一个计算态和三个可视态，其他模型仅保留目录元数据。
+    max-compute-models: ${MATSIM_RUNTIME_MAX_COMPUTE_MODELS:1}
+    max-visual-models: ${MATSIM_RUNTIME_MAX_VISUAL_MODELS:1}
+  cache-builder:
+    # 缓存缺失时完整 MATSim 计算在一次性子 JVM 中执行；完成即退出并归还全部峰值内存。
+    isolated-enabled: ${MATSIM_CACHE_BUILDER_ISOLATED_ENABLED:true}
+    process: false
+    xms: ${MATSIM_CACHE_BUILDER_XMS:256m}
+    xmx: ${MATSIM_CACHE_BUILDER_XMX:6g}
+    max-metaspace: ${MATSIM_CACHE_BUILDER_MAX_METASPACE:512m}
   # 轨迹缓存构建并发数；默认1（磁盘友好），多模型并行构建可调大。
-  trajectory-build-threads: 1
+  trajectory-build-threads: ${MATSIM_TRAJECTORY_BUILD_THREADS:1}
+  # 轨迹视口随机读取/Zstd 解压并发上限；防止快速拖图占满 CPU 和 Undertow worker。
+  trajectory-query-concurrency: ${MATSIM_TRAJECTORY_QUERY_CONCURRENCY:2}
 
 optimization:
   # 线网优化 MATSim 子进程最大堆内存（切分后的小场景通常 4-8g 足够）
-  runner-xmx: 8g
+  runner-xmx: ${OPTIMIZATION_RUNNER_XMX:8g}
   # 生成+运行任务并发数（每个任务顺序跑两个 MATSim，谨慎调大）
-  run-concurrency: 1
+  run-concurrency: ${OPTIMIZATION_RUN_CONCURRENCY:1}

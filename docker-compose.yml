@@ -1,0 +1,212 @@
+# 生产部署编排。所有可变项都从同目录的 .env 读取（见 docker.env.example）。
+#
+# 用法：
+#   docker-compose --env-file .env up -d --no-build  启动已加载的镜像
+#   docker-compose ps                               状态
+#   docker-compose logs -f backend                  日志
+#   docker image load 后修改 IMAGE_TAG，再执行：
+#   docker-compose up -d --no-build                 升级到新镜像
+name: gjcxfzksh
+
+services:
+  # 一次性初始化容器：把挂进来的数据目录属主归一到容器内的 app 用户。
+  #
+  # 为什么需要：数据是从开发机 rsync/scp 上来的，会连属主一起带过来
+  # （macOS 上是 uid 501）且目录常是 700。后端容器以 uid 10001 运行，于是既列不了
+  # 目录也写不了文件 —— 表现为"模型列表空 + 登录报保存用户数据失败"。
+  # 靠人工记得每次上传后 chown 不可靠，所以放进编排里每次启动自动纠正。
+  #
+  # 复用后端镜像（用 user 覆盖成 root），不额外引入 busybox，离线服务器不必多传一个镜像。
+  # find 先筛出属主不对的条目再 chown，已经正确时几乎零开销。
+  # 脚本恒定退出 0：rootless Docker 等场景下 chown 会失败，那属于无法自动修复，
+  # 交给后端启动时的目录可访问性校验去报一条说得清怎么修的错，而不是卡在这里。
+  data-permissions:
+    image: ${IMAGE_PREFIX:-gjcxfzksh}/gjcxfzksh-backend:${IMAGE_TAG:-latest}
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        uid=${APP_UID:-10001}; gid=${APP_GID:-10001}
+        for d in /data/pt_data /data/pt_cache; do
+          [ -d "$$d" ] || continue
+          n=$$(find "$$d" \( ! -uid "$$uid" -o ! -gid "$$gid" \) -print 2>/dev/null | wc -l)
+          if [ "$$n" -gt 0 ]; then
+            echo "归一 $$d 属主 -> $$uid:$$gid（$$n 项）"
+            find "$$d" \( ! -uid "$$uid" -o ! -gid "$$gid" \) -exec chown "$$uid:$$gid" {} + 2>/dev/null \
+              || echo "警告: chown 失败，请手动执行 chown -R $$uid:$$gid 宿主机数据目录"
+          fi
+        done
+        echo "数据目录属主检查完成"
+    volumes:
+      - ${PT_DATA_DIR:?请在 .env 中设置 PT_DATA_DIR}:/data/pt_data
+      - ${PT_CACHE_DIR:?请在 .env 中设置 PT_CACHE_DIR}:/data/pt_cache
+    restart: "no"
+    # 只改文件属主，不需要任何网络；显式声明 none 免得 compose 多建一个 default 网络
+    network_mode: "none"
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  backend:
+    image: ${IMAGE_PREFIX:-gjcxfzksh}/gjcxfzksh-backend:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        MAVEN_MIRROR_URL: ${MAVEN_MIRROR_URL:-https://maven.aliyun.com/repository/public}
+        APP_UID: ${APP_UID:-10001}
+        APP_GID: ${APP_GID:-10001}
+    restart: unless-stopped
+
+    # 先等属主归一跑完，否则后端会因为读不到数据目录启动失败
+    depends_on:
+      data-permissions:
+        condition: service_completed_successfully
+
+    # 使用无需登录的 OpenAPI 文档端点检查 Spring MVC 是否就绪。
+    # 不能使用 /pt/real-data/areaList：该接口受登录拦截器保护，
+    # 未携带会话的 Docker 健康检查会收到 401，导致正常后端被误判为 unhealthy。
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8090/v3/api-docs", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
+
+    environment:
+      # ---- 数据目录：容器内路径，宿主机路径在下面的 volumes 里映射 ----
+      MATSIM_DATA: /data/pt_data/
+      MATSIM_CACHE: /data/pt_cache/
+
+      # ---- JVM。中文路径需要 UTF-8 编码参数，镜像里的 LANG 已是 C.UTF-8，
+      #      这里显式再声明一次做双保险 ----
+      JAVA_OPTS: >-
+        -Xms128m -Xmx${BACKEND_HEAP:-2g} -Xss768k -XX:SoftMaxHeapSize=768m
+        -XX:+UseG1GC -XX:+UseStringDeduplication
+        -XX:G1PeriodicGCInterval=300000 -XX:G1PeriodicGCSystemLoadThreshold=0
+        -XX:+ExplicitGCInvokesConcurrent -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=128m
+        -Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8
+
+      # ---- 大模型判定阈值：沿用本机口径，不要随意改 ----
+      MATSIM_LARGE_MODEL_THRESHOLD_BYTES: ${MATSIM_LARGE_MODEL_THRESHOLD_BYTES:-21474836480}
+      MATSIM_LARGE_MODEL_PLANS_THRESHOLD_BYTES: ${MATSIM_LARGE_MODEL_PLANS_THRESHOLD_BYTES:-8589934592}
+      MATSIM_LARGE_MODEL_EVENTS_THRESHOLD_BYTES: ${MATSIM_LARGE_MODEL_EVENTS_THRESHOLD_BYTES:-8589934592}
+
+      # ---- 并发与缓存策略 ----
+      MATSIM_CACHE_BUILD_THREADS: ${MATSIM_CACHE_BUILD_THREADS:-1}
+      MATSIM_PROCESSING_THREADS: ${MATSIM_PROCESSING_THREADS:-4}
+      MATSIM_TRAJECTORY_BUILD_THREADS: ${MATSIM_TRAJECTORY_BUILD_THREADS:-1}
+      MATSIM_TRAJECTORY_QUERY_CONCURRENCY: ${MATSIM_TRAJECTORY_QUERY_CONCURRENCY:-2}
+      MATSIM_CACHE_STATUS_PROBE_TTL_MS: ${MATSIM_CACHE_STATUS_PROBE_TTL_MS:-10000}
+      MATSIM_CACHE_PREBUILD_ON_STARTUP: ${MATSIM_CACHE_PREBUILD_ON_STARTUP:-false}
+      MATSIM_REAL_PASSENGER_CACHE_PREBUILD_ON_STARTUP: ${MATSIM_REAL_PASSENGER_CACHE_PREBUILD_ON_STARTUP:-false}
+      MATSIM_REAL_PASSENGER_AGGREGATE_BUILDER_ENABLED: ${MATSIM_REAL_PASSENGER_AGGREGATE_BUILDER_ENABLED:-true}
+      MATSIM_REAL_PASSENGER_PYTHON_COMMAND: ${MATSIM_REAL_PASSENGER_PYTHON_COMMAND:-python3}
+      MATSIM_CACHE_MIN_FREE_BYTES: ${MATSIM_CACHE_MIN_FREE_BYTES:-21474836480}
+      MATSIM_CACHE_CLEAN_OLD_VERSIONS: ${MATSIM_CACHE_CLEAN_OLD_VERSIONS:-true}
+      MATSIM_CACHE_BUILDER_ISOLATED_ENABLED: ${MATSIM_CACHE_BUILDER_ISOLATED_ENABLED:-true}
+      MATSIM_CACHE_BUILDER_XMS: ${MATSIM_CACHE_BUILDER_XMS:-256m}
+      MATSIM_CACHE_BUILDER_XMX: ${MATSIM_CACHE_BUILDER_XMX:-6g}
+      MATSIM_CACHE_BUILDER_MAX_METASPACE: ${MATSIM_CACHE_BUILDER_MAX_METASPACE:-512m}
+      MATSIM_RUNTIME_MAX_COMPUTE_MODELS: ${MATSIM_RUNTIME_MAX_COMPUTE_MODELS:-1}
+      MATSIM_RUNTIME_MAX_VISUAL_MODELS: ${MATSIM_RUNTIME_MAX_VISUAL_MODELS:-1}
+      BACKEND_MEMORY_CACHE_MAX_BYTES: ${BACKEND_MEMORY_CACHE_MAX_BYTES:-268435456}
+      UNDERTOW_WORKER_THREADS: ${UNDERTOW_WORKER_THREADS:-32}
+      UNDERTOW_IO_THREADS: ${UNDERTOW_IO_THREADS:-4}
+
+      # ---- 大 events 并行解压（镜像内已装 pigz）----
+      GJCXFZKSH_EVENTS_PIGZ_ENABLED: ${GJCXFZKSH_EVENTS_PIGZ_ENABLED:-true}
+      GJCXFZKSH_EVENTS_PIGZ_THREADS: ${GJCXFZKSH_EVENTS_PIGZ_THREADS:-4}
+
+      # ---- 线网优化：每个任务会 fork 一个独立 JVM，堆内存要单独算进宿主机预算 ----
+      OPTIMIZATION_RUNNER_XMX: ${OPTIMIZATION_RUNNER_XMX:-8g}
+      OPTIMIZATION_RUN_CONCURRENCY: ${OPTIMIZATION_RUN_CONCURRENCY:-1}
+
+      # ---- CORS：前后端由同一个 Nginx 同源提供，正常情况下留空即可 ----
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+
+    volumes:
+      # MATSim 数据根目录，必须可写：拖拽上传、方案保存、用户账号
+      # (.gjcxfzksh-users.json) 都落在这里
+      - ${PT_DATA_DIR:?请在 .env 中设置 PT_DATA_DIR}:/data/pt_data
+      # 派生缓存，可写且会长得很大
+      - ${PT_CACHE_DIR:?请在 .env 中设置 PT_CACHE_DIR}:/data/pt_cache
+      # 建筑物 shp 等地理底数，只读挂载
+      - ${GEO_DIR:?请在 .env 中设置 GEO_DIR}:/data/geo:ro
+      # log4j2 的滚动日志（LOG_HOME=logs，相对工作目录 /app）
+      - ./logs/backend:/app/logs
+
+    # 容器内存上限。要给 JVM 堆之外留出直接内存、元空间和线网优化子进程的余量：
+    # 建议 ≥ BACKEND_HEAP + OPTIMIZATION_RUNNER_XMX + 4g
+    mem_limit: ${BACKEND_MEM_LIMIT:-5g}
+
+    # MATSim 读写大量分片文件，默认 1024 的句柄上限不够用
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    networks: [app]
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  web:
+    image: ${IMAGE_PREFIX:-gjcxfzksh}/gjcxfzksh-web:${IMAGE_TAG:-latest}
+    build:
+      context: ./frontend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/index.html", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    # 整套系统唯一对外暴露的端口。后端不发布端口，只在内部网络可达。
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:${HTTP_PORT:-80}:80"
+
+    environment:
+      # 同源相对路径，换 IP / 换域名都不用重新构建镜像
+      APP_API_BASE_URL: ${APP_API_BASE_URL:-/}
+      # 注意这是 backend 容器里的路径，不是宿主机路径
+      APP_CITY_BUILDINGS_SHP_PATH: ${APP_CITY_BUILDINGS_SHP_PATH:-/data/geo/buildings/Buildingguagnzhou84.shp}
+      APP_CITY_BUILDINGS_ENABLED: ${APP_CITY_BUILDINGS_ENABLED:-true}
+      APP_CITY_BUILDINGS_HEIGHT_FIELD: ${APP_CITY_BUILDINGS_HEIGHT_FIELD:-HEIGHT}
+      APP_CITY_BUILDINGS_MAX_FEATURES: ${APP_CITY_BUILDINGS_MAX_FEATURES:-20000}
+      APP_MAP_TILE_URL_TEMPLATE: ${APP_MAP_TILE_URL_TEMPLATE:-}
+      APP_MAP_BASEMAP_DEFAULT: ${APP_MAP_BASEMAP_DEFAULT:-esri-dark}
+      APP_NETWORK_LINE_MIN_PIXELS: ${APP_NETWORK_LINE_MIN_PIXELS:-0.8}
+      APP_NETWORK_LINE_SOFT_EDGE_PIXELS: ${APP_NETWORK_LINE_SOFT_EDGE_PIXELS:-0.75}
+      APP_MAP_PIXEL_RATIO: ${APP_MAP_PIXEL_RATIO:-}
+      APP_MAP_DISPLAY_SCALE: ${APP_MAP_DISPLAY_SCALE:-}
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    networks: [app]
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+networks:
+  app:
+    driver: bridge
+    # 固定 Linux 网桥名称。服务器的 firewalld 按接口名放行 Docker 内部通信；
+    # 如果使用 Docker 随机生成的 br-xxxxxxxxxxxx，网络重建后旧防火墙规则会失效，
+    # 表现为网页能打开，但登录、注册等 /pt/ 接口全部返回 502。
+    driver_opts:
+      com.docker.network.bridge.name: br-gjcxfzksh

@@ -4,6 +4,7 @@ import lombok.Data;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.network.Link;
 import org.matsim.vehicles.Vehicle;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 
 import java.io.Serializable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,7 +19,8 @@ public class VehicleId extends Id<Vehicle> implements Serializable {
     /**
      * 缓存重复的id不重复创建
      */
-    private static final ConcurrentMap<Id<Vehicle>, VehicleId> cache = new ConcurrentHashMap<>();
+    private static final BackendMemoryCache<Id<Vehicle>, VehicleId> cache =
+            new BackendMemoryCache<>("id-vehicle", 16L * 1024 * 1024, ignored -> 160L);
 
     /**
      * id

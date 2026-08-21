@@ -94,6 +94,15 @@ class MatsimAnalysisCacheLargeStreamTest {
     }
 
     @Test
+    void mediumEventsUseStreamingBuildBeforeTheyCanFillTheBuilderHeap() {
+        long threshold = MatsimAnalysisCache.TRAJECTORY_STREAMING_EVENTS_THRESHOLD_BYTES;
+
+        assertFalse(MatsimAnalysisCache.shouldStreamTrajectoryBuild(false, threshold - 1));
+        assertTrue(MatsimAnalysisCache.shouldStreamTrajectoryBuild(false, threshold));
+        assertTrue(MatsimAnalysisCache.shouldStreamTrajectoryBuild(true, 0));
+    }
+
+    @Test
     void largeModelTrajectoryCacheStreamsChunksOutsideOutput() throws Exception {
         System.setProperty("gjcxfzksh.events.workers", "4");
         System.setProperty("gjcxfzksh.events.pigz.enabled", "false");
@@ -135,7 +144,7 @@ class MatsimAnalysisCacheLargeStreamTest {
         Path trajectoryCache = cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION);
         Path fullManifest = trajectoryCache.resolve("manifest.json");
         Path lightManifest = trajectoryCache.resolve("manifest-lite.json");
-        Path spatialContainer = trajectoryCache.resolve("spatial-000000.bin");
+        Path spatialContainer = trajectoryCache.resolve("spatial-000000.zst");
         Path spatialIndex = trajectoryCache.resolve("spatial-000000.idx");
         assertTrue(Files.exists(fullManifest));
         assertTrue(Files.exists(lightManifest));
@@ -158,6 +167,14 @@ class MatsimAnalysisCacheLargeStreamTest {
             assertFalse(paths.anyMatch(path -> path.getFileName().toString().endsWith(".tmp")));
         }
         assertFalse(Files.exists(output.resolve(".gjcxfzksh-cache")));
+
+        // 整个缓存成功后管理员可人工归档 events。用新 MatsimData 模拟
+        // 服务重启后重新扫描 output：轨迹和乘客工件仍必须被判定为 ready。
+        Files.delete(output.resolve("output_events.xml.gz"));
+        MatsimData archived = new MatsimData("area/public/model", output.toString(), cache.toString(), true);
+        archived.setScenario(buildScenario());
+        assertNotNull(MatsimAnalysisCache.readReadyTrajectoryLightManifest(archived));
+        assertTrue(MatsimAnalysisCache.isPersonTrackStoreReady(archived));
     }
 
     @Test
@@ -232,7 +249,7 @@ class MatsimAnalysisCacheLargeStreamTest {
         assertNotNull(MatsimAnalysisCache.readReadyTrajectoryManifest(data));
         assertTrue(MatsimAnalysisCache.preloadPersonTracksIfReady(data));
         try (Stream<Path> paths = Files.list(cache.resolve(MatsimAnalysisCache.TRAJECTORY_CACHE_VERSION))) {
-            assertTrue(paths.anyMatch(path -> path.getFileName().toString().endsWith(".bin")));
+            assertTrue(paths.anyMatch(path -> path.getFileName().toString().endsWith(".zst")));
         }
     }
 
@@ -505,15 +522,30 @@ class MatsimAnalysisCacheLargeStreamTest {
         data.setScenario(buildScenario());
 
         Map<String, Object> manifest = MatsimAnalysisCache.ensureTrajectoryCache(data);
-        byte[] firstWindow = MatsimAnalysisCache.readTrajectoryBinaryViewport(
-                data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
-        );
-        byte[] secondWindow = MatsimAnalysisCache.readTrajectoryBinaryViewport(
-                data, 10, 10, "private", 900.0, -100.0, 1300.0, 100.0
+        long spatialLoadsBefore = MatsimAnalysisCache.trajectorySpatialSelectionLoadCount();
+        ExecutorService selectionPool = Executors.newFixedThreadPool(2);
+        byte[] firstWindow;
+        byte[] secondWindow;
+        try {
+            Future<byte[]> first = selectionPool.submit(() -> MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                    data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0));
+            Future<byte[]> second = selectionPool.submit(() -> MatsimAnalysisCache.readTrajectoryBinaryViewport(
+                    data, 10, 10, "private", 900.0, -100.0, 1300.0, 100.0));
+            firstWindow = first.get();
+            secondWindow = second.get();
+        } finally {
+            selectionPool.shutdownNow();
+        }
+        byte[] frame = MatsimAnalysisCache.readTrajectoryBinaryFrame(
+                data, 20, 1, "private", 900.0, -100.0, 1300.0, 100.0
         );
 
         assertEquals(1, binarySegmentCount(firstWindow), "视口不得携带 9km 外的另一辆车");
         assertEquals(1, binarySegmentCount(secondWindow));
+        assertEquals(1, binarySegmentCount(frame));
+        assertEquals(1L,
+                MatsimAnalysisCache.trajectorySpatialSelectionLoadCount() - spatialLoadsBefore,
+                "同一 30s/视口/模式的并发播放窗和快照必须只解压一次空间工件");
         assertEquals(List.of(0.0, 30.0, 1000.0, 1200.0), binaryTimeAndX(firstWindow));
         assertEquals(binaryTimeAndX(firstWindow), binaryTimeAndX(secondWindow),
                 "跨 10s 播放窗应复用完整原始段，保证边界插值连续");
@@ -537,7 +569,7 @@ class MatsimAnalysisCacheLargeStreamTest {
                     .filter(name -> name.startsWith("spatial-000000"))
                     .collect(java.util.stream.Collectors.toSet());
         }
-        assertEquals(Set.of("spatial-000000.bin", "spatial-000000.idx"), storageArtifacts,
+        assertEquals(Set.of("spatial-000000.zst", "spatial-000000.idx"), storageArtifacts,
                 "每个 30s 存储块只允许一个容器和一个偏移索引，禁止生成 tile 小文件");
 
         String firstGeneration = String.valueOf(manifest.get("cacheGeneration"));
@@ -573,7 +605,7 @@ class MatsimAnalysisCacheLargeStreamTest {
                 data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0
         )));
 
-        Path spatialContainer = trajectoryDir.resolve("spatial-000000.bin");
+        Path spatialContainer = trajectoryDir.resolve("spatial-000000.zst");
         Files.write(spatialContainer, new byte[]{'B', 'A', 'D'}, StandardOpenOption.TRUNCATE_EXISTING);
         assertThrows(IllegalStateException.class, () -> MatsimAnalysisCache.readTrajectoryBinaryViewport(
                 data, 0, 10, "private", 900.0, -100.0, 1300.0, 100.0));
@@ -619,8 +651,8 @@ class MatsimAnalysisCacheLargeStreamTest {
         List<?> globalSecond15 = (List<?>) ((List<?>) firstChunk.get("globalStats")).get(15);
         assertEquals(2, ((Number) globalSecond15.get(3)).intValue());
         Map<?, ?> spatial = (Map<?, ?>) manifest.get("spatial");
-        assertEquals(2, ((Number) spatial.get("indexVersion")).intValue());
-        assertEquals(32, ((Number) spatial.get("indexEntryBytes")).intValue());
+        assertEquals(3, ((Number) spatial.get("indexVersion")).intValue());
+        assertEquals(40, ((Number) spatial.get("indexEntryBytes")).intValue());
     }
 
     @Test
@@ -762,6 +794,23 @@ class MatsimAnalysisCacheLargeStreamTest {
                         data, 28, 7, "all", -10.0, -10.0, 110.0, 10.0
                 ),
                 "ETag 必须按实际规范化后的窗口与可见模式生成"
+        );
+        assertEquals(
+                MatsimAnalysisCache.trajectoryFrameETag(
+                        data, 28, 7, "all", -10.0, -10.0, 110.0, 10.0
+                ),
+                MatsimAnalysisCache.trajectoryFrameETag(
+                        data, 29, 2, "all", -10.0, -10.0, 110.0, 10.0
+                ),
+                "同一规范化快照桶必须命中同一个 single-flight 键"
+        );
+        assertNotEquals(
+                MatsimAnalysisCache.trajectoryFrameETag(
+                        data, 29, 2, "all", -10.0, -10.0, 110.0, 10.0
+                ),
+                MatsimAnalysisCache.trajectoryFrameETag(
+                        data, 30, 2, "all", -10.0, -10.0, 110.0, 10.0
+                )
         );
         assertThrows(IllegalArgumentException.class, () ->
                 MatsimAnalysisCache.trajectoryViewportETag(

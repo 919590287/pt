@@ -104,6 +104,13 @@
             <version>${fastutil-core.verison}</version>
         </dependency>
 
+        <!-- 轨迹空间块采用独立 Zstd frame；JNI 实现的解压吞吐高于外置盘读取吞吐。 -->
+        <dependency>
+            <groupId>com.github.luben</groupId>
+            <artifactId>zstd-jni</artifactId>
+            <version>1.5.7-4</version>
+        </dependency>
+
         <!-- springboot相关 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -173,6 +180,18 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>../scripts</directory>
+                <targetPath>real-passenger</targetPath>
+                <includes>
+                    <include>build_real_passenger_flow_data.py</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.springframework.boot</groupId>

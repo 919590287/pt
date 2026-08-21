@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPOutputStream;
@@ -33,6 +34,7 @@ class MatsimPersonTrackStoreTest {
     @AfterEach
     void cleanupProperties() {
         System.clearProperty("gjcxfzksh.person-track-partitions");
+        System.clearProperty("gjcxfzksh.person-tracks.max-materialized");
         MatsimSourceFingerprint.invalidateAll();
     }
 
@@ -70,6 +72,15 @@ class MatsimPersonTrackStoreTest {
         assertTrue(MatsimAnalysisCache.isPersonTrackStoreReady(data));
         MatsimPersonTrackStore.preparePartitions(data);
         assertTrue(MatsimPersonTrackStore.isPartitionStoreReady(data));
+
+        // 模拟旧版本误把超预算明细留在内存：访问层必须释放副本并仍从磁盘完整读取。
+        System.setProperty("gjcxfzksh.person-tracks.max-materialized", "2");
+        data.setPersonTracks(new LinkedHashSet<>(java.util.List.of(
+                MatsimPersonTrackStore.parse("10\ttrue\tp1\tl1\tr1\tv1\td1\ts1"),
+                MatsimPersonTrackStore.parse("11\ttrue\tp2\tl1\tr1\tv2\td2\ts1"),
+                MatsimPersonTrackStore.parse("20\tfalse\tp1\tl1\tr1\tv1\td1\ts2"),
+                MatsimPersonTrackStore.parse("21\tfalse\tp2\tl1\tr1\tv2\td2\ts2")
+        )));
 
         Map<String, Integer> perPerson = new LinkedHashMap<>();
         MatsimPersonTrackStore.forEachPerson(data, (personId, personTracks) ->

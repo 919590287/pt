@@ -25,6 +25,12 @@ public class RealPassengerFlowController {
         return AjaxResult.ok(service.capabilities(param.getAreaName()));
     }
 
+    @Operation(summary = "一次构建全部日期的真实客流交互缓存")
+    @PostMapping("/preload")
+    public AjaxResult preload(@RequestBody RealPassengerFlowParam param) {
+        return AjaxResult.ok(service.preload(param.getAreaName(), param.getServiceDate()));
+    }
+
     @Operation(summary = "总体客流")
     @PostMapping("/overallFlow")
     public AjaxResult overallFlow(@RequestBody RealPassengerFlowParam param) {
@@ -41,6 +47,18 @@ public class RealPassengerFlowController {
     @PostMapping("/routePanelDetail")
     public AjaxResult routePanelDetail(@RequestBody RealPassengerFlowParam param) {
         return AjaxResult.ok(service.routePanelDetail(param));
+    }
+
+    @Operation(summary = "真实方向班次客流时刻表与缓存面板")
+    @PostMapping("/departureTimetable")
+    public AjaxResult departureTimetable(@RequestBody RealPassengerFlowParam param) {
+        return AjaxResult.ok(service.departureTimetable(param));
+    }
+
+    @Operation(summary = "真实单班次客流面板")
+    @PostMapping("/departurePanel")
+    public AjaxResult departurePanel(@RequestBody RealPassengerFlowParam param) {
+        return AjaxResult.ok(service.departurePanel(param));
     }
 
     @Operation(summary = "站点客流索引")

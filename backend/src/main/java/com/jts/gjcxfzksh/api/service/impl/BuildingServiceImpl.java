@@ -3,6 +3,7 @@ package com.jts.gjcxfzksh.api.service.impl;
 import com.jts.gjcxfzksh.api.model.params.BuildingQueryParam;
 import com.jts.gjcxfzksh.api.model.vo.BuildingTileVO;
 import com.jts.gjcxfzksh.api.service.BuildingService;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 import com.jts.gjcxfzksh.exception.BusinessException;
 import jakarta.annotation.PreDestroy;
 import org.geotools.api.data.Query;
@@ -31,8 +32,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 
 @Service
 public class BuildingServiceImpl implements BuildingService {
@@ -42,11 +41,12 @@ public class BuildingServiceImpl implements BuildingService {
     private static final String DEFAULT_HEIGHT_FIELD = "HEIGHT";
     private static final int DEFAULT_MAX_FEATURES = 20000;
     private static final double EARTH_RADIUS = 6378137.0;
-    private final ConcurrentMap<String, ShapefileDataStore> dataStores = new ConcurrentHashMap<>();
+    private final BackendMemoryCache<String, ShapefileDataStore> dataStores =
+            new BackendMemoryCache<>("building-shapefile-stores", 16L * 1024 * 1024,
+                    ignored -> 1024L * 1024, (path, store) -> store.dispose());
 
     @PreDestroy
     void closeDataStores() {
-        dataStores.values().forEach(ShapefileDataStore::dispose);
         dataStores.clear();
     }
 

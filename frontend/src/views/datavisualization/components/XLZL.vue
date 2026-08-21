@@ -107,8 +107,8 @@
     </div>
   </div>
 
-  <teleport v-if="!runMonitorSimplifiedRight || pfaRightPanel" to="#datavisualization_index_box2" defer>
-    <MCard2 v-if="(!runMonitorSimplifiedRight || pfaRightPanel) && currentSelectedRoute" class="SJZL_right_card pfa-route-card" :open="true">
+  <teleport v-if="shouldRenderPfaRightPanel" to="#datavisualization_index_box2" defer>
+    <MCard2 v-if="shouldRenderPfaRightPanel && currentSelectedRoute" class="SJZL_right_card pfa-route-card" :open="true">
       <template #title>
         <div class="ranking-title-container">
           <div class="header-actions-left">
@@ -132,7 +132,7 @@
           <!-- 方向切换：两个方向分开统计与绘图，避免上下行混在一起
                （客流画像为上下行合并统计、关联线路的同站换乘天然含对向站，均不提供切换）
                地铁只按整线统计，不区分方向，故隐藏 -->
-          <div v-if="panelDirectionRoutes.length > 1 && !isMetroSelection && !['demographics', 'transfer'].includes(pfaLineSection)" class="panel-direction-section">
+          <div v-if="panelDirectionRoutes.length > 1 && !isMetroSelection && !['demographics', 'transfer'].includes(activeRouteAnalysisSection)" class="panel-direction-section">
             <span class="panel-direction-label">线路方向</span>
             <div class="panel-direction-pills">
               <button
@@ -149,7 +149,7 @@
 
           <!-- 统计时段（仅断面 / 乘降 / 关联换乘按时段统计）；滑杆+间隔分段按钮，样式同换乘分析头部 -->
           <TimeRangeFilter
-            v-if="['segments', 'boarding', 'transfer'].includes(pfaLineSection)"
+            v-if="!departureMonitorActive && ['segments', 'boarding', 'transfer'].includes(pfaLineSection)"
             v-model:range="segmentTimeRange"
             v-model:unit="segmentTimeUnit"
             :min="6"
@@ -158,9 +158,9 @@
           />
 
           <!-- ① 线路断面客流与满载率 -->
-          <section v-if="pfaLineSection === 'segments'" class="pfa-section">
+          <section v-if="activeRouteAnalysisSection === 'segments'" class="pfa-section">
             <div class="section-header">
-              <span class="section-title">线路断面客流与满载率</span>
+              <span class="section-title">{{ departureMonitorActive ? '单班次断面客流与满载率' : '线路断面客流与满载率' }}</span>
             </div>
             <div class="segments-table">
               <div class="table-header">
@@ -183,7 +183,7 @@
                   </span>
                   <span class="col-flow">{{ seg.flow.toLocaleString() }}</span>
                   <span class="col-load">
-                    <span :class="['load-indicator', seg.loadRate >= 70 ? 'high' : seg.loadRate >= 45 ? 'medium' : 'low']">{{ seg.loadRate }}%</span>
+                    <span :class="['load-indicator', seg.loadRate >= 70 ? 'high' : seg.loadRate >= 45 ? 'medium' : 'low']">{{ formatSegmentLoadRate(seg.loadRate) }}</span>
                   </span>
                 </div>
                 <div v-if="!routeSegments.length" class="pfa-empty">暂无断面数据</div>
@@ -192,9 +192,9 @@
           </section>
 
           <!-- ② 站点分时段乘降（折线 / 柱状可切换；图表点击即全屏） -->
-          <section v-else-if="pfaLineSection === 'boarding'" class="pfa-section">
+          <section v-else-if="activeRouteAnalysisSection === 'boarding'" class="pfa-section">
             <div class="section-header boarding-section-header">
-              <span class="section-title">站点乘降客流（按所选时段）</span>
+              <span class="section-title">{{ departureMonitorActive ? '站点乘降客流（当前班次）' : '站点乘降客流（按所选时段）' }}</span>
               <div class="section-actions chart-mode-actions">
                 <div class="chart-type-selector" role="group" aria-label="站点乘降客流图表类型">
                   <button
@@ -235,7 +235,7 @@
                       </template>
                     </el-auto-resizer>
                   </div>
-                  <div v-else class="pfa-empty">当前时段暂无乘降数据</div>
+                  <div v-else class="pfa-empty">{{ departureMonitorActive ? '当前班次暂无乘降数据' : '当前时段暂无乘降数据' }}</div>
                 </template>
                 <div
                   v-else
@@ -260,12 +260,9 @@
           </section>
 
           <!-- ④ 客流画像 -->
-          <section v-else-if="pfaLineSection === 'demographics'" class="pfa-section passenger-profile-section">
+          <section v-else-if="activeRouteAnalysisSection === 'demographics'" class="pfa-section passenger-profile-section">
             <div class="section-header">
               <span class="section-title">客流画像</span>
-              <span v-if="demographicsRiderCount" class="pfa-section-meta" :title="demographicsScopeText">
-                {{ demographicsScopeText }} · {{ demographicsSampleText }}
-              </span>
             </div>
             <p v-if="isRealCardProfile" class="pfa-profile-note">
               画像来源：刷卡记录 CARD_TYPE（票卡类型）；按上车刷卡人次归类，不推断性别、职业或出行目的。
@@ -274,7 +271,6 @@
               <div v-for="g in demographicsGroups" :key="g.key" class="demo-group">
                 <div class="demo-group-head">
                   <span class="demo-group-title">{{ g.title }}</span>
-                  <span class="demo-group-sum">{{ g.sumLabel || '合计 100%' }}</span>
                 </div>
                 <div class="demo-list">
                   <div v-for="d in g.items" :key="d.key" class="demo-row">
@@ -301,7 +297,7 @@
           </section>
 
           <!-- ⑤ 关联线路分析（直接换乘） -->
-          <section v-else-if="pfaLineSection === 'transfer'" class="pfa-section">
+          <section v-else-if="!departureMonitorActive && pfaLineSection === 'transfer'" class="pfa-section">
             <div class="section-header">
               <span class="section-title">关联线路分析（直接换乘）</span>
               <span class="section-unit-note">换乘人数单位：人次</span>
@@ -472,7 +468,7 @@
             {{ pfaRouteTitle }}
           </div>
         </div>
-        <span class="boarding-fullscreen-meta">{{ formatHourLabel(segmentTimeRange[0]) }}-{{ formatHourLabel(segmentTimeRange[1]) }} · {{ segmentTimeUnit }}min</span>
+        <span class="boarding-fullscreen-meta">{{ boardingAnalysisScopeText }}</span>
       </div>
     </template>
     <div class="boarding-fullscreen-body">
@@ -486,6 +482,25 @@
       </section>
     </div>
   </el-dialog>
+
+  <teleport v-if="departureMonitorActive && departureSelectedItem && departureTimetable.length" to="#datavisualization-map-bottom" defer>
+    <div class="departure-map-control">
+      <button
+        type="button"
+        :class="['departure-map-picker', { 'is-dark': isDarkTheme }]"
+        :aria-label="`选择班次，当前 ${departureSelectedItem ? formatDepartureTime(departureSelectedItem.departureTime) : '未选择'}`"
+        aria-haspopup="dialog"
+        :aria-expanded="departurePickerVisible"
+        @click="departurePickerVisible = true"
+      >
+        <span>班次</span>
+        <strong>{{ departureSelectedItem ? formatDepartureTime(departureSelectedItem.departureTime) : "选择" }}</strong>
+        <svg viewBox="0 0 20 20" aria-hidden="true">
+          <path d="m6 8 4 4 4-4" />
+        </svg>
+      </button>
+    </div>
+  </teleport>
 
   <el-dialog
     v-model="boardingHeatmapVisible"
@@ -502,9 +517,7 @@
           <div class="boarding-heatmap-kicker">乘降热力图</div>
           <div class="boarding-heatmap-title">{{ pfaRouteTitle }}</div>
         </div>
-        <span class="boarding-heatmap-meta">
-          {{ formatHourLabel(segmentTimeRange[0]) }} - {{ formatHourLabel(segmentTimeRange[1]) }} · {{ segmentTimeUnit }}min · 站点 × 时段（乘+降）
-        </span>
+        <span class="boarding-heatmap-meta">{{ boardingAnalysisScopeText }} · 站点 × 统计范围（乘+降）</span>
       </div>
     </template>
     <div class="boarding-heatmap-body">
@@ -518,6 +531,63 @@
       <el-empty v-else description="当前时段暂无乘降数据" />
     </div>
   </el-dialog>
+
+  <el-dialog
+    v-model="departurePickerVisible"
+    class="departure-picker-dialog"
+    modal-class="departure-picker-overlay"
+    width="min(760px, calc(100vw - 48px))"
+    append-to-body
+    align-center
+    destroy-on-close
+    :lock-scroll="true"
+  >
+    <template #header>
+      <div class="departure-picker-header">
+        <div>
+          <div class="departure-picker-title">选择班次</div>
+          <div class="departure-picker-route">{{ getRouteEndpointLabel(departureRoute, 0) }}</div>
+        </div>
+        <div class="departure-picker-meta">{{ departureTimetable.length }} 班</div>
+      </div>
+    </template>
+    <div
+      v-if="departureDirectionRoutes.length > 1"
+      class="departure-direction-switch"
+      role="group"
+      aria-label="班次时刻表方向"
+    >
+      <button
+        v-for="(route, index) in departureDirectionRoutes"
+        :key="routeUniqueKey(route)"
+        type="button"
+        :class="['departure-direction-button', routeMatchesKey(route, routeUniqueKey(departureRoute)) ? 'active' : '']"
+        :aria-pressed="routeMatchesKey(route, routeUniqueKey(departureRoute))"
+        @click="handleDepartureDirectionSwitch(route)"
+      >
+        {{ getRouteEndpointLabel(route, index) }}
+      </button>
+    </div>
+    <div v-if="departureTimetableLoading" class="departure-state">正在读取模型缓存…</div>
+    <div v-else-if="departureTimetableError" class="departure-state is-error" role="alert">
+      <span>{{ departureTimetableError }}</span>
+      <button type="button" @click="loadDepartureTimetable">重试</button>
+    </div>
+    <div v-else-if="!departureTimetable.length" class="departure-state">{{ departureEmptyText }}</div>
+    <div v-else class="departure-picker-grid" role="listbox" aria-label="线路班次时刻表">
+      <button
+        v-for="item in departureTimetable"
+        :key="item.id"
+        type="button"
+        role="option"
+        :aria-selected="departureSelectedId === item.id"
+        :class="['departure-slot', departureSelectedId === item.id ? 'active' : '']"
+        @click="selectDeparture(item)"
+      >
+        <strong>{{ formatDepartureTime(item.departureTime) }}</strong>
+      </button>
+    </div>
+  </el-dialog>
 </template>
 
 <script setup>
@@ -526,7 +596,12 @@ import { VChart } from "@/plugins/echarts";
 import { chartInk, isDarkTheme } from "@/utils/chartInk";
 import { Search, Location, Download } from "@element-plus/icons-vue";
 import { saveAs } from "file-saver";
-import { getRouteDetail, getRoutePanelDetail, getRouteTileBinary } from "@/api/route";
+import {
+  getDepartureTimetable,
+  getRouteDetail,
+  getRoutePanelDetail,
+  getRouteTileBinary,
+} from "@/api/route";
 import { abortOtherModelDataRequests, getCachedLineAll, getCachedRoutePanel, getModelDerived, getModelScopedMap, setScopedWithLimit } from "@/utils/modelDataCache.js";
 import MCard from "./MCard.vue";
 import MCard2 from "./MCard2.vue";
@@ -536,7 +611,7 @@ import { buildBoardingHeatmapOption } from "../utils/boardingHeatmap.js";
 import "../styles/boardingHeatmapDialog.css";
 import { RouteLayer } from "../layers/RouteLayer.js";
 import { emptyFeatureCollection, stationsToFeatureCollection } from "../layers/maplibreLayerUtils.js";
-import { buildPassengerProfileGroups, passengerProfileRiderCount } from "../utils/passengerProfile.js";
+import { buildPassengerProfileGroups } from "../utils/passengerProfile.js";
 import { buildFlowCurveFeatureCollection, emptyFlowCurveCollection } from "../utils/flowCurves.js";
 import { compareZh, createDebouncedMirror, getOrCreateAbortAwareRequest, isCanceledRequest } from "../utils/panelShared.js";
 import { provisionalRouteLinks } from "../utils/routeGeometry.js";
@@ -544,6 +619,7 @@ import { segmentDisplayName, segmentEndpointNames } from "../utils/routeSegments
 import { buildValueLegendItems, classifyByBreaks, createColorScaleConfig, quantileBreaks, resolveColorScale } from "@/utils/colorSchemes.js";
 import { MAP_THEME, hexNumber, hexToRgba } from "@/utils/mapTheme.js";
 import { PURE_METRO_LINE, isMetroLine, metroLineCanonicalName, metroLineNumber } from "@/utils/transitMode.js";
+import { authorityDirectionKey, isRealDatasource, uniqueAuthorityDirectionRoutes } from "@/utils/realPassengerFlow.js";
 import {
   LINE_RANK_METRICS,
   buildLineRankEntries,
@@ -565,6 +641,10 @@ const rawLines = shallowRef([]);
 let rawLinesModel = "";
 // 线路详情缓存下沉到模型级作用域：重挂载/切 tab 后仍命中，随模型 LRU 淘汰且模型间天然隔离
 const routeDetailCache = computed(() => getModelScopedMap(props.model, "xlzl:routeDetail"));
+// 后端已在模型加载阶段生成班次面板；浏览器只按选中线路缓存其只读结果，
+// 避免切换仿真时下载所有线路的全量班次包。
+const departureRouteCache = computed(() => getModelScopedMap(props.model, "xlzl:departureRoutes"));
+const departureRoutePromises = new Map();
 // routeDetailCache 是非响应式 Map：写入处 bump 版本号、读取它的 computed 显式依赖版本号，
 // 使缓存写入能直接触发派生重算，不再依赖 selectedRouteDetail 赋值的旁路兜底
 const routeDetailCacheVersion = shallowRef(0);
@@ -606,6 +686,19 @@ const matchedRoutes = shallowRef([]);
 // 线路详情（含全部 links）体量大且所有赋值点均为整值替换，用 shallowRef 避免深层代理
 const selectedRouteDetail = shallowRef(null);
 
+const departureTimetable = shallowRef([]);
+const departureBundleData = shallowRef(null);
+const departureTimetableLoading = ref(false);
+const departureTimetableError = ref("");
+const departureSelectedId = ref("");
+const departurePanel = shallowRef(null);
+const departurePanelLoading = ref(false);
+const departurePanelError = ref("");
+const departurePickerVisible = ref(false);
+const departureDirectionKey = ref("");
+const departureDetailSection = inject("departureMonitorSection", ref("overview"));
+let departureRequestSeq = 0;
+
 function nextSelectionSignal() {
   selectionAbortController?.abort();
   selectionAbortController = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -622,14 +715,15 @@ const BaseMapLineModeRef = inject("BaseMapLineModeRef", ref("bus-network"));
 // 注入右侧面板显示控制
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
+const departureMonitorActive = computed(() => activeDatavisualizationTab.value === "班次客流监测");
 
 // 运行监测页：右侧改为简化卡片（单条线路日客流量+折线图）。
 // 此处禁用本组件向右侧面板的 teleport，并把选中线路数据上抛给 index.vue。
 const runMonitorSimplifiedRight = inject("runMonitorSimplifiedRight", false);
 // 客流分析模式：即使简化（地图/选中复用运行监测），也渲染完整 MCard2 面板
 const pfaRightPanel = inject("pfaRightPanel", ref(false));
-// 客流分析：当前激活的子功能（右侧只显示对应统计）segments/boarding/demographics/transfer
-const pfaLineSection = inject("pfaLineSection", ref("segments"));
+// 客流分析：当前激活的子功能（右侧只显示对应统计）overview/segments/boarding/demographics/transfer
+const pfaLineSection = inject("pfaLineSection", ref("overview"));
 const runMonitorSelectedLinePanel = inject("runMonitorSelectedLinePanel", null);
 const runMonitorSelectedLineName = inject("runMonitorSelectedLineName", null);
 const runMonitorSelectedRouteDetail = inject("runMonitorSelectedRouteDetail", null);
@@ -639,10 +733,18 @@ const runMonitorSelectedRouteStationFlows = inject("runMonitorSelectedRouteStati
 const runMonitorSelectedReverseLinePanel = inject("runMonitorSelectedReverseLinePanel", null);
 const runMonitorSelectedReverseRouteDetail = inject("runMonitorSelectedReverseRouteDetail", null);
 const runMonitorSelectedReverseRouteMapLinks = inject("runMonitorSelectedReverseRouteMapLinks", null);
+const runMonitorSelectedDeparturePanel = inject("runMonitorSelectedDeparturePanel", null);
+const runMonitorSelectedDepartureItem = inject("runMonitorSelectedDepartureItem", null);
 const runMonitorLineOptionFilter = inject("runMonitorLineOptionFilter", () => true);
 const runMonitorStationOptionFilter = inject("runMonitorStationOptionFilter", () => true);
-const shouldRenderPfaRightPanel = computed(() => Boolean(unref(pfaRightPanel)));
+const shouldRenderPfaRightPanel = computed(() => Boolean(unref(pfaRightPanel))
+  && (departureMonitorActive.value
+    ? departureDetailSection.value !== "overview"
+    : pfaLineSection.value !== "overview"));
 const shouldLoadSelectedRoutePanel = computed(() => runMonitorSimplifiedRight || shouldRenderPfaRightPanel.value);
+const activeRouteAnalysisSection = computed(() => departureMonitorActive.value
+  ? departureDetailSection.value
+  : pfaLineSection.value);
 
 // 统一的当前选中路线计算属性
 const currentSelectedRoute = computed(() => {
@@ -668,6 +770,182 @@ const currentSelectedRoute = computed(() => {
     || rawLineIndexes.value.routeById.get(String(targetId))
     || null;
 });
+
+const departureDirectionRoutes = computed(() => {
+  const route = currentSelectedRoute.value;
+  if (!route) return [];
+  if (route.lineGroup) {
+    return uniquePhysicalDirectionRoutes(Array.isArray(route.childRoutes) ? route.childRoutes : []);
+  }
+  const displayName = selectedLineName.value || route.lineName || route.rawLineName || "";
+  const routes = linesForDisplayName(displayName).flatMap((line) =>
+    (Array.isArray(line?.routes) ? line.routes : []).map((item) => withLineMeta(item, line))
+  );
+  return uniquePhysicalDirectionRoutes(routes.length ? routes : [route]);
+});
+const departureRoute = computed(() => {
+  const routes = departureDirectionRoutes.value;
+  if (!routes.length) return currentSelectedRoute.value?.lineGroup ? null : currentSelectedRoute.value;
+  return routes.find((route) => routeMatchesKey(route, departureDirectionKey.value))
+    || routes.find((route) => routeMatchesKey(route, routeUniqueKey(currentSelectedRoute.value)))
+    || routes[0];
+});
+const departureRouteIdentity = computed(() => {
+  const route = departureRoute.value || {};
+  return `${props.model || ""}::${route.lineId || ""}::${route.routeId || ""}`;
+});
+const departureRouteBundle = computed(() => {
+  const data = departureBundleData.value;
+  return data && typeof data === "object" ? data : null;
+});
+const departureEmptyText = computed(() => String(props.model || "").startsWith("real::")
+  ? "当前方向暂无可匹配的实际班次"
+  : "当前方向暂无计划班次");
+const departureSelectedItem = computed(() =>
+  departureTimetable.value.find((item) => String(item?.id) === String(departureSelectedId.value)) || null);
+
+// 班次概览由页面层复用线路监测卡片渲染；这里只上抛当前班次数据，避免再维护一套右侧布局。
+watch([departureMonitorActive, departurePanel, departureSelectedItem], () => {
+  if (runMonitorSelectedDeparturePanel) {
+    runMonitorSelectedDeparturePanel.value = departureMonitorActive.value ? departurePanel.value : null;
+  }
+  if (runMonitorSelectedDepartureItem) {
+    runMonitorSelectedDepartureItem.value = departureMonitorActive.value ? departureSelectedItem.value : null;
+  }
+}, { immediate: true, flush: "post" });
+
+function formatDepartureTime(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+async function loadDeparturePanel(item) {
+  const route = departureRoute.value;
+  if (!route?.routeId || !item?.id) return;
+  const bundle = departureRouteBundle.value;
+  let cachedPanel = bundle?.panels?.[item.id];
+  if (!cachedPanel && bundle?.emptyPanel) {
+    // 后端 v24 对零客流班次按 route 共享零值模板，避免“班次数×站点数”重复占堆/磁盘。
+    const template = bundle.emptyPanel;
+    const departureTime = Number(item.departureTime) || 0;
+    cachedPanel = markRaw({
+      ...template,
+      departureId: item.id,
+      departureTime,
+      metrics: {
+        ...(template.metrics || {}),
+        capacity: Number(item.capacity) || 0,
+        departureTime,
+        vehicleId: item.vehicleId || "",
+      },
+      hourlyFlow: new Array(24).fill(0),
+    });
+  }
+  if (cachedPanel) {
+    const routeDemographics = bundle?.demographics;
+    const ownRiderCount = Number(cachedPanel?.demographics?.riderCount);
+    if (routeDemographics && (!Number.isFinite(ownRiderCount) || ownRiderCount <= 0)) {
+      cachedPanel = markRaw({ ...cachedPanel, demographics: routeDemographics });
+    }
+    departurePanelError.value = "";
+    departurePanelLoading.value = false;
+    departurePanel.value = cachedPanel;
+    return;
+  }
+  departurePanelLoading.value = false;
+  departurePanel.value = null;
+  departurePanelError.value = "班次缓存中缺少该班次数据，请重新加载模型";
+}
+
+function selectDeparture(item) {
+  if (!item?.id) return;
+  departureSelectedId.value = item.id;
+  departurePickerVisible.value = false;
+  loadDeparturePanel(item);
+}
+
+function handleDepartureDirectionSwitch(route) {
+  if (!route) return;
+  const key = routeUniqueKey(route);
+  if (!key || routeMatchesKey(route, routeUniqueKey(departureRoute.value))) return;
+  departureDirectionKey.value = key;
+  handlePanelDirectionSwitch(route);
+}
+
+async function loadDepartureTimetable() {
+  if (!departureMonitorActive.value) return;
+  const route = departureRoute.value;
+  const seq = ++departureRequestSeq;
+  departureTimetable.value = [];
+  departureBundleData.value = null;
+  departureTimetableError.value = "";
+  departurePickerVisible.value = false;
+  departureSelectedId.value = "";
+  departurePanel.value = null;
+  departurePanelError.value = "";
+  if (!route?.routeId) return;
+  departureTimetableLoading.value = true;
+  try {
+    const routeKey = `${route.lineId || ""}::${route.routeId}`;
+    const modelKey = String(props.model || "");
+    const requestKey = `${modelKey}::${routeKey}`;
+    let routeBundle = departureRouteCache.value.get(routeKey);
+    if (!routeBundle) {
+      let request = departureRoutePromises.get(requestKey);
+      if (!request) {
+        request = getDepartureTimetable({
+          datasource: modelKey,
+          lineId: route.lineId || "",
+          routeId: route.routeId,
+        }, { silentError: true }).then((response) => {
+          const data = response?.data && typeof response.data === "object" ? response.data : null;
+          if (data && data.status !== "generating" && props.model === modelKey) {
+            setScopedWithLimit(getModelScopedMap(modelKey, "xlzl:departureRoutes"), routeKey, markRaw(data), 24);
+          }
+          return data;
+        }).finally(() => departureRoutePromises.delete(requestKey));
+        departureRoutePromises.set(requestKey, request);
+      }
+      routeBundle = await request;
+    }
+    if (seq !== departureRequestSeq || !departureMonitorActive.value) return;
+    if (!routeBundle || routeBundle.status === "generating") {
+      throw new Error("班次缓存尚未就绪");
+    }
+    departureBundleData.value = routeBundle;
+    const rows = Array.isArray(departureRouteBundle.value?.departures) ? departureRouteBundle.value.departures : [];
+    departureTimetable.value = rows;
+    departurePickerVisible.value = true;
+    if (rows.length) {
+      departureSelectedId.value = rows[0].id;
+      loadDeparturePanel(rows[0]);
+    }
+  } catch (error) {
+    if (!isCanceledRequest(error) && seq === departureRequestSeq) {
+      departureTimetable.value = [];
+      departureTimetableError.value = "班次时刻表加载失败";
+    }
+  } finally {
+    if (seq === departureRequestSeq) departureTimetableLoading.value = false;
+  }
+}
+
+watch([departureMonitorActive, departureRouteIdentity], () => {
+  if (departureMonitorActive.value) loadDepartureTimetable();
+  else {
+    departureRequestSeq += 1;
+    departureTimetable.value = [];
+    departureBundleData.value = null;
+    departureTimetableError.value = "";
+    departureSelectedId.value = "";
+    departurePanel.value = null;
+    departurePanelError.value = "";
+    departurePickerVisible.value = false;
+    departureDirectionKey.value = "";
+  }
+}, { flush: "post" });
 
 // 右侧窄面板最多显示约这么多站名，其余站点仍参与图表统计。
 const BOARDING_LABEL_TARGET = 10;
@@ -718,9 +996,10 @@ const mergedLineGroupPanel = computed(() => {
   return routePanelDetailCache.get(key) || groups[key] || null;
 });
 
-// 统计类内容（指标 metrics / 客流画像 / 日客流量 / 关联线路）优先用全线合并口径；
-// 方向敏感内容（站点乘降、断面、站间OD）仍用 currentRoutePanel（单方向）。
-const statsPanel = computed(() => mergedLineGroupPanel.value || currentRoutePanel.value);
+// 班次监测的全部统计必须严格取当前 departure；线路监测的统计类内容仍优先用上下行合并口径。
+const statsPanel = computed(() => departureMonitorActive.value
+  ? departurePanel.value
+  : mergedLineGroupPanel.value || currentRoutePanel.value);
 // 需求1：右侧面板标题只显示纯线路名（lineName 为空才回退 lineId）。
 const pfaRouteTitle = computed(() => {
   const route = currentSelectedRoute.value || {};
@@ -887,9 +1166,17 @@ function stationFlowLookup(stationFlows = []) {
     const key = physicalStationKey(item);
     let agg = map.get(key);
     if (!agg) {
-      agg = { boardingByHour: new Array(24).fill(0), alightingByHour: new Array(24).fill(0) };
+      agg = {
+        boarding: 0,
+        alighting: 0,
+        boardingByHour: new Array(24).fill(0),
+        alightingByHour: new Array(24).fill(0),
+      };
       map.set(key, agg);
     }
+    // 单班次缓存是当前 departure 的标量；线路缓存仍是 24 小时数组。
+    agg.boarding += Number(item.boarding) || 0;
+    agg.alighting += Number(item.alighting) || 0;
     const boarding = Array.isArray(item.boardingByHour) ? item.boardingByHour : [];
     const alighting = Array.isArray(item.alightingByHour) ? item.alightingByHour : [];
     for (let h = 0; h < 24; h++) {
@@ -900,8 +1187,10 @@ function stationFlowLookup(stationFlows = []) {
   return map;
 }
 
-// 乘降图/全屏图/热力图/导出共享同一份物理站点客流索引，避免各消费点重复重建 Map
-const currentStationFlowLookup = computed(() => stationFlowLookup(currentRoutePanel.value?.stationFlows));
+// 乘降图/全屏图/热力图/导出共享同一份物理站点客流索引；班次模式切换为当前 departure。
+const currentStationFlowLookup = computed(() => stationFlowLookup(
+  (departureMonitorActive.value ? departurePanel.value : currentRoutePanel.value)?.stationFlows,
+));
 
 function uniqueFacilities(routes = []) {
   const seen = new Set();
@@ -1005,52 +1294,51 @@ function averageHourRangeProportional(values, startHour, endHour) {
   return weight > 0 ? total / weight : 0;
 }
 
+function formatSegmentLoadRate(value) {
+  if (value == null || value === "") return "-";
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number}%` : "-";
+}
+
 const routeMetrics = computed(() => {
   const route = currentSelectedRoute.value || {};
   const info = route.info || {};
-  // 需求12：指标优先取全线（上下行合并）组的 metrics
+  const structuralMetrics = currentRoutePanel.value?.metrics || {};
+  // 班次面板只带客流指标，线路长度、站数等静态属性继续从当前 route 面板补齐。
   const panelMetrics = statsPanel.value?.metrics || {};
-  const length = toFiniteNumber(panelMetrics.routeDist, 0);
+  const length = toFiniteNumber(panelMetrics.routeDist ?? structuralMetrics.routeDist, 0);
   // 整线（多服务模式合并）：后端 facNum 是按交路重复计数的虚高值，改用归并后的物理站点数。
   const stationCount = route.lineGroup
     ? toFiniteNumber(route.facilities?.length, 0)
-    : toFiniteNumber(panelMetrics.facNum, 0);
-  const avgStationDistance = toFiniteNumber(panelMetrics.facDist, 0);
-  const directness = toFiniteNumber(panelMetrics.lc, 0);
+    : toFiniteNumber(panelMetrics.facNum ?? structuralMetrics.facNum, route.facilities?.length || 0);
+  const avgStationDistance = toFiniteNumber(panelMetrics.facDist ?? structuralMetrics.facDist, 0);
+  const directness = toFiniteNumber(panelMetrics.lc ?? structuralMetrics.lc, 0);
   const passenger = toFiniteNumber(panelMetrics.passenger, 0);
   const loadRate = toFiniteNumber(panelMetrics.loadRate, NaN);
+  const missingLoadRate = isRealDatasource(props.model) ? "-" : "--";
   return {
     length: Number.isFinite(length) && length > 0 ? `${(length / 1000).toFixed(2)} km` : "--",
-    firstTime: formatSecondsToTime(panelMetrics.firstTime ?? info.firstTime),
-    lastTime: formatSecondsToTime(panelMetrics.lastTime ?? info.lastTime),
+    firstTime: formatSecondsToTime(panelMetrics.firstTime ?? structuralMetrics.firstTime ?? info.firstTime),
+    lastTime: formatSecondsToTime(panelMetrics.lastTime ?? structuralMetrics.lastTime ?? info.lastTime),
     directness: Number.isFinite(directness) && directness > 0 ? directness.toFixed(2) : "--",
     stationCount: stationCount > 0 ? `${stationCount} 个` : "--",
     avgStationDistance: Number.isFinite(avgStationDistance) && avgStationDistance > 0
       ? `${Math.round(avgStationDistance)} m`
       : "--",
     passenger: Number.isFinite(passenger) && passenger > 0 ? `${Math.round(passenger).toLocaleString()} 人次` : "--",
-    loadRate: Number.isFinite(loadRate) && loadRate > 0 ? `${loadRate.toFixed(1)}%` : "--",
+    loadRate: Number.isFinite(loadRate) && loadRate > 0 ? `${loadRate.toFixed(1)}%` : missingLoadRate,
   };
 });
 
-// 需求12：客流画像优先取全线（上下行合并）组的 demographics
+// 线路模式取上下行合并画像；班次模式由 statsPanel 严格切到当前 departure。
 const demographicsGroups = computed(() => {
   return buildPassengerProfileGroups(statsPanel.value?.demographics || {});
 });
-const demographicsRiderCount = computed(() =>
-  passengerProfileRiderCount(statsPanel.value?.demographics || {})
-);
 const isRealCardProfile = computed(() => statsPanel.value?.demographics?.source === "real-card-type");
-const demographicsScopeText = computed(() =>
-  isRealCardProfile.value
-    ? "上下行合并 · 票卡客群"
-    : "上下行合并 · 本次出行终点活动"
-);
-const demographicsSampleText = computed(() =>
-  isRealCardProfile.value
-    ? `刷卡上车样本 ${demographicsRiderCount.value.toLocaleString()} 人次`
-    : `模型原始人数 ${demographicsRiderCount.value.toLocaleString()} 人`
-);
+
+const boardingAnalysisScopeText = computed(() => departureMonitorActive.value
+  ? `当前班次 ${departureSelectedItem.value ? formatDepartureTime(departureSelectedItem.value.departureTime) : "-"}`
+  : `${formatHourLabel(segmentTimeRange.value[0])}-${formatHourLabel(segmentTimeRange.value[1])} · ${segmentTimeUnit.value}min`);
 
 function verticalStationLabel(value) {
   return Array.from(String(value || "")).join("\n");
@@ -1064,7 +1352,7 @@ function stationLabelInterval(total, showAll, target = BOARDING_LABEL_TARGET) {
 
 function buildBoardingAlightingChartOption({ route = null, panel = null, fullscreen = false, compact = false } = {}) {
   const targetRoute = route || currentSelectedRoute.value || {};
-  const targetPanel = panel || currentRoutePanel.value || {};
+  const targetPanel = panel || (departureMonitorActive.value ? departurePanel.value : currentRoutePanel.value) || {};
   const facilities = targetRoute.facilities || [];
   // 中性 chrome 随 UI 主题（宿主 computed 读到 chartInk 即建立依赖，切主题自动重建）
   const ink = chartInk.value;
@@ -1072,16 +1360,21 @@ function buildBoardingAlightingChartOption({ route = null, panel = null, fullscr
   const stationNames = facilities.map(f => f.facilityName || "");
   const startHour = debouncedSegmentTimeRange.value[0];
   const endHour = debouncedSegmentTimeRange.value[1];
-  const stationFlowMap = targetPanel === currentRoutePanel.value
+  const isDeparturePanel = departureMonitorActive.value && targetPanel === departurePanel.value;
+  const stationFlowMap = targetPanel === (departureMonitorActive.value ? departurePanel.value : currentRoutePanel.value)
     ? currentStationFlowLookup.value
     : stationFlowLookup(targetPanel?.stationFlows);
   const boardingData = facilities.map((fac) => {
     const flow = stationFlowMap.get(physicalStationKey(fac));
-    return Math.round(sumHourRangeProportional(flow?.boardingByHour, startHour, endHour));
+    return Math.round(isDeparturePanel
+      ? toFiniteNumber(flow?.boarding, 0)
+      : sumHourRangeProportional(flow?.boardingByHour, startHour, endHour));
   });
   const alightingData = facilities.map((fac) => {
     const flow = stationFlowMap.get(physicalStationKey(fac));
-    return -Math.round(sumHourRangeProportional(flow?.alightingByHour, startHour, endHour));
+    return -Math.round(isDeparturePanel
+      ? toFiniteNumber(flow?.alighting, 0)
+      : sumHourRangeProportional(flow?.alightingByHour, startHour, endHour));
   });
 
   const isBar = boardingChartType.value === "bar";
@@ -1217,12 +1510,12 @@ function routeDirectionText(route = {}) {
 // 乘降图表只画当前方向（方向切换在右侧面板顶部），点击图表进入全屏
 const boardingAlightingChartOption = computed(() => buildBoardingAlightingChartOption({
   route: currentSelectedRoute.value,
-  panel: currentRoutePanel.value,
+  panel: departureMonitorActive.value ? departurePanel.value : currentRoutePanel.value,
 }));
 
 const boardingFullscreenChartOption = computed(() => buildBoardingAlightingChartOption({
   route: currentSelectedRoute.value,
-  panel: currentRoutePanel.value,
+  panel: departureMonitorActive.value ? departurePanel.value : currentRoutePanel.value,
   fullscreen: true,
 }));
 
@@ -1249,7 +1542,8 @@ const boardingHeatmapPanelHeight = computed(() => {
 // 热力图矩阵：x=站点，y=统计时段（按统计时间单位分桶），值=乘+降
 const boardingHeatmapData = computed(() => {
   const route = currentSelectedRoute.value || {};
-  const panel = currentRoutePanel.value;
+  const isDeparturePanel = departureMonitorActive.value;
+  const panel = isDeparturePanel ? departurePanel.value : currentRoutePanel.value;
   const facilities = Array.isArray(route.facilities) ? route.facilities : [];
   const stationNames = facilities.map((fac, index) => fac?.facilityName || `站点${index + 1}`);
   // 与其他重计算一致消费 180ms 防抖镜像：拖动滑块期间不逐档重建热力矩阵
@@ -1257,10 +1551,14 @@ const boardingHeatmapData = computed(() => {
   const unitHours = Math.max(0.25, (Number(segmentTimeUnit.value) || 60) / 60);
   const stationFlowMap = currentStationFlowLookup.value;
 
-  const buckets = [];
-  for (let t = startHour; t < endHour - 1e-9; t += unitHours) {
-    const tEnd = Math.min(endHour, t + unitHours);
-    buckets.push({ start: t, end: tEnd, label: `${formatHourLabel(t)}-${formatHourLabel(tEnd)}` });
+  const buckets = isDeparturePanel
+    ? [{ start: 0, end: 24, label: `${formatDepartureTime(departurePanel.value?.departureTime)} 班次` }]
+    : [];
+  if (!isDeparturePanel) {
+    for (let t = startHour; t < endHour - 1e-9; t += unitHours) {
+      const tEnd = Math.min(endHour, t + unitHours);
+      buckets.push({ start: t, end: tEnd, label: `${formatHourLabel(t)}-${formatHourLabel(tEnd)}` });
+    }
   }
 
   const cells = [];
@@ -1269,8 +1567,12 @@ const boardingHeatmapData = computed(() => {
   facilities.forEach((fac, xIndex) => {
     const flow = stationFlowMap.get(physicalStationKey(fac));
     buckets.forEach((bucket, yIndex) => {
-      const boarding = Math.round(sumHourRangeProportional(flow?.boardingByHour, bucket.start, bucket.end));
-      const alighting = Math.round(sumHourRangeProportional(flow?.alightingByHour, bucket.start, bucket.end));
+      const boarding = Math.round(isDeparturePanel
+        ? toFiniteNumber(flow?.boarding, 0)
+        : sumHourRangeProportional(flow?.boardingByHour, bucket.start, bucket.end));
+      const alighting = Math.round(isDeparturePanel
+        ? toFiniteNumber(flow?.alighting, 0)
+        : sumHourRangeProportional(flow?.alightingByHour, bucket.start, bucket.end));
       const total = boarding + alighting;
       cells.push({ value: [xIndex, yIndex, total], boarding, alighting });
       maxCellFlow = Math.max(maxCellFlow, total);
@@ -1582,13 +1884,14 @@ const boardingFullscreenVisible = ref(false);
 
 // 监听当前选中的路线，控制右侧面板内容状态
 watch(currentSelectedRoute, (newRoute) => {
-  if (activeDatavisualizationTab.value === "线路客流监测") {
+  if (activeDatavisualizationTab.value === "线路客流监测"
+      || activeDatavisualizationTab.value === "班次客流监测") {
     rightPanelHasContent.value = true;
   }
 }, { immediate: true });
 
 watch(activeDatavisualizationTab, (newTab) => {
-  if (newTab === "线路客流监测") {
+  if (newTab === "线路客流监测" || newTab === "班次客流监测") {
     rightPanelHasContent.value = true;
   }
 });
@@ -1732,7 +2035,7 @@ watch(segmentTimeUnit, (unit) => {
 
 // 按当前激活子节导出对应面板明细为 CSV
 function handleExportDetail() {
-  const section = pfaLineSection.value;
+  const section = activeRouteAnalysisSection.value;
   const routeTitle = pfaRouteTitle.value || "线路";
   const startHour = segmentTimeRange.value[0];
   const endHour = segmentTimeRange.value[1];
@@ -1756,8 +2059,12 @@ function handleExportDetail() {
         const flow = stationFlowMap.get(physicalStationKey(fac));
         return [
           fac?.facilityName || "",
-          Math.round(sumHourRangeProportional(flow?.boardingByHour, startHour, endHour)),
-          Math.round(sumHourRangeProportional(flow?.alightingByHour, startHour, endHour)),
+          Math.round(departureMonitorActive.value
+            ? toFiniteNumber(flow?.boarding, 0)
+            : sumHourRangeProportional(flow?.boardingByHour, startHour, endHour)),
+          Math.round(departureMonitorActive.value
+            ? toFiniteNumber(flow?.alighting, 0)
+            : sumHourRangeProportional(flow?.alightingByHour, startHour, endHour)),
         ];
       }),
     ];
@@ -1779,7 +2086,9 @@ function handleExportDetail() {
     return;
   }
   // 时段相关面板的文件名带统计时段（去掉冒号，避免非法文件名字符）
-  const rangeText = `${formatHourLabel(startHour)}-${formatHourLabel(endHour)}`.replace(/:/g, "");
+  const rangeText = departureMonitorActive.value
+    ? `班次${formatDepartureTime(departurePanel.value?.departureTime)}`.replace(/:/g, "")
+    : `${formatHourLabel(startHour)}-${formatHourLabel(endHour)}`.replace(/:/g, "");
   const fileName = ["segments", "boarding", "transfer"].includes(section)
     ? `${routeTitle}_${label}_${rangeText}.csv`
     : `${routeTitle}_${label}.csv`;
@@ -1803,7 +2112,9 @@ const rawRouteSegments = computed(() => {
       fromName,
       toName,
       flow: Math.round(sumHourRangeProportional(segment.flowByHour, startHour, endHour)),
-      loadRate: Number(averageHourRangeProportional(segment.loadRateByHour, startHour, endHour).toFixed(1))
+      loadRate: Array.isArray(segment.loadRateByHour)
+        ? Number(averageHourRangeProportional(segment.loadRateByHour, startHour, endHour).toFixed(1))
+        : null,
     };
   });
 });
@@ -1818,9 +2129,22 @@ function stationPairKeyOf(a, b) {
 // （34 站 → 约 33 个相邻区段），而非按交路/方向重复罗列。满载率按所选时段用整线运力重算。
 const routeSegments = computed(() => {
   const panel = currentRoutePanel.value;
+  if (departureMonitorActive.value && Array.isArray(departurePanel.value?.segments)) {
+    return departurePanel.value.segments.map((segment) => ({
+      ...segment,
+      name: segment.name || segmentDisplayName(segment),
+      flow: Math.max(0, Number(segment.flow) || 0),
+      loadRate: segment.loadRate != null && Number.isFinite(Number(segment.loadRate))
+        ? Math.max(0, Number(segment.loadRate))
+        : null,
+    }));
+  }
   const startHour = debouncedSegmentTimeRange.value[0];
   const endHour = debouncedSegmentTimeRange.value[1];
   if (!panel?.lineGroup) return rawRouteSegments.value;
+  const realPanel = isRealDatasource(props.model) || panel?.source === "real";
+  const realCapacityAvailable = !realPanel
+    || Number(panel?.metrics?.peakMissingCapacityDepartures) <= 0;
   const capacityByHour = Array.isArray(panel.capacityByHour) ? panel.capacityByHour : [];
   const byPair = new Map();
   (panel.segments || []).forEach((segment) => {
@@ -1836,28 +2160,48 @@ const routeSegments = computed(() => {
     }
     let dir = pair.get(dirKey);
     if (!dir) {
-      dir = { name, fromName, toName, flowByHour: new Array(24).fill(0) };
+      dir = {
+        name,
+        fromName,
+        toName,
+        flowByHour: new Array(24).fill(0),
+        loadRateByHour: realPanel ? new Array(24).fill(0) : null,
+        loadRateAvailable: true,
+      };
       pair.set(dirKey, dir);
     }
     const flowByHour = Array.isArray(segment.flowByHour) ? segment.flowByHour : [];
     for (let h = 0; h < dir.flowByHour.length; h++) {
       dir.flowByHour[h] += Number(flowByHour[h]) || 0;
     }
+    if (realPanel) {
+      const loadRateByHour = Array.isArray(segment.loadRateByHour) ? segment.loadRateByHour : null;
+      if (!loadRateByHour) dir.loadRateAvailable = false;
+      if (loadRateByHour) {
+        for (let h = 0; h < dir.loadRateByHour.length; h++) {
+          dir.loadRateByHour[h] += Number(loadRateByHour[h]) || 0;
+        }
+      }
+    }
   });
   const dirTotal = (dir) => dir.flowByHour.reduce((sum, v) => sum + v, 0);
   return Array.from(byPair.values()).map((pair) => {
     const dirs = Array.from(pair.values());
     const peak = dirs.reduce((best, dir) => (dirTotal(dir) > dirTotal(best) ? dir : best), dirs[0]);
-    const loadByHour = peak.flowByHour.map((flow, h) => {
-      const cap = Number(capacityByHour[h]) || 0;
-      return cap > 0 ? Math.min(100, (flow * 100) / cap) : 0;
-    });
+    const loadByHour = realPanel
+      ? realCapacityAvailable && peak.loadRateAvailable ? peak.loadRateByHour : null
+      : peak.flowByHour.map((flow, h) => {
+        const cap = Number(capacityByHour[h]) || 0;
+        return cap > 0 ? Math.min(100, (flow * 100) / cap) : 0;
+      });
     return {
       name: peak.name,
       fromName: peak.fromName,
       toName: peak.toName,
       flow: Math.round(sumHourRangeProportional(peak.flowByHour, startHour, endHour)),
-      loadRate: Number(averageHourRangeProportional(loadByHour, startHour, endHour).toFixed(1))
+      loadRate: Array.isArray(loadByHour)
+        ? Number(averageHourRangeProportional(loadByHour, startHour, endHour).toFixed(1))
+        : null,
     };
   });
 });
@@ -2188,8 +2532,20 @@ function odPointToLngLat(x, y) {
 const PFA_OD_MAP_ENABLED = true;
 
 const stationOdFlows = computed(() => {
-  if (!PFA_OD_MAP_ENABLED || !shouldRenderPfaRightPanel.value || pfaLineSection.value !== "boarding" || !currentSelectedRoute.value) {
+  if (!PFA_OD_MAP_ENABLED || !shouldRenderPfaRightPanel.value || activeRouteAnalysisSection.value !== "boarding" || !currentSelectedRoute.value) {
     return [];
+  }
+  if (departureMonitorActive.value) {
+    return (Array.isArray(departurePanel.value?.stationOd) ? departurePanel.value.stationOd : [])
+      .map((od) => ({
+        from: odPointToLngLat(od?.fromX, od?.fromY),
+        to: odPointToLngLat(od?.toX, od?.toY),
+        value: Number(od?.flow) || 0,
+        direction: "departure",
+        fromName: String(od?.fromName || "").trim(),
+        toName: String(od?.toName || "").trim(),
+      }))
+      .filter((od) => od.value > 0);
   }
   // OD 期望线跟随乘降统计的时间段筛选，同一 [start, end) 口径；
   // 取防抖镜像，拖动滑块时不高频重建地图曲线数据
@@ -2582,6 +2938,8 @@ function routeEndpointNames(route = {}) {
 
 function routeDirectionDedupeKey(route = {}, index = 0) {
   if (route?.lineGroup) return "";
+  const authorityKey = authorityDirectionKey(route);
+  if (authorityKey.startsWith("authority:")) return authorityKey;
   const { start, end } = routeEndpointNames(route);
   if (start && end) {
     return `${normalizeLineSearchName(start)}->${normalizeLineSearchName(end)}`;
@@ -2591,6 +2949,14 @@ function routeDirectionDedupeKey(route = {}, index = 0) {
 
 function uniquePhysicalDirectionRoutes(routes = []) {
   const activeKey = searchMode.value === "line" ? activeRouteId.value : activeMatchedRouteId.value;
+  const authorityRoutes = routes.filter((route) => authorityDirectionKey(route).startsWith("authority:"));
+  if (authorityRoutes.length) {
+    const activeRoute = authorityRoutes.find((route) => routeMatchesKey(route, activeKey));
+    return uniqueAuthorityDirectionRoutes(
+      authorityRoutes,
+      activeRoute ? authorityDirectionKey(activeRoute) : "",
+    );
+  }
   const byDirection = new Map();
   routes.forEach((route, index) => {
     if (!route || route.lineGroup) return;
@@ -3356,7 +3722,8 @@ onMounted(() => {
   if (props.model) {
     loadAllLines();
   }
-  if (activeDatavisualizationTab.value === "线路客流监测") {
+  if (activeDatavisualizationTab.value === "线路客流监测"
+      || activeDatavisualizationTab.value === "班次客流监测") {
     rightPanelHasContent.value = true;
   }
 });
@@ -3386,6 +3753,8 @@ onUnmounted(() => {
   isComponentUnmounted = true;
   cancelSegmentTimeMirror();
   selectionAbortController?.abort();
+  if (runMonitorSelectedDeparturePanel) runMonitorSelectedDeparturePanel.value = null;
+  if (runMonitorSelectedDepartureItem) runMonitorSelectedDepartureItem.value = null;
   if (runMonitorSelectedRouteDetail) runMonitorSelectedRouteDetail.value = null;
   if (runMonitorSelectedRouteMapLinks) runMonitorSelectedRouteMapLinks.value = [];
   clearReverseSelectionOutputs();
@@ -3691,6 +4060,226 @@ defineExpose({
   align-items: stretch;
   flex-direction: column;
   gap: var(--dm2-space-2);
+}
+
+.departure-map-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  width: max-content;
+  pointer-events: auto;
+}
+
+.departure-map-picker {
+  display: inline-grid;
+  grid-template-columns: max-content max-content 18px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  width: max-content;
+  min-width: 136px;
+  min-height: 46px;
+  padding: 0 14px 0 12px;
+  border: 1px solid var(--dm2-line-strong, rgba(17, 32, 58, 0.18));
+  border-radius: 10px;
+  background: var(--dm2-veil-strong, rgba(252, 253, 255, 0.97));
+  box-shadow: 0 4px 8px rgba(13, 38, 76, 0.16);
+  color: var(--dm2-ink, #1c2024);
+  font-family: inherit;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.departure-map-picker > span {
+  padding-right: 10px;
+  border-right: 1px solid var(--dm2-line, rgba(17, 32, 58, 0.1));
+  color: var(--dm2-muted, #667085);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.departure-map-picker > strong {
+  min-width: 44px;
+  color: var(--dm2-ink, #1c2024);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.departure-map-picker svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: var(--dm2-accent, #0071e3);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.departure-map-picker:hover,
+.departure-map-picker:focus-visible {
+  border-color: var(--dm2-accent, #0071e3);
+  background: var(--dm2-surface, #ffffff);
+  transform: translateY(-1px);
+}
+
+.departure-map-picker:focus-visible {
+  outline: 2px solid var(--dm2-accent-ring, rgba(0, 113, 227, 0.18));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .departure-map-picker,
+  .departure-direction-button {
+    transition: none;
+  }
+
+  .departure-map-picker:hover,
+  .departure-map-picker:focus-visible {
+    transform: none;
+  }
+}
+
+.departure-picker-header { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.departure-picker-title { color: #172033; font-size: 20px; font-weight: 700; }
+.departure-picker-route {
+  max-width: 560px;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #6b7b91;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.departure-picker-meta { color: #6b7b91; font-size: 12px; text-align: right; }
+.departure-direction-switch {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 4px;
+  border-radius: 10px;
+  background: #eef3f8;
+}
+.departure-direction-button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 42px;
+  padding: 8px 12px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #526176;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+.departure-direction-button:hover,
+.departure-direction-button:focus-visible {
+  border-color: rgba(18, 105, 211, 0.28);
+  color: #0b5ebd;
+  outline: none;
+}
+.departure-direction-button.active {
+  border-color: #1269d3;
+  background: #1269d3;
+  color: #ffffff;
+}
+.departure-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  max-height: min(56vh, 480px);
+  overflow: auto;
+  border-top: 1px solid #dbe3ee;
+  border-left: 1px solid #dbe3ee;
+}
+.departure-picker-dialog :deep(.el-dialog__body) { padding: 4px 24px 24px; }
+.departure-picker-dialog :deep(.el-dialog__header) { padding: 24px 24px 16px; }
+.departure-picker-dialog :deep(.el-dialog) { border-radius: 12px; }
+.departure-picker-overlay { backdrop-filter: blur(2px); }
+
+.departure-slot {
+  min-width: 0;
+  min-height: 48px;
+  padding: 7px 5px;
+  border: 0;
+  border-right: 1px solid var(--dm-border, #dbe3ee);
+  border-bottom: 1px solid var(--dm-border, #dbe3ee);
+  background: var(--dm-surface, #fff);
+  color: var(--dm-text-primary, #172033);
+  cursor: pointer;
+}
+
+.departure-slot strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.departure-slot strong { font-size: 14px; font-variant-numeric: tabular-nums; }
+.departure-slot:hover { background: #eef6ff; }
+.departure-slot.active { background: #1269d3; color: #fff; box-shadow: inset 0 0 0 1px #0b55ae; }
+
+.departure-state {
+  padding: 22px 8px;
+  color: var(--dm-text-tertiary, #738096);
+  text-align: center;
+  font-size: 12px;
+}
+
+.departure-state.is-error {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  color: var(--el-color-danger, #c0362c);
+}
+
+.departure-state.is-error button {
+  padding: 4px 12px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.departure-state.is-error button:active { transform: translateY(1px); }
+
+.departure-simple-table { border-top: 1px solid var(--dm-border, #dbe3ee); }
+.departure-table-head,
+.departure-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px 62px;
+  align-items: center;
+  min-height: 34px;
+  border-bottom: 1px solid var(--dm-border, #e5eaf1);
+  font-size: 11px;
+}
+.departure-table-head { color: var(--dm-text-tertiary, #738096); font-weight: 650; }
+.departure-table-row > span { overflow: hidden; padding-right: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.departure-table-row > strong,
+.departure-table-row > em { text-align: right; font-style: normal; font-weight: 600; }
+.departure-table-row > em { color: #1269d3; }
+
+.departure-demographics { display: grid; gap: 10px; }
+.departure-demo-row { display: grid; grid-template-columns: 54px minmax(0, 1fr) 48px; align-items: center; gap: 8px; font-size: 11px; }
+.departure-demo-row i { height: 7px; overflow: hidden; background: var(--dm-surface-subtle, #edf1f6); }
+.departure-demo-row b { display: block; height: 100%; }
+.departure-demo-row strong { text-align: right; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 1280px) {
+  .departure-picker-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 720px) {
+  .departure-picker-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .departure-picker-header { align-items: start; flex-direction: column; }
+  .departure-picker-meta { text-align: left; }
+  .departure-direction-switch { flex-direction: column; }
 }
 .pfa-route-sections .chart-mode-actions {
   width: 100%;
@@ -4125,12 +4714,6 @@ defineExpose({
 
 /* 乘降热力图全屏弹窗壳与头部样式收敛进 styles/boardingHeatmapDialog.css（与站点客流分析共用） */
 
-/* 分区右上角的轻量元信息（样本量等）*/
-.pfa-route-sections .pfa-section-meta {
-  font-size: var(--dm2-text-xs);
-  color: var(--dm2-muted);
-  font-variant-numeric: tabular-nums;
-}
 .pfa-route-sections .pfa-profile-note {
   margin: 0 0 var(--dm2-space-3);
   color: var(--dm2-muted);
@@ -4139,16 +4722,6 @@ defineExpose({
 }
 
 /* ④ 客流画像：可扩展的占比条形列表（按类型自适应，不再横向溢出）*/
-.pfa-route-sections .passenger-profile-section > .section-header {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 5px;
-}
-.pfa-route-sections .passenger-profile-section > .section-header .pfa-section-meta {
-  max-width: 100%;
-  line-height: 1.45;
-  white-space: normal;
-}
 .pfa-route-sections .demo-groups {
   display: flex;
   flex-direction: column;
@@ -4162,7 +4735,7 @@ defineExpose({
 .pfa-route-sections .demo-group-head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: var(--dm2-space-2);
   padding-bottom: var(--dm2-space-2);
   border-bottom: 1px solid var(--dm2-line);
@@ -4172,12 +4745,6 @@ defineExpose({
   font-weight: var(--dm2-fw-semibold);
   color: var(--dm2-ink);
   letter-spacing: 0.02em;
-}
-.pfa-route-sections .demo-group-sum {
-  font-size: var(--dm2-text-xs);
-  color: var(--dm2-ink-soft);
-  font-family: var(--dm2-font-num);
-  font-variant-numeric: tabular-nums;
 }
 .pfa-route-sections .demo-list {
   display: flex;
@@ -5133,6 +5700,111 @@ html.dark .pfa-od-legend-dirs {
 }
 :global(html.dark .boarding-fullscreen-dialog .el-dialog__header) {
   border-bottom-color: rgba(64, 156, 255, 0.16);
+}
+
+.departure-map-picker.is-dark {
+  border-color: rgba(121, 164, 214, 0.38);
+  background: rgba(15, 25, 36, 0.96);
+  box-shadow: 0 4px 8px rgba(2, 6, 12, 0.38);
+  color: #e7edf6;
+}
+
+.departure-map-picker.is-dark > span {
+  border-right-color: rgba(148, 180, 220, 0.2);
+  color: #aebdd0;
+}
+
+.departure-map-picker.is-dark > strong {
+  color: #ffffff;
+}
+
+.departure-map-picker.is-dark svg {
+  stroke: #74b6ff;
+}
+
+.departure-map-picker.is-dark:hover,
+.departure-map-picker.is-dark:focus-visible {
+  border-color: #409cff;
+  background: #18293b;
+}
+/* 班次选择弹窗 append-to-body，必须使用全局暗色选择器。 */
+:global(html.dark .departure-picker-dialog) {
+  --dm-surface: #131d28;
+  --dm-border: rgba(148, 180, 220, 0.22);
+  --dm-text-primary: #f3f7fc;
+  --dm-text-secondary: #c2cddd;
+  --dm-text-tertiary: #94a3b8;
+  border: 1px solid rgba(64, 156, 255, 0.2);
+  background: #101820;
+  box-shadow: 0 20px 56px rgba(2, 6, 12, 0.56);
+  color: #e7edf6;
+}
+:global(html.dark .departure-picker-dialog .el-dialog__header),
+:global(html.dark .departure-picker-dialog .el-dialog__body) {
+  background: #101820;
+}
+:global(html.dark .departure-picker-dialog .el-dialog__header) {
+  border-bottom: 1px solid rgba(64, 156, 255, 0.14);
+}
+:global(html.dark .departure-picker-dialog .el-dialog__headerbtn .el-dialog__close) {
+  color: #9fb0c5;
+}
+:global(html.dark .departure-picker-dialog .el-dialog__headerbtn:hover .el-dialog__close) {
+  color: #74b6ff;
+}
+:global(html.dark .departure-picker-dialog .departure-picker-title) {
+  color: #f3f7fc;
+}
+:global(html.dark .departure-picker-dialog .departure-picker-meta),
+:global(html.dark .departure-picker-dialog .departure-picker-route),
+:global(html.dark .departure-picker-dialog .departure-state) {
+  color: #b6c3d4;
+}
+:global(html.dark .departure-picker-dialog .departure-direction-switch) {
+  background: #151f2b;
+}
+:global(html.dark .departure-picker-dialog .departure-direction-button) {
+  color: #c2cddd;
+}
+:global(html.dark .departure-picker-dialog .departure-direction-button:hover),
+:global(html.dark .departure-picker-dialog .departure-direction-button:focus-visible) {
+  border-color: rgba(105, 173, 255, 0.46);
+  color: #ffffff;
+}
+:global(html.dark .departure-picker-dialog .departure-direction-button.active) {
+  border-color: #69adff;
+  background: #287fdc;
+  color: #ffffff;
+}
+:global(html.dark .departure-picker-dialog .departure-picker-grid) {
+  border-color: rgba(148, 180, 220, 0.22);
+  scrollbar-color: rgba(64, 156, 255, 0.36) transparent;
+}
+:global(html.dark .departure-picker-dialog .departure-picker-grid::-webkit-scrollbar) {
+  width: 8px;
+}
+:global(html.dark .departure-picker-dialog .departure-picker-grid::-webkit-scrollbar-thumb) {
+  border-radius: 999px;
+  background: rgba(64, 156, 255, 0.36);
+}
+:global(html.dark .departure-picker-dialog .departure-slot) {
+  border-color: rgba(148, 180, 220, 0.22);
+  background: #151f2b;
+  color: #f3f7fc;
+}
+:global(html.dark .departure-picker-dialog .departure-slot:hover),
+:global(html.dark .departure-picker-dialog .departure-slot:focus-visible) {
+  background: rgba(64, 156, 255, 0.13);
+  box-shadow: inset 0 0 0 1px rgba(64, 156, 255, 0.42);
+  outline: none;
+}
+:global(html.dark .departure-picker-dialog .departure-slot.active) {
+  background: #287fdc;
+  color: #ffffff;
+  box-shadow: inset 0 0 0 1px #69adff;
+}
+:global(html.dark .departure-picker-overlay) {
+  background: rgba(3, 8, 14, 0.68);
 }
 
 /* 左侧检索卡 */

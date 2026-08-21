@@ -250,7 +250,6 @@
         :fmt-int="formatInteger"
         :fmt-unit="formatUnit"
         :fmt-pct="formatPercent"
-        @configure-coverage="openBuiltUpDialog"
       />
     </template>
   </div>
@@ -620,67 +619,6 @@
     @apply="applyAttributeTableChanges"
   />
 
-  <teleport to="body">
-    <div v-if="builtUpDialog.visible" class="built-up-backdrop" @click.self="closeBuiltUpDialog">
-      <div class="built-up-modal" role="dialog" aria-modal="true" aria-labelledby="built-up-title">
-        <div class="built-up-head">
-          <div class="built-up-head-text">
-            <p class="built-up-kicker">常规公交站点覆盖率 · 分母设置</p>
-            <h3 id="built-up-title">建成区面积</h3>
-          </div>
-          <button type="button" class="built-up-close" aria-label="关闭" @click="closeBuiltUpDialog">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"></line><line x1="18" y1="6" x2="6" y2="18"></line></svg>
-          </button>
-        </div>
-        <p class="built-up-desc">
-          覆盖率 = 站点 300/500m 被服务面积 ÷ 建成区面积。留空则按{{ builtUpDialog.scopeLabel }}行政区面积
-          <strong>{{ formatUnit(builtUpDialog.defaultAreaKm2, "km²") }}</strong> 计算。
-        </p>
-        <div class="built-up-scope">
-          <span class="built-up-scope-tag">当前范围</span>
-          <span class="built-up-scope-name">{{ builtUpDialog.scopeLabel }}</span>
-        </div>
-        <label class="built-up-field">
-          <span class="built-up-field-label">建成区面积（km²）</span>
-          <input
-            ref="builtUpInputRef"
-            v-model="builtUpDialog.input"
-            class="built-up-input"
-            type="number"
-            inputmode="decimal"
-            min="0"
-            step="0.01"
-            :placeholder="builtUpDialog.defaultAreaKm2 != null ? `留空＝行政区面积 ${formatUnit(builtUpDialog.defaultAreaKm2, 'km²')}` : '输入建成区面积'"
-            @keyup.enter="saveBuiltUpDialog"
-            @keydown.esc="closeBuiltUpDialog"
-          />
-        </label>
-        <div class="built-up-preview" :class="{ 'is-missing': !builtUpPreview.available }">
-          <div class="built-up-preview-item">
-            <span>300 米</span>
-            <strong>{{ formatPercent(builtUpPreview.rate300) }}</strong>
-          </div>
-          <div class="built-up-preview-divider"></div>
-          <div class="built-up-preview-item">
-            <span>500 米</span>
-            <strong>{{ formatPercent(builtUpPreview.rate500) }}</strong>
-          </div>
-        </div>
-        <p v-if="!builtUpPreview.available" class="built-up-warn">该范围暂无被服务面积数据，无法按建成区面积重算（请确认后端已下发分区覆盖）。</p>
-        <template v-else>
-          <p v-if="builtUpPreview.isCapped" class="built-up-warn">输入面积小于站点服务面积，覆盖率按 100% 封顶显示。</p>
-          <p v-if="builtUpDialog.scope !== DISPLAY_RANGE_ALL" class="built-up-note">分区模式：此面积仅用于「{{ builtUpDialog.scopeLabel }}」，与其他分区分开保存。</p>
-        </template>
-        <div class="built-up-actions">
-          <button type="button" class="built-up-btn ghost" @click="resetBuiltUpDialog">恢复默认</button>
-          <span class="built-up-actions-right">
-            <button type="button" class="built-up-btn" @click="closeBuiltUpDialog">取消</button>
-            <button type="button" class="built-up-btn primary" @click="saveBuiltUpDialog">保存</button>
-          </span>
-        </div>
-      </div>
-    </div>
-  </teleport>
 </template>
 
 <script setup>
@@ -704,6 +642,7 @@ import "./tokens.css";
 import {
   collectionFeatures,
   collectionOperationMetrics,
+  countPhysicalStations,
   expandGeometryBounds,
   featureCollectionBounds,
   featureCollectionFromFeatures,
@@ -724,8 +663,10 @@ import DmSidebar from "./components/DmSidebar.vue";
 import MapSearchBox from "./components/MapSearchBox.vue";
 import MapControlsToolbar from "./components/MapControlsToolbar.vue";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { isDarkTheme } from "@/utils/uiTheme.js";
 import { adminDistrictOutlineStyle, districtOutlineFeatureCollection } from "@/utils/adminDistrictRange.js";
 import { limitRightPanelRanking } from "@/utils/rightPanelRanking.js";
+import { splitRouteName } from "@/views/vehiclecalculation/realRouteParams.js";
 import busStationIconUrl from "@/assets/images/datamanagement/bus-station.svg?url";
 import busStationHighlightIconUrl from "@/assets/images/datamanagement/bus-station_highlight.svg?url";
 import busStationHighlightOutsideIconUrl from "@/assets/images/datamanagement/bus-station_highlight_outside.svg?url";
@@ -788,15 +729,12 @@ const overviewStats = reactive({
   networkScaleKm: null,
   networkDensityKmPerKm2: null,
   stationCount: 0,
-  stationCoverage300Rate: null,
-  stationCoverage500Rate: null,
-  // 全市被服务面积（分子）——供按"建成区面积"重算覆盖率
-  stationCoverage300Km2: null,
-  stationCoverage500Km2: null,
+  stationPopulationCoverage300Rate: null,
+  stationPopulationCoverage500Rate: null,
   adminAreaKm2: null,
 });
-// 各行政区覆盖面积映射：{ 区名: { coverage300Km2, coverage500Km2, areaKm2, coverage300Rate, coverage500Rate } }
-const overviewDistrictCoverage = ref({});
+// 各行政区真实常住人口覆盖率。
+const overviewDistrictPopulationCoverage = ref({});
 let overviewStatsBaseline = {
   lineCount: 0,
   networkScaleKm: null,
@@ -987,13 +925,13 @@ const DEPOT_ICON_ID = "dm-real-bus-depot-icon";
 const STATION_ICON_BASE_SIZE = 96;
 const DEPOT_ICON_BASE_SIZE = 128;
 const EARTH_RADIUS_METERS = 6378137;
+// 与后端 STANDARD_ROUTE_FIELDS 同口径：dir/interval 是已下线的占位列，不再固定占位属性表；
+// 旧数据若仍带这两列，buildAttributeTableColumns 会按行属性自动补出来，不会漏显示。
 const LINE_ATTRIBUTE_FIELD_ORDER = [
   "line_id",
-  "dir",
   "route_id",
   "first",
   "last",
-  "interval",
   "mode",
   "name",
   "price",
@@ -1147,8 +1085,8 @@ const pendingEditDatasetSummary = computed(() =>
 );
 const hasAnyUnsavedEdits = computed(() => editOperations.station.length + editOperations.line.length + editOperations.depot.length > 0);
 const attributeTableChangedCount = computed(() => attributeTableOperationCount());
-// ── 线网运营里程（日）：方向级 dep_count×几何长度 单遍聚合 ──
-// 长度取当前（行政区裁剪后）集合的几何积分，与「线网总长度」同口径——选区时即为区内里程；
+// ── 计划运营里程（日）：方向级 dep_count×几何长度 单遍聚合 ──
+// 长度取当前（行政区裁剪后）集合的几何积分，选区时即为区内计划车公里；
 // 要素对象在全市与已缓存行政区之间稳定，WeakMap 长度缓存令重切区零重算
 const lineFeatureLengthCache = new WeakMap();
 function cachedLineFeatureLengthMeters(feature) {
@@ -1164,7 +1102,7 @@ const lineOperationMetrics = computed(() => {
   void collectionsRevision;
   return collectionOperationMetrics(realDataCollections.lines, cachedLineFeatureLengthMeters, splitOperatorCompanies);
 });
-// 数据总览展示态：overviewStats 已随行政区切换（updateOverviewCollectionCounts），叠加运营里程（万km/日）
+// 数据总览展示态：overviewStats 已随行政区切换，叠加计划运营里程（万车公里/日）
 const overviewDisplayStats = computed(() => {
   const mileage = lineOperationMetrics.value.mileageKmPerDay;
   return { ...overviewStats, dailyMileageWanKm: mileage == null ? null : mileage / 10000 };
@@ -1210,127 +1148,20 @@ const operatorLineRows = computed(() => {
 // 数据总览是否为空：无线路且无站点即视为空态（错误态复位后也会落到这里，故渲染顺序为 加载→错误→空→数据）
 const isOverviewEmpty = computed(() => !overviewStats.lineCount && !overviewStats.stationCount);
 
-// ── 建成区面积覆写：覆盖率默认按行政区/分区面积为分母，用户可改用实际建成区面积；按「区域 + 分区」分开持久化 ──
-const BUILT_UP_STORAGE_KEY = "dm.builtUpArea.v1";
-function loadBuiltUpOverrides() {
-  if (typeof window === "undefined") return {};
-  try {
-    const parsed = JSON.parse(window.localStorage?.getItem(BUILT_UP_STORAGE_KEY) || "null");
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-const builtUpOverrides = ref(loadBuiltUpOverrides());
-function builtUpOverrideFor(area, scope) {
-  const number = Number(builtUpOverrides.value?.[area]?.[scope]);
-  return Number.isFinite(number) && number > 0 ? number : null;
-}
-function setBuiltUpOverride(area, scope, value) {
-  const next = { ...builtUpOverrides.value };
-  const scoped = { ...(next[area] || {}) };
-  const number = Number(value);
-  if (Number.isFinite(number) && number > 0) {
-    scoped[scope] = Number(number.toFixed(4));
-  } else {
-    delete scoped[scope];
-  }
-  if (Object.keys(scoped).length) next[area] = scoped;
-  else delete next[area];
-  builtUpOverrides.value = next;
-  if (typeof window !== "undefined") {
-    try {
-      window.localStorage?.setItem(BUILT_UP_STORAGE_KEY, JSON.stringify(builtUpOverrides.value));
-    } catch {
-      /* 隐私模式/配额不足时静默失败 */
-    }
-  }
-}
-
-// 当前范围（全市 / 某行政区）的覆盖率视图：只用服务面积与当前分母计算。
+// 当前范围（全市 / 某行政区）的真实常住人口覆盖率。
 const coverageView = computed(() => {
   const scope = selectedDisplayRange.value || DISPLAY_RANGE_ALL;
   const isCity = scope === DISPLAY_RANGE_ALL;
-  const district = isCity ? null : overviewDistrictCoverage.value?.[scope] || null;
-  const covered300 = isCity ? nullableNumber(overviewStats.stationCoverage300Km2) : nullableNumber(district?.coverage300Km2);
-  const covered500 = isCity ? nullableNumber(overviewStats.stationCoverage500Km2) : nullableNumber(district?.coverage500Km2);
-  const defaultAreaKm2 = isCity ? nullableNumber(overviewStats.adminAreaKm2) : nullableNumber(district?.areaKm2);
-  const override = builtUpOverrideFor(selectedArea.value, scope);
-  const denom = override != null ? override : defaultAreaKm2;
-  const rateOf = (covered) => (covered != null && denom != null && denom > 0 ? (covered / denom) * 100 : null);
-  const raw300 = rateOf(covered300);
-  const raw500 = rateOf(covered500);
-  // 建成区面积 < 服务footprint 时原始值可能 >100%，显示封顶到 100% 并标注
-  const cap = (rate) => (rate != null && rate > 100 ? 100 : rate);
+  const district = isCity ? null : overviewDistrictPopulationCoverage.value?.[scope] || null;
   return {
-    scope,
-    scopeLabel: isCity ? DISPLAY_RANGE_ALL : scope,
-    isCity,
-    covered300,
-    covered500,
-    defaultAreaKm2,
-    builtUpAreaKm2: override,
-    usingOverride: override != null,
-    denominatorKm2: denom,
-    hasCoveredArea: covered300 != null || covered500 != null,
-    rate300: cap(raw300),
-    rate500: cap(raw500),
-    isCapped: (raw300 != null && raw300 > 100) || (raw500 != null && raw500 > 100),
+    rate300: isCity
+      ? nullableNumber(overviewStats.stationPopulationCoverage300Rate)
+      : nullableNumber(district?.coverage300Rate),
+    rate500: isCity
+      ? nullableNumber(overviewStats.stationPopulationCoverage500Rate)
+      : nullableNumber(district?.coverage500Rate),
   };
 });
-
-// 建成区面积设置弹窗
-const builtUpInputRef = ref(null);
-const builtUpDialog = reactive({
-  visible: false,
-  scope: DISPLAY_RANGE_ALL,
-  scopeLabel: DISPLAY_RANGE_ALL,
-  input: "",
-  defaultAreaKm2: null,
-  covered300: null,
-  covered500: null,
-});
-// 弹窗内按当前输入实时预览覆盖率（输入非法/空则回落默认面积）
-const builtUpPreview = computed(() => {
-  const value = Number(builtUpDialog.input);
-  const denom = Number.isFinite(value) && value > 0 ? value : builtUpDialog.defaultAreaKm2;
-  const available = builtUpDialog.covered300 != null || builtUpDialog.covered500 != null;
-  const rate = (covered) => (covered != null && denom != null && denom > 0 ? (covered / denom) * 100 : null);
-  const raw300 = rate(builtUpDialog.covered300);
-  const raw500 = rate(builtUpDialog.covered500);
-  const cap = (r) => (r != null && r > 100 ? 100 : r);
-  return {
-    denom,
-    available,
-    rate300: cap(raw300),
-    rate500: cap(raw500),
-    isCapped: (raw300 != null && raw300 > 100) || (raw500 != null && raw500 > 100),
-  };
-});
-function openBuiltUpDialog() {
-  const view = coverageView.value;
-  builtUpDialog.scope = view.scope;
-  builtUpDialog.scopeLabel = view.scopeLabel;
-  builtUpDialog.defaultAreaKm2 = view.defaultAreaKm2;
-  builtUpDialog.covered300 = view.covered300;
-  builtUpDialog.covered500 = view.covered500;
-  builtUpDialog.input = view.builtUpAreaKm2 != null ? String(view.builtUpAreaKm2) : "";
-  builtUpDialog.visible = true;
-  nextTick(() => builtUpInputRef.value?.focus());
-}
-function closeBuiltUpDialog() {
-  builtUpDialog.visible = false;
-}
-function saveBuiltUpDialog() {
-  // 空或非正数等同恢复默认（清除覆写）
-  setBuiltUpOverride(selectedArea.value, builtUpDialog.scope, builtUpDialog.input);
-  builtUpDialog.visible = false;
-}
-function resetBuiltUpDialog() {
-  setBuiltUpOverride(selectedArea.value, builtUpDialog.scope, null);
-  builtUpDialog.input = "";
-  builtUpDialog.visible = false;
-}
 
 const lineRoutePickerTitle = computed(() => {
   if (lineRoutePicker.mode === "edit") return "选择经过该路段的线路";
@@ -1653,13 +1484,13 @@ function setOverviewStats(data) {
   overviewStats.networkScaleKm = overviewStatsBaseline.networkScaleKm;
   overviewStats.networkDensityKmPerKm2 = overviewStatsBaseline.networkDensityKmPerKm2;
   overviewStats.stationCount = overviewStatsBaseline.stationCount;
-  overviewStats.stationCoverage300Rate = nullableNumber(overview.stationCoverage300Rate);
-  overviewStats.stationCoverage500Rate = nullableNumber(overview.stationCoverage500Rate);
-  overviewStats.stationCoverage300Km2 = nullableNumber(overview.stationCoverage300Km2);
-  overviewStats.stationCoverage500Km2 = nullableNumber(overview.stationCoverage500Km2);
+  overviewStats.stationPopulationCoverage300Rate = nullableNumber(overview.stationPopulationCoverage300Rate);
+  overviewStats.stationPopulationCoverage500Rate = nullableNumber(overview.stationPopulationCoverage500Rate);
   overviewStats.adminAreaKm2 = overviewStatsBaseline.adminAreaKm2;
-  overviewDistrictCoverage.value =
-    overview.districtCoverage && typeof overview.districtCoverage === "object" ? overview.districtCoverage : {};
+  overviewDistrictPopulationCoverage.value =
+    overview.districtPopulationCoverage && typeof overview.districtPopulationCoverage === "object"
+      ? overview.districtPopulationCoverage
+      : {};
 }
 
 function syncHistorySummary(history = {}) {
@@ -1762,12 +1593,10 @@ function resetOverviewStats() {
   overviewStats.networkScaleKm = null;
   overviewStats.networkDensityKmPerKm2 = null;
   overviewStats.stationCount = 0;
-  overviewStats.stationCoverage300Rate = null;
-  overviewStats.stationCoverage500Rate = null;
-  overviewStats.stationCoverage300Km2 = null;
-  overviewStats.stationCoverage500Km2 = null;
+  overviewStats.stationPopulationCoverage300Rate = null;
+  overviewStats.stationPopulationCoverage500Rate = null;
   overviewStats.adminAreaKm2 = null;
-  overviewDistrictCoverage.value = {};
+  overviewDistrictPopulationCoverage.value = {};
   overviewStatsBaseline = {
     lineCount: 0,
     networkScaleKm: null,
@@ -2260,8 +2089,8 @@ function ensureDistrictOutlineLayer(map) {
       data: districtOutlineFeatureCollection(activeDisplayRangeContext()),
     });
   }
+  const style = adminDistrictOutlineStyle(isDarkTheme.value);
   if (!map.getLayer(LAYER_DISTRICT_OUTLINE)) {
-    const style = adminDistrictOutlineStyle();
     map.addLayer({
       id: LAYER_DISTRICT_OUTLINE,
       type: "line",
@@ -2269,6 +2098,9 @@ function ensureDistrictOutlineLayer(map) {
       layout: style.layout,
       paint: style.paint,
     });
+  } else {
+    map.setPaintProperty(LAYER_DISTRICT_OUTLINE, "line-color", style.paint["line-color"]);
+    map.setPaintProperty(LAYER_DISTRICT_OUTLINE, "line-dasharray", style.paint["line-dasharray"]);
   }
   updateDistrictOutlineLayer(map);
 }
@@ -2276,6 +2108,8 @@ function ensureDistrictOutlineLayer(map) {
 function updateDistrictOutlineLayer(map = MapRef.value?.map) {
   if (!map?.getLayer?.(LAYER_DISTRICT_OUTLINE)) return;
   const context = activeDisplayRangeContext();
+  const style = adminDistrictOutlineStyle(isDarkTheme.value);
+  map.setPaintProperty(LAYER_DISTRICT_OUTLINE, "line-color", style.paint["line-color"]);
   setGeoJsonSourceData(SOURCE_DISTRICT_OUTLINE, districtOutlineFeatureCollection(context), map);
   setLayerVisibility(map, LAYER_DISTRICT_OUTLINE, context ? "visible" : "none");
 }
@@ -2788,7 +2622,7 @@ function applyDisplayRangeFilter(options = {}) {
     }
     return;
   }
-  // 区级总览统计（去重计数+线网长度积分）随缓存条目存储：区间来回切换不再全量重算
+  // 区级总览统计（线路族/物理站点去重 + 上下行平均长度）随缓存条目存储
   if (!context) {
     updateOverviewCollectionCounts(null);
   } else if (activeEntry.stats) {
@@ -3124,8 +2958,8 @@ function updateOverviewCollectionCounts(context = null) {
     return;
   }
   overviewStats.lineCount = countUniqueFeatures(realDataCollections.lines, physicalLineKey);
-  overviewStats.stationCount = countUniqueFeatures(realDataCollections.routeStops, physicalStationKey);
-  const rawNetworkScaleKm = featureCollectionLineLengthMeters(realDataCollections.lines) / 1000;
+  overviewStats.stationCount = countPhysicalStations(realDataCollections.stations);
+  const rawNetworkScaleKm = featureCollectionLineLengthMeters(realDataCollections.lines) / 2 / 1000;
   const networkScaleKm = roundNumber(rawNetworkScaleKm, 2);
   const adminAreaKm2 = roundNumber(context.areaKm2, 2);
   overviewStats.networkScaleKm = Number.isFinite(networkScaleKm) ? networkScaleKm : null;
@@ -3167,7 +3001,10 @@ function physicalLineKey(feature, index = 0) {
 }
 
 function computePhysicalLineKey(feature, properties, name, index) {
-  const familyName = name ? stripRouteEndpointSuffix(name) : "";
+  // 线路族名（剥掉尾部 "(起点--终点)"）是同一条物理线路两个走向的唯一共同键，
+  // 剥离必须按括号深度倒扫配对，否则站名自带括号的线路（102路(广钢新城总站(崇文二路)--东山总站)）
+  // 会被剥成半截名，与反方向分成两条线，直接抬高总览与各公司的线路数。
+  const familyName = name ? splitRouteName(name).family : "";
   if (familyName) return `line:${familyName}`;
   const routeId = valueOrEmpty(properties.route_id || properties.routeId);
   if (routeId) return `route:${routeId}`;
@@ -3175,27 +3012,6 @@ function computePhysicalLineKey(feature, properties, name, index) {
   if (lineId) return `lineid:${lineId}`;
   const fallbackKey = valueOrEmpty(properties._lineKey || properties._featureId || feature?.id);
   return fallbackKey ? `feature:${fallbackKey}` : `line-index:${index}`;
-}
-
-function stripRouteEndpointSuffix(value) {
-  let text = valueOrEmpty(value).trim();
-  while (text.endsWith(")") || text.endsWith("）")) {
-    const closeIndex = Math.max(text.lastIndexOf(")"), text.lastIndexOf("）"));
-    const openIndex = Math.max(text.lastIndexOf("(", closeIndex), text.lastIndexOf("（", closeIndex));
-    if (openIndex < 0 || openIndex >= closeIndex) break;
-    const inner = text.slice(openIndex + 1, closeIndex).trim();
-    if (!looksLikeEndpointText(inner)) break;
-    text = text.slice(0, openIndex).trim();
-  }
-  return text;
-}
-
-function looksLikeEndpointText(value) {
-  const parts = String(value || "")
-    .split(/\s*(?:--|—|－|至|到)\s*/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return parts.length >= 2;
 }
 
 function physicalStationKey(feature, index = 0) {
@@ -4743,6 +4559,19 @@ function attributeColumnLabel(key) {
     stop_count: "站点数量",
     avg_stop_m: "平均站距(m)",
     route_cnt: "途经线路数",
+    // 线路 SHP 现有的运营字段（interval 占位列已下线，间隔改由 am_gap/pm_gap/off_gap 承载）
+    dep_count: "班次数量",
+    first_dep: "首班发车",
+    last_dep: "末班发车",
+    timetable: "时刻表",
+    am_peak: "早高峰时段",
+    pm_peak: "晚高峰时段",
+    am_gap: "早高峰间隔(分)",
+    pm_gap: "晚高峰间隔(分)",
+    off_gap: "平峰间隔(分)",
+    capacity: "载客量(大/小)",
+    load_num: "配车数",
+    approved_c: "核定载客数",
     ...DEPOT_FIELD_LABELS,
   };
   return labels[key] || key;
@@ -6260,10 +6089,17 @@ function routeServiceTime(properties = {}) {
   return `${start || "未知"} - ${end || "未知"}`;
 }
 
+// interval 是已下线的占位列（本地编辑改发车间隔仍写它，故优先取）；
+// 现网线路 SHP 的间隔按高峰/平峰分列存放，两者都缺时才算暂无。
 function routeHeadway(properties = {}) {
   const value = firstAvailableValue(properties, ["interval"]);
-  if (!value) return "暂无";
-  return String(value).match(/[分m]/i) ? String(value) : `${value} 分钟`;
+  if (value) return String(value).match(/[分m]/i) ? String(value) : `${value} 分钟`;
+  const peak = firstAvailableValue(properties, ["am_gap", "pm_gap"]);
+  const offPeak = firstAvailableValue(properties, ["off_gap"]);
+  const parts = [];
+  if (peak) parts.push(`高峰 ${peak} 分`);
+  if (offPeak) parts.push(`平峰 ${offPeak} 分`);
+  return parts.length ? parts.join(" / ") : "暂无";
 }
 
 function routeFare(properties = {}) {
@@ -7129,9 +6965,20 @@ watch(activeKey, (key, previousKey) => {
 watch(MapRef, (mapInstance) => {
   bindMapStateListeners(mapInstance);
   bindSelectableHoverListener();
-  if (isMapDataPage(activeKey.value)) {
-    loadOverviewLayers({ fit: true });
+  if (!isMapDataPage(activeKey.value)) return;
+
+  // 冷刷新时 MapRef 已就位但 maplibre 的 style 还在加载，此刻
+  // renderRealDataLayers → ensureSourceData → map.addSource 会抛
+  // "Style is not done loading"，异常从 watcher 逃逸会中断整页 bootstrap
+  // （与运行监测页同一个坑）。命中真实数据缓存时这条链路是全同步的，最容易踩。
+  // whenReady 在已就绪时是同步回调，正常路径行为不变。
+  if (mapInstance && !mapInstance.styleReady) {
+    mapInstance.whenReady(() => {
+      if (isMapDataPage(activeKey.value)) loadOverviewLayers({ fit: true });
+    });
+    return;
   }
+  loadOverviewLayers({ fit: true });
 }, { immediate: true });
 
 function parsePickerRoute(fullName) {
@@ -7904,295 +7751,6 @@ onBeforeUnmount(() => {
   .sk-shimmer {
     animation: none;
     background: var(--dm2-surface-sunken);
-  }
-}
-
-/* ── 建成区面积设置弹窗（teleport 到 body；组件 scope 属性仍随之下发，作用域样式生效） ── */
-.built-up-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 2600;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(13, 27, 51, 0.42);
-  -webkit-backdrop-filter: blur(2px);
-  backdrop-filter: blur(2px);
-  animation: builtUpFade 160ms var(--dm2-ease);
-}
-
-.built-up-modal {
-  width: 360px;
-  max-width: calc(100vw - 48px);
-  box-sizing: border-box;
-  padding: 20px;
-  border: 1px solid var(--dm2-line);
-  border-radius: var(--dm2-radius-lg);
-  background: var(--dm2-surface);
-  box-shadow: var(--dm2-shadow-dialog);
-  color: var(--dm2-ink);
-  font-family: var(--dm2-font);
-  animation: builtUpPop 200ms var(--dm2-ease-out);
-}
-
-@keyframes builtUpFade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes builtUpPop {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.built-up-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.built-up-kicker {
-  margin: 0 0 3px;
-  color: var(--dm2-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.built-up-head-text h3 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 700;
-  color: var(--dm2-ink);
-}
-
-.built-up-close {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--dm2-muted);
-  cursor: pointer;
-  transition:
-    background-color var(--dm2-dur) var(--dm2-ease),
-    color var(--dm2-dur) var(--dm2-ease);
-}
-
-.built-up-close:hover {
-  background: var(--dm2-field);
-  color: var(--dm2-ink);
-}
-
-.built-up-desc {
-  margin: 14px 0 0;
-  color: var(--dm2-ink-soft);
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-
-.built-up-desc strong {
-  color: var(--dm2-accent);
-  font-family: var(--dm2-font-num);
-  font-weight: 700;
-}
-
-.built-up-scope {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.built-up-scope-tag {
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--dm2-field);
-  color: var(--dm2-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.built-up-scope-name {
-  color: var(--dm2-ink);
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.built-up-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 14px;
-}
-
-.built-up-field-label {
-  color: var(--dm2-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.built-up-input {
-  width: 100%;
-  box-sizing: border-box;
-  height: 40px;
-  padding: 0 12px;
-  border: 1px solid var(--dm2-line-strong);
-  border-radius: var(--dm2-radius-sm);
-  background: var(--dm2-field);
-  color: var(--dm2-ink);
-  font-family: var(--dm2-font-num);
-  font-size: 15px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  transition:
-    border-color var(--dm2-dur) var(--dm2-ease),
-    box-shadow var(--dm2-dur) var(--dm2-ease),
-    background-color var(--dm2-dur) var(--dm2-ease);
-}
-
-.built-up-input:focus {
-  outline: none;
-  border-color: var(--dm2-accent);
-  background: var(--dm2-surface);
-  box-shadow: 0 0 0 3px var(--dm2-accent-ring);
-}
-
-.built-up-preview {
-  display: flex;
-  align-items: stretch;
-  margin-top: 14px;
-  border: 1px solid var(--dm2-line);
-  border-radius: var(--dm2-radius-sm);
-  background: var(--dm2-surface-sunken);
-  overflow: hidden;
-}
-
-.built-up-preview.is-missing {
-  opacity: 0.6;
-}
-
-.built-up-preview-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 10px 6px;
-}
-
-.built-up-preview-item span {
-  color: var(--dm2-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.built-up-preview-item strong {
-  color: var(--dm2-accent);
-  font-family: var(--dm2-font-num);
-  font-size: 18px;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
-
-.built-up-preview-divider {
-  width: 1px;
-  background: var(--dm2-line-faint);
-}
-
-.built-up-warn {
-  margin: 10px 0 0;
-  color: var(--dm2-modify);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
-.built-up-note {
-  margin: 10px 0 0;
-  color: var(--dm2-muted);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
-.built-up-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.built-up-actions-right {
-  display: inline-flex;
-  gap: 8px;
-}
-
-.built-up-btn {
-  height: 34px;
-  padding: 0 16px;
-  border: 1px solid var(--dm2-line-strong);
-  border-radius: var(--dm2-radius-sm);
-  background: var(--dm2-surface);
-  color: var(--dm2-ink-soft);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color var(--dm2-dur) var(--dm2-ease),
-    border-color var(--dm2-dur) var(--dm2-ease),
-    color var(--dm2-dur) var(--dm2-ease);
-}
-
-.built-up-btn:hover {
-  background: var(--dm2-field);
-}
-
-.built-up-btn.ghost {
-  border-color: transparent;
-  background: transparent;
-  color: var(--dm2-muted);
-}
-
-.built-up-btn.ghost:hover {
-  color: var(--dm2-delete);
-  background: var(--dm2-delete-weak);
-}
-
-.built-up-btn.primary {
-  border-color: transparent;
-  background: var(--dm2-accent);
-  color: #fff;
-  box-shadow: var(--dm2-accent-glow);
-}
-
-.built-up-btn.primary:hover {
-  background: var(--dm2-accent-strong);
-}
-
-.built-up-btn:focus-visible {
-  outline: 2px solid var(--dm2-accent-ring);
-  outline-offset: 2px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .built-up-backdrop,
-  .built-up-modal {
-    animation: none;
   }
 }
 

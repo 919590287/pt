@@ -61,4 +61,27 @@ class RealPassengerFlowOperationMetricsTest {
                 RealPassengerFlowServiceImpl.optionalNumber(
                         Map.of("avg_speed_kmh", "not-a-number"), "avg_speed_kmh"));
     }
+
+    @Test
+    void timetableAllowsGtfsTimesAfterMidnight() {
+        assertEquals(26 * 3600 + 10 * 60,
+                RealPassengerFlowServiceImpl.clockSeconds("26:10:00"));
+        assertThrows(RuntimeException.class,
+                () -> RealPassengerFlowServiceImpl.clockSeconds("48:00:00"));
+    }
+
+    @Test
+    void routeShapefilePeakHeadwaysUseBothPeakPeriods() {
+        assertEquals(12.5, RealPassengerFlowServiceImpl.averagePositive(10, 15));
+        assertEquals(10, RealPassengerFlowServiceImpl.averagePositive(10, 0));
+        assertEquals(15, RealPassengerFlowServiceImpl.averagePositive(0, 15));
+    }
+
+    @Test
+    void routeShapefileCapacityUsesTotalPassengerCapacity() {
+        assertEquals(90, RealPassengerFlowServiceImpl.firstCapacity("90/26"));
+        assertEquals(70, RealPassengerFlowServiceImpl.firstCapacity("70,24"));
+        assertEquals(0, RealPassengerFlowServiceImpl.firstCapacity(""));
+    }
+
 }

@@ -3,21 +3,7 @@
     <section class="auth-panel" aria-label="用户认证">
       <div class="brand-block">
         <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 36 36" width="36" height="36" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect width="36" height="36" rx="9" fill="url(#auth-logo-gradient)" />
-            <path d="M10 18 C 14 13, 22 13, 26 18" stroke="#f8fbff" stroke-width="2.5" stroke-linecap="round" opacity="0.85" />
-            <path d="M10 18 C 14 23, 22 23, 26 18" stroke="#31d8ee" stroke-width="2" stroke-linecap="round" opacity="0.95" />
-            <circle cx="10" cy="18" r="3.5" fill="#f8fbff" />
-            <circle cx="18" cy="15" r="3" fill="#8aa8ff" />
-            <circle cx="26" cy="18" r="3.5" fill="#31d8ee" />
-            <defs>
-              <linearGradient id="auth-logo-gradient" x1="0" y1="0" x2="36" y2="36" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stop-color="#1569de" />
-                <stop offset="52%" stop-color="#0b91b7" />
-                <stop offset="100%" stop-color="#31d8ee" />
-              </linearGradient>
-            </defs>
-          </svg>
+          <img src="@/assets/images/header/platform-logo.png" alt="平台Logo" class="brand-logo-img" width="36" height="36" />
         </div>
         <div>
           <p class="eyebrow">公共交通数智化治理平台</p>
@@ -199,6 +185,13 @@ async function handleSubmit() {
   place-items: center;
   border-radius: 10px;
   background: #edf6fb;
+
+  .brand-logo-img {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    object-fit: cover;
+  }
 }
 
 .eyebrow {

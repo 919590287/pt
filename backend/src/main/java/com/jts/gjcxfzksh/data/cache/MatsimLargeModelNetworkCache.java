@@ -62,11 +62,26 @@ public final class MatsimLargeModelNetworkCache {
             log.warn("管理员已显式禁用大模型公交子路网，将尝试加载完整路网: model={}", data.getName());
             return original;
         }
-        String schedule = data.getOutfile().getTransitSchedule();
-        if (!regularFile(original) || !regularFile(schedule)) {
-            throw new IllegalStateException("大模型公交子路网缺少原始 network 或 transitSchedule: model="
+        return resolveTransitNetworkInput(data);
+    }
+
+    /**
+     * VISUAL 运行态统一使用公交子路网，无论模型总体是否超过大模型阈值。
+     * 完整道路仍由 visual 二进制瓦片提供，避免缓存命中后把百万级 Link 对象重新入堆。
+     */
+    public static String resolveTransitNetworkInput(MatsimData data) {
+        if (data == null) return null;
+        String original = data.getOutfile().getNetwork();
+        if (!isApplicable(data)) {
+            if (!data.isLargeModel()) {
+                // 无公交时刻表的纯道路模型无法裁剪公交子网；小模型
+                // 可安全回退原始路网，也不将该工件纳入缓存就绪判定。
+                return original;
+            }
+            throw new IllegalStateException("公交子路网缺少原始 network 或 transitSchedule: model="
                     + data.getName());
         }
+        String schedule = data.getOutfile().getTransitSchedule();
         try {
             synchronized (ModelBuildLocks.lockFor("large-network", data)) {
                 if (!isReady(data)) {
@@ -75,9 +90,21 @@ public final class MatsimLargeModelNetworkCache {
             }
             return isReady(data) ? networkPath(data).toString() : original;
         } catch (Exception e) {
-            throw new IllegalStateException("大模型公交子路网生成失败，已阻止完整路网入堆: model="
+            throw new IllegalStateException("公交子路网生成失败，已阻止完整路网入堆: model="
                     + data.getName() + ", error=" + e.getMessage(), e);
         }
+    }
+
+    public static void prepareTransitNetwork(MatsimData data) {
+        // 某些只含道路或单元测试模型没有 transitSchedule。它们不需要
+        // 公交子网，不应因为可选规范工件阻断其他缓存的原子发布。
+        if (isApplicable(data)) resolveTransitNetworkInput(data);
+    }
+
+    public static boolean isApplicable(MatsimData data) {
+        return data != null
+                && regularFile(data.getOutfile().getNetwork())
+                && regularFile(data.getOutfile().getTransitSchedule());
     }
 
     public static boolean isReady(MatsimData data) {

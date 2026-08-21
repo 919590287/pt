@@ -1,16 +1,23 @@
 <template>
-  <div ref="panelRef" :style="panelStyle" class="vehicle-calc-panel">
-    <div ref="handleRef" class="panel-header">
+  <div class="vehicle-calc-panel">
+    <div class="panel-header">
       <div class="header-title">
         <span class="title-mark"></span>
         <div>
           <div class="title-main">配车测算</div>
-          <div class="title-sub">公交线路发班与车辆配置测算</div>
         </div>
       </div>
       <div class="header-actions">
-        <el-button size="small" @click.stop="resetExample">恢复示例</el-button>
         <el-button size="small" type="primary" @click.stop="generateTimetable">生成测算</el-button>
+        <el-button
+          size="small"
+          type="success"
+          :disabled="!selectedRouteInfo"
+          :loading="savingResult"
+          @click.stop="saveCalculationResult"
+        >
+          保存测算结果
+        </el-button>
       </div>
     </div>
 
@@ -52,75 +59,159 @@
       <div class="workbench-grid">
         <aside class="input-column">
           <section class="form-section">
+            <div class="section-title">线路参数导入（真实线路）</div>
+            <el-select
+              v-model="selectedRouteKey"
+              class="route-select"
+              size="small"
+              filterable
+              remote
+              clearable
+              reserve-keyword
+              placeholder="按线路名称搜索，如 101路"
+              no-data-text="未匹配到线路"
+              loading-text="真实线路数据加载中"
+              :loading="routeSource.status === 'loading'"
+              :remote-method="handleRouteSearch"
+              @visible-change="handleRouteDropdown"
+              @change="handleRouteChange"
+            >
+              <el-option
+                v-for="option in routeSearchResults"
+                :key="option.key"
+                :label="option.name"
+                :value="option.key"
+              >
+                <span class="option-name">{{ option.name }}</span>
+                <span class="option-meta">{{ option.endpointsText }}</span>
+              </el-option>
+            </el-select>
+
+            <p v-if="routeSource.error" class="route-error">{{ routeSource.error }}</p>
+
+            <div v-if="selectedRouteInfo" class="route-picked">
+              <div class="route-picked-head">
+                <span class="route-picked-name">{{ selectedRouteInfo.name }}</span>
+                <button
+                  class="swap-button"
+                  type="button"
+                  :disabled="selectedRouteInfo.directionCount < 2"
+                  @click="swapDirections"
+                >
+                  ⇄ 交换上下行
+                </button>
+              </div>
+              <div class="route-dir-row">
+                <i class="dir-tag">上行</i>
+                <span>{{ selectedRouteInfo.upLabel || "真实数据中缺此走向" }}</span>
+              </div>
+              <div class="route-dir-row">
+                <i class="dir-tag down">下行</i>
+                <span>{{ selectedRouteInfo.downLabel || "真实数据中缺此走向" }}</span>
+              </div>
+            </div>
+
+            <div v-if="routeMissing.length" class="route-missing">
+              <div class="route-missing-title">以下参数在真实数据中为空，请手动填写</div>
+              <div v-for="group in routeMissingGroups" :key="group.name" class="route-missing-group">
+                <i class="dir-tag" :class="{ down: group.name === '下行' }">{{ group.name }}</i>
+                <div class="route-missing-tags">
+                  <span v-for="item in group.items" :key="item.key">{{ item.label }}</span>
+                </div>
+              </div>
+            </div>
+
+            <p v-for="note in routeNotes" :key="note" class="route-note">{{ note }}</p>
+
+          </section>
+
+          <section class="form-section">
             <div class="section-title">服务时间设置</div>
             <div class="form-block-grid">
-              <div class="form-block">
+              <div class="form-block" :class="{ 'needs-input': isMissing('upService') }">
                 <h3>上行服务时间</h3>
                 <label class="field-row">
                   <span>开始</span>
                   <input v-model="form.upServiceStart" type="time" />
                 </label>
-                <label class="field-row">
-                  <span>结束</span>
+                <div class="field-row">
+                  <span class="field-head">
+                    结束
+                    <label class="next-day"><input v-model="form.upServiceEndNextDay" type="checkbox" />次日</label>
+                  </span>
                   <input v-model="form.upServiceEnd" type="time" />
-                </label>
+                </div>
               </div>
-              <div class="form-block">
+              <div class="form-block" :class="{ 'needs-input': isMissing('downService') }">
                 <h3>下行服务时间</h3>
                 <label class="field-row">
                   <span>开始</span>
                   <input v-model="form.downServiceStart" type="time" />
                 </label>
-                <label class="field-row">
-                  <span>结束</span>
+                <div class="field-row">
+                  <span class="field-head">
+                    结束
+                    <label class="next-day"><input v-model="form.downServiceEndNextDay" type="checkbox" />次日</label>
+                  </span>
                   <input v-model="form.downServiceEnd" type="time" />
-                </label>
+                </div>
               </div>
             </div>
           </section>
 
           <section class="form-section">
-            <div class="section-title">高峰时段与发车间隔</div>
+            <div class="section-title">
+              高峰时段与发车间隔
+              <button class="link-button" type="button" @click="copyUpPeaksToDown">上行参数复制到下行</button>
+            </div>
             <div class="form-block-grid">
-              <div class="form-block">
-                <h3>早高峰</h3>
+              <div
+                v-for="direction in DIRECTIONS"
+                :key="direction.key"
+                class="form-block"
+                :class="{ 'needs-input': hasMissingPeak(direction.key) }"
+              >
+                <h3>{{ direction.label }}</h3>
+                <div class="sub-title">早高峰</div>
                 <label class="field-row">
                   <span>开始</span>
-                  <input v-model="form.amStart" type="time" />
+                  <input v-model="form[`${direction.key}AmStart`]" type="time" />
                 </label>
                 <label class="field-row">
                   <span>结束</span>
-                  <input v-model="form.amEnd" type="time" />
+                  <input v-model="form[`${direction.key}AmEnd`]" type="time" />
                 </label>
-              </div>
-              <div class="form-block">
-                <h3>晚高峰</h3>
+                <label class="field-row">
+                  <span>发车间隔 (分)</span>
+                  <input v-model.number="form[`${direction.key}AmInterval`]" min="1" step="1" type="number" />
+                </label>
+                <div class="sub-title">晚高峰</div>
                 <label class="field-row">
                   <span>开始</span>
-                  <input v-model="form.pmStart" type="time" />
+                  <input v-model="form[`${direction.key}PmStart`]" type="time" />
                 </label>
                 <label class="field-row">
                   <span>结束</span>
-                  <input v-model="form.pmEnd" type="time" />
+                  <input v-model="form[`${direction.key}PmEnd`]" type="time" />
+                </label>
+                <label class="field-row">
+                  <span>发车间隔 (分)</span>
+                  <input v-model.number="form[`${direction.key}PmInterval`]" min="1" step="1" type="number" />
+                </label>
+                <div class="sub-title">平峰</div>
+                <label class="field-row">
+                  <span>发车间隔 (分)</span>
+                  <input v-model.number="form[`${direction.key}OffInterval`]" min="1" step="1" type="number" />
                 </label>
               </div>
             </div>
-            <div class="interval-grid">
-              <label class="field-row">
-                <span>高峰间隔 (分)</span>
-                <input v-model.number="form.peakInterval" min="1" step="1" type="number" />
-              </label>
-              <label class="field-row">
-                <span>平峰间隔 (分)</span>
-                <input v-model.number="form.offInterval" min="1" step="1" type="number" />
-              </label>
-            </div>
+            <p class="interval-note">上下行各按自身的高峰时段与间隔发班；未设置某个高峰时，对应运营时段按该方向的平峰间隔。</p>
           </section>
 
           <section class="form-section">
             <div class="section-title">车辆调度参数</div>
             <div class="form-block-grid">
-              <div class="form-block">
+              <div class="form-block" :class="{ 'needs-input': isMissing('upDuration') || isMissing('downDuration') }">
                 <h3>单程时间</h3>
                 <label class="field-row">
                   <span>上行 (分)</span>
@@ -277,57 +368,51 @@
 </template>
 
 <script setup>
-import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
-import { useDraggable } from "@vueuse/core";
+import { computed, nextTick, onMounted, reactive, ref, shallowRef, watch } from "vue";
+import { ElMessage } from "element-plus";
+import { saveVehicleCalculationResult } from "@/api/realData.js";
 import { isDarkTheme } from "@/utils/uiTheme";
+import {
+  getCachedRealData,
+  invalidateCachedHistory,
+  invalidateCachedRealData,
+} from "@/utils/realDataCache.js";
+import { DEFAULT_REAL_AREA } from "@/utils/realPassengerFlow.js";
+import { buildRouteOptions, extractRouteFormValues, searchRouteOptions } from "./realRouteParams.js";
+import { scheduleVehiclesOnly as calculateScheduleVehiclesOnly } from "./fleetCalculator.js";
+import { generateDirectionTimeline } from "./timetable.js";
 
-const panelRef = ref(null);
-const handleRef = ref(null);
 const canvasRef = ref(null);
 const diagramWrapRef = ref(null);
 
-const { style: panelStyle, x: panelX, y: panelY } = useDraggable(panelRef, {
-  initialValue: { x: 20, y: 104 },
-  handle: handleRef,
-});
+const DIRECTIONS = Object.freeze([
+  Object.freeze({ key: "up", label: "上行" }),
+  Object.freeze({ key: "down", label: "下行" }),
+]);
 
-const PANEL_EDGE_GUTTER = 20;
-const PANEL_TOP_GUTTER = 84;
-
-function getPanelScale() {
-  const panel = panelRef.value;
-  const panelScale = panel ? Number.parseFloat(window.getComputedStyle(panel).scale) : Number.NaN;
-  if (Number.isFinite(panelScale) && panelScale > 0) return panelScale;
-
-  const rootScale = Number.parseFloat(window.getComputedStyle(document.documentElement).getPropertyValue("--app-panel-scale"));
-  return Number.isFinite(rootScale) && rootScale > 0 ? rootScale : 1;
-}
-
-function centerPanel() {
-  if (typeof window === "undefined") return;
-  nextTick(() => {
-    const panel = panelRef.value;
-    if (!panel) return;
-
-    const scale = getPanelScale();
-    const visualWidth = panel.offsetWidth * scale;
-    const visualHeight = panel.offsetHeight * scale;
-    panelX.value = Math.max(PANEL_EDGE_GUTTER, (window.innerWidth - visualWidth) / 2);
-    panelY.value = Math.max(PANEL_TOP_GUTTER, (window.innerHeight - visualHeight) / 2);
-  });
-}
-
+// 高峰时段与三档间隔都是方向级参数：同一条线的上下行在真实数据里经常不同
+// （如南沙10路上行早高峰 07:00-08:00、下行 06:00-07:00），两侧各自独立填写与计算。
 const DEFAULT_FORM = Object.freeze({
   upServiceStart: "05:30",
   upServiceEnd: "23:00",
+  upServiceEndNextDay: false,
   downServiceStart: "05:30",
   downServiceEnd: "23:00",
-  amStart: "07:00",
-  amEnd: "09:00",
-  pmStart: "17:00",
-  pmEnd: "19:00",
-  peakInterval: 30,
-  offInterval: 60,
+  downServiceEndNextDay: false,
+  upAmStart: "07:00",
+  upAmEnd: "09:00",
+  upPmStart: "17:00",
+  upPmEnd: "19:00",
+  upAmInterval: 30,
+  upPmInterval: 30,
+  upOffInterval: 60,
+  downAmStart: "07:00",
+  downAmEnd: "09:00",
+  downPmStart: "17:00",
+  downPmEnd: "19:00",
+  downAmInterval: 30,
+  downPmInterval: 30,
+  downOffInterval: 60,
   upDuration: 60,
   downDuration: 60,
   turnTime: 25,
@@ -389,6 +474,119 @@ const DIAGRAM_INK = Object.freeze({
   }),
 });
 
+// ── 真实线路参数导入 ──
+// 线路来自真实数据 SHP（与数据管理页同一份 busLineStation 缓存，先开过数据管理页则秒开）。
+// 整包偏大，改为首次展开下拉/输入时才拉取。
+const routeSource = reactive({ status: "idle", error: "" });
+const routeOptions = shallowRef([]);
+const routeSearchResults = shallowRef([]);
+const selectedRouteKey = ref("");
+const selectedRouteInfo = shallowRef(null);
+const routeMissing = shallowRef([]);
+const routeNotes = shallowRef([]);
+const directionsSwapped = ref(false);
+const savingResult = ref(false);
+const routeDataVersion = reactive({ revision: null, versionId: "" });
+const missingKeys = computed(() => new Set(routeMissing.value.map((item) => item.key)));
+// 缺失项按上下行分组展示，平铺成一串标签读不出属于哪个方向。
+const routeMissingGroups = computed(() => {
+  const groups = new Map();
+  routeMissing.value.forEach((item) => {
+    const name = item.group || "";
+    if (!groups.has(name)) groups.set(name, { name, items: [] });
+    groups.get(name).items.push(item);
+  });
+  return [...groups.values()];
+});
+let routeLoadPromise = null;
+
+function isMissing(key) {
+  return missingKeys.value.has(key);
+}
+
+function hasMissingPeak(direction) {
+  return ["AmPeak", "PmPeak", "AmInterval", "PmInterval", "OffInterval"]
+    .some((suffix) => isMissing(`${direction}${suffix}`));
+}
+
+function copyUpPeaksToDown() {
+  ["AmStart", "AmEnd", "AmInterval", "PmStart", "PmEnd", "PmInterval", "OffInterval"].forEach((suffix) => {
+    form[`down${suffix}`] = form[`up${suffix}`];
+  });
+  const copiedMissingKeys = new Set([
+    "downAmPeak", "downPmPeak", "downAmInterval", "downPmInterval", "downOffInterval",
+  ]);
+  routeMissing.value = routeMissing.value.filter((item) => !copiedMissingKeys.has(item.key));
+  generateTimetable();
+}
+
+function ensureRouteOptions() {
+  if (routeSource.status === "ready") return Promise.resolve();
+  if (routeLoadPromise) return routeLoadPromise;
+  routeSource.status = "loading";
+  routeSource.error = "";
+  routeLoadPromise = getCachedRealData(DEFAULT_REAL_AREA)
+    .then((data) => {
+      routeOptions.value = buildRouteOptions(data?.lines);
+      routeDataVersion.revision = Number.isFinite(Number(data?.history?.revision))
+        ? Number(data.history.revision)
+        : null;
+      routeDataVersion.versionId = String(data?.versionId || data?.history?.activeVersionId || "");
+      routeSource.status = routeOptions.value.length ? "ready" : "empty";
+      if (!routeOptions.value.length) routeSource.error = "真实数据中没有可用线路";
+    })
+    .catch((error) => {
+      routeSource.status = "error";
+      routeSource.error = error?.message || "真实线路数据加载失败";
+    })
+    .finally(() => {
+      routeLoadPromise = null;
+    });
+  return routeLoadPromise;
+}
+
+function refreshRouteResults(keyword) {
+  routeSearchResults.value = searchRouteOptions(routeOptions.value, keyword, 30);
+}
+
+function handleRouteDropdown(visible) {
+  if (!visible) return;
+  ensureRouteOptions().then(() => refreshRouteResults(""));
+}
+
+function handleRouteSearch(keyword) {
+  ensureRouteOptions().then(() => refreshRouteResults(keyword));
+}
+
+function handleRouteChange(key) {
+  directionsSwapped.value = false;
+  applySelectedRoute(key);
+}
+
+function swapDirections() {
+  directionsSwapped.value = !directionsSwapped.value;
+  applySelectedRoute(selectedRouteKey.value);
+}
+
+// 真实数据里为空的字段写回空值（而不是保留上一条线路的值或默认值）。
+// 成对为空的高峰时段/间隔表示无该高峰；其他空值仍与 routeMissing 的待填提示对应。
+function applySelectedRoute(key) {
+  if (!key) {
+    selectedRouteInfo.value = null;
+    routeMissing.value = [];
+    routeNotes.value = [];
+    return;
+  }
+  const option = routeOptions.value.find((item) => item.key === key);
+  if (!option) return;
+  const { values, missing, notes, line } = extractRouteFormValues(option, { swapped: directionsSwapped.value });
+  Object.assign(form, values);
+  selectedRouteInfo.value = line;
+  routeMissing.value = missing;
+  routeNotes.value = notes;
+  generateTimetable();
+}
+
 function toNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -411,25 +609,49 @@ function vehicleColor(index) {
   return COLORS[index % COLORS.length];
 }
 
+// 服务结束时刻允许跨零点（真实数据里夜班线末班写到 24:30 甚至 30:00），
+// input[type=time] 只装得下钟面时刻，跨零点由「次日」勾选补 1440 分钟。
+function serviceEndMinutes(direction) {
+  const time = direction === "up" ? form.upServiceEnd : form.downServiceEnd;
+  const nextDay = direction === "up" ? form.upServiceEndNextDay : form.downServiceEndNextDay;
+  return timeToMinutes(time) + (nextDay ? 1440 : 0);
+}
+
+function validateDirectionPeaks(direction, label) {
+  const amStart = form[`${direction}AmStart`];
+  const amEnd = form[`${direction}AmEnd`];
+  const pmStart = form[`${direction}PmStart`];
+  const pmEnd = form[`${direction}PmEnd`];
+  const amIntervalValue = form[`${direction}AmInterval`];
+  const pmIntervalValue = form[`${direction}PmInterval`];
+  const amInterval = toNumber(amIntervalValue);
+  const pmInterval = toNumber(pmIntervalValue);
+  const hasIntervalValue = (value) => value !== null && value !== undefined && value !== "";
+  const hasAmPeak = Boolean(amStart || amEnd || hasIntervalValue(amIntervalValue));
+  const hasPmPeak = Boolean(pmStart || pmEnd || hasIntervalValue(pmIntervalValue));
+  if (toNumber(form[`${direction}OffInterval`]) < 1) return `${label}：平峰发车间隔必须大于等于 1`;
+  if (hasAmPeak && (!amStart || !amEnd || amInterval < 1)) return `${label}：请完整填写早高峰时段与发车间隔`;
+  if (hasPmPeak && (!pmStart || !pmEnd || pmInterval < 1)) return `${label}：请完整填写晚高峰时段与发车间隔`;
+  if (hasAmPeak && timeToMinutes(amEnd) <= timeToMinutes(amStart)) return `${label}：早高峰结束时间必须晚于开始时间`;
+  if (hasPmPeak && timeToMinutes(pmEnd) <= timeToMinutes(pmStart)) return `${label}：晚高峰结束时间必须晚于开始时间`;
+  if (hasAmPeak && hasPmPeak && timeToMinutes(amEnd) > timeToMinutes(pmStart)) return `${label}：早高峰结束时间不能晚于晚高峰开始时间`;
+  return "";
+}
+
 function validateParams() {
-  if (!form.amStart || !form.amEnd || !form.pmStart || !form.pmEnd) {
-    return "请完整填写高峰时段";
+  if (!form.upServiceStart || !form.upServiceEnd || !form.downServiceStart || !form.downServiceEnd) {
+    return "请完整填写上下行服务时间";
   }
-  if (toNumber(form.peakInterval) < 1 || toNumber(form.offInterval) < 1) {
-    return "发车间隔必须为大于等于 1 的整数";
+  if (serviceEndMinutes("up") <= timeToMinutes(form.upServiceStart)) {
+    return "上行：服务结束时间必须晚于开始时间（跨零点请勾选“次日”）";
   }
-  const amStart = timeToMinutes(form.amStart);
-  const amEnd = timeToMinutes(form.amEnd);
-  const pmStart = timeToMinutes(form.pmStart);
-  const pmEnd = timeToMinutes(form.pmEnd);
-  if (amEnd <= amStart) return "早高峰结束时间必须晚于开始时间";
-  if (pmEnd <= pmStart) return "晚高峰结束时间必须晚于开始时间";
-  if (amEnd > pmStart) return "早高峰结束时间不能晚于晚高峰开始时间";
-  if (timeToMinutes(form.upServiceEnd) <= timeToMinutes(form.upServiceStart)) {
-    return "上行：服务结束时间必须晚于开始时间";
+  if (serviceEndMinutes("down") <= timeToMinutes(form.downServiceStart)) {
+    return "下行：服务结束时间必须晚于开始时间（跨零点请勾选“次日”）";
   }
-  if (timeToMinutes(form.downServiceEnd) <= timeToMinutes(form.downServiceStart)) {
-    return "下行：服务结束时间必须晚于开始时间";
+  // 高峰参数逐方向校验：上下行各一套，报错要说清是哪个方向
+  for (const direction of DIRECTIONS) {
+    const error = validateDirectionPeaks(direction.key, direction.label);
+    if (error) return error;
   }
   const positiveFields = [
     ["上行单程时间", form.upDuration, 1],
@@ -450,79 +672,23 @@ function validateParams() {
 
 function directionParams(direction) {
   return {
-    serviceStart: direction === "up" ? form.upServiceStart : form.downServiceStart,
-    serviceEnd: direction === "up" ? form.upServiceEnd : form.downServiceEnd,
-    amStart: form.amStart,
-    amEnd: form.amEnd,
-    amInterval: toNumber(form.peakInterval),
-    pmStart: form.pmStart,
-    pmEnd: form.pmEnd,
-    pmInterval: toNumber(form.peakInterval),
-    offInterval: toNumber(form.offInterval),
+    // 服务时段直接给分钟数：结束时刻可能跨零点（>1440），不能再走 timeToMinutes 的钟面口径
+    serviceStart: timeToMinutes(direction === "up" ? form.upServiceStart : form.downServiceStart),
+    serviceEnd: serviceEndMinutes(direction),
+    amStart: form[`${direction}AmStart`],
+    amEnd: form[`${direction}AmEnd`],
+    amInterval: toNumber(form[`${direction}AmInterval`]),
+    pmStart: form[`${direction}PmStart`],
+    pmEnd: form[`${direction}PmEnd`],
+    pmInterval: toNumber(form[`${direction}PmInterval`]),
+    offInterval: toNumber(form[`${direction}OffInterval`]),
   };
 }
 
-function generateDirectionTimeline(params) {
-  const serviceStart = timeToMinutes(params.serviceStart);
-  const serviceEnd = timeToMinutes(params.serviceEnd);
-  const amStart = timeToMinutes(params.amStart);
-  const amEnd = timeToMinutes(params.amEnd);
-  const pmStart = timeToMinutes(params.pmStart);
-  const pmEnd = timeToMinutes(params.pmEnd);
-  const effectiveAmStart = Math.max(amStart, serviceStart);
-  const effectiveAmEnd = Math.min(amEnd, serviceEnd);
-  const effectivePmStart = Math.max(pmStart, serviceStart);
-  const effectivePmEnd = Math.min(pmEnd, serviceEnd);
-
-  const periods = [];
-  let current = serviceStart;
-  if (effectiveAmEnd > effectiveAmStart) {
-    if (current < effectiveAmStart) {
-      periods.push({ start: current, end: effectiveAmStart, interval: params.offInterval });
-    }
-    periods.push({ start: effectiveAmStart, end: effectiveAmEnd, interval: params.amInterval });
-    current = effectiveAmEnd;
-  }
-  if (effectivePmEnd > effectivePmStart) {
-    if (current < effectivePmStart) {
-      periods.push({ start: current, end: effectivePmStart, interval: params.offInterval });
-    }
-    periods.push({ start: effectivePmStart, end: effectivePmEnd, interval: params.pmInterval });
-    current = effectivePmEnd;
-  }
-  if (current < serviceEnd) {
-    periods.push({ start: current, end: serviceEnd, interval: params.offInterval });
-  }
-
-  const times = [];
-  let cursor = serviceStart;
-  let iteration = 0;
-  while (cursor < serviceEnd && iteration < 1000) {
-    times.push(cursor);
-    let bestNext = null;
-    for (const period of periods) {
-      const candidate = cursor + period.interval;
-      if (candidate >= period.start && candidate < period.end && candidate < serviceEnd) {
-        if (bestNext === null || candidate < bestNext) bestNext = candidate;
-      }
-    }
-    if (bestNext === null) {
-      let nextStart = null;
-      for (const period of periods) {
-        if (period.start > cursor && (nextStart === null || period.start < nextStart)) {
-          nextStart = period.start;
-        }
-      }
-      if (nextStart !== null && nextStart < serviceEnd) bestNext = nextStart;
-      else break;
-    }
-    cursor = bestNext;
-    iteration += 1;
-  }
-  return times;
-}
-
 function scheduleVehiclesOnly(upTimes, downTimes, upDur, downDur, turnTime, error, upLength, downLength, largeRange, smallRange) {
+  return calculateScheduleVehiclesOnly(upTimes, downTimes, upDur, downDur, turnTime, error, upLength, downLength, largeRange, smallRange);
+  /* legacy implementation retained below only in history; shared calculator is the source of truth. */
+/*
   const tasks = [];
   upTimes.forEach((time, index) => {
     tasks.push({ id: `up_${index}`, direction: "上行", start: time, duration: upDur, from: "A", to: "B", idx: index, length: upLength });
@@ -654,6 +820,7 @@ function scheduleVehiclesOnly(upTimes, downTimes, upDur, downDur, turnTime, erro
     downType,
     vehicleTasks,
   };
+*/
 }
 
 function buildTimetableRows(upTimes, downTimes, schedule) {
@@ -716,15 +883,67 @@ function generateTimetable() {
   result.upTimes = upTimes;
   result.downTimes = downTimes;
   result.schedule = schedule;
-  result.peakRoundTripVehicles = Math.ceil((toNumber(form.upDuration) + toNumber(form.downDuration) + 2 * toNumber(form.turnTime)) / toNumber(form.peakInterval));
+  // 折返配车按最密的那档高峰取值：上下行、早晚高峰的间隔各不相同时，配车规模由最小间隔决定
+  const peakIntervals = [
+    toNumber(form.upAmInterval),
+    toNumber(form.upPmInterval),
+    toNumber(form.downAmInterval),
+    toNumber(form.downPmInterval),
+  ].filter((interval) => interval >= 1);
+  const tightestPeakInterval = peakIntervals.length ? Math.min(...peakIntervals) : null;
+  result.peakRoundTripVehicles = tightestPeakInterval === null
+    ? 0
+    : Math.ceil((toNumber(form.upDuration) + toNumber(form.downDuration) + 2 * toNumber(form.turnTime)) / tightestPeakInterval);
   result.timetableRows = buildTimetableRows(upTimes, downTimes, schedule);
   result.note = `上行首班：${upTimes.length ? minutesToTime(upTimes[0]) : "无"}，下行首班：${downTimes.length ? minutesToTime(downTimes[0]) : "无"}，允许晚点 ≤ ${toNumber(form.errorMargin)} 分钟`;
   nextTick(drawVehicleDiagram);
 }
 
-function resetExample() {
-  Object.assign(form, DEFAULT_FORM);
+async function saveCalculationResult() {
+  if (savingResult.value) return;
+  const option = routeOptions.value.find((item) => item.key === selectedRouteKey.value);
+  if (!option) {
+    ElMessage.warning("请先选择需要保存的真实线路");
+    return;
+  }
+
   generateTimetable();
+  if (errorMessage.value || result.schedule.vehicles < 1) {
+    ElMessage.warning(errorMessage.value || "当前没有可保存的配车测算结果");
+    return;
+  }
+  const featureIds = [...new Set(option.features
+    .map((feature) => String(feature?.id || feature?.properties?._featureId || "").trim())
+    .filter(Boolean))];
+  if (!featureIds.length || routeDataVersion.revision === null || !routeDataVersion.versionId) {
+    ElMessage.warning("线路版本信息不完整，请重新选择线路后再保存");
+    return;
+  }
+
+  savingResult.value = true;
+  try {
+    const response = await saveVehicleCalculationResult({
+      areaName: DEFAULT_REAL_AREA,
+      baseRevision: routeDataVersion.revision,
+      baseVersionId: routeDataVersion.versionId,
+      routeName: option.name,
+      featureIds,
+      vehicleCount: result.schedule.vehicles,
+    }, { silentError: true });
+    const saved = response?.data || {};
+    routeDataVersion.revision = Number(saved.revision);
+    routeDataVersion.versionId = String(saved.versionId || routeDataVersion.versionId);
+    option.features.forEach((feature) => {
+      if (feature?.properties) feature.properties.load_num = result.schedule.vehicles;
+    });
+    invalidateCachedRealData(DEFAULT_REAL_AREA);
+    invalidateCachedHistory(DEFAULT_REAL_AREA);
+    ElMessage.success(`已保存 ${option.name} 的配车数：${result.schedule.vehicles} 辆`);
+  } catch (error) {
+    ElMessage.error(error?.message || "保存测算结果失败，请稍后重试");
+  } finally {
+    savingResult.value = false;
+  }
 }
 
 function stationY(station, marginTop, plotHeight) {
@@ -901,12 +1120,6 @@ watch(isDarkTheme, () => nextTick(drawVehicleDiagram));
 
 onMounted(() => {
   generateTimetable();
-  centerPanel();
-  window.addEventListener("resize", centerPanel);
-});
-
-onUnmounted(() => {
-  window.removeEventListener("resize", centerPanel);
 });
 </script>
 
@@ -914,18 +1127,17 @@ onUnmounted(() => {
 .vehicle-calc-panel {
   position: fixed;
   z-index: var(--z-panel);
-  width: min(1680px, calc((100vw - 40px) / var(--app-panel-scale)));
-  max-height: calc((100vh - 132px) / var(--app-panel-scale));
+  inset: var(--app-header-height) 0 0;
+  width: 100vw;
+  max-height: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   color: var(--app-ink);
   background: var(--app-panel-bg);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-panel-radius);
-  box-shadow: var(--app-shadow-panel);
-  scale: var(--app-panel-scale);
-  transform-origin: top left;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .panel-header {
@@ -936,14 +1148,10 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: var(--space-md);
   padding: 10px 14px;
-  cursor: grab;
   user-select: none;
   background: rgba(21, 105, 222, 0.07);
   border-bottom: 1px solid rgba(21, 105, 222, 0.14);
 
-  &:active {
-    cursor: grabbing;
-  }
 }
 
 .header-title {
@@ -1129,7 +1337,8 @@ onUnmounted(() => {
     margin-bottom: 0;
   }
 
-  input {
+  /* 直接子选择器：结束时刻行里还嵌了「次日」复选框，不能套用整宽输入框样式 */
+  > input {
     width: 100%;
     min-width: 0;
     height: 30px;
@@ -1150,13 +1359,209 @@ onUnmounted(() => {
   }
 }
 
-.interval-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding-top: 10px;
-  margin-top: 10px;
+.interval-note {
+  margin: 10px 0 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 方向块内的「早高峰 / 晚高峰 / 平峰」分档小标题 */
+.sub-title {
+  margin: 0 0 6px;
+  padding-top: 8px;
   border-top: 1px dashed rgba(21, 105, 222, 0.16);
+  color: var(--app-ink-soft);
+  font-size: 12px;
+  font-weight: 700;
+
+  &:first-of-type {
+    padding-top: 0;
+    border-top: none;
+  }
+}
+
+.link-button {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--app-blue);
+  font-size: 12px;
+  font-weight: 620;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.next-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--app-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+
+  input {
+    width: 12px;
+    height: 12px;
+    margin: 0;
+    padding: 0;
+    accent-color: var(--app-blue);
+    cursor: pointer;
+  }
+}
+
+/* ── 真实线路导入 ── */
+.route-select {
+  width: 100%;
+}
+
+.option-name {
+  font-weight: 650;
+}
+
+.option-meta {
+  margin-left: 8px;
+  color: var(--app-muted);
+  font-size: 12px;
+}
+
+.route-error {
+  margin: 8px 0 0;
+  color: #b42335;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.route-picked {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(21, 105, 222, 0.14);
+  border-radius: 8px;
+  background: rgba(21, 105, 222, 0.05);
+}
+
+.route-picked-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.route-picked-name {
+  color: var(--app-blue);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.swap-button {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid rgba(21, 105, 222, 0.28);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--app-blue);
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+.route-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--app-ink-soft);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dir-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(21, 105, 222, 0.14);
+  color: var(--app-blue);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+
+  &.down {
+    background: rgba(15, 139, 98, 0.14);
+    color: #0f8b62;
+  }
+}
+
+.route-missing {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(217, 138, 12, 0.32);
+  border-radius: 8px;
+  background: rgba(217, 138, 12, 0.09);
+}
+
+.route-missing-title {
+  color: #a9670a;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.route-missing-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.route-missing-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+
+  span {
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: rgba(217, 138, 12, 0.18);
+    color: #8a5407;
+    font-size: 11px;
+    font-weight: 650;
+  }
+}
+
+.route-note {
+  margin: 6px 0 0;
+  color: var(--app-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 真实数据里为空、需要人工补的输入框统一用琥珀色描边标出 */
+.form-block.needs-input {
+  border-color: rgba(217, 138, 12, 0.42);
+  background: rgba(217, 138, 12, 0.06);
+}
+
+.field-row.needs-input > input,
+.form-block.needs-input .field-row > input {
+  border-color: rgba(217, 138, 12, 0.5);
+  background: rgba(217, 138, 12, 0.05);
 }
 
 .hint-text {
@@ -1297,14 +1702,9 @@ canvas {
 }
 
 @media (max-width: 1100px) {
-  .vehicle-calc-panel {
-    width: min(760px, calc((100vw - 40px) / var(--app-panel-scale)));
-  }
-
   .summary-strip,
   .workbench-grid,
-  .form-block-grid,
-  .interval-grid {
+  .form-block-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1349,15 +1749,52 @@ html.dark .form-block {
   border-color: rgba(64, 156, 255, 0.13);
   background: rgba(16, 22, 30, 0.74);
 }
-html.dark .field-row input {
+html.dark .field-row > input {
   border-color: rgba(64, 156, 255, 0.22);
   background: #1a2431;
 }
-html.dark .field-row input:focus {
+html.dark .field-row > input:focus {
   border-color: rgba(64, 156, 255, 0.62);
   box-shadow: 0 0 0 3px rgba(64, 156, 255, 0.16);
 }
-html.dark .interval-grid {
+html.dark .route-picked {
+  border-color: rgba(64, 156, 255, 0.2);
+  background: rgba(64, 156, 255, 0.08);
+}
+html.dark .dir-tag {
+  background: rgba(64, 156, 255, 0.2);
+}
+html.dark .dir-tag.down {
+  background: rgba(76, 205, 118, 0.18);
+  color: #4ccd76;
+}
+html.dark .swap-button {
+  border-color: rgba(64, 156, 255, 0.36);
+}
+html.dark .route-error {
+  color: #f87171;
+}
+html.dark .route-missing {
+  border-color: rgba(232, 168, 56, 0.34);
+  background: rgba(232, 168, 56, 0.12);
+}
+html.dark .route-missing-title {
+  color: #e8a838;
+}
+html.dark .route-missing-tags span {
+  background: rgba(232, 168, 56, 0.2);
+  color: #e8a838;
+}
+html.dark .form-block.needs-input {
+  border-color: rgba(232, 168, 56, 0.4);
+  background: rgba(232, 168, 56, 0.08);
+}
+html.dark .field-row.needs-input > input,
+html.dark .form-block.needs-input .field-row > input {
+  border-color: rgba(232, 168, 56, 0.45);
+  background: rgba(232, 168, 56, 0.08);
+}
+html.dark .sub-title {
   border-top-color: rgba(64, 156, 255, 0.2);
 }
 html.dark .table-wrap {

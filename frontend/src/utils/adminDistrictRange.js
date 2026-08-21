@@ -4,18 +4,18 @@ export function emptyFeatureCollection() {
   return { type: "FeatureCollection", features: [] };
 }
 
-/** 全平台行政区显示范围的统一黑色虚线样式。 */
-export function adminDistrictOutlineStyle() {
+/** 全平台行政区显示范围的统一描边虚线样式（dark底图下为白色，亮色底图下为黑色）。 */
+export function adminDistrictOutlineStyle(isDark = false) {
   return {
     layout: {
       "line-join": "round",
-      "line-cap": "round",
+      "line-cap": "butt",
     },
     paint: {
-      "line-color": "#000000",
+      "line-color": isDark ? "#ffffff" : "#000000",
       "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.4, 12, 2.1, 15, 2.8],
-      "line-opacity": 0.86,
-      "line-dasharray": [3.2, 2.4],
+      "line-opacity": isDark ? 0.88 : 0.86,
+      "line-dasharray": [2.5, 2.5],
     },
   };
 }

@@ -21,18 +21,23 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.WeakHashMap;
 
 /** Spatial lookup from an exact model-network segment to the transit routes using it. */
 public final class MatsimRouteSpatialIndex {
 
-    private static final Map<MatsimData, Index> CACHE = new WeakHashMap<>();
+    private static final BackendMemoryCache<MatsimData, Index> CACHE =
+            new BackendMemoryCache<>("route-spatial-index", 128L * 1024 * 1024, Index::estimatedBytes);
 
     private MatsimRouteSpatialIndex() {
     }
 
     public static void prepareOnModelLoad(MatsimData data) {
         index(data);
+    }
+
+    /** Release the strong model reference as soon as the model returns to CATALOG. */
+    public static void release(MatsimData data) {
+        if (data != null) CACHE.remove(data);
     }
 
     public static List<RoutePickVO> query(MatsimData data, double x, double y, double radiusMeters, int limit) {
@@ -42,9 +47,7 @@ public final class MatsimRouteSpatialIndex {
     }
 
     private static Index index(MatsimData data) {
-        synchronized (CACHE) {
-            return CACHE.computeIfAbsent(data, Index::new);
-        }
+        return CACHE.computeIfAbsent(data, Index::new);
     }
 
     private record RouteMeta(
@@ -81,10 +84,12 @@ public final class MatsimRouteSpatialIndex {
 
     private static final class Index {
         private final STRtree links = new STRtree();
+        private final long estimatedBytes;
 
         private Index(MatsimData data) {
             Network network = data.getNetwork();
             Map<String, List<RouteMeta>> routesByLink = new HashMap<>();
+            int routeCount = 0;
 
             for (Map.Entry<Id<TransitLine>, TransitLine> lineEntry : data.getSchedule().getTransitLines().entrySet()) {
                 TransitLine line = lineEntry.getValue();
@@ -102,6 +107,7 @@ public final class MatsimRouteSpatialIndex {
                             stops.isEmpty() ? "" : stationName(stops.getFirst()),
                             stops.isEmpty() ? "" : stationName(stops.getLast())
                     );
+                    routeCount++;
                     if (!(route.getRoute() instanceof NetworkRoute networkRoute)) continue;
                     Set<String> routeLinkIds = new HashSet<>();
                     addLinkId(routeLinkIds, networkRoute.getStartLinkId());
@@ -113,6 +119,8 @@ public final class MatsimRouteSpatialIndex {
                 }
             }
 
+            long routeAssociations = 0L;
+            int indexedLinks = 0;
             for (Map.Entry<String, List<RouteMeta>> entry : routesByLink.entrySet()) {
                 Link link = network.getLinks().get(Id.createLinkId(entry.getKey()));
                 if (link == null) continue;
@@ -121,8 +129,20 @@ public final class MatsimRouteSpatialIndex {
                 double x2 = link.getToNode().getCoord().getX();
                 double y2 = link.getToNode().getCoord().getY();
                 links.insert(new Envelope(x1, x2, y1, y2), new LinkMeta(link, List.copyOf(entry.getValue())));
+                indexedLinks++;
+                routeAssociations += entry.getValue().size();
             }
             links.build();
+            // STRtree/Envelope/LinkMeta and immutable route lists are custom objects which the generic
+            // collection estimator cannot inspect. Keep a deliberately conservative per-item estimate.
+            estimatedBytes = 256L * 1024
+                    + indexedLinks * 320L
+                    + routeAssociations * 128L
+                    + routeCount * 384L;
+        }
+
+        private long estimatedBytes() {
+            return estimatedBytes;
         }
 
         @SuppressWarnings("unchecked")

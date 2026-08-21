@@ -90,20 +90,18 @@ public final class MatsimStationPanelCache {
     );
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
-    private static final Map<String, Map<String, Object>> MEMORY_CACHE = Collections.synchronizedMap(
-            new LinkedHashMap<>(4, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
-                    return size() > 2;
-                }
-            }
-    );
+    private static final BackendMemoryCache<String, Map<String, Object>> MEMORY_CACHE =
+            new BackendMemoryCache<>("station-panel-legacy", 48L * 1024 * 1024, BackendMemoryCache::estimate);
 
     private MatsimStationPanelCache() {
     }
 
     public static void prepareOnModelLoad(MatsimData data) {
         ensureStationPanelCache(data);
+        if (isReady(data)) {
+            MatsimPanelReadCache.readStationIndex(data, panelPath(data));
+            MatsimPanelReadCache.promoteCanonical(data, panelPath(data), "station");
+        }
     }
 
     public static Map<String, Object> readStationPanel(MatsimData data) {
@@ -115,7 +113,7 @@ public final class MatsimStationPanelCache {
             );
         }
         try {
-            return loadPanel(data);
+            return MatsimPanelReadCache.readFull(data, panelPath(data), "station");
         } catch (Exception e) {
             throw new IllegalStateException("读取站点客流面板缓存失败: model=" + data.getName()
                     + ", path=" + panelPath(data), e);
@@ -270,7 +268,9 @@ public final class MatsimStationPanelCache {
     }
 
     public static boolean isReady(MatsimData data) {
-        if (!Files.exists(manifestPath(data)) || !Files.exists(panelPath(data))) {
+        if (!Files.exists(manifestPath(data))
+                || (!Files.exists(panelPath(data))
+                    && !MatsimPanelReadCache.canonicalReady(panelPath(data), "station"))) {
             return false;
         }
         try {

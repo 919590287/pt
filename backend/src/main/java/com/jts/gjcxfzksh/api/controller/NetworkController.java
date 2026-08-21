@@ -7,6 +7,7 @@ import com.jts.gjcxfzksh.api.model.params.TileNetworkParam;
 import com.jts.gjcxfzksh.api.service.NetworkService;
 import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
@@ -21,32 +22,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-
 @RestController
 @RequestMapping("/pt/network")
 @Tag(name = "路网总览", description = "路网总览")
 public class NetworkController {
-
-    private static final int FULL_BINARY_CACHE_MAX_ENTRIES = 4;
 
     @Resource
     private NetworkService networkService;
 
     /**
      * 全量路网二进制缓存：key 含模型加载版本（重载后旧字节自动失效），
-     * LRU 上限 {@value FULL_BINARY_CACHE_MAX_ENTRIES} 份，避免多模型场景内存无上限增长。
+     * 与全平台后端缓存共用字节预算。
      */
-    private final Map<String, byte[]> fullBinaryCache = Collections.synchronizedMap(
-            new LinkedHashMap<>(8, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
-                    return size() > FULL_BINARY_CACHE_MAX_ENTRIES;
-                }
-            }
-    );
+    private final BackendMemoryCache<String, byte[]> fullBinaryCache =
+            new BackendMemoryCache<>("network-full-binary", 128L * 1024 * 1024, bytes -> bytes.length);
 
     @Operation(summary = "瓦片路网, zoom level13")
     @PostMapping("/tile")
@@ -129,8 +118,11 @@ public class NetworkController {
         String datasource = String.valueOf(param.getDatasource());
         // key 带模型加载版本：unload/重载后版本递增，旧条目不再命中并被 LRU 逐出
         String cacheKey = datasource + "#v" + Datasource.currentLoadVersion(datasource);
-        return fullBinaryCache.computeIfAbsent(cacheKey,
-                ignored -> TileBinaryEncoder.encodeLinks(networkService.full(param)));
+        byte[] cached = fullBinaryCache.get(cacheKey);
+        if (cached != null) return cached;
+        cached = TileBinaryEncoder.encodeLinks(networkService.full(param));
+        fullBinaryCache.put(cacheKey, cached);
+        return cached;
     }
 
 }

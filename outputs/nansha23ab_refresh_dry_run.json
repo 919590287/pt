@@ -1,0 +1,2523 @@
+{
+  "mode": "dry-run",
+  "source_shp": "/Volumes/USB DISK/pt_data/广州市/真实数据/公交线路站点/线路/routes.shp",
+  "source_xlsx": "/Volumes/USB DISK/数据/南沙公交数据/南沙公交时刻表数据/最新全量线路时刻表（南沙修复）.xlsx",
+  "amap_script": "/Users/a../模型算法/高德爬虫/getGaode.py",
+  "source_features": 2228,
+  "xlsx_target_rows": 186,
+  "existing_routes_matched": 188,
+  "new_routes": [
+    {
+      "code": "23A",
+      "line_id": "900000217069",
+      "amap_name": "南沙23路A线(地铁横沥站--地铁横沥站)",
+      "point_count": 144,
+      "stop_count": 9,
+      "first_stop": "地铁横沥站",
+      "last_stop": "地铁横沥站",
+      "distance_km": "7.189000",
+      "bbox": [
+        113.50505983982947,
+        22.753794182008278,
+        113.51587379983678,
+        22.774645822953282
+      ]
+    },
+    {
+      "code": "23B",
+      "line_id": "900000217078",
+      "amap_name": "南沙23B路(地铁横沥站--地铁横沥站)",
+      "point_count": 153,
+      "stop_count": 8,
+      "first_stop": "地铁横沥站",
+      "last_stop": "地铁横沥站",
+      "distance_km": "6.872000",
+      "bbox": [
+        113.49768531402273,
+        22.753794182008278,
+        113.50812450817284,
+        22.77419709239655
+      ]
+    }
+  ],
+  "amap_routes_added": 0,
+  "amap_routes_refreshed": 2,
+  "names_changed": 0,
+  "timetables_changed": 0,
+  "xlsx_rows_reused_for_legacy_features": [
+    "南沙10路(新兴村委总站--地铁万顷沙站)",
+    "南沙W1路支线(蕉门地铁(区政府)站--蕉门地铁(区政府)站)"
+  ],
+  "match_methods": {
+    "exact_name": 184,
+    "reviewed_line_id": 4
+  },
+  "validation": {
+    "features": 2228,
+    "unique_line_ids": 2228,
+    "unique_names": 2226,
+    "xlsx_target_names_present": 186,
+    "blank_timetables": 0,
+    "new_line_ids": [
+      "900000217069",
+      "900000217078"
+    ]
+  },
+  "route_updates": [
+    {
+      "line_id": "900000073094",
+      "before_name": "南沙65路(市桥汽车站西门(番禺人才市场)站--潭州车站)",
+      "after_name": "南沙65路(市桥汽车站西门(番禺人才市场)站--潭州车站)",
+      "xlsx_row": 24,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000073093",
+      "before_name": "南沙65路(潭州车站--市桥汽车站西门(番禺人才市场)站)",
+      "after_name": "南沙65路(潭州车站--市桥汽车站西门(番禺人才市场)站)",
+      "xlsx_row": 25,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018001",
+      "before_name": "南沙10路(新兴村委总站--地铁万顷沙站)",
+      "after_name": "南沙10路(新兴村委总站--地铁万顷沙站)",
+      "xlsx_row": 63,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000213430",
+      "before_name": "南沙10路(地铁万顷沙站--新兴村委总站)",
+      "after_name": "南沙10路(地铁万顷沙站--新兴村委总站)",
+      "xlsx_row": 62,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000213422",
+      "before_name": "南沙10路(新兴村委总站--地铁万顷沙站)",
+      "after_name": "南沙10路(新兴村委总站--地铁万顷沙站)",
+      "xlsx_row": 63,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000181393",
+      "before_name": "南沙10路短线(冯马一村站--新兴村卫生站)",
+      "after_name": "南沙10路短线(冯马一村站--新兴村卫生站)",
+      "xlsx_row": 64,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000181392",
+      "before_name": "南沙10路短线(新兴村卫生站--冯马一村站)",
+      "after_name": "南沙10路短线(新兴村卫生站--冯马一村站)",
+      "xlsx_row": 65,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013381",
+      "before_name": "南11路(医谷站--新垦公交总站)",
+      "after_name": "南11路(医谷站--新垦公交总站)",
+      "xlsx_row": 98,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013378",
+      "before_name": "南11路(新垦公交总站--医谷站)",
+      "after_name": "南11路(新垦公交总站--医谷站)",
+      "xlsx_row": 99,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013417",
+      "before_name": "南沙12路(新兴村委总站--珠江电厂站)",
+      "after_name": "南沙12路(新兴村委总站--珠江电厂站)",
+      "xlsx_row": 158,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013415",
+      "before_name": "南沙12路(珠江电厂站--新兴村委总站)",
+      "after_name": "南沙12路(珠江电厂站--新兴村委总站)",
+      "xlsx_row": 159,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013443",
+      "before_name": "南沙13路(中山大学附属第一(南沙)医院站--水牛头渡口总站)",
+      "after_name": "南沙13路(中山大学附属第一(南沙)医院站--水牛头渡口总站)",
+      "xlsx_row": 202,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013446",
+      "before_name": "南沙13路(水牛头渡口总站--中山大学附属第一(南沙)医院站)",
+      "after_name": "南沙13路(水牛头渡口总站--中山大学附属第一(南沙)医院站)",
+      "xlsx_row": 203,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013464",
+      "before_name": "南沙14路(横沥地铁站公交总站--香港科技大学(广州))",
+      "after_name": "南沙14路(横沥地铁站公交总站--香港科技大学(广州))",
+      "xlsx_row": 220,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013465",
+      "before_name": "南沙14路(香港科技大学(广州)--横沥地铁站公交总站)",
+      "after_name": "南沙14路(香港科技大学(广州)--横沥地铁站公交总站)",
+      "xlsx_row": 221,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013477",
+      "before_name": "南沙15路(万科海上明月总站--新海村总站)",
+      "after_name": "南沙15路(万科海上明月总站--新海村总站)",
+      "xlsx_row": 234,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013476",
+      "before_name": "南沙15路(新海村总站--万科海上明月总站)",
+      "after_name": "南沙15路(新海村总站--万科海上明月总站)",
+      "xlsx_row": 235,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013484",
+      "before_name": "南沙16路(团结围总站--新垦公交站)",
+      "after_name": "南沙16路(团结围总站--新垦公交站)",
+      "xlsx_row": 250,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013486",
+      "before_name": "南沙16路(新垦公交站--团结围总站)",
+      "after_name": "南沙16路(新垦公交站--团结围总站)",
+      "xlsx_row": 251,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018008",
+      "before_name": "南沙17路(地铁横沥站--新兴村站)",
+      "after_name": "南沙17路(地铁横沥站--新兴村站)",
+      "xlsx_row": 272,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018009",
+      "before_name": "南沙17路(新兴村站--地铁横沥站)",
+      "after_name": "南沙17路(新兴村站--地铁横沥站)",
+      "xlsx_row": 273,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000217070",
+      "before_name": "南沙18路(蕉门地铁(区政府)站--邮轮母港公交总站)",
+      "after_name": "南沙18路(蕉门地铁(区政府)站--邮轮母港公交总站)",
+      "xlsx_row": 321,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000033572",
+      "before_name": "南沙18路(邮轮母港公交总站--蕉门地铁(区政府)站)",
+      "after_name": "南沙18路(邮轮母港公交总站--蕉门地铁(区政府)站)",
+      "xlsx_row": 322,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000147635",
+      "before_name": "南沙4路(18:30后)(南沙资讯科技园站--蕉门公交总站)",
+      "after_name": "南沙4路(18:30后)(南沙资讯科技园站--蕉门公交总站)",
+      "xlsx_row": 323,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175500",
+      "before_name": "南夜1路(万科海上明月--黄阁地铁站)",
+      "after_name": "南夜1路(万科海上明月--黄阁地铁站)",
+      "xlsx_row": 372,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175499",
+      "before_name": "南夜1路(黄阁地铁站--万科海上明月)",
+      "after_name": "南夜1路(黄阁地铁站--万科海上明月)",
+      "xlsx_row": 373,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018013",
+      "before_name": "南沙1路(大涌公交总站--广州船坞总站)",
+      "after_name": "南沙1路(大涌公交总站--广州船坞总站)",
+      "xlsx_row": 374,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018012",
+      "before_name": "南沙1路(广州船坞总站--大涌公交总站)",
+      "after_name": "南沙1路(广州船坞总站--大涌公交总站)",
+      "xlsx_row": 375,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091632",
+      "before_name": "南沙G1路(大湾区文化体育中心公交总站--蕉门公交总站)",
+      "after_name": "南沙G1路(大湾区文化体育中心公交总站--蕉门公交总站)",
+      "xlsx_row": 376,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091631",
+      "before_name": "南沙G1路(蕉门公交总站--大湾区文化体育中心公交总站)",
+      "after_name": "南沙G1路(蕉门公交总站--大湾区文化体育中心公交总站)",
+      "xlsx_row": 377,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000038956",
+      "before_name": "南沙K1路(天河公交场总站--蕉门公交总站)",
+      "after_name": "南沙K1路(天河公交场总站--蕉门公交总站)",
+      "xlsx_row": 378,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000045355",
+      "before_name": "南沙K1路(蕉门公交总站--天河公交场总站)",
+      "after_name": "南沙K1路(蕉门公交总站--天河公交场总站)",
+      "xlsx_row": 379,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000099482",
+      "before_name": "南沙W1路下行(蕉门公交总站--蕉门公交总站)",
+      "after_name": "南沙W1路下行(蕉门公交总站--蕉门公交总站)",
+      "xlsx_row": 380,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000229513",
+      "before_name": "南沙夜1路(万科海上明月总站--万科海上明月总站)",
+      "after_name": "南沙夜1路(万科海上明月总站--万科海上明月总站)",
+      "xlsx_row": 381,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000150190",
+      "before_name": "南沙学1路(华润瑞府公交总站--南沙客运港站)",
+      "after_name": "南沙学1路(华润瑞府公交总站--南沙客运港站)",
+      "xlsx_row": 382,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000150189",
+      "before_name": "南沙学1路(南沙客运港站--华润瑞府公交总站)",
+      "after_name": "南沙学1路(南沙客运港站--华润瑞府公交总站)",
+      "xlsx_row": 383,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013645",
+      "before_name": "南沙20路(中山大学附属第一(南沙)医院站--虎门轮渡码头总站)",
+      "after_name": "南沙20路(中山大学附属第一(南沙)医院站--虎门轮渡码头总站)",
+      "xlsx_row": 428,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013647",
+      "before_name": "南沙20路(虎门轮渡码头总站--中山大学附属第一(南沙)医院站)",
+      "after_name": "南沙20路(虎门轮渡码头总站--中山大学附属第一(南沙)医院站)",
+      "xlsx_row": 429,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013675",
+      "before_name": "南沙21路(广州船坞总站--新垦总站)",
+      "after_name": "南沙21路(广州船坞总站--新垦总站)",
+      "xlsx_row": 452,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018016",
+      "before_name": "南沙21路(新垦总站--广州船坞总站)",
+      "after_name": "南沙21路(新垦总站--广州船坞总站)",
+      "xlsx_row": 453,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000217073",
+      "before_name": "南沙21路支线(地铁万顷沙站--广州船坞总站)",
+      "after_name": "南沙21路支线(地铁万顷沙站--广州船坞总站)",
+      "xlsx_row": 454,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000217067",
+      "before_name": "南沙21路支线(广州船坞总站--地铁万顷沙站)",
+      "after_name": "南沙21路支线(广州船坞总站--地铁万顷沙站)",
+      "xlsx_row": 455,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000172975",
+      "before_name": "南沙24路(横沥地铁站公交总站--虎门轮渡码头总站)",
+      "after_name": "南沙24路(横沥地铁站公交总站--虎门轮渡码头总站)",
+      "xlsx_row": 509,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000172973",
+      "before_name": "南沙24路(虎门轮渡码头总站--横沥地铁站公交总站)",
+      "after_name": "南沙24路(虎门轮渡码头总站--横沥地铁站公交总站)",
+      "xlsx_row": 510,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013782",
+      "before_name": "南沙25路(万顷沙总站--大湾区文化体育中心公交总站)",
+      "after_name": "南沙25路(万顷沙总站--大湾区文化体育中心公交总站)",
+      "xlsx_row": 536,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013781",
+      "before_name": "南沙25路(大湾区文化体育中心公交总站--万顷沙总站)",
+      "after_name": "南沙25路(大湾区文化体育中心公交总站--万顷沙总站)",
+      "xlsx_row": 537,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018021",
+      "before_name": "南沙27路(广州南沙国际物流中心站--蕉门公交总站)",
+      "after_name": "南沙27路(广州南沙国际物流中心站--蕉门公交总站)",
+      "xlsx_row": 574,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018020",
+      "before_name": "南沙27路(蕉门公交总站--广州南沙国际物流中心站)",
+      "after_name": "南沙27路(蕉门公交总站--广州南沙国际物流中心站)",
+      "xlsx_row": 575,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013860",
+      "before_name": "南沙28路(冯马一村总站--水牛头渡口总站)",
+      "after_name": "南沙28路(冯马一村总站--水牛头渡口总站)",
+      "xlsx_row": 597,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100012779",
+      "before_name": "南沙28路(水牛头渡口总站--冯马一村总站)",
+      "after_name": "南沙28路(水牛头渡口总站--冯马一村总站)",
+      "xlsx_row": 598,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000209392",
+      "before_name": "南沙2路支线(出口加工区站--出口加工区站)",
+      "after_name": "南沙2路支线(出口加工区站--出口加工区站)",
+      "xlsx_row": 632,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091655",
+      "before_name": "南沙G2路(万顷沙公交站--蕉门公交总站)",
+      "after_name": "南沙G2路(万顷沙公交站--蕉门公交总站)",
+      "xlsx_row": 633,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091654",
+      "before_name": "南沙G2路(蕉门公交总站--万顷沙公交站)",
+      "after_name": "南沙G2路(蕉门公交总站--万顷沙公交站)",
+      "xlsx_row": 634,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000103664",
+      "before_name": "南沙W2路(南沙资讯科技园站--南沙资讯科技园站)",
+      "after_name": "南沙W2路(南沙资讯科技园站--南沙资讯科技园站)",
+      "xlsx_row": 635,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013924",
+      "before_name": "南沙30路(嘉安花园站--红港村站)",
+      "after_name": "南沙30路(嘉安花园站--红港村站)",
+      "xlsx_row": 684,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013921",
+      "before_name": "南沙30路(红港村站--嘉安花园站)",
+      "after_name": "南沙30路(红港村站--嘉安花园站)",
+      "xlsx_row": 685,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000217077",
+      "before_name": "南沙31路支线(蕉门公交总站--蕉门公交总站)",
+      "after_name": "南沙31路支线(蕉门公交总站--蕉门公交总站)",
+      "xlsx_row": 705,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013964",
+      "before_name": "南沙32路(南沙牌坊站--大岗公交总站)",
+      "after_name": "南沙32路(南沙牌坊站--大岗公交总站)",
+      "xlsx_row": 734,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013959",
+      "before_name": "南沙32路(广大附中南沙实验学校站--蕉门公交总站    下行:广大附中南沙实验学校站-蕉门公交总站)",
+      "after_name": "南沙32路(广大附中南沙实验学校站--蕉门公交总站    下行:广大附中南沙实验学校站-蕉门公交总站)",
+      "xlsx_row": 735,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018024",
+      "before_name": "南沙34路(东涌湖公交总站--南沙中心医院西门站)",
+      "after_name": "南沙34路(东涌湖公交总站--南沙中心医院西门站)",
+      "xlsx_row": 786,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018025",
+      "before_name": "南沙34路(南沙中心医院西门站--东涌湖公交总站)",
+      "after_name": "南沙34路(南沙中心医院西门站--东涌湖公交总站)",
+      "xlsx_row": 787,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100012792",
+      "before_name": "南沙35路(东涌地铁站总站--东涌地铁站总站)",
+      "after_name": "南沙35路(东涌地铁站总站--东涌地铁站总站)",
+      "xlsx_row": 812,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000217068",
+      "before_name": "南沙35路支线(东涌湖公交总站--东涌湖公交总站)",
+      "after_name": "南沙35路支线(东涌湖公交总站--东涌湖公交总站)",
+      "xlsx_row": 813,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018026",
+      "before_name": "南沙36路(东涌湖公交总站--西樵幼儿园总站)",
+      "after_name": "南沙36路(东涌湖公交总站--西樵幼儿园总站)",
+      "xlsx_row": 836,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018027",
+      "before_name": "南沙36路(西樵幼儿园总站--东涌湖公交总站)",
+      "after_name": "南沙36路(西樵幼儿园总站--东涌湖公交总站)",
+      "xlsx_row": 837,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018030",
+      "before_name": "南沙38路(东涌湖公交总站--虎门轮渡码头总站)",
+      "after_name": "南沙38路(东涌湖公交总站--虎门轮渡码头总站)",
+      "xlsx_row": 866,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018031",
+      "before_name": "南沙38路(虎门轮渡码头总站--东涌湖公交总站)",
+      "after_name": "南沙38路(虎门轮渡码头总站--东涌湖公交总站)",
+      "xlsx_row": 867,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014093",
+      "before_name": "南沙39路(万顷沙公交总站--大岗公交总站)",
+      "after_name": "南沙39路(万顷沙公交总站--大岗公交总站)",
+      "xlsx_row": 886,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014090",
+      "before_name": "南沙39路(大岗公交总站--万顷沙公交总站)",
+      "after_name": "南沙39路(大岗公交总站--万顷沙公交总站)",
+      "xlsx_row": 887,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091666",
+      "before_name": "南沙G3路(榄核公交总站--横沥地铁站公交总站)",
+      "after_name": "南沙G3路(榄核公交总站--横沥地铁站公交总站)",
+      "xlsx_row": 901,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091665",
+      "before_name": "南沙G3路(横沥地铁站公交总站--榄核公交总站)",
+      "after_name": "南沙G3路(横沥地铁站公交总站--榄核公交总站)",
+      "xlsx_row": 902,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000182297",
+      "before_name": "南沙40路短线(大岗公交总站--新沙村委站)",
+      "after_name": "南沙40路短线(大岗公交总站--新沙村委站)",
+      "xlsx_row": 951,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000182298",
+      "before_name": "南沙40路短线(新沙村委站--大岗公交总站)",
+      "after_name": "南沙40路短线(新沙村委站--大岗公交总站)",
+      "xlsx_row": 952,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000028976",
+      "before_name": "南沙41路(榄核公交总站--甘岗村委站)",
+      "after_name": "南沙41路(榄核公交总站--甘岗村委站)",
+      "xlsx_row": 967,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000028975",
+      "before_name": "南沙41路(甘岗村委站--榄核公交总站)",
+      "after_name": "南沙41路(甘岗村委站--榄核公交总站)",
+      "xlsx_row": 968,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014188",
+      "before_name": "南沙42路(南顺二村尾总站--大岗公交总站)",
+      "after_name": "南沙42路(南顺二村尾总站--大岗公交总站)",
+      "xlsx_row": 982,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014187",
+      "before_name": "南沙42路(大岗公交总站--南顺二村尾总站)",
+      "after_name": "南沙42路(大岗公交总站--南顺二村尾总站)",
+      "xlsx_row": 983,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029264",
+      "before_name": "南沙43路(张松村站--榄核公交总站)",
+      "after_name": "南沙43路(张松村站--榄核公交总站)",
+      "xlsx_row": 1001,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029270",
+      "before_name": "南沙43路(榄核公交总站--张松村站)",
+      "after_name": "南沙43路(榄核公交总站--张松村站)",
+      "xlsx_row": 1002,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029095",
+      "before_name": "南沙44路(创信鞋厂(九比村)总站--榄核公交总站)",
+      "after_name": "南沙44路(创信鞋厂(九比村)总站--榄核公交总站)",
+      "xlsx_row": 1022,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029093",
+      "before_name": "南沙44路(榄核公交总站--创信鞋厂(九比村)总站)",
+      "after_name": "南沙44路(榄核公交总站--创信鞋厂(九比村)总站)",
+      "xlsx_row": 1023,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100016702",
+      "before_name": "南沙45路(大岗公交总站--榄核公交总站)",
+      "after_name": "南沙45路(大岗公交总站--榄核公交总站)",
+      "xlsx_row": 1041,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100016703",
+      "before_name": "南沙45路(榄核公交总站--大岗公交总站)",
+      "after_name": "南沙45路(榄核公交总站--大岗公交总站)",
+      "xlsx_row": 1042,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018035",
+      "before_name": "南沙46路(大岗公交总站--智新六路南站                        下行:智新六路南站-大岗公交总站)",
+      "after_name": "南沙46路(大岗公交总站--智新六路南站                        下行:智新六路南站-大岗公交总站)",
+      "xlsx_row": 1063,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018036",
+      "before_name": "南沙46路(新联五路(云生四路口)临时站--大岗公交总站)",
+      "after_name": "南沙46路(新联五路(云生四路口)临时站--大岗公交总站)",
+      "xlsx_row": 1064,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175516",
+      "before_name": "南沙夜4路(地铁广隆站--金洲地铁站)",
+      "after_name": "南沙夜4路(地铁广隆站--金洲地铁站)",
+      "xlsx_row": 1114,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175515",
+      "before_name": "南沙夜4路(金洲地铁站--地铁广隆站)",
+      "after_name": "南沙夜4路(金洲地铁站--地铁广隆站)",
+      "xlsx_row": 1115,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018042",
+      "before_name": "南沙4路(滨海公园站--蕉门公交总站)",
+      "after_name": "南沙4路(滨海公园站--蕉门公交总站)",
+      "xlsx_row": 1116,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027903",
+      "before_name": "南沙4路(蕉门公交总站--滨海公园站)",
+      "after_name": "南沙4路(蕉门公交总站--滨海公园站)",
+      "xlsx_row": 1117,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091674",
+      "before_name": "南沙G4路(新兴村委总站--虎门轮渡码头站)",
+      "after_name": "南沙G4路(新兴村委总站--虎门轮渡码头站)",
+      "xlsx_row": 1118,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000091673",
+      "before_name": "南沙G4路(虎门轮渡码头站--新兴村委总站)",
+      "after_name": "南沙G4路(虎门轮渡码头站--新兴村委总站)",
+      "xlsx_row": 1119,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018043",
+      "before_name": "南沙50路(励业染厂站--鱼窝头二中站)",
+      "after_name": "南沙50路(励业染厂站--鱼窝头二中站)",
+      "xlsx_row": 1159,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018044",
+      "before_name": "南沙50路(鱼窝头二中站--励业染厂站)",
+      "after_name": "南沙50路(鱼窝头二中站--励业染厂站)",
+      "xlsx_row": 1160,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100012817",
+      "before_name": "南沙51路(万洲水闸总站--马克村总站)",
+      "after_name": "南沙51路(万洲水闸总站--马克村总站)",
+      "xlsx_row": 1179,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014423",
+      "before_name": "南沙51路(马克村总站--万洲水闸总站)",
+      "after_name": "南沙51路(马克村总站--万洲水闸总站)",
+      "xlsx_row": 1180,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018045",
+      "before_name": "南沙52路(东涌湖公交站--鱼窝头二中站)",
+      "after_name": "南沙52路(东涌湖公交站--鱼窝头二中站)",
+      "xlsx_row": 1211,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018046",
+      "before_name": "南沙52路(鱼窝头二中站--东涌湖公交站)",
+      "after_name": "南沙52路(鱼窝头二中站--东涌湖公交站)",
+      "xlsx_row": 1212,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000025789",
+      "before_name": "南沙53路(南沙儿童公园站--南沙湾总站)",
+      "after_name": "南沙53路(南沙儿童公园站--南沙湾总站)",
+      "xlsx_row": 1223,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000025791",
+      "before_name": "南沙53路(南沙湾总站--南沙儿童公园站)",
+      "after_name": "南沙53路(南沙湾总站--南沙儿童公园站)",
+      "xlsx_row": 1224,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029097",
+      "before_name": "南沙54路(蕉门公交总站--雁洲村总站)",
+      "after_name": "南沙54路(蕉门公交总站--雁洲村总站)",
+      "xlsx_row": 1247,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029098",
+      "before_name": "南沙54路(雁洲村总站--蕉门公交总站)",
+      "after_name": "南沙54路(雁洲村总站--蕉门公交总站)",
+      "xlsx_row": 1248,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029091",
+      "before_name": "南沙55路(新兴村委总站--庆盛枢纽公交总站)",
+      "after_name": "南沙55路(新兴村委总站--庆盛枢纽公交总站)",
+      "xlsx_row": 1260,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000029096",
+      "before_name": "南沙55路(庆盛枢纽公交总站--新兴村委总站)",
+      "after_name": "南沙55路(庆盛枢纽公交总站--新兴村委总站)",
+      "xlsx_row": 1261,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000030087",
+      "before_name": "南沙56路(地铁横沥站--聚豪新村站)",
+      "after_name": "南沙56路(地铁横沥站--聚豪新村站)",
+      "xlsx_row": 1282,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027446",
+      "before_name": "南沙56路(聚豪新村站--蕉门公交总站               下行:蕉门公交总站-聚豪新村站)",
+      "after_name": "南沙56路(聚豪新村站--蕉门公交总站               下行:蕉门公交总站-聚豪新村站)",
+      "xlsx_row": 1283,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027447",
+      "before_name": "南沙57路(高铁庆盛总站--马克桥下公园站)",
+      "after_name": "南沙57路(高铁庆盛总站--马克桥下公园站)",
+      "xlsx_row": 1301,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027444",
+      "before_name": "南沙57路(马克桥下公园站--高铁庆盛总站)",
+      "after_name": "南沙57路(马克桥下公园站--高铁庆盛总站)",
+      "xlsx_row": 1302,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027437",
+      "before_name": "南沙58路(粤新船厂总站--翡翠蓝湾社区总站)",
+      "after_name": "南沙58路(粤新船厂总站--翡翠蓝湾社区总站)",
+      "xlsx_row": 1315,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027448",
+      "before_name": "南沙58路(翡翠蓝湾社区总站--粤新船厂总站)",
+      "after_name": "南沙58路(翡翠蓝湾社区总站--粤新船厂总站)",
+      "xlsx_row": 1318,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027440",
+      "before_name": "南沙59路(潭州车站--翡翠蓝湾社区总站)",
+      "after_name": "南沙59路(潭州车站--翡翠蓝湾社区总站)",
+      "xlsx_row": 1328,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000027443",
+      "before_name": "南沙59路(翡翠蓝湾社区总站--潭州车站)",
+      "after_name": "南沙59路(翡翠蓝湾社区总站--潭州车站)",
+      "xlsx_row": 1327,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175517",
+      "before_name": "南沙夜5路(地铁南沙客运港站--时代南湾站)",
+      "after_name": "南沙夜5路(地铁南沙客运港站--时代南湾站)",
+      "xlsx_row": 1341,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175518",
+      "before_name": "南沙夜5路(时代南湾站--地铁南沙客运港站)",
+      "after_name": "南沙夜5路(时代南湾站--地铁南沙客运港站)",
+      "xlsx_row": 1342,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018047",
+      "before_name": "南沙5路(华润瑞府公交总站--邮轮母港站)",
+      "after_name": "南沙5路(华润瑞府公交总站--邮轮母港站)",
+      "xlsx_row": 1343,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018048",
+      "before_name": "南沙5路(邮轮母港站--华润瑞府公交总站)",
+      "after_name": "南沙5路(邮轮母港站--华润瑞府公交总站)",
+      "xlsx_row": 1344,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000171271",
+      "before_name": "南沙G5路（普线）(横沥地铁站公交总站--蕉门地铁(区政府)站)",
+      "after_name": "南沙G5路（普线）(横沥地铁站公交总站--蕉门地铁(区政府)站)",
+      "xlsx_row": 1345,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000171269",
+      "before_name": "南沙G5路（普线）(蕉门地铁(区政府)站--横沥地铁站公交总站)",
+      "after_name": "南沙G5路（普线）(蕉门地铁(区政府)站--横沥地铁站公交总站)",
+      "xlsx_row": 1346,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000120568",
+      "before_name": "南沙K5路(市桥汽车站西门(番禺人才市场)--蕉门公交总站)",
+      "after_name": "南沙K5路(市桥汽车站西门(番禺人才市场)--蕉门公交总站)",
+      "xlsx_row": 1347,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000120567",
+      "before_name": "南沙K5路(蕉门公交总站--市桥汽车站西门(番禺人才市场))",
+      "after_name": "南沙K5路(蕉门公交总站--市桥汽车站西门(番禺人才市场))",
+      "xlsx_row": 1348,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000062928",
+      "before_name": "南沙60路(北斗渡口站①--榄核公交总站)",
+      "after_name": "南沙60路(北斗渡口站①--榄核公交总站)",
+      "xlsx_row": 1367,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000065810",
+      "before_name": "南沙60路(榄核公交总站--北斗渡口站①)",
+      "after_name": "南沙60路(榄核公交总站--北斗渡口站①)",
+      "xlsx_row": 1368,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000050548",
+      "before_name": "南沙61路(万科海上明月站--黄山鲁西门总站)",
+      "after_name": "南沙61路(万科海上明月站--黄山鲁西门总站)",
+      "xlsx_row": 1381,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000050549",
+      "before_name": "南沙61路(黄山鲁西门总站--万科海上明月站)",
+      "after_name": "南沙61路(黄山鲁西门总站--万科海上明月站)",
+      "xlsx_row": 1382,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000224959",
+      "before_name": "南沙61路短线(黄阁中学--万科海上明月)",
+      "after_name": "南沙61路短线(黄阁中学--万科海上明月)",
+      "xlsx_row": 1383,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000224960",
+      "before_name": "南沙61路短线(黄阁公交总站--黄阁公交总站)",
+      "after_name": "南沙61路短线(黄阁公交总站--黄阁公交总站)",
+      "xlsx_row": 1384,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000073076",
+      "before_name": "南沙62路(广州船坞总站--珠江电厂站)",
+      "after_name": "南沙62路(广州船坞总站--珠江电厂站)",
+      "xlsx_row": 1393,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000073075",
+      "before_name": "南沙62路(珠江电厂站--广州船坞总站)",
+      "after_name": "南沙62路(珠江电厂站--广州船坞总站)",
+      "xlsx_row": 1394,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000180721",
+      "before_name": "南沙62路短线(滨海绿道站--珠江电厂站)",
+      "after_name": "南沙62路短线(滨海绿道站--珠江电厂站)",
+      "xlsx_row": 1395,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000180719",
+      "before_name": "南沙62路短线(珠江电厂站--滨海绿道站)",
+      "after_name": "南沙62路短线(珠江电厂站--滨海绿道站)",
+      "xlsx_row": 1396,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000073089",
+      "before_name": "南沙63路上行(南沙儿童公园总站--南沙儿童公园总站)",
+      "after_name": "南沙63路上行(南沙儿童公园总站--南沙儿童公园总站)",
+      "xlsx_row": 1407,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000073090",
+      "before_name": "南沙63路下行(南沙儿童公园总站--南沙儿童公园总站)",
+      "after_name": "南沙63路下行(南沙儿童公园总站--南沙儿童公园总站)",
+      "xlsx_row": 1408,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000136823",
+      "before_name": "南沙65路(快)(大岗公交总站--市桥汽车站西门(番禺人才市场)站)",
+      "after_name": "南沙65路(快)(大岗公交总站--市桥汽车站西门(番禺人才市场)站)",
+      "xlsx_row": 1434,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000136824",
+      "before_name": "南沙65路(快)(市桥汽车站西门(番禺人才市场)站--大岗公交总站)",
+      "after_name": "南沙65路(快)(市桥汽车站西门(番禺人才市场)站--大岗公交总站)",
+      "xlsx_row": 1435,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175519",
+      "before_name": "南沙夜6路(南沙奥园站--金岭南路站)",
+      "after_name": "南沙夜6路(南沙奥园站--金岭南路站)",
+      "xlsx_row": 1469,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000175520",
+      "before_name": "南沙夜6路(金岭南路站--南沙奥园站)",
+      "after_name": "南沙夜6路(金岭南路站--南沙奥园站)",
+      "xlsx_row": 1470,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014677",
+      "before_name": "南沙6路(黄阁公交总站--黄阁公交总站)",
+      "after_name": "南沙6路(黄阁公交总站--黄阁公交总站)",
+      "xlsx_row": 1471,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014898",
+      "before_name": "南沙7路(沙仔码头总站--金科集美御峰站)",
+      "after_name": "南沙7路(沙仔码头总站--金科集美御峰站)",
+      "xlsx_row": 1674,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014902",
+      "before_name": "南沙7路(金科集美御峰站--沙仔码头总站)",
+      "after_name": "南沙7路(金科集美御峰站--沙仔码头总站)",
+      "xlsx_row": 1675,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000137501",
+      "before_name": "南沙K7路(大岗公交总站--广州南站公交场总站)",
+      "after_name": "南沙K7路(大岗公交总站--广州南站公交场总站)",
+      "xlsx_row": 1676,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000137502",
+      "before_name": "南沙K7路(广州南站公交场总站--大岗公交总站)",
+      "after_name": "南沙K7路(广州南站公交场总站--大岗公交总站)",
+      "xlsx_row": 1677,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000040310",
+      "before_name": "南沙8路(珠江电厂站--黄沙路北站)",
+      "after_name": "南沙8路(珠江电厂站--黄沙路北站)",
+      "xlsx_row": 1833,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000040336",
+      "before_name": "南沙8路(黄沙路北站--珠江电厂站)",
+      "after_name": "南沙8路(黄沙路北站--珠江电厂站)",
+      "xlsx_row": 1834,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000167810",
+      "before_name": "南沙K8路(广仁路总站--蕉门公交总站)",
+      "after_name": "南沙K8路(广仁路总站--蕉门公交总站)",
+      "xlsx_row": 1835,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000167809",
+      "before_name": "南沙K8路(蕉门公交总站--广仁路总站)",
+      "after_name": "南沙K8路(蕉门公交总站--广仁路总站)",
+      "xlsx_row": 1836,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000216576",
+      "before_name": "南沙9路缸瓦沙线(万顷沙总站--团结围总站)",
+      "after_name": "南沙9路缸瓦沙线(万顷沙总站--团结围总站)",
+      "xlsx_row": 1960,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000216575",
+      "before_name": "南沙9路缸瓦沙线(团结围总站--万顷沙总站)",
+      "after_name": "南沙9路缸瓦沙线(团结围总站--万顷沙总站)",
+      "xlsx_row": 1961,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000151709",
+      "before_name": "南沙K1路支线(珠江帝景苑总站--蕉门公交总站)",
+      "after_name": "南沙K1路支线(珠江帝景苑总站--蕉门公交总站)",
+      "xlsx_row": 1994,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000151708",
+      "before_name": "南沙K1路支线(蕉门公交总站--珠江帝景苑总站)",
+      "after_name": "南沙K1路支线(蕉门公交总站--珠江帝景苑总站)",
+      "xlsx_row": 1995,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000093310",
+      "before_name": "南沙W1路上行(蕉门公交总站--蕉门公交总站)",
+      "after_name": "南沙W1路上行(蕉门公交总站--蕉门公交总站)",
+      "xlsx_row": 1996,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000169316",
+      "before_name": "南沙W1路支线(蕉门地铁(区政府)站--蕉门地铁(区政府)站)",
+      "after_name": "南沙W1路支线(蕉门地铁(区政府)站--蕉门地铁(区政府)站)",
+      "xlsx_row": 1997,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000169317",
+      "before_name": "南沙W1路支线(蕉门地铁(区政府)站--蕉门地铁(区政府)站)",
+      "after_name": "南沙W1路支线(蕉门地铁(区政府)站--蕉门地铁(区政府)站)",
+      "xlsx_row": 1997,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013706",
+      "before_name": "南沙22路(地铁东涌站--庆盛枢纽公交总站)",
+      "after_name": "南沙22路(地铁东涌站--庆盛枢纽公交总站)",
+      "xlsx_row": 2001,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018017",
+      "before_name": "南沙22路(庆盛枢纽公交总站--地铁东涌站)",
+      "after_name": "南沙22路(庆盛枢纽公交总站--地铁东涌站)",
+      "xlsx_row": 2002,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000235619",
+      "before_name": "南沙26路(地铁横沥站--地铁横沥站)",
+      "after_name": "南沙26路(地铁横沥站--地铁横沥站)",
+      "xlsx_row": 2003,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013890",
+      "before_name": "南沙2路(新垦站--蕉门公交总站)",
+      "after_name": "南沙2路(新垦站--蕉门公交总站)",
+      "xlsx_row": 2004,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013894",
+      "before_name": "南沙2路(蕉门公交总站--新垦站)",
+      "after_name": "南沙2路(蕉门公交总站--新垦站)",
+      "xlsx_row": 2005,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013990",
+      "before_name": "南沙33路(南沙中心医院西门站--榄核公交总站)",
+      "after_name": "南沙33路(南沙中心医院西门站--榄核公交总站)",
+      "xlsx_row": 2006,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013991",
+      "before_name": "南沙33路(榄核公交总站--南沙中心医院西门站)",
+      "after_name": "南沙33路(榄核公交总站--南沙中心医院西门站)",
+      "xlsx_row": 2007,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014102",
+      "before_name": "南沙3路(南沙湾总站--黄阁公交总站)",
+      "after_name": "南沙3路(南沙湾总站--黄阁公交总站)",
+      "xlsx_row": 2008,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014100",
+      "before_name": "南沙3路(黄阁公交总站--南沙湾总站)",
+      "after_name": "南沙3路(黄阁公交总站--南沙湾总站)",
+      "xlsx_row": 2009,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014325",
+      "before_name": "南沙47路(大岗公交总站--新围八队总站)",
+      "after_name": "南沙47路(大岗公交总站--新围八队总站)",
+      "xlsx_row": 2010,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100014326",
+      "before_name": "南沙47路(新围八队总站--大岗公交总站)",
+      "after_name": "南沙47路(新围八队总站--大岗公交总站)",
+      "xlsx_row": 2011,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018038",
+      "before_name": "南沙48路(大岗公交总站--庆盛枢纽公交总站)",
+      "after_name": "南沙48路(大岗公交总站--庆盛枢纽公交总站)",
+      "xlsx_row": 2012,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018037",
+      "before_name": "南沙48路(庆盛枢纽公交总站--大岗公交总站)",
+      "after_name": "南沙48路(庆盛枢纽公交总站--大岗公交总站)",
+      "xlsx_row": 2013,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018039",
+      "before_name": "南沙49路(三姓路站--大岗公交总站)",
+      "after_name": "南沙49路(三姓路站--大岗公交总站)",
+      "xlsx_row": 2014,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018040",
+      "before_name": "南沙49路(大岗公交总站--三姓路站)",
+      "after_name": "南沙49路(大岗公交总站--三姓路站)",
+      "xlsx_row": 2015,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100015562",
+      "before_name": "南沙67路(大岗公交总站--番禺中心医院)",
+      "after_name": "南沙67路(大岗公交总站--番禺中心医院)",
+      "xlsx_row": 2016,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100015561",
+      "before_name": "南沙67路(番禺中心医院--大岗公交总站)",
+      "after_name": "南沙67路(番禺中心医院--大岗公交总站)",
+      "xlsx_row": 2017,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000136826",
+      "before_name": "南68路快线(市桥汽车站东门--榄核公交总站)",
+      "after_name": "南68路快线(市桥汽车站东门--榄核公交总站)",
+      "xlsx_row": 2018,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000136825",
+      "before_name": "南68路快线(榄核公交总站--市桥汽车站西门)",
+      "after_name": "南68路快线(榄核公交总站--市桥汽车站西门)",
+      "xlsx_row": 2019,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000073127",
+      "before_name": "南沙68路(市桥汽车站西门(番禺人才市场)--榄核公交总站)",
+      "after_name": "南沙68路(市桥汽车站西门(番禺人才市场)--榄核公交总站)",
+      "xlsx_row": 2020,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100017628",
+      "before_name": "南沙68路(榄核公交总站--市桥汽车站西门(番禺人才市场))",
+      "after_name": "南沙68路(榄核公交总站--市桥汽车站西门(番禺人才市场))",
+      "xlsx_row": 2021,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000242838",
+      "before_name": "广州(南沙)深圳机场快线(南沙岭南东方酒店)(广州蕉门公交总站--深圳宝安机场)",
+      "after_name": "广州(南沙)深圳机场快线(南沙岭南东方酒店)(广州蕉门公交总站--深圳宝安机场)",
+      "xlsx_row": 2127,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000221119",
+      "before_name": "广州(南沙)深圳机场快线(广州蕉门公交总站--深圳宝安机场)",
+      "after_name": "广州(南沙)深圳机场快线(广州蕉门公交总站--深圳宝安机场)",
+      "xlsx_row": 2128,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000221122",
+      "before_name": "广州(南沙)深圳机场快线(深圳宝安机场--广州蕉门公交总站)",
+      "after_name": "广州(南沙)深圳机场快线(深圳宝安机场--广州蕉门公交总站)",
+      "xlsx_row": 2129,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000171899",
+      "before_name": "南沙23路(雨洪公交总站--雨洪公交总站)",
+      "after_name": "南沙23路(雨洪公交总站--雨洪公交总站)",
+      "xlsx_row": 2199,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018014",
+      "before_name": "南1路B(广州船坞总站--海力花园站)",
+      "after_name": "南1路B(广州船坞总站--海力花园站)",
+      "xlsx_row": 2216,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018015",
+      "before_name": "南1路B(海力花园站--广州船坞总站)",
+      "after_name": "南1路B(海力花园站--广州船坞总站)",
+      "xlsx_row": 2217,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100013937",
+      "before_name": "南沙31路上行(蕉门公交总站--蕉门公交总站)",
+      "after_name": "南沙31路上行(蕉门公交总站--蕉门公交总站)",
+      "xlsx_row": 2218,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100012786",
+      "before_name": "南沙31路下行(蕉门公交总站--蕉门公交总站)",
+      "after_name": "南沙31路下行(蕉门公交总站--蕉门公交总站)",
+      "xlsx_row": 2219,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018029",
+      "before_name": "南沙37路(高铁庆盛总站--东涌湖公交总站)",
+      "after_name": "南沙37路(高铁庆盛总站--东涌湖公交总站)",
+      "xlsx_row": 2220,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "440100018028",
+      "before_name": "南沙37路(东涌湖公交总站--高铁庆盛总站)",
+      "after_name": "南沙37路(东涌湖公交总站--高铁庆盛总站)",
+      "xlsx_row": 2221,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000146751",
+      "before_name": "九王庙接驳线(黄山鲁东门站--黄山鲁东门站(往金业小学方向))",
+      "after_name": "九王庙接驳线(黄山鲁东门站--黄山鲁东门站(往金业小学方向))",
+      "xlsx_row": 2222,
+      "match": {
+        "method": "reviewed_line_id",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000151565",
+      "before_name": "九王庙接驳线(黄山鲁东门站--黄山鲁东门站(往东井村方向))",
+      "after_name": "九王庙接驳线(黄山鲁东门站--黄山鲁东门站(往东井村方向))",
+      "xlsx_row": 2223,
+      "match": {
+        "method": "reviewed_line_id",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000122274",
+      "before_name": "南沙K6路(东莞富民商务中心(政务服务中心)站--蕉门公交总站)",
+      "after_name": "南沙K6路(东莞富民商务中心(政务服务中心)站--蕉门公交总站)",
+      "xlsx_row": 2224,
+      "match": {
+        "method": "reviewed_line_id",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000122275",
+      "before_name": "南沙K6路(蕉门公交总站--东莞富民商务中心(政务服务中心)站)",
+      "after_name": "南沙K6路(蕉门公交总站--东莞富民商务中心(政务服务中心)站)",
+      "xlsx_row": 2225,
+      "match": {
+        "method": "reviewed_line_id",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {}
+    },
+    {
+      "line_id": "900000217069",
+      "before_name": "南沙23A路(地铁横沥站--地铁横沥站)",
+      "after_name": "南沙23A路(地铁横沥站--地铁横沥站)",
+      "xlsx_row": 2226,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {
+        "geometry": {
+          "before": "existing geometry",
+          "after": "fresh Amap geometry (144 points)"
+        }
+      }
+    },
+    {
+      "line_id": "900000217078",
+      "before_name": "南沙23B路(地铁横沥站--地铁横沥站)",
+      "after_name": "南沙23B路(地铁横沥站--地铁横沥站)",
+      "xlsx_row": 2227,
+      "match": {
+        "method": "exact_name",
+        "endpoint_score": 1.0,
+        "timetable_similarity": 1.0,
+        "score": 1.0
+      },
+      "changes": {
+        "geometry": {
+          "before": "existing geometry",
+          "after": "fresh Amap geometry (153 points)"
+        }
+      }
+    }
+  ],
+  "report": "outputs/nansha23ab_refresh_dry_run.json"
+}

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.luben.zstd.Zstd;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.ModelProcessingPool;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
@@ -87,6 +88,8 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
@@ -106,14 +109,19 @@ import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 @Slf4j
 public final class MatsimAnalysisCache {
 
-    // v14: 沿用 v11 的 int32 vehicleId + link.length 精确速度，并把每个 30s 存储块
-    // 组织成“单容器 + 空间偏移索引”，避免 V6 产生数十万小文件。段按 4096m 网格中点
-    // 唯一归属；v14 为每个 tile 增加精确 envelope，超长 link 不再扩大其它 tile 候选集。
-    // 读取候选 offset range 后仍逐段精确 bbox 过滤；交付给前端再切成 10s 时间窗。
-    public static final String TRAJECTORY_CACHE_VERSION = "trajectory-v14";
+    // v15 保持 v14 的 30s/10s/1~2s/4096m 查询协议与前端二进制响应完全不变，
+    // 仅把每个空间 tile 的记录独立编码成 Zstd frame。索引保存压缩偏移、压缩长度和
+    // 原始记录数；视口查询只读取并解压命中的 tile，避免为随机访问解压整个 30s 容器。
+    public static final String TRAJECTORY_CACHE_VERSION = "trajectory-v15";
     public static final int TRAJECTORY_CHUNK_SECONDS = 30;
     public static final int TRAJECTORY_PLAYBACK_WINDOW_SECONDS = 10;
     public static final int TRAJECTORY_SPATIAL_TILE_METERS = 4096;
+    /**
+     * events 压缩文件达到该规模后，即使模型整体未被标记为“大模型”，
+     * 轨迹也必须使用边解析边落盘的构建路径。经验放大率远高于压缩文件大小：
+     * 512 MiB events 已可能在对象化后占用数 GiB Java heap。
+     */
+    static final long TRAJECTORY_STREAMING_EVENTS_THRESHOLD_BYTES = 512L * 1024L * 1024L;
 
     // pt-events-v3: PTHandler/大模型流式路径接入 TransitDriverStarts 动态映射 + 司机显式过滤，
     // personTracks 的 line/route/departure 归属语义变更。该缓存是 route/station 面板的输入，
@@ -121,16 +129,27 @@ public final class MatsimAnalysisCache {
     public static final String PERSON_TRACK_CACHE_VERSION = "pt-events-v3";
     private static final String PERSON_TRACK_FILE = "person-tracks.tsv.gz";
     private static final byte[] TRAJECTORY_BINARY_MAGIC = new byte[]{'G', 'J', 'T', 'B'};
+    private static final byte[] TRAJECTORY_ZSTD_MAGIC = new byte[]{'G', 'J', 'T', 'Z'};
     private static final byte[] TRAJECTORY_SPATIAL_INDEX_MAGIC = new byte[]{'G', 'J', 'T', 'I'};
     private static final int TRAJECTORY_BINARY_VERSION = 2;
-    private static final int TRAJECTORY_SPATIAL_INDEX_VERSION = 2;
+    private static final int TRAJECTORY_SPATIAL_INDEX_VERSION = 3;
+    private static final int TRAJECTORY_LEGACY_SPATIAL_INDEX_VERSION = 2;
     private static final int TRAJECTORY_BINARY_HEADER_BYTES = 64;
     private static final int TRAJECTORY_SPATIAL_INDEX_HEADER_BYTES = 64;
-    // tileX/tileY/offset/count(int32) + tile 内全部 segment 的 minX/minY/maxX/maxY(float32, 相对 origin)
-    private static final int TRAJECTORY_SPATIAL_INDEX_ENTRY_BYTES = 32;
+    // v3: tileX/tileY(int32) + compressedOffset(int64) + compressedBytes/count(int32)
+    // + tile 内全部 segment 的 minX/minY/maxX/maxY(float32, 相对 origin)
+    private static final int TRAJECTORY_SPATIAL_INDEX_ENTRY_BYTES = 40;
+    private static final int TRAJECTORY_LEGACY_SPATIAL_INDEX_ENTRY_BYTES = 32;
     // start/end/x1/y1/x2/y2/mode(float32), vehicleId(int32), distanceMeters(float32)
     private static final int TRAJECTORY_BINARY_STRIDE = 9;
+    // 大模型容器内部记录: originalStart/originalEnd/vehicleIndex/linkIndex (int32)。
+    private static final int TRAJECTORY_COMPACT_STRIDE = 4;
+    private static final String TRAJECTORY_LINK_DICTIONARY_FILE = "link-geometry.dict.zst";
+    private static final String TRAJECTORY_VEHICLE_DICTIONARY_FILE = "vehicle-metadata.dict.zst";
+    private static final byte[] TRAJECTORY_LINK_DICTIONARY_MAGIC = new byte[]{'G', 'J', 'L', 'D'};
+    private static final byte[] TRAJECTORY_VEHICLE_DICTIONARY_MAGIC = new byte[]{'G', 'J', 'V', 'D'};
     private static final int TRAJECTORY_IO_BUFFER_BYTES = 4 * 1024 * 1024;
+    private static final int TRAJECTORY_ZSTD_LEVEL = 1;
     private static final int TRAJECTORY_RAW_CHUNK_BUFFER_BYTES = 64 * 1024;
     private static final long TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES = 32L * 1024 * 1024;
     private static final int TRAJECTORY_QUEUE_DEFAULT_SIZE = 65_536;
@@ -153,14 +172,26 @@ public final class MatsimAnalysisCache {
     private static final ConcurrentMap<String, Boolean> TRAJECTORY_REPAIR_REQUESTS = new ConcurrentHashMap<>();
     // manifest-lite 带有全天逐秒全市统计，V6 可达数 MB。连续播放一次请求会先算 ETag、
     // 再读取 body，不能重复反序列化；以原子发布文件的 mtime/size/fileKey 做线程安全失效。
-    private static final int TRAJECTORY_LIGHT_MANIFEST_CACHE_ENTRIES = 4;
-    private static final Map<String, CachedTrajectoryLightManifest> TRAJECTORY_LIGHT_MANIFESTS =
-            Collections.synchronizedMap(new LinkedHashMap<>(8, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, CachedTrajectoryLightManifest> eldest) {
-                    return size() > TRAJECTORY_LIGHT_MANIFEST_CACHE_ENTRIES;
-                }
-            });
+    // 广州 V6 的 8.7 MiB JSON 对象化后会超过 32 MiB；分区若过小，每次 put 都会
+    // 遍历整份清单做估算后拒绝缓存，使一个轨迹请求重复两次这个慢路径。
+    private static final BackendMemoryCache<String, CachedTrajectoryLightManifest> TRAJECTORY_LIGHT_MANIFESTS =
+            new BackendMemoryCache<>("trajectory-light-manifest", 64L * 1024 * 1024,
+                    cached -> BackendMemoryCache.estimate(cached.manifest));
+    private static final BackendMemoryCache<String, CachedTrajectoryDictionaries> TRAJECTORY_DICTIONARIES =
+            new BackendMemoryCache<>("trajectory-dictionaries", 128L * 1024 * 1024,
+                    cached -> cached.value.estimatedBytes());
+    // 前端播放窗是 10s，磁盘容器是 30s。同一视口的三个连续请求共用一份
+    // 已解压、字典展开并完成空间/模式筛选的 30s GJTB 记录。
+    private static final BackendMemoryCache<TrajectorySpatialSelectionKey, CachedTrajectorySpatialSelection>
+            TRAJECTORY_SPATIAL_SELECTIONS = new BackendMemoryCache<>(
+                    "trajectory-spatial-selection",
+                    128L * 1024 * 1024,
+                    CachedTrajectorySpatialSelection::estimatedBytes
+            );
+    private static final ConcurrentMap<TrajectorySpatialSelectionKey,
+            CompletableFuture<CachedTrajectorySpatialSelection>> TRAJECTORY_SPATIAL_SELECTION_LOADS =
+            new ConcurrentHashMap<>();
+    private static final AtomicLong TRAJECTORY_SPATIAL_SELECTION_LOAD_COUNT = new AtomicLong();
     private static final AtomicInteger ACTIVE_TRAJECTORY_BUILDS = new AtomicInteger();
 
     private MatsimAnalysisCache() {
@@ -182,7 +213,7 @@ public final class MatsimAnalysisCache {
      * 峰值内存不会因此增加（两份结果原本也会同时驻留）。已有任一缓存时仍只补缺失部分。</p>
      */
     public static void prepareAllOnModelLoad(MatsimData data, BuildProgress progress) throws Exception {
-        if (data.isLargeModel()) {
+        if (shouldStreamTrajectoryBuild(data)) {
             ensureLargeTrajectoryCache(data, progress);
             // 大模型的 person-tracks.tsv.gz 是“冷数据仓”。只有确认能放进当前堆预算时才对象化；
             // V6 的 2064 万条记录会膨胀为数 GB Java 对象，必须保持磁盘态。
@@ -280,7 +311,7 @@ public final class MatsimAnalysisCache {
     }
 
     public static Map<String, Object> ensureTrajectoryCache(MatsimData data, BuildProgress progress) throws Exception {
-        if (data.isLargeModel()) {
+        if (shouldStreamTrajectoryBuild(data)) {
             return ensureLargeTrajectoryCache(data, progress);
         }
         Map<String, Object> manifest = readReadyTrajectoryLightManifest(data);
@@ -651,20 +682,49 @@ public final class MatsimAnalysisCache {
             }
         }
 
-        Path chunkPath = trajectorySpatialContainerPath(data, chunkStart);
-        if (!Files.exists(chunkPath)) {
-            markTrajectoryGenerationBroken(data, manifest, "轨迹二进制分块缺失: " + chunkPath.getFileName());
-            throw new IllegalStateException("轨迹 manifest 声明的二进制分块不存在: " + chunkPath);
-        }
-
+        Path indexPath = trajectorySpatialIndexPath(data, chunkStart);
         try {
-            if (Files.size(chunkPath) > TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) {
+            SpatialContainerIndex index = readSpatialTrajectoryIndex(indexPath, chunkStart);
+            Path chunkPath = index.version == TRAJECTORY_SPATIAL_INDEX_VERSION
+                    ? trajectorySpatialContainerPath(data, chunkStart)
+                    : trajectoryLegacySpatialContainerPath(data, chunkStart);
+            if (!Files.exists(chunkPath)) {
+                throw new IOException("轨迹二进制容器缺失: " + chunkPath.getFileName());
+            }
+            long rawRowsBytes = index.entries.stream().mapToLong(entry ->
+                    (long) entry.count * TRAJECTORY_BINARY_STRIDE * Float.BYTES).sum();
+            if (TRAJECTORY_BINARY_HEADER_BYTES + rawRowsBytes > TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) {
                 throw new IllegalStateException("轨迹整块超过接口上限，请使用视口分块接口: " + chunkPath);
             }
-            return Files.readAllBytes(chunkPath);
+            if (index.version == TRAJECTORY_LEGACY_SPATIAL_INDEX_VERSION) {
+                return Files.readAllBytes(chunkPath);
+            }
+            ByteArrayOutputStream result = new ByteArrayOutputStream(
+                    Math.toIntExact(TRAJECTORY_BINARY_HEADER_BYTES + rawRowsBytes));
+            int segmentCount = index.entries.stream().mapToInt(entry -> entry.count).sum();
+            writeTrajectoryBinaryHeader(
+                    result, chunkStart, chunkStart + TRAJECTORY_CHUNK_SECONDS - 1,
+                    segmentCount, 0, segmentCount * 2, index.originX, index.originY);
+            TrajectoryDictionaries dictionaries = index.recordStride == TRAJECTORY_COMPACT_STRIDE
+                    ? loadTrajectoryDictionaries(data) : null;
+            try (FileChannel channel = FileChannel.open(chunkPath, StandardOpenOption.READ)) {
+                validateSpatialContainerHeader(channel, chunkStart, index);
+                for (SpatialIndexEntry entry : index.entries) {
+                    ByteBuffer encoded = ByteBuffer.allocate(entry.compressedBytes);
+                    readFully(channel, encoded, entry.compressedOffset);
+                    byte[] raw = Zstd.decompress(
+                            encoded.array(), entry.count * index.recordStride * Integer.BYTES);
+                    if (index.recordStride == TRAJECTORY_COMPACT_STRIDE) {
+                        raw = expandCompactTrajectoryRows(
+                                dictionaries, raw, entry.count, chunkStart, index.originX, index.originY);
+                    }
+                    result.write(raw);
+                }
+            }
+            return result.toByteArray();
         } catch (Exception e) {
             markTrajectoryGenerationBroken(data, manifest, "轨迹二进制分块读取失败: " + e.getMessage());
-            throw new IllegalStateException("轨迹二进制分块读取失败: " + chunkPath, e);
+            throw new IllegalStateException("轨迹二进制分块读取失败: " + indexPath, e);
         }
     }
 
@@ -746,102 +806,380 @@ public final class MatsimAnalysisCache {
                 && Double.isFinite(requestedMaxX) && Double.isFinite(requestedMaxY)
                 && requestedMaxX > requestedMinX && requestedMaxY > requestedMinY;
         Path indexPath = trajectorySpatialIndexPath(data, chunkStart);
-        Path containerPath = trajectorySpatialContainerPath(data, chunkStart);
-        if (!Files.exists(indexPath) || !Files.exists(containerPath)) {
+        Path compressedContainerPath = trajectorySpatialContainerPath(data, chunkStart);
+        Path legacyContainerPath = trajectoryLegacySpatialContainerPath(data, chunkStart);
+        if (!Files.exists(indexPath)
+                || (!Files.exists(compressedContainerPath) && !Files.exists(legacyContainerPath))) {
             markTrajectoryGenerationBroken(data, manifest,
-                    "轨迹空间工件缺失: " + (!Files.exists(indexPath) ? indexPath.getFileName() : containerPath.getFileName()));
+                    "轨迹空间工件缺失: " + (!Files.exists(indexPath)
+                            ? indexPath.getFileName() : compressedContainerPath.getFileName()));
             return null;
         }
 
         String normalizedVisibility = normalizeTrajectoryVisibility(visibilityMode);
-        byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
-        ByteBuffer record = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
-        IntOpenHashSet vehicles = new IntOpenHashSet();
-        ByteArrayOutputStream selectedRows = new ByteArrayOutputStream(1024 * 1024);
-        int selectedCount = 0;
-
         try {
-            SpatialContainerIndex spatialIndex = readSpatialTrajectoryIndex(indexPath, chunkStart);
-            List<SpatialIndexEntry> candidates = spatialCandidates(
-                    spatialIndex,
+            Path containerPath = Files.exists(compressedContainerPath)
+                    ? compressedContainerPath : legacyContainerPath;
+            TrajectorySpatialSelectionKey cacheKey = new TrajectorySpatialSelectionKey(
+                    trajectoryRepairKey(data),
+                    String.valueOf(manifest.getOrDefault("cacheGeneration", "missing")),
+                    chunkStart,
+                    normalizedVisibility,
                     hasBounds,
-                    hasBounds ? requestedMinX : 0.0,
-                    hasBounds ? requestedMinY : 0.0,
-                    hasBounds ? requestedMaxX : 0.0,
-                    hasBounds ? requestedMaxY : 0.0
+                    hasBounds ? normalizedDoubleBits(requestedMinX) : 0L,
+                    hasBounds ? normalizedDoubleBits(requestedMinY) : 0L,
+                    hasBounds ? normalizedDoubleBits(requestedMaxX) : 0L,
+                    hasBounds ? normalizedDoubleBits(requestedMaxY) : 0L,
+                    trajectoryArtifactFingerprint(indexPath),
+                    trajectoryArtifactFingerprint(containerPath)
             );
-
-            try (FileChannel channel = FileChannel.open(containerPath, StandardOpenOption.READ)) {
-                validateSpatialContainerHeader(channel, chunkStart, spatialIndex);
-                int rowsPerBatch = Math.max(1, (1024 * 1024) / (TRAJECTORY_BINARY_STRIDE * Float.BYTES));
-                ByteBuffer tileRows = ByteBuffer.allocate(
-                        rowsPerBatch * TRAJECTORY_BINARY_STRIDE * Float.BYTES
-                ).order(ByteOrder.LITTLE_ENDIAN);
-                for (SpatialIndexEntry entry : candidates) {
-                    long byteOffset = TRAJECTORY_BINARY_HEADER_BYTES
-                            + (long) entry.offset * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
-                    int remaining = entry.count;
-                    while (remaining > 0) {
-                        int batchRows = Math.min(rowsPerBatch, remaining);
-                        tileRows.clear();
-                        tileRows.limit(batchRows * TRAJECTORY_BINARY_STRIDE * Float.BYTES);
-                        readFully(channel, tileRows, byteOffset);
-                        tileRows.flip();
-                        for (int index = 0; index < batchRows; index++) {
-                            tileRows.get(row);
-                            record.clear();
-                            float startTime = record.getFloat();
-                            float endTime = record.getFloat();
-                            float startX = record.getFloat();
-                            float startY = record.getFloat();
-                            float endX = record.getFloat();
-                            float endY = record.getFloat();
-                            int modeCode = Math.round(record.getFloat());
-                            int vehicleIndex = record.getInt();
-                            record.getFloat();
-                            if (!(startTime < selectionEndExclusive && endTime > selectionStart)) continue;
-                            if ("public".equals(normalizedVisibility) && modeCode == 2) continue;
-                            if ("private".equals(normalizedVisibility) && modeCode != 2) continue;
-                            if (hasBounds) {
-                                double segmentMinX = spatialIndex.originX + Math.min(startX, endX);
-                                double segmentMaxX = spatialIndex.originX + Math.max(startX, endX);
-                                double segmentMinY = spatialIndex.originY + Math.min(startY, endY);
-                                double segmentMaxY = spatialIndex.originY + Math.max(startY, endY);
-                                if (segmentMaxX < requestedMinX || segmentMinX > requestedMaxX
-                                        || segmentMaxY < requestedMinY || segmentMinY > requestedMaxY) continue;
-                            }
-                            selectedRows.write(row);
-                            selectedCount++;
-                            vehicles.add(vehicleIndex);
-                        }
-                        int batchBytes = batchRows * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
-                        byteOffset += batchBytes;
-                        remaining -= batchRows;
-                    }
-                }
-            }
-            ByteArrayOutputStream result = new ByteArrayOutputStream(
-                    TRAJECTORY_BINARY_HEADER_BYTES + selectedRows.size()
+            CachedTrajectorySpatialSelection spatialSelection = trajectorySpatialSelection(
+                    cacheKey,
+                    data,
+                    chunkStart,
+                    normalizedVisibility,
+                    hasBounds,
+                    requestedMinX,
+                    requestedMinY,
+                    requestedMaxX,
+                    requestedMaxY,
+                    indexPath,
+                    containerPath
             );
-            writeTrajectoryBinaryHeader(
-                    result,
-                    selectionStart,
-                    selectionEndExclusive - 1,
-                    selectedCount,
-                    vehicles.size(),
-                    selectedCount * 2,
-                    spatialIndex.originX,
-                    spatialIndex.originY,
-                    selectionEndExclusive - selectionStart
-            );
-            selectedRows.writeTo(result);
-            return result.toByteArray();
+            return sliceTrajectorySpatialSelection(
+                    spatialSelection, selectionStart, selectionEndExclusive);
         } catch (Exception e) {
             markTrajectoryGenerationBroken(data, manifest, "轨迹空间工件校验失败: " + e.getMessage());
             throw new IllegalStateException("轨迹空间块读取失败: model=" + data.getName()
                     + ", chunk=" + chunkStart + ", bounds=[" + requestedMinX + "," + requestedMinY
                     + "," + requestedMaxX + "," + requestedMaxY + "]", e);
         }
+    }
+
+    private static CachedTrajectorySpatialSelection trajectorySpatialSelection(
+            TrajectorySpatialSelectionKey cacheKey,
+            MatsimData data,
+            int chunkStart,
+            String normalizedVisibility,
+            boolean hasBounds,
+            Double requestedMinX,
+            Double requestedMinY,
+            Double requestedMaxX,
+            Double requestedMaxY,
+            Path indexPath,
+            Path containerPath
+    ) throws IOException {
+        CachedTrajectorySpatialSelection cached = TRAJECTORY_SPATIAL_SELECTIONS.get(cacheKey);
+        if (cached != null) return cached;
+
+        CompletableFuture<CachedTrajectorySpatialSelection> loading = new CompletableFuture<>();
+        CompletableFuture<CachedTrajectorySpatialSelection> existing =
+                TRAJECTORY_SPATIAL_SELECTION_LOADS.putIfAbsent(cacheKey, loading);
+        if (existing != null) return awaitTrajectorySpatialSelection(existing);
+
+        try {
+            TRAJECTORY_SPATIAL_SELECTION_LOAD_COUNT.incrementAndGet();
+            CachedTrajectorySpatialSelection loaded = loadTrajectorySpatialSelection(
+                    data,
+                    chunkStart,
+                    normalizedVisibility,
+                    hasBounds,
+                    requestedMinX,
+                    requestedMinY,
+                    requestedMaxX,
+                    requestedMaxY,
+                    indexPath,
+                    containerPath
+            );
+            TRAJECTORY_SPATIAL_SELECTIONS.put(cacheKey, loaded);
+            loading.complete(loaded);
+            return loaded;
+        } catch (Throwable error) {
+            loading.completeExceptionally(error);
+            return rethrowTrajectorySpatialSelectionFailure(error);
+        } finally {
+            TRAJECTORY_SPATIAL_SELECTION_LOADS.remove(cacheKey, loading);
+        }
+    }
+
+    private static CachedTrajectorySpatialSelection loadTrajectorySpatialSelection(
+            MatsimData data,
+            int chunkStart,
+            String normalizedVisibility,
+            boolean hasBounds,
+            Double requestedMinX,
+            Double requestedMinY,
+            Double requestedMaxX,
+            Double requestedMaxY,
+            Path indexPath,
+            Path containerPath
+    ) throws IOException {
+        SpatialContainerIndex spatialIndex = readSpatialTrajectoryIndex(indexPath, chunkStart);
+        List<SpatialIndexEntry> candidates = spatialCandidates(
+                spatialIndex,
+                hasBounds,
+                hasBounds ? requestedMinX : 0.0,
+                hasBounds ? requestedMinY : 0.0,
+                hasBounds ? requestedMaxX : 0.0,
+                hasBounds ? requestedMaxY : 0.0
+        );
+        TrajectoryDictionaries dictionaries = spatialIndex.recordStride == TRAJECTORY_COMPACT_STRIDE
+                ? loadTrajectoryDictionaries(data) : null;
+        TrajectorySpatialSelectionAccumulator accumulator =
+                new TrajectorySpatialSelectionAccumulator(
+                        chunkStart, spatialIndex.originX, spatialIndex.originY);
+
+        try (FileChannel channel = FileChannel.open(containerPath, StandardOpenOption.READ)) {
+            validateSpatialContainerHeader(channel, chunkStart, spatialIndex);
+            int rowsPerBatch = Math.max(1, (1024 * 1024) / (TRAJECTORY_BINARY_STRIDE * Float.BYTES));
+            ByteBuffer tileRows = ByteBuffer.allocate(
+                    rowsPerBatch * TRAJECTORY_BINARY_STRIDE * Float.BYTES
+            ).order(ByteOrder.LITTLE_ENDIAN);
+            for (SpatialIndexEntry entry : candidates) {
+                if (spatialIndex.version == TRAJECTORY_SPATIAL_INDEX_VERSION) {
+                    ByteBuffer encoded = ByteBuffer.allocate(entry.compressedBytes);
+                    readFully(channel, encoded, entry.compressedOffset);
+                    byte[] raw = Zstd.decompress(
+                            encoded.array(), entry.count * spatialIndex.recordStride * Integer.BYTES);
+                    if (spatialIndex.recordStride == TRAJECTORY_COMPACT_STRIDE) {
+                        raw = expandCompactTrajectoryRows(
+                                dictionaries, raw, entry.count, chunkStart,
+                                spatialIndex.originX, spatialIndex.originY);
+                    }
+                    accumulator.append(
+                            ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN), entry.count,
+                            normalizedVisibility,
+                            hasBounds, requestedMinX, requestedMinY, requestedMaxX, requestedMaxY,
+                            spatialIndex.originX, spatialIndex.originY);
+                    continue;
+                }
+                long byteOffset = TRAJECTORY_BINARY_HEADER_BYTES
+                        + (long) entry.offset * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
+                int remaining = entry.count;
+                while (remaining > 0) {
+                    int batchRows = Math.min(rowsPerBatch, remaining);
+                    tileRows.clear();
+                    tileRows.limit(batchRows * TRAJECTORY_BINARY_STRIDE * Float.BYTES);
+                    readFully(channel, tileRows, byteOffset);
+                    tileRows.flip();
+                    accumulator.append(
+                            tileRows, batchRows,
+                            normalizedVisibility, hasBounds,
+                            requestedMinX, requestedMinY, requestedMaxX, requestedMaxY,
+                            spatialIndex.originX, spatialIndex.originY);
+                    int batchBytes = batchRows * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
+                    byteOffset += batchBytes;
+                    remaining -= batchRows;
+                }
+            }
+        }
+        return accumulator.finish();
+    }
+
+    private static byte[] sliceTrajectorySpatialSelection(
+            CachedTrajectorySpatialSelection spatialSelection,
+            int selectionStart,
+            int selectionEndExclusive
+    ) throws IOException {
+        int duration = selectionEndExclusive - selectionStart;
+        int relativeStart = selectionStart - spatialSelection.chunkStart;
+        int playbackIndex = Math.floorDiv(relativeStart, TRAJECTORY_PLAYBACK_WINDOW_SECONDS);
+        if (duration == TRAJECTORY_PLAYBACK_WINDOW_SECONDS
+                && relativeStart >= 0
+                && relativeStart % TRAJECTORY_PLAYBACK_WINDOW_SECONDS == 0
+                && playbackIndex >= 0
+                && playbackIndex < spatialSelection.playbackWindows.length) {
+            return spatialSelection.playbackWindows[playbackIndex];
+        }
+        if (playbackIndex < 0 || playbackIndex >= spatialSelection.playbackWindows.length) {
+            return emptyTrajectorySelection(selectionStart, selectionEndExclusive);
+        }
+
+        byte[] playbackWindow = spatialSelection.playbackWindows[playbackIndex];
+        IntOpenHashSet vehicles = new IntOpenHashSet();
+        ByteArrayOutputStream selectedRows = new ByteArrayOutputStream(
+                Math.min(playbackWindow.length - TRAJECTORY_BINARY_HEADER_BYTES, 1024 * 1024));
+        int selectedCount = appendSelectedTrajectoryRows(
+                ByteBuffer.wrap(
+                        playbackWindow,
+                        TRAJECTORY_BINARY_HEADER_BYTES,
+                        playbackWindow.length - TRAJECTORY_BINARY_HEADER_BYTES
+                ).order(ByteOrder.LITTLE_ENDIAN),
+                spatialSelection.playbackRowCounts[playbackIndex],
+                selectionStart,
+                selectionEndExclusive,
+                "all",
+                false,
+                null,
+                null,
+                null,
+                null,
+                spatialSelection.originX,
+                spatialSelection.originY,
+                selectedRows,
+                vehicles
+        );
+        ByteArrayOutputStream result = new ByteArrayOutputStream(
+                TRAJECTORY_BINARY_HEADER_BYTES + selectedRows.size());
+        writeTrajectoryBinaryHeader(
+                result,
+                selectionStart,
+                selectionEndExclusive - 1,
+                selectedCount,
+                vehicles.size(),
+                selectedCount * 2,
+                spatialSelection.originX,
+                spatialSelection.originY,
+                selectionEndExclusive - selectionStart
+        );
+        selectedRows.writeTo(result);
+        return result.toByteArray();
+    }
+
+    private static CachedTrajectorySpatialSelection awaitTrajectorySpatialSelection(
+            CompletableFuture<CachedTrajectorySpatialSelection> loading
+    ) throws IOException {
+        try {
+            return loading.join();
+        } catch (CompletionException error) {
+            return rethrowTrajectorySpatialSelectionFailure(error.getCause());
+        }
+    }
+
+    private static CachedTrajectorySpatialSelection rethrowTrajectorySpatialSelectionFailure(
+            Throwable error
+    ) throws IOException {
+        if (error instanceof IOException io) throw io;
+        if (error instanceof RuntimeException runtime) throw runtime;
+        if (error instanceof Error fatal) throw fatal;
+        throw new IOException("轨迹空间块加载失败", error);
+    }
+
+    private static long normalizedDoubleBits(double value) {
+        return Double.doubleToLongBits(value == 0.0 ? 0.0 : value);
+    }
+
+    private static TrajectoryArtifactFingerprint trajectoryArtifactFingerprint(Path path) throws IOException {
+        BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class);
+        return new TrajectoryArtifactFingerprint(
+                path.toAbsolutePath().normalize().toString(),
+                attributes.size(),
+                attributes.lastModifiedTime().toMillis(),
+                String.valueOf(attributes.fileKey())
+        );
+    }
+
+    static long trajectorySpatialSelectionLoadCount() {
+        return TRAJECTORY_SPATIAL_SELECTION_LOAD_COUNT.get();
+    }
+
+    private static int appendSelectedTrajectoryRows(
+            ByteBuffer rows,
+            int rowCount,
+            int selectionStart,
+            int selectionEndExclusive,
+            String normalizedVisibility,
+            boolean hasBounds,
+            Double requestedMinX,
+            Double requestedMinY,
+            Double requestedMaxX,
+            Double requestedMaxY,
+            double originX,
+            double originY,
+            ByteArrayOutputStream selectedRows,
+            IntOpenHashSet vehicles
+    ) throws IOException {
+        byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
+        ByteBuffer record = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
+        int selected = 0;
+        for (int index = 0; index < rowCount; index++) {
+            rows.get(row);
+            record.clear();
+            float startTime = record.getFloat();
+            float endTime = record.getFloat();
+            float startX = record.getFloat();
+            float startY = record.getFloat();
+            float endX = record.getFloat();
+            float endY = record.getFloat();
+            int modeCode = Math.round(record.getFloat());
+            int vehicleIndex = record.getInt();
+            record.getFloat();
+            if (!(startTime < selectionEndExclusive && endTime > selectionStart)) continue;
+            if ("public".equals(normalizedVisibility) && modeCode == 2) continue;
+            if ("private".equals(normalizedVisibility) && modeCode != 2) continue;
+            if (hasBounds) {
+                double segmentMinX = originX + Math.min(startX, endX);
+                double segmentMaxX = originX + Math.max(startX, endX);
+                double segmentMinY = originY + Math.min(startY, endY);
+                double segmentMaxY = originY + Math.max(startY, endY);
+                if (segmentMaxX < requestedMinX || segmentMinX > requestedMaxX
+                        || segmentMaxY < requestedMinY || segmentMinY > requestedMaxY) continue;
+            }
+            selectedRows.write(row);
+            selected++;
+            vehicles.add(vehicleIndex);
+        }
+        return selected;
+    }
+
+    private static byte[] expandCompactTrajectoryRows(
+            TrajectoryDictionaries dictionaries,
+            byte[] compactRows,
+            int rowCount,
+            int chunkStart,
+            double responseOriginX,
+            double responseOriginY
+    ) throws IOException {
+        int expectedBytes = Math.multiplyExact(rowCount, TRAJECTORY_COMPACT_STRIDE * Integer.BYTES);
+        if (compactRows.length != expectedBytes) {
+            throw new IOException("紧凑轨迹块解压长度不一致");
+        }
+        if (dictionaries == null) throw new IOException("紧凑轨迹块缺少字典");
+        ByteBuffer input = ByteBuffer.wrap(compactRows).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer output = ByteBuffer.allocate(
+                Math.multiplyExact(rowCount, TRAJECTORY_BINARY_STRIDE * Float.BYTES)
+        ).order(ByteOrder.LITTLE_ENDIAN);
+        for (int i = 0; i < rowCount; i++) {
+            int originalStart = input.getInt();
+            int originalEnd = input.getInt();
+            int vehicleIndex = input.getInt();
+            int linkIndex = input.getInt();
+            VehicleSegment segment = dictionaries.compactSegment(
+                    linkIndex, originalStart, originalEnd, chunkStart);
+            int modeCode = dictionaries.mode(vehicleIndex);
+            if (segment == null || modeCode < 0) {
+                throw new IOException("紧凑轨迹记录引用了无效字典项");
+            }
+            output.putFloat(segment.startTime);
+            output.putFloat(segment.endTime);
+            output.putFloat((float) (segment.fromX - responseOriginX));
+            output.putFloat((float) (segment.fromY - responseOriginY));
+            output.putFloat((float) (segment.toX - responseOriginX));
+            output.putFloat((float) (segment.toY - responseOriginY));
+            output.putFloat(modeCode);
+            output.putInt(vehicleIndex);
+            output.putFloat((float) segment.distance);
+        }
+        return output.array();
+    }
+
+    private static VehicleSegment compactSegment(
+            MatsimLinkGeometryIndex dictionary,
+            int linkIndex,
+            int originalStart,
+            int originalEnd,
+            int chunkStart
+    ) {
+        if (linkIndex < 0 || linkIndex >= dictionary.size() || originalEnd <= originalStart) return null;
+        return new VehicleSegment(
+                originalStart,
+                originalEnd,
+                roundCoord(dictionary.fromX(linkIndex)),
+                roundCoord(dictionary.fromY(linkIndex)),
+                roundCoord(dictionary.toX(linkIndex)),
+                roundCoord(dictionary.toY(linkIndex)),
+                dictionary.lengthMeters(linkIndex)
+        ).clip(chunkStart, chunkStart + TRAJECTORY_CHUNK_SECONDS);
     }
 
     private static List<SpatialIndexEntry> spatialCandidates(
@@ -939,38 +1277,51 @@ public final class MatsimAnalysisCache {
         int entryBytes = buffer.getInt();
         buffer.getInt();
         long expectedBytes = (long) headerBytes + (long) tileCount * entryBytes;
-        if (version != TRAJECTORY_SPATIAL_INDEX_VERSION
+        boolean legacy = version == TRAJECTORY_LEGACY_SPATIAL_INDEX_VERSION;
+        boolean compressed = version == TRAJECTORY_SPATIAL_INDEX_VERSION;
+        if ((!legacy && !compressed)
                 || headerBytes != TRAJECTORY_SPATIAL_INDEX_HEADER_BYTES
                 || chunkStart != normalizeChunkStart(expectedChunkStart)
                 || tileSize != TRAJECTORY_SPATIAL_TILE_METERS
-                || stride != TRAJECTORY_BINARY_STRIDE
-                || entryBytes != TRAJECTORY_SPATIAL_INDEX_ENTRY_BYTES
+                || (legacy && stride != TRAJECTORY_BINARY_STRIDE)
+                || (compressed && stride != TRAJECTORY_BINARY_STRIDE
+                    && stride != TRAJECTORY_COMPACT_STRIDE)
+                || entryBytes != (legacy
+                    ? TRAJECTORY_LEGACY_SPATIAL_INDEX_ENTRY_BYTES
+                    : TRAJECTORY_SPATIAL_INDEX_ENTRY_BYTES)
                 || tileCount < 0 || totalSegments < 0 || expectedBytes != bytes.length) {
             throw new IOException("轨迹空间索引格式不兼容");
         }
         List<SpatialIndexEntry> entries = new ArrayList<>(tileCount);
         int covered = 0;
+        long expectedCompressedOffset = TRAJECTORY_BINARY_HEADER_BYTES;
         for (int i = 0; i < tileCount; i++) {
-            SpatialIndexEntry entry = new SpatialIndexEntry(
-                    new SpatialTileKey(buffer.getInt(), buffer.getInt()),
-                    buffer.getInt(),
-                    buffer.getInt(),
-                    buffer.getFloat(),
-                    buffer.getFloat(),
-                    buffer.getFloat(),
-                    buffer.getFloat()
-            );
-            if (entry.offset != covered || entry.count <= 0
+            SpatialTileKey key = new SpatialTileKey(buffer.getInt(), buffer.getInt());
+            SpatialIndexEntry entry;
+            if (legacy) {
+                entry = new SpatialIndexEntry(
+                        key, buffer.getInt(), buffer.getInt(),
+                        buffer.getFloat(), buffer.getFloat(), buffer.getFloat(), buffer.getFloat());
+            } else {
+                entry = new SpatialIndexEntry(
+                        key, buffer.getLong(), buffer.getInt(), buffer.getInt(),
+                        buffer.getFloat(), buffer.getFloat(), buffer.getFloat(), buffer.getFloat());
+            }
+            boolean invalidLocation = legacy
+                    ? entry.offset != covered
+                    : entry.compressedOffset != expectedCompressedOffset || entry.compressedBytes <= 0;
+            if (invalidLocation || entry.count <= 0
                     || !Float.isFinite(entry.minX) || !Float.isFinite(entry.minY)
                     || !Float.isFinite(entry.maxX) || !Float.isFinite(entry.maxY)
                     || entry.maxX < entry.minX || entry.maxY < entry.minY) {
                 throw new IOException("轨迹空间索引偏移不连续");
             }
             covered += entry.count;
+            if (!legacy) expectedCompressedOffset += entry.compressedBytes;
             entries.add(entry);
         }
         if (covered != totalSegments) throw new IOException("轨迹空间索引记录数不一致");
-        return new SpatialContainerIndex(originX, originY, entries);
+        return new SpatialContainerIndex(version, stride, originX, originY, entries);
     }
 
     private static void validateSpatialContainerHeader(
@@ -981,7 +1332,9 @@ public final class MatsimAnalysisCache {
         ByteBuffer header = ByteBuffer.allocate(TRAJECTORY_BINARY_HEADER_BYTES).order(ByteOrder.LITTLE_ENDIAN);
         readFully(channel, header, 0L);
         header.flip();
-        for (byte expected : TRAJECTORY_BINARY_MAGIC) {
+        byte[] expectedMagic = index.version == TRAJECTORY_SPATIAL_INDEX_VERSION
+                ? TRAJECTORY_ZSTD_MAGIC : TRAJECTORY_BINARY_MAGIC;
+        for (byte expected : expectedMagic) {
             if (header.get() != expected) throw new IOException("轨迹空间容器 magic 不匹配");
         }
         int version = Short.toUnsignedInt(header.getShort());
@@ -995,12 +1348,19 @@ public final class MatsimAnalysisCache {
         double originX = header.getDouble();
         double originY = header.getDouble();
         int indexedSegments = index.entries.stream().mapToInt(entry -> entry.count).sum();
-        long expectedSize = TRAJECTORY_BINARY_HEADER_BYTES
-                + (long) segmentCount * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
+        long expectedSize;
+        if (index.version == TRAJECTORY_SPATIAL_INDEX_VERSION) {
+            SpatialIndexEntry last = index.entries.isEmpty() ? null : index.entries.getLast();
+            expectedSize = last == null ? TRAJECTORY_BINARY_HEADER_BYTES
+                    : last.compressedOffset + last.compressedBytes;
+        } else {
+            expectedSize = TRAJECTORY_BINARY_HEADER_BYTES
+                    + (long) segmentCount * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
+        }
         if (version != TRAJECTORY_BINARY_VERSION
                 || headerBytes != TRAJECTORY_BINARY_HEADER_BYTES
                 || chunkStart != normalizeChunkStart(expectedChunkStart)
-                || stride != TRAJECTORY_BINARY_STRIDE
+                || stride != index.recordStride
                 || segmentCount != indexedSegments
                 || Double.compare(originX, index.originX) != 0
                 || Double.compare(originY, index.originY) != 0
@@ -1029,13 +1389,17 @@ public final class MatsimAnalysisCache {
             return null;
         }
 
-        Path chunkPath = trajectorySpatialContainerPath(data, chunkStart);
         try {
+            SpatialContainerIndex index = readSpatialTrajectoryIndex(
+                    trajectorySpatialIndexPath(data, chunkStart), chunkStart);
+            // v15 空间容器是内部 Zstd 工件，不能直接 sendfile 给仍使用 GJTB 的前端。
+            if (index.version == TRAJECTORY_SPATIAL_INDEX_VERSION) return null;
+            Path chunkPath = trajectoryLegacySpatialContainerPath(data, chunkStart);
             return Files.exists(chunkPath) && Files.size(chunkPath) <= TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES
-                    ? chunkPath
-                    : null;
+                    ? chunkPath : null;
         } catch (IOException e) {
-            throw new IllegalStateException("读取轨迹分块大小失败: " + chunkPath, e);
+            throw new IllegalStateException("读取轨迹分块工件失败: "
+                    + trajectorySpatialIndexPath(data, chunkStart), e);
         }
     }
 
@@ -1053,7 +1417,7 @@ public final class MatsimAnalysisCache {
 
     private static Map<String, Object> trajectorySpatialInfo() {
         Map<String, Object> spatial = new LinkedHashMap<>();
-        spatial.put("layout", "indexed-container-midpoint-envelope-v2");
+        spatial.put("layout", "indexed-zstd-spatial-blocks-v3");
         spatial.put("indexVersion", TRAJECTORY_SPATIAL_INDEX_VERSION);
         spatial.put("indexEntryBytes", TRAJECTORY_SPATIAL_INDEX_ENTRY_BYTES);
         spatial.put("tileSizeMeters", TRAJECTORY_SPATIAL_TILE_METERS);
@@ -1064,6 +1428,8 @@ public final class MatsimAnalysisCache {
         spatial.put("assignment", "segment-midpoint");
         spatial.put("exactBoundsFilter", true);
         spatial.put("fullCityChunk", false);
+        spatial.put("compression", "zstd");
+        spatial.put("independentBlocks", true);
         spatial.put("filesPerStorageChunk", 2);
         return spatial;
     }
@@ -1111,6 +1477,28 @@ public final class MatsimAnalysisCache {
         return "\"traj-view-" + Integer.toUnsignedString(identity.hashCode(), 16) + "\"";
     }
 
+    public static String trajectoryFrameETag(
+            MatsimData data,
+            int time,
+            int bucketSeconds,
+            String visibilityMode,
+            Double minX,
+            Double minY,
+            Double maxX,
+            Double maxY
+    ) {
+        Map<String, Object> manifest = readReadyTrajectoryLightManifest(data);
+        String generation = manifest == null ? Integer.toHexString(trajectoryCacheKey(data).hashCode())
+                : String.valueOf(manifest.getOrDefault("cacheGeneration", "missing"));
+        int window = normalizeFrameBucketSeconds(bucketSeconds);
+        int frameStart = Math.floorDiv(Math.max(0, time), window) * window;
+        String identity = generation + ":" + frameStart + ":" + window + ":"
+                + normalizeTrajectoryVisibility(visibilityMode) + ":"
+                + String.valueOf(minX) + ":" + String.valueOf(minY) + ":"
+                + String.valueOf(maxX) + ":" + String.valueOf(maxY);
+        return "\"traj-frame-" + Integer.toUnsignedString(identity.hashCode(), 16) + "\"";
+    }
+
     /**
      * 磁盘轻量缓存已就绪时把 personTracks 装入内存（不解析 events，缓存缺失直接返回 false）。
      * 供模型加载路径使用：磁盘缓存齐全时 ModelCacheManager 不会再跑 buildCaches，
@@ -1118,10 +1506,17 @@ public final class MatsimAnalysisCache {
      */
     public static boolean preloadPersonTracksIfReady(MatsimData data) {
         if (data.getPersonTracks() != null && !data.getPersonTracks().isEmpty()) {
-            return true;
+            long limit = maxMaterializedPersonTracks();
+            if (data.getPersonTracks().size() <= limit && personTracksFitHeapBudget(data)) {
+                return true;
+            }
+            int count = data.getPersonTracks().size();
+            data.setPersonTracks(new it.unimi.dsi.fastutil.objects.ObjectOpenHashSet<>());
+            log.warn("乘客明细超过堆预算，释放内存副本并切换磁盘态: model={}, tracks={}, limit={}",
+                    data.getName(), count, limit);
         }
-        if (data.isLargeModel() && !personTracksFitHeapBudget(data)) {
-            log.info("大模型乘客明细保持磁盘态: model={}, tracks={}, maxHeap={}MB",
+        if (!personTracksFitHeapBudget(data)) {
+            log.info("乘客明细保持磁盘态: model={}, tracks={}, maxHeap={}MB",
                     data.getName(), personTrackCount(data), Runtime.getRuntime().maxMemory() / 1024 / 1024);
             return false;
         }
@@ -1130,12 +1525,16 @@ public final class MatsimAnalysisCache {
 
     /** 磁盘乘客明细是否与当前 events 指纹一致，可用于不加载模型的缓存就绪探测。 */
     public static boolean isPersonTrackStoreReady(MatsimData data) {
+        return isPersonTracksCacheReady(data) || MatsimPersonTrackStore.isPartitionStoreReady(data);
+    }
+
+    static boolean isPersonTrackSourceReady(MatsimData data) {
         return isPersonTracksCacheReady(data);
     }
 
     /** manifest 中的记录数；未知返回 -1。该方法只读几 KB JSON，不触碰 300MB+ gzip。 */
     public static long personTrackCount(MatsimData data) {
-        if (!isPersonTracksCacheReady(data)) return -1L;
+        if (!isPersonTracksCacheReady(data)) return MatsimPersonTrackStore.trackCount(data);
         try {
             Map<String, Object> manifest = JSON.readValue(personTrackManifestPath(data).toFile(), MAP_TYPE);
             Object value = manifest.get("trackCount");
@@ -1149,12 +1548,16 @@ public final class MatsimAnalysisCache {
     private static boolean personTracksFitHeapBudget(MatsimData data) {
         long count = personTrackCount(data);
         if (count < 0) return false;
-        long configuredMax = Long.getLong("gjcxfzksh.person-tracks.max-materialized", 1_500_000L);
+        long configuredMax = maxMaterializedPersonTracks();
         // 一个 PTPersonTrack 连同 6 个 ID 包装、String/HashSet 桶的实测量级远高于 TSV；
         // 用 384B/条做保守门槛，并且最多占 max heap 的 25%。
         long estimatedBytes = saturatedMultiply(count, 384L);
         long heapBudget = Math.max(32L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 4);
         return count <= Math.max(0L, configuredMax) && estimatedBytes <= heapBudget;
+    }
+
+    static long maxMaterializedPersonTracks() {
+        return Math.max(0L, Long.getLong("gjcxfzksh.person-tracks.max-materialized", 1_500_000L));
     }
 
     private static long saturatedMultiply(long left, long right) {
@@ -1294,6 +1697,7 @@ public final class MatsimAnalysisCache {
             VehicleTrajectoryHandler handler,
             TrajectoryMeta trajectoryMeta
     ) throws Exception {
+        handler.finishProgress();
         handler.assertCompleteNetworkCoverage();
         invalidateTrajectoryLightManifestCache(data);
         MatsimCachePaths.recreateVersionDir(data, TRAJECTORY_CACHE_VERSION);
@@ -1462,7 +1866,7 @@ public final class MatsimAnalysisCache {
             long fullChunkBytes = TRAJECTORY_BINARY_HEADER_BYTES
                     + (long) binarySegments.size() * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
             if (fullChunkBytes <= TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) {
-                chunk.put("binaryFile", String.format(Locale.ROOT, "spatial-%06d.bin", chunkStart));
+                chunk.put("binaryAssembly", "on-demand-from-zstd-spatial-blocks");
                 chunk.put("fullChunkAvailable", true);
             } else {
                 chunk.put("fullChunkAvailable", false);
@@ -1763,6 +2167,139 @@ public final class MatsimAnalysisCache {
         }
     }
 
+    private static void writeTrajectoryDictionaries(
+            MatsimData data,
+            MatsimLinkGeometryIndex links,
+            ConcurrentMap<String, Integer> vehicleIndexById,
+            int vehicleCount,
+            Int2IntOpenHashMap vehicleModes
+    ) throws Exception {
+        ByteBuffer linkRaw = ByteBuffer.allocate(Math.addExact(32, Math.multiplyExact(links.size(), 20)))
+                .order(ByteOrder.LITTLE_ENDIAN);
+        linkRaw.put(TRAJECTORY_LINK_DICTIONARY_MAGIC);
+        linkRaw.putShort((short) 1);
+        linkRaw.putShort((short) 32);
+        linkRaw.putInt(links.size());
+        linkRaw.putInt(20);
+        linkRaw.putDouble(links.originX());
+        linkRaw.putDouble(links.originY());
+        for (int index = 0; index < links.size(); index++) {
+            linkRaw.putFloat(links.relativeFromX(index));
+            linkRaw.putFloat(links.relativeFromY(index));
+            linkRaw.putFloat(links.relativeToX(index));
+            linkRaw.putFloat(links.relativeToY(index));
+            linkRaw.putFloat((float) links.lengthMeters(index));
+        }
+        writeZstdDictionaryArtifact(trajectoryLinkDictionaryPath(data), linkRaw.array());
+
+        String[] vehicleIds = new String[Math.max(0, vehicleCount)];
+        vehicleIndexById.forEach((id, index) -> {
+            if (index != null && index >= 0 && index < vehicleIds.length) vehicleIds[index] = id;
+        });
+        ByteArrayOutputStream vehicleRaw = new ByteArrayOutputStream(16 + vehicleCount * 12);
+        vehicleRaw.write(TRAJECTORY_VEHICLE_DICTIONARY_MAGIC);
+        writeShortLE(vehicleRaw, 1);
+        writeShortLE(vehicleRaw, 16);
+        writeIntLE(vehicleRaw, vehicleIds.length);
+        writeIntLE(vehicleRaw, 0);
+        for (int index = 0; index < vehicleIds.length; index++) {
+            int mode = vehicleModes.get(index);
+            vehicleRaw.write(mode < 0 ? 255 : mode);
+            writeZeroBytes(vehicleRaw, 3);
+            byte[] id = (vehicleIds[index] == null ? "" : vehicleIds[index]).getBytes(StandardCharsets.UTF_8);
+            writeIntLE(vehicleRaw, id.length);
+            vehicleRaw.write(id);
+        }
+        writeZstdDictionaryArtifact(trajectoryVehicleDictionaryPath(data), vehicleRaw.toByteArray());
+        TRAJECTORY_DICTIONARIES.remove(trajectoryRepairKey(data));
+    }
+
+    private static void writeZstdDictionaryArtifact(Path path, byte[] raw) throws Exception {
+        byte[] encoded = Zstd.compress(raw, TRAJECTORY_ZSTD_LEVEL);
+        Path temp = path.resolveSibling(path.getFileName() + ".tmp");
+        Files.write(temp, encoded);
+        moveAtomically(temp, path);
+    }
+
+    private static TrajectoryDictionaries loadTrajectoryDictionaries(MatsimData data) throws IOException {
+        Path linksPath = trajectoryLinkDictionaryPath(data);
+        Path vehiclesPath = trajectoryVehicleDictionaryPath(data);
+        String signature = Files.size(linksPath) + ":" + Files.getLastModifiedTime(linksPath).toMillis()
+                + ":" + Files.size(vehiclesPath) + ":" + Files.getLastModifiedTime(vehiclesPath).toMillis();
+        String cacheKey = trajectoryRepairKey(data);
+        CachedTrajectoryDictionaries cached = TRAJECTORY_DICTIONARIES.get(cacheKey);
+        if (cached != null && cached.signature.equals(signature)) return cached.value;
+
+        byte[] linkRaw = decompressZstdArtifact(linksPath);
+        ByteBuffer links = ByteBuffer.wrap(linkRaw).order(ByteOrder.LITTLE_ENDIAN);
+        requireMagic(links, TRAJECTORY_LINK_DICTIONARY_MAGIC, "link geometry");
+        int linkVersion = Short.toUnsignedInt(links.getShort());
+        int linkHeader = Short.toUnsignedInt(links.getShort());
+        int linkCount = links.getInt();
+        int linkRecordBytes = links.getInt();
+        double originX = links.getDouble();
+        double originY = links.getDouble();
+        if (linkVersion != 1 || linkHeader != 32 || linkRecordBytes != 20 || linkCount < 0
+                || linkRaw.length != linkHeader + linkCount * linkRecordBytes) {
+            throw new IOException("轨迹 link 几何字典格式不兼容");
+        }
+        float[] fromX = new float[linkCount];
+        float[] fromY = new float[linkCount];
+        float[] toX = new float[linkCount];
+        float[] toY = new float[linkCount];
+        float[] lengths = new float[linkCount];
+        for (int i = 0; i < linkCount; i++) {
+            fromX[i] = links.getFloat();
+            fromY[i] = links.getFloat();
+            toX[i] = links.getFloat();
+            toY[i] = links.getFloat();
+            lengths[i] = links.getFloat();
+        }
+
+        byte[] vehicleRaw = decompressZstdArtifact(vehiclesPath);
+        ByteBuffer vehicles = ByteBuffer.wrap(vehicleRaw).order(ByteOrder.LITTLE_ENDIAN);
+        requireMagic(vehicles, TRAJECTORY_VEHICLE_DICTIONARY_MAGIC, "vehicle metadata");
+        int vehicleVersion = Short.toUnsignedInt(vehicles.getShort());
+        int vehicleHeader = Short.toUnsignedInt(vehicles.getShort());
+        int vehicleCount = vehicles.getInt();
+        vehicles.getInt();
+        if (vehicleVersion != 1 || vehicleHeader != 16 || vehicleCount < 0) {
+            throw new IOException("轨迹车辆元数据字典格式不兼容");
+        }
+        byte[] modes = new byte[vehicleCount];
+        for (int i = 0; i < vehicleCount; i++) {
+            if (vehicles.remaining() < 8) throw new EOFException("车辆元数据字典不完整");
+            modes[i] = vehicles.get();
+            vehicles.position(vehicles.position() + 3);
+            int idBytes = vehicles.getInt();
+            if (idBytes < 0 || idBytes > vehicles.remaining()) {
+                throw new EOFException("车辆元数据字典 id 不完整");
+            }
+            vehicles.position(vehicles.position() + idBytes);
+        }
+        if (vehicles.hasRemaining()) throw new IOException("车辆元数据字典存在尾部脏数据");
+        TrajectoryDictionaries result = new TrajectoryDictionaries(
+                originX, originY, fromX, fromY, toX, toY, lengths, modes);
+        TRAJECTORY_DICTIONARIES.put(cacheKey, new CachedTrajectoryDictionaries(signature, result));
+        return result;
+    }
+
+    private static byte[] decompressZstdArtifact(Path path) throws IOException {
+        byte[] encoded = Files.readAllBytes(path);
+        long rawBytes = Zstd.decompressedSize(encoded);
+        if (rawBytes <= 0 || rawBytes > Integer.MAX_VALUE) {
+            throw new IOException("Zstd 字典缺少有效的原始长度: " + path);
+        }
+        return Zstd.decompress(encoded, Math.toIntExact(rawBytes));
+    }
+
+    private static void requireMagic(ByteBuffer buffer, byte[] expected, String name) throws IOException {
+        if (buffer.remaining() < expected.length) throw new EOFException(name + " dictionary header incomplete");
+        for (byte value : expected) {
+            if (buffer.get() != value) throw new IOException(name + " dictionary magic mismatch");
+        }
+    }
+
     private static void writeTrajectoryBinaryChunk(
             Path path,
             int chunkStart,
@@ -1813,7 +2350,6 @@ public final class MatsimAnalysisCache {
             ));
         }
 
-        List<BinaryTrajectorySegment> ordered = new ArrayList<>(segments.size());
         List<SpatialIndexEntry> entries = new ArrayList<>(byTile.size());
         int offset = 0;
         for (Map.Entry<SpatialTileKey, List<BinaryTrajectorySegment>> entry : byTile.entrySet()) {
@@ -1827,24 +2363,154 @@ public final class MatsimAnalysisCache {
                 );
             }
             entries.add(envelope.toIndexEntry(entry.getKey(), offset));
-            ordered.addAll(entry.getValue());
             offset += entry.getValue().size();
         }
-        writeTrajectoryBinaryChunk(
+        writeZstdSpatialContainer(
                 trajectorySpatialContainerPath(data, chunkStart),
                 chunkStart,
                 chunkEnd,
-                0,
-                ordered.size() * 2,
                 originX,
                 originY,
-                ordered
+                byTile,
+                entries,
+                segments.size()
         );
-        writeSpatialTrajectoryIndex(data, chunkStart, originX, originY, maxSegmentSpan, entries, ordered.size());
+        writeSpatialTrajectoryIndex(
+                data, chunkStart, originX, originY, maxSegmentSpan,
+                entries, segments.size(), TRAJECTORY_BINARY_STRIDE);
         Map<String, Object> payload = spatialChunkPayload(byTile.keySet(), maxSegmentSpan);
         putSpatialContainerFiles(payload, chunkStart);
         payload.put("globalStats", globalStats.payload());
         return payload;
+    }
+
+    /**
+     * 每个 4096m 空间块单独生成一个 Zstd frame。块内仍是原有 36-byte GJTB row，
+     * 因此解压后可以零转换进入既有筛选/返回路径，不改变前端协议和浮点精度。
+     */
+    private static void writeZstdSpatialContainer(
+            Path container,
+            int chunkStart,
+            int chunkEnd,
+            double originX,
+            double originY,
+            Map<SpatialTileKey, List<BinaryTrajectorySegment>> byTile,
+            List<SpatialIndexEntry> entries,
+            int totalSegments
+    ) throws Exception {
+        Path temp = container.resolveSibling(container.getFileName() + ".tmp");
+        try (OutputStream out = new BufferedOutputStream(
+                Files.newOutputStream(temp), TRAJECTORY_IO_BUFFER_BYTES)) {
+            writeZstdSpatialHeader(
+                    out, chunkStart, chunkEnd, totalSegments, originX, originY,
+                    TRAJECTORY_BINARY_STRIDE);
+            long compressedOffset = TRAJECTORY_BINARY_HEADER_BYTES;
+            for (SpatialIndexEntry entry : entries) {
+                List<BinaryTrajectorySegment> tile = byTile.get(entry.key);
+                if (tile == null || tile.size() != entry.count) {
+                    throw new IOException("轨迹空间块记录数不一致: " + entry.key.x + "," + entry.key.y);
+                }
+                ByteBuffer rows = ByteBuffer.allocate(Math.multiplyExact(
+                        entry.count, TRAJECTORY_BINARY_STRIDE * Float.BYTES
+                )).order(ByteOrder.LITTLE_ENDIAN);
+                for (BinaryTrajectorySegment segment : tile) {
+                    rows.putFloat(segment.startTime);
+                    rows.putFloat(segment.endTime);
+                    rows.putFloat((float) (segment.startX - originX));
+                    rows.putFloat((float) (segment.startY - originY));
+                    rows.putFloat((float) (segment.endX - originX));
+                    rows.putFloat((float) (segment.endY - originY));
+                    rows.putFloat(segment.modeCode);
+                    rows.putInt(segment.vehicleIndex);
+                    rows.putFloat(segment.distanceMeters);
+                }
+                byte[] encoded = Zstd.compress(rows.array(), TRAJECTORY_ZSTD_LEVEL);
+                if (encoded.length == 0) throw new IOException("Zstd 轨迹空间块压缩结果为空");
+                entry.compressedOffset = compressedOffset;
+                entry.compressedBytes = encoded.length;
+                out.write(encoded);
+                compressedOffset += encoded.length;
+            }
+        } catch (Exception e) {
+            Files.deleteIfExists(temp);
+            throw e;
+        }
+        moveAtomically(temp, container);
+    }
+
+    private static void writeZstdSpatialContainerFromSortedRaw(
+            Path sortedRaw,
+            Path container,
+            int chunkStart,
+            int chunkEnd,
+            double originX,
+            double originY,
+            List<SpatialIndexEntry> entries,
+            int totalSegments
+    ) throws Exception {
+        Path temp = container.resolveSibling(container.getFileName() + ".tmp");
+        try (FileChannel input = FileChannel.open(sortedRaw, StandardOpenOption.READ);
+             OutputStream out = new BufferedOutputStream(
+                     Files.newOutputStream(temp), TRAJECTORY_IO_BUFFER_BYTES)) {
+            long expectedRawBytes = TRAJECTORY_BINARY_HEADER_BYTES
+                    + (long) totalSegments * TRAJECTORY_COMPACT_STRIDE * Integer.BYTES;
+            if (input.size() != expectedRawBytes) {
+                throw new IOException("轨迹排序临时文件长度不一致");
+            }
+            writeZstdSpatialHeader(
+                    out, chunkStart, chunkEnd, totalSegments, originX, originY,
+                    TRAJECTORY_COMPACT_STRIDE);
+            long compressedOffset = TRAJECTORY_BINARY_HEADER_BYTES;
+            for (SpatialIndexEntry entry : entries) {
+                int rawBytes = Math.multiplyExact(
+                        entry.count, TRAJECTORY_COMPACT_STRIDE * Integer.BYTES);
+                ByteBuffer rows = ByteBuffer.allocate(rawBytes);
+                readFully(input, rows, TRAJECTORY_BINARY_HEADER_BYTES
+                        + (long) entry.offset * TRAJECTORY_COMPACT_STRIDE * Integer.BYTES);
+                byte[] encoded = Zstd.compress(rows.array(), TRAJECTORY_ZSTD_LEVEL);
+                if (encoded.length == 0) throw new IOException("Zstd 轨迹空间块压缩结果为空");
+                entry.compressedOffset = compressedOffset;
+                entry.compressedBytes = encoded.length;
+                out.write(encoded);
+                compressedOffset += encoded.length;
+            }
+        } catch (Exception e) {
+            Files.deleteIfExists(temp);
+            throw e;
+        }
+        moveAtomically(temp, container);
+    }
+
+    private static void writeZstdSpatialHeader(
+            OutputStream out,
+            int chunkStart,
+            int chunkEnd,
+            int segmentCount,
+            double originX,
+            double originY,
+            int recordStride
+    ) throws IOException {
+        out.write(TRAJECTORY_ZSTD_MAGIC);
+        writeShortLE(out, TRAJECTORY_BINARY_VERSION);
+        writeShortLE(out, TRAJECTORY_BINARY_HEADER_BYTES);
+        writeIntLE(out, chunkStart);
+        writeIntLE(out, chunkEnd);
+        writeIntLE(out, segmentCount);
+        writeIntLE(out, 0);
+        writeIntLE(out, segmentCount * 2);
+        writeIntLE(out, recordStride);
+        writeDoubleLE(out, originX);
+        writeDoubleLE(out, originY);
+        writeIntLE(out, TRAJECTORY_CHUNK_SECONDS);
+        writeZeroBytes(out, TRAJECTORY_BINARY_HEADER_BYTES - 52);
+    }
+
+    private static void moveAtomically(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private static void writeSpatialTrajectoryIndex(
@@ -1854,7 +2520,8 @@ public final class MatsimAnalysisCache {
             double originY,
             double maxSegmentSpan,
             List<SpatialIndexEntry> entries,
-            int totalSegments
+            int totalSegments,
+            int recordStride
     ) throws Exception {
         ByteBuffer buffer = ByteBuffer.allocate(
                 TRAJECTORY_SPATIAL_INDEX_HEADER_BYTES
@@ -1866,7 +2533,7 @@ public final class MatsimAnalysisCache {
         buffer.putInt(normalizeChunkStart(chunkStart));
         buffer.putInt(TRAJECTORY_SPATIAL_TILE_METERS);
         buffer.putInt(entries.size());
-        buffer.putInt(TRAJECTORY_BINARY_STRIDE);
+        buffer.putInt(recordStride);
         buffer.putInt(totalSegments);
         buffer.putInt(0);
         buffer.putDouble(originX);
@@ -1877,7 +2544,8 @@ public final class MatsimAnalysisCache {
         for (SpatialIndexEntry entry : entries) {
             buffer.putInt(entry.key.x);
             buffer.putInt(entry.key.y);
-            buffer.putInt(entry.offset);
+            buffer.putLong(entry.compressedOffset);
+            buffer.putInt(entry.compressedBytes);
             buffer.putInt(entry.count);
             buffer.putFloat(entry.minX);
             buffer.putFloat(entry.minY);
@@ -1896,8 +2564,9 @@ public final class MatsimAnalysisCache {
 
     private static void putSpatialContainerFiles(Map<String, Object> payload, int chunkStart) {
         int normalized = normalizeChunkStart(chunkStart);
-        payload.put("containerFile", String.format(Locale.ROOT, "spatial-%06d.bin", normalized));
+        payload.put("containerFile", String.format(Locale.ROOT, "spatial-%06d.zst", normalized));
         payload.put("spatialIndexFile", String.format(Locale.ROOT, "spatial-%06d.idx", normalized));
+        payload.put("containerCompression", "zstd-independent-spatial-blocks");
         payload.put("artifactFiles", 2);
     }
 
@@ -1920,37 +2589,44 @@ public final class MatsimAnalysisCache {
             int chunkEnd,
             double originX,
             double originY,
-            List<Path> rawPaths
+            List<Path> rawPaths,
+            MatsimLinkGeometryIndex linkGeometry,
+            Int2IntOpenHashMap vehicleModes
     ) throws Exception {
         Map<SpatialTileKey, SpatialTileAggregate> aggregates = new TreeMap<>();
         TrajectoryGlobalStatsAccumulator globalStats = new TrajectoryGlobalStatsAccumulator(chunkStart);
-        byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
+        byte[] row = new byte[TRAJECTORY_COMPACT_STRIDE * Integer.BYTES];
         ByteBuffer record = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
         double maxSegmentSpan = 0.0;
         for (Path rawPath : rawPaths) {
             try (InputStream in = new BufferedInputStream(Files.newInputStream(rawPath), TRAJECTORY_IO_BUFFER_BYTES)) {
                 while (readFully(in, row)) {
                     record.clear();
-                    record.getFloat();
-                    record.getFloat();
-                    float startX = record.getFloat();
-                    float startY = record.getFloat();
-                    float endX = record.getFloat();
-                    float endY = record.getFloat();
-                    int modeCode = Math.round(record.getFloat());
-                    record.getInt();
-                    float distanceMeters = record.getFloat();
+                    int originalStart = record.getInt();
+                    int originalEnd = record.getInt();
+                    int vehicleIndex = record.getInt();
+                    int linkIndex = record.getInt();
+                    VehicleSegment segment = compactSegment(
+                            linkGeometry, linkIndex, originalStart, originalEnd, chunkStart);
+                    int modeCode = vehicleModes.get(vehicleIndex);
+                    if (segment == null || modeCode < 0) {
+                        throw new IOException("紧凑轨迹记录引用了无效字典项");
+                    }
+                    float startX = (float) (segment.fromX - originX);
+                    float startY = (float) (segment.fromY - originY);
+                    float endX = (float) (segment.toX - originX);
+                    float endY = (float) (segment.toY - originY);
                     SpatialTileKey key = spatialTileForMidpoint(
-                            originX + (startX + endX) / 2.0,
-                            originY + (startY + endY) / 2.0
+                            (segment.fromX + segment.toX) / 2.0,
+                            (segment.fromY + segment.toY) / 2.0
                     );
                     aggregates.computeIfAbsent(key, ignored -> new SpatialTileAggregate())
                             .add(startX, startY, endX, endY);
                     globalStats.add(
-                            record.getFloat(0),
-                            record.getFloat(Float.BYTES),
+                            segment.startTime,
+                            segment.endTime,
                             modeCode,
-                            distanceMeters
+                            (float) segment.distance
                     );
                     maxSegmentSpan = Math.max(maxSegmentSpan, Math.max(
                             Math.abs(endX - startX),
@@ -1968,12 +2644,12 @@ public final class MatsimAnalysisCache {
             totalSegments += indexEntry.count;
         }
         long containerBytes = TRAJECTORY_BINARY_HEADER_BYTES
-                + (long) totalSegments * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
+                + (long) totalSegments * TRAJECTORY_COMPACT_STRIDE * Integer.BYTES;
         if (containerBytes > Integer.MAX_VALUE) {
             throw new IOException("单个 30s 轨迹容器超过 2GB，无法安全内存映射: " + containerBytes);
         }
         Path container = trajectorySpatialContainerPath(data, chunkStart);
-        Path temp = container.resolveSibling(container.getFileName() + ".tmp");
+        Path temp = container.resolveSibling(container.getFileName() + ".raw-sort.tmp");
         Map<SpatialTileKey, SpatialIndexEntry> byKey = entries.stream().collect(Collectors.toMap(
                 entry -> entry.key,
                 entry -> entry,
@@ -2001,7 +2677,7 @@ public final class MatsimAnalysisCache {
             mapped.putInt(totalSegments);
             mapped.putInt(0);
             mapped.putInt(totalSegments * 2);
-            mapped.putInt(TRAJECTORY_BINARY_STRIDE);
+            mapped.putInt(TRAJECTORY_COMPACT_STRIDE);
             mapped.putDouble(originX);
             mapped.putDouble(originY);
             mapped.putInt(TRAJECTORY_CHUNK_SECONDS);
@@ -2011,32 +2687,33 @@ public final class MatsimAnalysisCache {
                 try (InputStream in = new BufferedInputStream(Files.newInputStream(rawPath), TRAJECTORY_IO_BUFFER_BYTES)) {
                     while (readFully(in, row)) {
                         record.clear();
-                        record.getFloat();
-                        record.getFloat();
-                        float startX = record.getFloat();
-                        float startY = record.getFloat();
-                        float endX = record.getFloat();
-                        float endY = record.getFloat();
+                        int originalStart = record.getInt();
+                        int originalEnd = record.getInt();
+                        record.getInt();
+                        int linkIndex = record.getInt();
+                        VehicleSegment segment = compactSegment(
+                                linkGeometry, linkIndex, originalStart, originalEnd, chunkStart);
+                        if (segment == null) throw new IOException("紧凑轨迹记录时间范围无效");
                         SpatialTileKey key = spatialTileForMidpoint(
-                                originX + (startX + endX) / 2.0,
-                                originY + (startY + endY) / 2.0
+                                (segment.fromX + segment.toX) / 2.0,
+                                (segment.fromY + segment.toY) / 2.0
                         );
                         SpatialIndexEntry target = byKey.get(key);
                         int recordIndex = target.offset + target.written++;
                         mapped.position(TRAJECTORY_BINARY_HEADER_BYTES
-                                + recordIndex * TRAJECTORY_BINARY_STRIDE * Float.BYTES);
+                                + recordIndex * TRAJECTORY_COMPACT_STRIDE * Integer.BYTES);
                         mapped.put(row);
                     }
                 }
             }
             mapped.force();
         }
-        try {
-            Files.move(temp, container, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        } catch (Exception e) {
-            Files.move(temp, container, StandardCopyOption.REPLACE_EXISTING);
-        }
-        writeSpatialTrajectoryIndex(data, chunkStart, originX, originY, maxSegmentSpan, entries, totalSegments);
+        writeZstdSpatialContainerFromSortedRaw(
+                temp, container, chunkStart, chunkEnd, originX, originY, entries, totalSegments);
+        Files.deleteIfExists(temp);
+        writeSpatialTrajectoryIndex(
+                data, chunkStart, originX, originY, maxSegmentSpan,
+                entries, totalSegments, TRAJECTORY_COMPACT_STRIDE);
         Map<String, Object> payload = spatialChunkPayload(aggregates.keySet(), maxSegmentSpan);
         putSpatialContainerFiles(payload, chunkStart);
         payload.put("globalStats", globalStats.payload());
@@ -2356,7 +3033,7 @@ public final class MatsimAnalysisCache {
                     || !(actual.get(entry.getKey()) instanceof Map<?, ?> actualItem)) {
                 return false;
             }
-            if (trajectorySourceItemEquals(expectedItem, actualItem)) {
+            if (MatsimSourceFingerprint.sameSourceItem(entry.getKey(), expectedItem, actualItem)) {
                 continue;
             }
             // trajectory-v14 早期版本在模型加载后把兼容转换 config 写入 manifest；
@@ -2389,9 +3066,12 @@ public final class MatsimAnalysisCache {
         long eventsSize = ((Number) manifest.getOrDefault("eventsSize", -1)).longValue();
         Object oldSignature = manifest.get("eventsSignature");
         if (oldSignature != null) {
-            return eventsSize == fileSize(data.getOutfile().getEvents())
-                    && MatsimSourceFingerprint.signature(data.getOutfile().getEvents())
-                    .equals(String.valueOf(oldSignature));
+            Map<String, Object> current = trajectorySource(data.getOutfile().getEvents());
+            Map<String, Object> stored = new LinkedHashMap<>();
+            stored.put("size", eventsSize);
+            stored.put("modified", eventsModified);
+            stored.put("signature", oldSignature);
+            return MatsimSourceFingerprint.sameSourceItem("events", current, stored);
         }
         return eventsModified == lastModified(data.getOutfile().getEvents())
                 && eventsSize == fileSize(data.getOutfile().getEvents());
@@ -2465,12 +3145,25 @@ public final class MatsimAnalysisCache {
 
     private static Path trajectorySpatialContainerPath(MatsimData data, int start) {
         return trajectoryCacheDir(data)
+                .resolve(String.format(Locale.ROOT, "spatial-%06d.zst", normalizeChunkStart(start)));
+    }
+
+    private static Path trajectoryLegacySpatialContainerPath(MatsimData data, int start) {
+        return trajectoryCacheDir(data)
                 .resolve(String.format(Locale.ROOT, "spatial-%06d.bin", normalizeChunkStart(start)));
     }
 
     private static Path trajectorySpatialIndexPath(MatsimData data, int start) {
         return trajectoryCacheDir(data)
                 .resolve(String.format(Locale.ROOT, "spatial-%06d.idx", normalizeChunkStart(start)));
+    }
+
+    private static Path trajectoryLinkDictionaryPath(MatsimData data) {
+        return trajectoryCacheDir(data).resolve(TRAJECTORY_LINK_DICTIONARY_FILE);
+    }
+
+    private static Path trajectoryVehicleDictionaryPath(MatsimData data) {
+        return trajectoryCacheDir(data).resolve(TRAJECTORY_VEHICLE_DICTIONARY_FILE);
     }
 
     private static SpatialTileKey spatialTileForMidpoint(double x, double y) {
@@ -2508,6 +3201,14 @@ public final class MatsimAnalysisCache {
         } catch (Exception e) {
             throw new IllegalStateException("读取源文件大小失败: " + filePath, e);
         }
+    }
+
+    private static boolean shouldStreamTrajectoryBuild(MatsimData data) {
+        return shouldStreamTrajectoryBuild(data.isLargeModel(), fileSize(data.getOutfile().getEvents()));
+    }
+
+    static boolean shouldStreamTrajectoryBuild(boolean largeModel, long compressedEventsBytes) {
+        return largeModel || compressedEventsBytes >= TRAJECTORY_STREAMING_EVENTS_THRESHOLD_BYTES;
     }
 
     private static String idString(Object value) {
@@ -2846,6 +3547,8 @@ public final class MatsimAnalysisCache {
     private static final class SpatialIndexEntry {
         private final SpatialTileKey key;
         private final int offset;
+        private long compressedOffset;
+        private int compressedBytes;
         private final int count;
         private final float minX;
         private final float minY;
@@ -2870,6 +3573,21 @@ public final class MatsimAnalysisCache {
             this.maxX = maxX;
             this.maxY = maxY;
         }
+
+        private SpatialIndexEntry(
+                SpatialTileKey key,
+                long compressedOffset,
+                int compressedBytes,
+                int count,
+                float minX,
+                float minY,
+                float maxX,
+                float maxY
+        ) {
+            this(key, 0, count, minX, minY, maxX, maxY);
+            this.compressedOffset = compressedOffset;
+            this.compressedBytes = compressedBytes;
+        }
     }
 
     private static final class SpatialTileAggregate {
@@ -2893,18 +3611,224 @@ public final class MatsimAnalysisCache {
     }
 
     private static final class SpatialContainerIndex {
+        private final int version;
+        private final int recordStride;
         private final double originX;
         private final double originY;
         private final List<SpatialIndexEntry> entries;
 
         private SpatialContainerIndex(
+                int version,
+                int recordStride,
                 double originX,
                 double originY,
                 List<SpatialIndexEntry> entries
         ) {
+            this.version = version;
+            this.recordStride = recordStride;
             this.originX = originX;
             this.originY = originY;
             this.entries = entries;
+        }
+    }
+
+    private record CachedTrajectoryDictionaries(String signature, TrajectoryDictionaries value) {
+    }
+
+    private record TrajectoryArtifactFingerprint(
+            String path,
+            long size,
+            long modified,
+            String fileKey
+    ) {
+    }
+
+    private record TrajectorySpatialSelectionKey(
+            String modelPath,
+            String cacheGeneration,
+            int chunkStart,
+            String visibility,
+            boolean hasBounds,
+            long minX,
+            long minY,
+            long maxX,
+            long maxY,
+            TrajectoryArtifactFingerprint index,
+            TrajectoryArtifactFingerprint container
+    ) {
+    }
+
+    private record CachedTrajectorySpatialSelection(
+            int chunkStart,
+            byte[][] playbackWindows,
+            int[] playbackRowCounts,
+            double originX,
+            double originY
+    ) {
+        private long estimatedBytes() {
+            long bytes = 192L + playbackRowCounts.length * Integer.BYTES;
+            for (byte[] window : playbackWindows) bytes += 16L + window.length;
+            return bytes;
+        }
+    }
+
+    private static final class TrajectorySpatialSelectionAccumulator {
+        private static final int PLAYBACK_WINDOWS_PER_CHUNK =
+                TRAJECTORY_CHUNK_SECONDS / TRAJECTORY_PLAYBACK_WINDOW_SECONDS;
+
+        private final int chunkStart;
+        private final double originX;
+        private final double originY;
+        private final ByteArrayOutputStream[] rows =
+                new ByteArrayOutputStream[PLAYBACK_WINDOWS_PER_CHUNK];
+        private final IntOpenHashSet[] vehicles = new IntOpenHashSet[PLAYBACK_WINDOWS_PER_CHUNK];
+        private final int[] rowCounts = new int[PLAYBACK_WINDOWS_PER_CHUNK];
+
+        private TrajectorySpatialSelectionAccumulator(int chunkStart, double originX, double originY) {
+            this.chunkStart = chunkStart;
+            this.originX = originX;
+            this.originY = originY;
+            for (int index = 0; index < PLAYBACK_WINDOWS_PER_CHUNK; index++) {
+                rows[index] = new ByteArrayOutputStream(1024 * 1024);
+                vehicles[index] = new IntOpenHashSet();
+            }
+        }
+
+        private void append(
+                ByteBuffer source,
+                int sourceRowCount,
+                String normalizedVisibility,
+                boolean hasBounds,
+                Double requestedMinX,
+                Double requestedMinY,
+                Double requestedMaxX,
+                Double requestedMaxY,
+                double responseOriginX,
+                double responseOriginY
+        ) throws IOException {
+            byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
+            ByteBuffer record = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
+            for (int rowIndex = 0; rowIndex < sourceRowCount; rowIndex++) {
+                source.get(row);
+                record.clear();
+                float startTime = record.getFloat();
+                float endTime = record.getFloat();
+                float startX = record.getFloat();
+                float startY = record.getFloat();
+                float endX = record.getFloat();
+                float endY = record.getFloat();
+                int modeCode = Math.round(record.getFloat());
+                int vehicleIndex = record.getInt();
+                record.getFloat();
+                if ("public".equals(normalizedVisibility) && modeCode == 2) continue;
+                if ("private".equals(normalizedVisibility) && modeCode != 2) continue;
+                if (hasBounds) {
+                    double segmentMinX = responseOriginX + Math.min(startX, endX);
+                    double segmentMaxX = responseOriginX + Math.max(startX, endX);
+                    double segmentMinY = responseOriginY + Math.min(startY, endY);
+                    double segmentMaxY = responseOriginY + Math.max(startY, endY);
+                    if (segmentMaxX < requestedMinX || segmentMinX > requestedMaxX
+                            || segmentMaxY < requestedMinY || segmentMinY > requestedMaxY) continue;
+                }
+                for (int windowIndex = 0; windowIndex < PLAYBACK_WINDOWS_PER_CHUNK; windowIndex++) {
+                    int windowStart = chunkStart
+                            + windowIndex * TRAJECTORY_PLAYBACK_WINDOW_SECONDS;
+                    int windowEnd = windowStart + TRAJECTORY_PLAYBACK_WINDOW_SECONDS;
+                    if (!(startTime < windowEnd && endTime > windowStart)) continue;
+                    rows[windowIndex].write(row);
+                    rowCounts[windowIndex]++;
+                    vehicles[windowIndex].add(vehicleIndex);
+                }
+            }
+        }
+
+        private CachedTrajectorySpatialSelection finish() throws IOException {
+            byte[][] playbackWindows = new byte[PLAYBACK_WINDOWS_PER_CHUNK][];
+            for (int index = 0; index < PLAYBACK_WINDOWS_PER_CHUNK; index++) {
+                int selectionStart = chunkStart + index * TRAJECTORY_PLAYBACK_WINDOW_SECONDS;
+                ByteArrayOutputStream response = new ByteArrayOutputStream(
+                        TRAJECTORY_BINARY_HEADER_BYTES + rows[index].size());
+                writeTrajectoryBinaryHeader(
+                        response,
+                        selectionStart,
+                        selectionStart + TRAJECTORY_PLAYBACK_WINDOW_SECONDS - 1,
+                        rowCounts[index],
+                        vehicles[index].size(),
+                        rowCounts[index] * 2,
+                        originX,
+                        originY,
+                        TRAJECTORY_PLAYBACK_WINDOW_SECONDS
+                );
+                rows[index].writeTo(response);
+                playbackWindows[index] = response.toByteArray();
+            }
+            return new CachedTrajectorySpatialSelection(
+                    chunkStart,
+                    playbackWindows,
+                    rowCounts.clone(),
+                    originX,
+                    originY
+            );
+        }
+    }
+
+    private static final class TrajectoryDictionaries {
+        private final double originX;
+        private final double originY;
+        private final float[] fromX;
+        private final float[] fromY;
+        private final float[] toX;
+        private final float[] toY;
+        private final float[] lengths;
+        private final byte[] modes;
+
+        private TrajectoryDictionaries(
+                double originX,
+                double originY,
+                float[] fromX,
+                float[] fromY,
+                float[] toX,
+                float[] toY,
+                float[] lengths,
+                byte[] modes
+        ) {
+            this.originX = originX;
+            this.originY = originY;
+            this.fromX = fromX;
+            this.fromY = fromY;
+            this.toX = toX;
+            this.toY = toY;
+            this.lengths = lengths;
+            this.modes = modes;
+        }
+
+        private int mode(int vehicleIndex) {
+            if (vehicleIndex < 0 || vehicleIndex >= modes.length) return -1;
+            int value = Byte.toUnsignedInt(modes[vehicleIndex]);
+            return value == 255 ? -1 : value;
+        }
+
+        private VehicleSegment compactSegment(
+                int linkIndex,
+                int originalStart,
+                int originalEnd,
+                int chunkStart
+        ) {
+            if (linkIndex < 0 || linkIndex >= fromX.length || originalEnd <= originalStart) return null;
+            return new VehicleSegment(
+                    originalStart,
+                    originalEnd,
+                    roundCoord(originX + fromX[linkIndex]),
+                    roundCoord(originY + fromY[linkIndex]),
+                    roundCoord(originX + toX[linkIndex]),
+                    roundCoord(originY + toY[linkIndex]),
+                    lengths[linkIndex]
+            ).clip(chunkStart, chunkStart + TRAJECTORY_CHUNK_SECONDS);
+        }
+
+        private long estimatedBytes() {
+            return 96L + modes.length
+                    + (long) (fromX.length + fromY.length + toX.length + toY.length + lengths.length) * Float.BYTES;
         }
     }
 
@@ -3108,6 +4032,9 @@ public final class MatsimAnalysisCache {
         private final MatsimData data;
         private final TrajectoryMeta trajectoryMeta;
         private final MatsimLinkGeometryIndex linkGeometry;
+        private final ConcurrentMap<String, Integer> vehicleIndexById;
+        private final java.util.concurrent.atomic.AtomicInteger vehicleIndexCounter;
+        private final Path trajectorySpoolDir;
         private final ProgressThrottle progress;
         private final List<LargeTrajectoryWorker> workers = new ArrayList<>();
         private final List<BlockingQueue<RawEventTask>> queues = new ArrayList<>();
@@ -3123,12 +4050,19 @@ public final class MatsimAnalysisCache {
             // data.getNetwork() 在大模型下是公交子路网；轨迹必须以原始完整 network 为准，
             // 否则所有普通道路上的小汽车事件都会被静默丢弃。
             this.linkGeometry = MatsimLinkGeometryIndex.load(data);
+            // 30s 原始分块是构建期短命工件，不应写到最终缓存盘。
+            // ExFAT 常见 512KiB 分配块，数千个 worker 临时文件会额外占用数 GiB
+            // 并显著拖慢 events 解析。在系统临时盘流式落盘，完成后只把
+            // Zstd 规范工件发布到配置的缓存目录。
+            this.trajectorySpoolDir = Files.createTempDirectory(
+                    "gjcxfzksh-trajectory-" + Integer.toUnsignedString(data.getName().hashCode()) + "-");
+            log.info("轨迹流式临时盘: model={}, path={}", data.getName(), trajectorySpoolDir);
             Map<String, String> departureByVehicle = departureByVehicle(data.getSchedule());
             // 全局顺序车辆索引：原实现用 hashCode%16M 作去重键，车辆规模大时生日碰撞导致
             // totalVehicles/vehicleCountByMode 少计、不同车辆的占用曲线被错误合并。
             // 顺序自增保证唯一，且远小于 2^24，float 编码仍无损。
-            ConcurrentMap<String, Integer> vehicleIndexById = new ConcurrentHashMap<>();
-            java.util.concurrent.atomic.AtomicInteger vehicleIndexCounter = new java.util.concurrent.atomic.AtomicInteger();
+            this.vehicleIndexById = new ConcurrentHashMap<>();
+            this.vehicleIndexCounter = new java.util.concurrent.atomic.AtomicInteger();
 
             int workerCount = largeTrajectoryParallelism();
             int queueSize = trajectoryQueueSize();
@@ -3138,6 +4072,7 @@ public final class MatsimAnalysisCache {
                 LargeTrajectoryWorker worker = new LargeTrajectoryWorker(
                         i,
                         data,
+                        trajectorySpoolDir,
                         trajectoryMeta,
                         linkGeometry,
                         departureByVehicle,
@@ -3276,6 +4211,8 @@ public final class MatsimAnalysisCache {
             IntOpenHashSet globalTransitVehicleMeta = new IntOpenHashSet();
             Map<Integer, CombinedChunkAccumulator> combinedChunks = new TreeMap<>();
             Map<String, Long> vehicleCountByMode = emptyLongModeMap();
+            Int2IntOpenHashMap globalVehicleModes = new Int2IntOpenHashMap();
+            globalVehicleModes.defaultReturnValue(-1);
             Map<String, Double> distanceByMode = emptyDoubleModeMap();
             Map<Integer, long[]> passengerBins = new TreeMap<>();
             Map<String, Integer> routeBoardings = new HashMap<>();
@@ -3288,8 +4225,10 @@ public final class MatsimAnalysisCache {
             for (LargeTrajectoryWorker worker : workers) {
                 // 事件始终按 vehicleId 哈希到唯一 worker，各 worker 的车辆集合天然不相交，
                 // 可直接求和，无需在 finish 阶段再构造一份全局大集合。
-                worker.seenVehicleModes.forEach((vehicleIndex, encodedMode) ->
-                        vehicleCountByMode.merge(modeFromCode(encodedMode), 1L, Long::sum));
+                worker.seenVehicleModes.forEach((vehicleIndex, encodedMode) -> {
+                    globalVehicleModes.put(vehicleIndex.intValue(), encodedMode.intValue());
+                    vehicleCountByMode.merge(modeFromCode(encodedMode), 1L, Long::sum);
+                });
                 worker.distanceByMode.forEach((mode, distance) -> distanceByMode.merge(mode, distance, Double::sum));
                 worker.passengerBins.forEach((time, counts) -> {
                     long[] target = passengerBins.computeIfAbsent(time, ignored -> new long[4]);
@@ -3327,10 +4266,13 @@ public final class MatsimAnalysisCache {
                 maxTime = Math.max(maxTime, worker.maxTime);
             }
 
+            writeTrajectoryDictionaries(
+                    data, linkGeometry, vehicleIndexById, vehicleIndexCounter.get(), globalVehicleModes);
             List<Map<String, Object>> chunkPayloads = new ArrayList<>();
             for (CombinedChunkAccumulator chunk : combinedChunks.values()) {
-                chunkPayloads.add(chunk.finish(data));
+                chunkPayloads.add(chunk.finish(data, linkGeometry, globalVehicleModes));
             }
+            cleanupTrajectorySpool();
 
             if (minTime == Integer.MAX_VALUE || maxTime == Integer.MIN_VALUE) {
                 minTime = 0;
@@ -3355,6 +4297,9 @@ public final class MatsimAnalysisCache {
             quality.put("networkCrs", linkGeometry.sourceCrs());
             quality.put("linkEvents", workers.stream().mapToLong(worker -> worker.linkEvents).sum());
             quality.put("missingLinkEvents", 0);
+            quality.put("compactRecordBytes", TRAJECTORY_COMPACT_STRIDE * Integer.BYTES);
+            quality.put("linkGeometryDictionary", TRAJECTORY_LINK_DICTIONARY_FILE);
+            quality.put("vehicleMetadataDictionary", TRAJECTORY_VEHICLE_DICTIONARY_FILE);
 
             Map<String, Object> timeRange = new LinkedHashMap<>();
             timeRange.put("min", minTime);
@@ -3392,6 +4337,7 @@ public final class MatsimAnalysisCache {
             for (LargeTrajectoryWorker worker : workers) {
                 worker.cleanupTempFiles();
             }
+            cleanupTrajectorySpool();
             try {
                 Files.deleteIfExists(personTracksPath(data).resolveSibling(PERSON_TRACK_FILE + ".tmp"));
             } catch (Exception ignored) {
@@ -3423,6 +4369,24 @@ public final class MatsimAnalysisCache {
             Throwable failure = workerFailure.get();
             if (failure != null) {
                 throw new RuntimeException("并行解析events失败", failure);
+            }
+        }
+
+        private void cleanupTrajectorySpool() {
+            if (trajectorySpoolDir == null || !Files.exists(trajectorySpoolDir)) {
+                return;
+            }
+            try (Stream<Path> paths = Files.walk(trajectorySpoolDir)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                    try {
+                        Files.deleteIfExists(path);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+            } catch (Exception e) {
+                log.warn("清理轨迹流式临时目录失败: path={}, error={}",
+                        trajectorySpoolDir, e.getMessage());
             }
         }
 
@@ -3529,6 +4493,7 @@ public final class MatsimAnalysisCache {
 
         private final int partition;
         private final MatsimData data;
+        private final Path trajectorySpoolDir;
         private final TrajectoryMeta trajectoryMeta;
         private final MatsimLinkGeometryIndex linkGeometry;
         private final Map<String, String> departureByVehicle;
@@ -3575,6 +4540,7 @@ public final class MatsimAnalysisCache {
         private LargeTrajectoryWorker(
                 int partition,
                 MatsimData data,
+                Path trajectorySpoolDir,
                 TrajectoryMeta trajectoryMeta,
                 MatsimLinkGeometryIndex linkGeometry,
                 Map<String, String> departureByVehicle,
@@ -3586,6 +4552,7 @@ public final class MatsimAnalysisCache {
         ) throws Exception {
             this.partition = partition;
             this.data = data;
+            this.trajectorySpoolDir = trajectorySpoolDir;
             this.trajectoryMeta = trajectoryMeta;
             this.linkGeometry = linkGeometry;
             this.departureByVehicle = departureByVehicle;
@@ -3730,7 +4697,9 @@ public final class MatsimAnalysisCache {
                 VehicleSegment clipped = segment.clip(chunkStart, chunkStart + TRAJECTORY_CHUNK_SECONDS);
                 if (clipped != null) {
                     boolean firstVehicleInChunk = lastCountedChunkByVehicle.put(vehicleIndex, chunkStart) != chunkStart;
-                    chunk(chunkStart).add(clipped, encodedMode, vehicleIndex, firstVehicleInChunk);
+                    // 容器内保存原始链路起止时刻；查询还原时再按 30s 容器边界裁剪，
+                    // 对外结果与旧版 clipped row 一致。
+                    chunk(chunkStart).add(segment, encodedMode, vehicleIndex, geometryIndex, firstVehicleInChunk);
                 }
             }
             pruneOpenChunks();
@@ -3807,7 +4776,7 @@ public final class MatsimAnalysisCache {
             return chunks.computeIfAbsent(chunkStart, start -> {
                 try {
                     return new ChunkAccumulator(
-                            trajectoryCacheDir(data),
+                            trajectorySpoolDir,
                             start,
                             ".part-" + partition,
                             linkGeometry.originX(),
@@ -3919,7 +4888,7 @@ public final class MatsimAnalysisCache {
         private final Path rawPath;
         private final double rawOriginX;
         private final double rawOriginY;
-        private final byte[] row = new byte[TRAJECTORY_BINARY_STRIDE * Float.BYTES];
+        private final byte[] row = new byte[TRAJECTORY_COMPACT_STRIDE * Integer.BYTES];
         private final ByteBuffer rowBuffer = ByteBuffer.wrap(row).order(ByteOrder.LITTLE_ENDIAN);
         private OutputStream rawOut;
         private long lastUsedAt = 0L;
@@ -3946,21 +4915,20 @@ public final class MatsimAnalysisCache {
             this.rawPath = dir.resolve(String.format(Locale.ROOT, "chunk-%06d%s.raw.tmp", this.start, suffix));
         }
 
-        private void add(VehicleSegment segment, int modeCode, int vehicleIndex, boolean firstVehicleInChunk) {
+        private void add(
+                VehicleSegment segment,
+                int modeCode,
+                int vehicleIndex,
+                int linkIndex,
+                boolean firstVehicleInChunk
+        ) {
             try {
                 ensureOpen();
                 rowBuffer.clear();
-                rowBuffer.putFloat((float) segment.startTime);
-                rowBuffer.putFloat((float) segment.endTime);
-                // 原始临时行也以网络原点为基准，避免先把 1.3e7 级 WebMercator 绝对坐标
-                // 压成 float 再减块原点所造成的米级精度损失。
-                rowBuffer.putFloat((float) (segment.fromX - rawOriginX));
-                rowBuffer.putFloat((float) (segment.fromY - rawOriginY));
-                rowBuffer.putFloat((float) (segment.toX - rawOriginX));
-                rowBuffer.putFloat((float) (segment.toY - rawOriginY));
-                rowBuffer.putFloat((float) modeCode);
+                rowBuffer.putInt(segment.startTime);
+                rowBuffer.putInt(segment.endTime);
                 rowBuffer.putInt(vehicleIndex);
-                rowBuffer.putFloat((float) segment.distance);
+                rowBuffer.putInt(linkIndex);
                 rawOut.write(row);
                 lastUsedAt = System.nanoTime();
             } catch (IOException e) {
@@ -4008,29 +4976,6 @@ public final class MatsimAnalysisCache {
             }
         }
 
-        private Map<String, Object> finish(MatsimData data) throws Exception {
-            close();
-            Map<String, Object> chunk = chunkInfo(start, vehicleCount, pointCount);
-            chunk.put("segmentCount", segmentCount);
-            Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("status", "ready");
-            payload.put("cacheVersion", TRAJECTORY_CACHE_VERSION);
-            payload.put("chunk", chunk);
-            payload.put("vehicles", List.of());
-            writeGzipJson(trajectoryCacheDir(data).resolve(chunkFileName(start)), payload);
-
-            chunk.putAll(writeSpatialTrajectoryTilesFromRaw(
-                    data, start, end, rawOriginX, rawOriginY, List.of(rawPath)
-            ));
-            if (Files.size(rawPath) + TRAJECTORY_BINARY_HEADER_BYTES <= TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) {
-                chunk.put("binaryFile", String.format(Locale.ROOT, "spatial-%06d.bin", start));
-                chunk.put("fullChunkAvailable", true);
-            } else {
-                chunk.put("fullChunkAvailable", false);
-            }
-            Files.deleteIfExists(rawPath);
-            return chunk;
-        }
     }
 
     private static class CombinedChunkAccumulator {
@@ -4071,7 +5016,11 @@ public final class MatsimAnalysisCache {
             maxY = Math.max(maxY, chunk.maxY);
         }
 
-        private Map<String, Object> finish(MatsimData data) throws Exception {
+        private Map<String, Object> finish(
+                MatsimData data,
+                MatsimLinkGeometryIndex linkGeometry,
+                Int2IntOpenHashMap vehicleModes
+        ) throws Exception {
             Map<String, Object> chunk = chunkInfo(start, vehicleCount, pointCount);
             chunk.put("segmentCount", segmentCount);
             Map<String, Object> payload = new LinkedHashMap<>();
@@ -4084,12 +5033,12 @@ public final class MatsimAnalysisCache {
             double originX = Double.isFinite(rawOriginX) ? rawOriginX : 0.0;
             double originY = Double.isFinite(rawOriginY) ? rawOriginY : 0.0;
             chunk.putAll(writeSpatialTrajectoryTilesFromRaw(
-                    data, start, end, originX, originY, rawPaths
+                    data, start, end, originX, originY, rawPaths, linkGeometry, vehicleModes
             ));
-            long rawBytes = 0L;
-            for (Path rawPath : rawPaths) rawBytes += Files.size(rawPath);
-            if (rawBytes + TRAJECTORY_BINARY_HEADER_BYTES <= TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) {
-                chunk.put("binaryFile", String.format(Locale.ROOT, "spatial-%06d.bin", start));
+            long expandedBytes = TRAJECTORY_BINARY_HEADER_BYTES
+                    + (long) segmentCount * TRAJECTORY_BINARY_STRIDE * Float.BYTES;
+            if (expandedBytes <= TRAJECTORY_LEGACY_FULL_CHUNK_MAX_BYTES) {
+                chunk.put("binaryAssembly", "on-demand-from-zstd-spatial-blocks");
                 chunk.put("fullChunkAvailable", true);
             } else {
                 chunk.put("fullChunkAvailable", false);
@@ -4109,7 +5058,7 @@ public final class MatsimAnalysisCache {
 
         private final Network network;
         private final Map<String, TransitVehicleMeta> transitMeta;
-        private final BuildProgress progress;
+        private final ProgressThrottle progress;
         private final Map<String, VehicleTrace> traces = new LinkedHashMap<>();
         private final Set<String> missingLinkSamples = new LinkedHashSet<>();
         private long linkEvents;
@@ -4120,7 +5069,9 @@ public final class MatsimAnalysisCache {
         private VehicleTrajectoryHandler(Network network, Map<String, TransitVehicleMeta> transitMeta, BuildProgress progress) {
             this.network = network;
             this.transitMeta = transitMeta;
-            this.progress = progress;
+            // 独立 Builder 会把进度原子写入外置盘。逐 segment 写一次会把 events
+            // 解析退化成每秒约千条 IOPS；与大模型路径一致，最多每秒发布一次进度。
+            this.progress = new ProgressThrottle(progress);
         }
 
         @Override
@@ -4169,9 +5120,7 @@ public final class MatsimAnalysisCache {
             if (segment != null) {
                 minTime = Math.min(minTime, segment.startTime);
                 maxTime = Math.max(maxTime, segment.endTime);
-                if (progress != null) {
-                    progress.markPoint(segment.endTime, traces.size());
-                }
+                progress.markPoint(segment.endTime, traces.size());
             }
         }
 
@@ -4195,9 +5144,7 @@ public final class MatsimAnalysisCache {
             if (segment != null) {
                 minTime = Math.min(minTime, segment.startTime);
                 maxTime = Math.max(maxTime, segment.endTime);
-                if (progress != null) {
-                    progress.markPoint(segment.endTime, traces.size());
-                }
+                progress.markPoint(segment.endTime, traces.size());
             }
         }
 
@@ -4211,6 +5158,10 @@ public final class MatsimAnalysisCache {
 
         private Collection<VehicleTrace> getTraces() {
             return traces.values();
+        }
+
+        private void finishProgress() {
+            progress.finish(maxTime == Integer.MIN_VALUE ? 0 : maxTime, traces.size());
         }
 
         private void recordMissingLink(String linkId) {

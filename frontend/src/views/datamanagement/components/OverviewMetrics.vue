@@ -1,6 +1,6 @@
 <template>
   <div class="overview-metric-list">
-    <!-- 主指标：线网总长度 + 线网总运营里程（双联视觉焦点，随行政区切换） -->
+    <!-- 主指标：线网总长度 + 计划运营里程（随行政区切换） -->
     <div class="metric-card hero-card">
       <div class="hero-metric">
         <span class="hero-label">线网总长度</span>
@@ -9,12 +9,12 @@
           <span v-if="hasNumber(stats.networkScaleKm)" class="hero-unit">km</span>
         </span>
       </div>
-      <div class="hero-metric" title="Σ 日班次 × 线路长度（方向级合计）；选定行政区时按区内段里程统计">
-        <span class="hero-label">线网总运营里程</span>
+      <div class="hero-metric" title="Σ 方向计划日班次 × 方向线路长度；选定行政区时按区内段里程统计">
+        <span class="hero-label">计划运营里程</span>
         <span class="hero-value">
           <!-- fmtUnit 对 null 会经 Number(null)=0 误显示 0，此处显式判空 -->
           <strong class="hero-num">{{ hasNumber(stats.dailyMileageWanKm) ? fmtUnit(stats.dailyMileageWanKm, "", 1) : "暂无" }}</strong>
-          <span v-if="hasNumber(stats.dailyMileageWanKm)" class="hero-unit">万km/日</span>
+          <span v-if="hasNumber(stats.dailyMileageWanKm)" class="hero-unit">万车公里/日</span>
         </span>
       </div>
     </div>
@@ -35,26 +35,10 @@
       </div>
     </div>
 
-    <!-- 覆盖率：常规公交站点服务范围 -->
+    <!-- 覆盖率：真实常住人口中位于公交站点服务范围内的比例 -->
     <div class="metric-card coverage-card">
       <div class="card-title-row coverage-title-row">
-        <span class="card-title">常规公交站点覆盖率</span>
-        <button
-          type="button"
-          class="coverage-config-btn"
-          :class="{ 'is-active': coverage.usingOverride }"
-          :aria-label="coverage.usingOverride ? '已按建成区面积计算，点击调整' : '设置建成区面积'"
-          :title="coverage.usingOverride
-            ? `按建成区面积 ${fmtUnit(coverage.builtUpAreaKm2, 'km²')} 计算，点击调整`
-            : '覆盖率默认按行政区面积计算，点击设为建成区面积'"
-          @click="emit('configure-coverage')"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="9.2"></circle>
-            <path d="M9.6 9.4a2.4 2.4 0 1 1 3.3 2.2c-.7.3-1 .8-1 1.6v.3"></path>
-            <line x1="11.9" y1="16.6" x2="11.91" y2="16.6"></line>
-          </svg>
-        </button>
+        <span class="card-title">公交站点人口覆盖率</span>
       </div>
       <div class="coverage-metrics">
         <div class="coverage-item">
@@ -76,7 +60,6 @@
           </div>
         </div>
       </div>
-      <p v-if="coverage.isCapped" class="coverage-capped">服务面积已超建成区，按 100% 封顶显示</p>
     </div>
 
     <!-- 详情：企业线路统计 -->
@@ -90,7 +73,7 @@
           <span class="operator-number">线路数量</span>
           <span class="operator-number">线路占比</span>
           <span class="operator-number" title="真实线网暂无配车数据源，待业务配车表接入">配车数</span>
-          <span class="operator-number operator-th-stack" title="Σ 日班次 × 线路长度；选定行政区时按区内段里程统计">运营里程<i class="operator-col-unit">万km/日</i></span>
+          <span class="operator-number operator-th-stack" title="Σ 方向计划日班次 × 方向线路长度；选定行政区时按区内段里程统计">计划运营里程<i class="operator-col-unit">万车公里/日</i></span>
         </div>
         <div
           v-for="row in operatorRows"
@@ -120,8 +103,6 @@ defineProps({
   fmtUnit: { type: Function, required: true },
   fmtPct: { type: Function, required: true },
 });
-const emit = defineEmits(["configure-coverage"]);
-
 function hasNumber(value) {
   return Number.isFinite(Number(value)) && value !== null && value !== "";
 }
@@ -166,7 +147,7 @@ function coverageWidth(value) {
   box-shadow: var(--dm2-shadow-card);
 }
 
-/* ① 主指标 —— 双联视觉焦点（线网总长度 / 总运营里程）：沉底磨砂 + 极淡蓝色数据辉光 */
+/* ① 主指标：线网总长度 / 计划运营里程 */
 .hero-card {
   position: relative;
   display: flex;
@@ -296,7 +277,7 @@ function coverageWidth(value) {
   letter-spacing: 0.01em;
 }
 
-/* 常规公交站点覆盖率 */
+/* 公交站点人口覆盖率 */
 .coverage-card {
   display: flex;
   flex-direction: column;
@@ -310,72 +291,6 @@ function coverageWidth(value) {
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 0;
-}
-
-/* 建成区面积设置入口：极简圆形图标按钮，覆写生效时点亮为强调蓝 */
-.coverage-config-btn {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--dm2-muted-soft);
-  cursor: pointer;
-  transition:
-    color var(--dm2-dur) var(--dm2-ease),
-    background-color var(--dm2-dur) var(--dm2-ease);
-}
-
-.coverage-config-btn svg {
-  width: 15px;
-  height: 15px;
-}
-
-.coverage-config-btn:hover {
-  color: var(--dm2-accent);
-  background: var(--dm2-accent-weak);
-}
-
-.coverage-config-btn:focus-visible {
-  outline: 2px solid var(--dm2-accent-ring);
-  outline-offset: 1px;
-}
-
-.coverage-config-btn.is-active {
-  color: var(--dm2-accent);
-  background: var(--dm2-accent-weak);
-}
-
-.coverage-basis {
-  margin: -2px 0 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--dm2-muted);
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.coverage-basis-label {
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--dm2-field);
-  color: var(--dm2-muted);
-  font-size: 10px;
-  font-weight: 600;
-}
-
-.coverage-capped {
-  margin: 8px 0 0;
-  color: var(--dm2-modify);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.4;
 }
 
 .coverage-metrics {
@@ -446,7 +361,8 @@ function coverageWidth(value) {
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding-bottom: 1px;
   scrollbar-width: thin;
   scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
@@ -463,7 +379,14 @@ function coverageWidth(value) {
 
 .operator-table-row {
   display: grid;
-  grid-template-columns: minmax(88px, 1.5fr) repeat(4, minmax(52px, 0.8fr));
+  width: 100%;
+  box-sizing: border-box;
+  grid-template-columns:
+    minmax(72px, 1.2fr)
+    minmax(52px, 0.82fr)
+    minmax(52px, 0.82fr)
+    minmax(44px, 0.7fr)
+    minmax(86px, 1.3fr);
   min-height: 38px;
   align-items: center;
   border-bottom: 1px solid var(--dm2-line-faint);
@@ -471,12 +394,13 @@ function coverageWidth(value) {
   transition: background-color var(--dm2-dur) var(--dm2-ease);
 }
 
-/* 表头列内单位（运营里程 万km/日）：数值列不重复带单位；带 row 类提高特异性压过右对齐规则 */
+/* 表头列内单位（计划运营里程，万车公里/日） */
 .operator-table-row .operator-th-stack {
   flex-direction: column;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
   gap: 1px;
+  text-align: center;
 }
 
 .operator-col-unit {
@@ -526,14 +450,6 @@ function coverageWidth(value) {
   word-break: break-word;
 }
 
-.operator-table-row .operator-company {
-  padding-inline: 8px;
-}
-
-.operator-table-row .operator-number:last-child {
-  padding-inline-end: 8px;
-}
-
 .operator-table-row strong {
   color: var(--dm2-ink);
   font-family: var(--dm2-font-num);
@@ -542,16 +458,15 @@ function coverageWidth(value) {
   font-feature-settings: "tnum" 1;
 }
 
-/* 企业名左对齐便于扫读，数值右对齐让 tabular-nums 按位对齐利于比较。
-   选择器带 .operator-table-row 提高特异性，压过基础规则的 justify-content: center */
+/* 表头和数据共用同一网格轨道，并统一居中，避免列内对齐规则互相覆盖。 */
 .operator-table-row .operator-company {
-  justify-content: flex-start;
-  text-align: left;
+  justify-content: center;
+  text-align: center;
 }
 
 .operator-table-row .operator-number {
-  justify-content: flex-end;
-  text-align: right;
+  justify-content: center;
+  text-align: center;
 }
 
 .operator-share {

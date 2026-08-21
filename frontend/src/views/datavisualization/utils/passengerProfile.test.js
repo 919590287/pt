@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { buildPassengerProfileGroups } from "./passengerProfile.js";
 
 describe("passengerProfile", () => {
+  it("画像缓存尚未注入时使用空状态，不中断右侧面板渲染", () => {
+    expect(buildPassengerProfileGroups({})).toEqual([]);
+    expect(buildPassengerProfileGroups({ commuter: 0, student: 0, elderly: 0 })).toEqual([]);
+  });
+
   it("把 MATSim 终点活动归并为中文出行目的，home 显示为返家", () => {
     const groups = buildPassengerProfileGroups({
       riderCount: 5,

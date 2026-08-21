@@ -17,6 +17,8 @@ public class RealPassengerFlowParam {
 
     private String routeId;
 
+    private String departureId;
+
     private String stationName;
 
     private String facilityId;

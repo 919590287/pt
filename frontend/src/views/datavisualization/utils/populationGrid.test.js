@@ -121,20 +121,42 @@ describe("densityClassIndex / buildGridColors", () => {
 });
 
 describe("buildGridElevations", () => {
-  it("按原始数值除以固定系数线性映射，保持 0 值不拉伸", () => {
-    const elevations = buildGridElevations(Uint32Array.from([0, 25, 100]), {
-      heightDivisor: 0.5,
+  it("0 值不起柱，非零值不低于 minHeight，参考分位对应 referenceHeight", () => {
+    const elevations = buildGridElevations(Uint32Array.from([0, 1, 100]), {
+      referenceQuantile: 1,
+      referenceHeight: 1500,
+      minHeight: 200,
+      exponent: 0.5,
     });
-    expect(Array.from(elevations)).toEqual([0, 50, 200]);
+    expect(elevations[0]).toBe(0);
+    // 1/100 开方 = 0.1 → 200 + 1300×0.1
+    expect(elevations[1]).toBeCloseTo(330, 3);
+    expect(elevations[2]).toBeCloseTo(1500, 3);
   });
 
-  it("支持人口单格计数向人/km²换算后再除以固定系数", () => {
-    const elevations = buildGridElevations(Uint32Array.from([1, 400]), {
-      valueMultiplier: 1 / CELL_AREA_KM2,
-      heightDivisor: 10,
+  it("幂次压缩把 100 倍数据差收敛到 5 倍以内的高度差", () => {
+    const elevations = buildGridElevations(Uint32Array.from([1, 100]), {
+      referenceQuantile: 1,
+      referenceHeight: 1500,
+      minHeight: 200,
     });
-    expect(elevations[0]).toBe(10);
-    expect(elevations[1]).toBe(4000);
+    expect(elevations[1] / elevations[0]).toBeLessThan(5);
+  });
+
+  it("参考值取非零格分位，极端高值不封顶仍高于参考高度", () => {
+    const counts = Uint32Array.from([0, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 1000]);
+    const elevations = buildGridElevations(counts, {
+      referenceQuantile: 0.5,
+      referenceHeight: 1500,
+      minHeight: 200,
+    });
+    expect(elevations[1]).toBeCloseTo(1500, 3); // 中位数格 = 参考高度
+    expect(elevations[11]).toBeGreaterThan(1500); // 极值不被压平
+  });
+
+  it("全零输入返回全零，不做除零", () => {
+    const elevations = buildGridElevations(Uint32Array.from([0, 0, 0]));
+    expect(Array.from(elevations)).toEqual([0, 0, 0]);
   });
 });
 

@@ -28,7 +28,8 @@ public final class MatsimSourceFingerprint {
     private static final int SAMPLE_WINDOWS = 16;
     private static final long FULL_HASH_LIMIT = 8L << 20;
     private static final long TTL_MS = Long.getLong("gjcxfzksh.source-fingerprint-ttl-ms", 60_000L);
-    private static final Map<Path, Cached> CACHE = new ConcurrentHashMap<>();
+    private static final BackendMemoryCache<Path, Cached> CACHE =
+            new BackendMemoryCache<>("source-fingerprints", 8L * 1024 * 1024, ignored -> 160L);
 
     private MatsimSourceFingerprint() {
     }
@@ -40,11 +41,13 @@ public final class MatsimSourceFingerprint {
     public static String signature(Path input) {
         if (input == null) return "missing";
         Path path = input.toAbsolutePath().normalize();
+        // 存在性必须在 TTL 记忆缓存之前检查。否则管理员刚归档
+        // events/plans 后，已加载模型还会在最多 60 秒内拿到删除前的指纹。
+        if (!Files.isRegularFile(path)) return "missing";
         long now = System.currentTimeMillis();
         Cached cached = CACHE.get(path);
         if (cached != null && cached.expiresAt > now) return cached.signature;
         try {
-            if (!Files.isRegularFile(path)) return "missing";
             long size = Files.size(path);
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.update(SCHEMA.getBytes(java.nio.charset.StandardCharsets.UTF_8));
@@ -102,6 +105,12 @@ public final class MatsimSourceFingerprint {
         for (Map.Entry<String, Object> entry : expected.entrySet()) {
             String key = entry.getKey();
             String base = fingerprintBase(key);
+            if (isArchivedHeavySource(base, expected, actual)) {
+                // events/plans 是生成派生缓存的原始大文件。完整缓存已记录其
+                // 内容指纹后，允许管理员人工将文件移到冷存储。若文件仍在，则仍
+                // 严格比较 Size + Signature；若之后恢复了不同内容，也会正常失效。
+                continue;
+            }
             boolean hasCurrentSignature = base != null && expected.containsKey(base + "Signature");
             if (hasCurrentSignature && (key.endsWith("File") || key.endsWith("Modified"))) {
                 continue;
@@ -119,6 +128,42 @@ public final class MatsimSourceFingerprint {
         if (storedSignature == null) return false;
         return sameValue(expected.get("size"), actual.get("size"))
                 && sameValue(expected.get("signature"), storedSignature);
+    }
+
+    /**
+     * 比较带源名称的嵌套指纹。events/plans 在旧清单中有有效指纹、
+     * 但当前已缺失时，视为管理员人工归档；其他源文件仍严格校验。
+     */
+    public static boolean sameSourceItem(String sourceName, Map<?, ?> expected, Map<?, ?> actual) {
+        if (isHeavySource(sourceName) && isMissingItem(expected) && hasStoredContent(actual)) {
+            return true;
+        }
+        return sameSourceItem(expected, actual);
+    }
+
+    private static boolean isArchivedHeavySource(String base, Map<String, Object> current,
+                                                  Map<String, Object> stored) {
+        if (!isHeavySource(base)) return false;
+        Object currentSignature = current.get(base + "Signature");
+        Object storedSignature = stored.get(base + "Signature");
+        return "missing".equals(String.valueOf(currentSignature))
+                && storedSignature != null
+                && !"missing".equals(String.valueOf(storedSignature));
+    }
+
+    private static boolean isHeavySource(String sourceName) {
+        return sourceName != null
+                && ("events".equalsIgnoreCase(sourceName) || "plans".equalsIgnoreCase(sourceName));
+    }
+
+    private static boolean isMissingItem(Map<?, ?> item) {
+        return item != null && "missing".equals(String.valueOf(item.get("signature")));
+    }
+
+    private static boolean hasStoredContent(Map<?, ?> item) {
+        if (item == null) return false;
+        Object signature = item.get("signature");
+        return signature != null && !"missing".equals(String.valueOf(signature));
     }
 
     private static String fingerprintBase(String key) {

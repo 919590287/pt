@@ -1,0 +1,15 @@
+.git
+.github
+.deploy
+.codex_tmp
+.idea
+.vscode
+backend/target
+frontend
+docs
+outputs
+logs
+scripts/*
+!scripts/build_real_passenger_flow_data.py
+**/__pycache__
+**/*.pyc

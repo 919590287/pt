@@ -41,14 +41,11 @@ public final class RealPopulationCache {
     private static final int BIN_RECORD_BYTES = 22;
     private static final int CELL_SIZE_METERS = 100;
 
-    private static final Map<Path, CachedArtifacts> CACHE = Collections.synchronizedMap(
-            new LinkedHashMap<>(4, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<Path, CachedArtifacts> eldest) {
-                    return size() > 3;
-                }
-            }
-    );
+    private static final BackendMemoryCache<Path, CachedArtifacts> CACHE =
+            new BackendMemoryCache<>("real-population", 128L * 1024 * 1024,
+                    cached -> BackendMemoryCache.estimate(cached.artifacts.summary())
+                            + BackendMemoryCache.estimate(cached.artifacts.streets())
+                            + cached.artifacts.gridBytes().length);
     private static final Map<Path, Object> LOCKS = new ConcurrentHashMap<>();
 
     private RealPopulationCache() {
@@ -86,9 +83,13 @@ public final class RealPopulationCache {
     public static EvaluationPopulationStats evaluationStats(
             Path source, String district, List<double[]> stopLngLat) {
         if (!isAvailable(source)) return null;
-        Artifacts artifacts = artifacts(source);
-        MatsimPopulationCache.StreetIndex streets = MatsimPopulationCache.streetIndex();
+        StationPopulationCoverage coverage = stationPopulationCoverage(source, stopLngLat);
         String scope = district == null || district.isBlank() ? "全市" : district.trim();
+        ScopePopulationCoverage scopedCoverage = "全市".equals(scope)
+                ? coverage.city()
+                : coverage.districts().get(scope);
+        if (scopedCoverage == null) return new EvaluationPopulationStats(0, 0, 0);
+        MatsimPopulationCache.StreetIndex streets = MatsimPopulationCache.streetIndex();
         boolean all = "全市".equals(scope);
         double areaKm2 = 0;
         for (int index = 0; index < streets.size(); index++) {
@@ -96,20 +97,24 @@ public final class RealPopulationCache {
             if (all || scope.equals(street.district())) areaKm2 += street.areaKm2();
         }
 
-        final double coverageMeters = 300.0;
-        Map<Long, List<double[]>> stopsByCell = new HashMap<>();
-        for (double[] point : stopLngLat == null ? List.<double[]>of() : stopLngLat) {
-            if (point == null || point.length < 2
-                    || !Double.isFinite(point[0]) || !Double.isFinite(point[1])) continue;
-            double[] mercator = GeoUtil.lngLatToMercator(point[0], point[1]);
-            int i = (int) Math.floor(mercator[0] / coverageMeters);
-            int j = (int) Math.floor(mercator[1] / coverageMeters);
-            stopsByCell.computeIfAbsent(spatialKey(i, j), ignored -> new ArrayList<>())
-                    .add(mercator);
-        }
+        return new EvaluationPopulationStats(
+                scopedCoverage.residentPersons(), areaKm2, scopedCoverage.coveredResidents300m());
+    }
 
-        long residents = 0;
-        long coveredResidents = 0;
+    /**
+     * 数据管理总览的站点人口覆盖率。分子和分母都使用与运行监测一致的
+     * 真实人口百米网格“常住人口数量”，一次扫描同时生成全市和各行政区的 300m/500m 结果。
+     */
+    public static StationPopulationCoverage stationPopulationCoverage(
+            Path source, List<double[]> stopLngLat) {
+        if (!isAvailable(source)) return null;
+        Artifacts artifacts = artifacts(source);
+        MatsimPopulationCache.StreetIndex streets = MatsimPopulationCache.streetIndex();
+        Map<Long, List<double[]>> stops300 = coverageCells(stopLngLat, 300.0);
+        Map<Long, List<double[]>> stops500 = coverageCells(stopLngLat, 500.0);
+        MutableCoverage city = new MutableCoverage();
+        Map<String, MutableCoverage> districts = new LinkedHashMap<>();
+
         ByteBuffer buffer = ByteBuffer.wrap(artifacts.gridBytes()).order(ByteOrder.LITTLE_ENDIAN);
         buffer.position(4);
         buffer.getShort();
@@ -122,18 +127,37 @@ public final class RealPopulationCache {
             buffer.getInt();
             long resident = Integer.toUnsignedLong(buffer.getInt());
             int streetIndex = Short.toUnsignedInt(buffer.getShort());
-            if (resident <= 0 || streetIndex == MatsimPopulationCache.STREET_SENTINEL
-                    || streetIndex >= streets.size()) continue;
-            MatsimPopulationCache.StreetRef street = streets.street(streetIndex);
-            if (!all && !scope.equals(street.district())) continue;
-            residents += resident;
+            if (resident <= 0) continue;
+
             double x = (i + 0.5) * mercCellSize;
             double y = (j + 0.5) * mercCellSize;
-            if (withinCoverage(x, y, coverageMeters, stopsByCell)) {
-                coveredResidents += resident;
+            boolean covered300 = withinCoverage(x, y, 300.0, stops300);
+            boolean covered500 = withinCoverage(x, y, 500.0, stops500);
+            city.add(resident, covered300, covered500);
+
+            if (streetIndex != MatsimPopulationCache.STREET_SENTINEL && streetIndex < streets.size()) {
+                String district = streets.street(streetIndex).district();
+                districts.computeIfAbsent(district, ignored -> new MutableCoverage())
+                        .add(resident, covered300, covered500);
             }
         }
-        return new EvaluationPopulationStats(residents, areaKm2, coveredResidents);
+
+        Map<String, ScopePopulationCoverage> districtResults = new LinkedHashMap<>();
+        districts.forEach((name, value) -> districtResults.put(name, value.freeze()));
+        return new StationPopulationCoverage(city.freeze(), districtResults);
+    }
+
+    private static Map<Long, List<double[]>> coverageCells(List<double[]> stopLngLat, double radius) {
+        Map<Long, List<double[]>> result = new HashMap<>();
+        for (double[] point : stopLngLat == null ? List.<double[]>of() : stopLngLat) {
+            if (point == null || point.length < 2
+                    || !Double.isFinite(point[0]) || !Double.isFinite(point[1])) continue;
+            double[] mercator = GeoUtil.lngLatToMercator(point[0], point[1]);
+            int i = (int) Math.floor(mercator[0] / radius);
+            int j = (int) Math.floor(mercator[1] / radius);
+            result.computeIfAbsent(spatialKey(i, j), ignored -> new ArrayList<>()).add(mercator);
+        }
+        return result;
     }
 
     private static boolean withinCoverage(double x, double y, double radius,
@@ -440,6 +464,42 @@ public final class RealPopulationCache {
         public Double coveragePercent() {
             return residentPersons > 0
                     ? coveredResidentPersons * 100.0 / residentPersons : null;
+        }
+    }
+
+    public record StationPopulationCoverage(ScopePopulationCoverage city,
+                                            Map<String, ScopePopulationCoverage> districts) {
+    }
+
+    public record ScopePopulationCoverage(long residentPersons,
+                                          long coveredResidents300m,
+                                          long coveredResidents500m) {
+        public Double coverage300Percent() {
+            return percent(coveredResidents300m);
+        }
+
+        public Double coverage500Percent() {
+            return percent(coveredResidents500m);
+        }
+
+        private Double percent(long covered) {
+            return residentPersons > 0 ? covered * 100.0 / residentPersons : null;
+        }
+    }
+
+    private static final class MutableCoverage {
+        private long residents;
+        private long covered300;
+        private long covered500;
+
+        private void add(long resident, boolean isCovered300, boolean isCovered500) {
+            residents += resident;
+            if (isCovered300) covered300 += resident;
+            if (isCovered500) covered500 += resident;
+        }
+
+        private ScopePopulationCoverage freeze() {
+            return new ScopePopulationCoverage(residents, covered300, covered500);
         }
     }
 

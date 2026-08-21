@@ -1,6 +1,7 @@
 import request from "@/utils/request";
 import {
   getRealLineAll,
+  getRealOverallFlow,
   getRealRouteDetail,
   isRealDatasource,
   realLocalResponse,
@@ -78,7 +79,9 @@ export function getRoutePanel(data, config = {}) {
 // POST /pt/route/overallFlow
 // data = { status: "ready"|"generating", hourlyByMode: { bus: number[24], metro: number[24] } }
 export function getOverallFlow(data, config = {}) {
-  if (isRealDatasource(data?.datasource)) return realPassengerFlowRequest("overallFlow", data, config);
+  if (isRealDatasource(data?.datasource)) {
+    return realLocalResponse(() => getRealOverallFlow(data.datasource));
+  }
   return request({
     url: `/pt/route/overallFlow`,
     method: 'POST',
@@ -95,6 +98,43 @@ export function getRoutePanelDetail(data, config = {}) {
     data: data,
     ...config
   })
+}
+
+export function getDepartureTimetable(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) {
+    return realPassengerFlowRequest("departureTimetable", data, config);
+  }
+  return request({
+    url: `/pt/route/departureTimetable`,
+    method: 'POST',
+    data,
+    ...config,
+  });
+}
+
+// 模型级班次客流缓存：时刻表与所有单班次分析面板随模型一起生成。
+export function getDepartureBundle(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) {
+    return realPassengerFlowRequest("departureTimetable", data, config);
+  }
+  return request({
+    url: `/pt/route/departureBundle`,
+    method: 'POST',
+    data,
+    ...config,
+  });
+}
+
+export function getDeparturePanel(data, config = {}) {
+  if (isRealDatasource(data?.datasource)) {
+    return realPassengerFlowRequest("departurePanel", data, config);
+  }
+  return request({
+    url: `/pt/route/departurePanel`,
+    method: 'POST',
+    data,
+    ...config,
+  });
 }
 
 export function getRouteCandidates(data, config = {}) {

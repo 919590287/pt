@@ -10,7 +10,7 @@
     cityBuildingsHeightField: "HEIGHT",
     cityBuildingsMaxFeatures: 20000,
     mapTileUrlTemplate: "",
-    defaultBasemapKey: "configured",
+    defaultBasemapKey: "esri-dark",
     networkLineMinPixels: 0.8,
     networkLineSoftEdgePixels: 0,
     mapPixelRatio: null,

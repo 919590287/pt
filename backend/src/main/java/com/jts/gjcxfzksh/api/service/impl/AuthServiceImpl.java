@@ -440,7 +440,11 @@ public class AuthServiceImpl implements AuthService {
     private AuthStore readStoreFile() {
         Path path = storePath();
         try {
-            if (!Files.exists(path)) {
+            // 必须用 notExists 而不是 !exists：父目录不可进入时 exists 会返回 false 而不报错，
+            // 于是"读不到用户表"被当成"首次运行"，静默起一个空用户表，
+            // 接着第一次注册就把真实的用户表覆盖掉。notExists 在权限不明时返回 false，
+            // 让下面的 readString 抛出 AccessDeniedException，问题当场暴露。
+            if (Files.notExists(path)) {
                 return new AuthStore();
             }
             String text = Files.readString(path, StandardCharsets.UTF_8);

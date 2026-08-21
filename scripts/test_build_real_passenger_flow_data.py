@@ -8,6 +8,20 @@ import build_real_passenger_flow_data as flow
 
 
 class RealPassengerFlowMappingTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        flow.SERVICE_DATE_START = None
+        flow.SERVICE_DATE_END = None
+
+    def test_service_date_filter_is_inclusive_and_rejects_invalid_values(self) -> None:
+        flow.SERVICE_DATE_START = dt.date(2026, 7, 1)
+        flow.SERVICE_DATE_END = dt.date(2026, 7, 15)
+
+        self.assertFalse(flow.accepts_service_date("2026-06-30 23:59:59"))
+        self.assertTrue(flow.accepts_service_date("2026-07-01"))
+        self.assertTrue(flow.accepts_service_date(dt.datetime(2026, 7, 15, 23, 59)))
+        self.assertFalse(flow.accepts_service_date(dt.date(2026, 7, 16)))
+        self.assertFalse(flow.accepts_service_date("invalid"))
+
     def test_fast_route_aliases_keep_fast_service_separate(self) -> None:
         self.assertEqual(flow.canonical_route_code("南沙65路(快)"), "65快")
         self.assertEqual(flow.canonical_route_code("南沙65路(大站快线)"), "65快")

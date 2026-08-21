@@ -31,6 +31,9 @@ function ensureState(mapWrapper) {
     overlay,
     layers: new Map(),
     nextSequence: 0,
+    // 页面组失活时按 key 前缀挂起（见 setSharedDeckLayersHidden）：注册项保留，
+    // 只是不提交给 overlay。恢复时无需重建 deck layer，切页面是即时的。
+    hiddenPrefixes: new Set(),
   };
   overlayRegistry.set(mapWrapper, state);
   return state;
@@ -48,7 +51,17 @@ function teardownState(mapWrapper, state) {
   }
 }
 
+function isHidden(state, key) {
+  if (!state.hiddenPrefixes.size) return false;
+  for (const prefix of state.hiddenPrefixes) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
 function commitState(state) {
+  // 注册表为空才拆 overlay。仅仅是全部被挂起时保留控件，
+  // 否则每次切页面都要重建 MapboxOverlay 及其 WebGL 资源，切换会明显发顿。
   if (!state.layers.size) {
     teardownState(state.mapWrapper, state);
     return;
@@ -102,10 +115,40 @@ export function setSharedDeckLayer(mapWrapper, key, layer, order = 0) {
 }
 
 function applyLayers(state) {
-  const orderedLayers = [...state.layers.values()]
-    .sort((left, right) => left.order - right.order || left.sequence - right.sequence)
-    .map((item) => item.layer);
+  const orderedLayers = [...state.layers.entries()]
+    .filter(([key]) => !isHidden(state, key))
+    .sort(([, left], [, right]) => left.order - right.order || left.sequence - right.sequence)
+    .map(([, item]) => item.layer);
   state.overlay.setProps({ layers: normalizeLayerList(orderedLayers) });
+}
+
+/**
+ * 按 key 前缀挂起/恢复共享 deck 图层，供 MapLayout 在页面组切换时调用。
+ *
+ * 为什么必须单独走这条路：deck 的 interleaved 图层是 maplibre 的 custom layer，
+ * 而 maplibre 的 Style#serialize 明确跳过 custom layer（源码原注释：
+ * "this check will skip all custom layers"）。所以 MapLayout 里按
+ * `map.getStyle().layers` 遍历 + setLayoutProperty 隐藏的那套，对 deck 图层完全无效——
+ * 离开运行监测后客流流向的 OD 线、人口栅格、客流走廊等会一直留在共享地图上。
+ *
+ * 挂起只是不提交给 overlay，deck layer 实例和 GPU 资源都保留，恢复是即时的。
+ */
+export function setSharedDeckLayersHidden(mapWrapper, prefixes, hidden) {
+  const state = overlayRegistry.get(mapWrapper);
+  if (!state || !prefixes?.length) return false;
+  let changed = false;
+  for (const prefix of prefixes) {
+    if (hidden) {
+      if (!state.hiddenPrefixes.has(prefix)) {
+        state.hiddenPrefixes.add(prefix);
+        changed = true;
+      }
+    } else if (state.hiddenPrefixes.delete(prefix)) {
+      changed = true;
+    }
+  }
+  if (changed) scheduleCommit(state);
+  return changed;
 }
 
 export function removeSharedDeckLayer(mapWrapper, key) {

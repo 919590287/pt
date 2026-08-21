@@ -71,6 +71,15 @@ export class StationLayer extends Layer {
     });
   }
 
+  // 站点标注画在共享 deck overlay 上。基类 onRemove 不管 deck 注册项，
+  // 页面组切换（MapLayout.stashPageLayers → removeLayer）后标注会残留到下一个页面。
+  // 圆点/图标是 maplibre 样式图层（station- 前缀），由 MapLayout 那套按前缀隐藏覆盖。
+  onRemove() {
+    removeSharedDeckLayer(this.map, this.labelLayerId);
+    this.labelsVisible = false;
+    super.onRemove();
+  }
+
   on(type, data) {
     // 必须调 super.on：基类在此派发 EventListener 注册的回调（构造 event 选项 /
     // addEventListener），漏调会让点击、pick 等外部监听静默失效

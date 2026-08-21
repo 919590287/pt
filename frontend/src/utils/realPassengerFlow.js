@@ -1,6 +1,7 @@
 import request from "@/utils/request.js";
 import { getStreetsGeojson } from "@/api/population.js";
 import { getCachedRealData, ensureCachedRouteStops } from "@/utils/realDataCache.js";
+import { readPanelBundle, writePanelBundle } from "@/utils/realPanelBundleStore.js";
 
 export const REAL_DATASOURCE_PREFIX = "real::";
 export const DEFAULT_REAL_AREA = "广州市";
@@ -10,6 +11,7 @@ const REAL_DATE_SEPARATOR = "::service-date::";
 const networkCache = new Map();
 const analysisCache = new Map();
 const streetAggregationCache = new Map();
+const realWarmupPromises = new Map();
 const WEB_MERCATOR_RADIUS = 6378137;
 
 function lngLatToWebMercator(lng, lat) {
@@ -74,6 +76,29 @@ export function realLineGroupName(value = "") {
 
 export function realLineGroupId(value = "") {
   return `real-line::${realLineGroupName(value)}`;
+}
+
+export function authorityDirectionKey(route = {}, fallback = "") {
+  const authorityLineId = firstText(route, "authorityLineId", "authority_line_id");
+  if (authorityLineId) return `authority:${authorityLineId}`;
+  const routeId = firstText(route, "routeId", "route_id");
+  const lineId = firstText(route, "lineId", "line_id");
+  return routeId ? `${lineId}::${routeId}` : String(fallback || "");
+}
+
+export function uniqueAuthorityDirectionRoutes(routes = [], activeKey = "") {
+  const byDirection = new Map();
+  for (const [index, route] of (Array.isArray(routes) ? routes : []).entries()) {
+    if (!route || route.lineGroup) continue;
+    const key = authorityDirectionKey(route, index);
+    if (!key) continue;
+    const existing = byDirection.get(key);
+    const routeKey = authorityDirectionKey(route);
+    if (!existing || routeKey === activeKey || String(route.routeId || "") === String(activeKey || "")) {
+      byDirection.set(key, route);
+    }
+  }
+  return [...byDirection.values()];
 }
 
 function normalizeNanshaLinePrefix(value = "") {
@@ -249,9 +274,13 @@ export function clearRealPassengerFlowCache(datasource = "") {
     networkCache.clear();
     analysisCache.clear();
     streetAggregationCache.clear();
+    realWarmupPromises.clear();
     return;
   }
   networkCache.delete(areaName);
+  [...realWarmupPromises.keys()].forEach((key) => {
+    if (key.startsWith(`${areaName}::`)) realWarmupPromises.delete(key);
+  });
   const prefix = `${REAL_DATASOURCE_PREFIX}${areaName}`;
   [...analysisCache.keys()].forEach((key) => {
     if (key.startsWith(prefix)) analysisCache.delete(key);
@@ -303,8 +332,9 @@ export function realPassengerFlowRequest(endpoint, data = {}, config = {}) {
   });
 }
 
-function cachedAnalysis(datasource, endpoint) {
+function cachedAnalysis(datasource, endpoint, options = {}) {
   const key = `${datasource}::${endpoint}`;
+  if (options.force) analysisCache.delete(key);
   if (analysisCache.has(key)) return analysisCache.get(key);
   const promise = realPassengerFlowRequest(endpoint, { datasource }, { silentError: true })
     .then((res) => res?.data || {})
@@ -316,27 +346,137 @@ function cachedAnalysis(datasource, endpoint) {
   return promise;
 }
 
-export function getRealPassengerFlowCapabilities(datasource) {
-  return cachedAnalysis(datasource, "capabilities");
+/** force 用于门槛轮询后端缓存构建进度，绕开会话内缓存拿最新状态位。 */
+export function getRealPassengerFlowCapabilities(datasource, options = {}) {
+  return cachedAnalysis(datasource, "capabilities", options);
+}
+
+export function getRealPassengerFlowPreload(datasource) {
+  return cachedAnalysis(datasource, "preload");
 }
 
 /**
- * 登录后空闲预热真实客流切换所需的最小数据集。
- * 与页面读取共用 networkCache / analysisCache，切换时不会再重复请求或重建线网。
+ * capabilities 同时描述原始聚合与面板工件。面板工件本来就由 preload 负责生成，
+ * 因此只有原始聚合尚未产出服务日时才需要等待，不能拿 panelCacheStatus 阻断 preload。
  */
-export function warmRealPassengerFlow(areaName = DEFAULT_REAL_AREA) {
-  const datasource = realDatasource(areaName, REAL_AVERAGE_DATE);
-  return Promise.all([
-    getRealNetwork(datasource),
-    getRealPassengerFlowCapabilities(datasource),
-  ]).then(([network, capabilities]) => ({ network, capabilities }));
+export function isRealPassengerAggregatePending(capabilities = {}) {
+  const status = String(capabilities?.status || "").toLowerCase();
+  const dates = Array.isArray(capabilities?.serviceDates) ? capabilities.serviceDates : [];
+  return (status === "pending" || status === "building") && dates.length === 0;
+}
+
+export function realPassengerCapabilityError(capabilities = {}) {
+  const status = String(capabilities?.status || "").toLowerCase();
+  if (status !== "failed") return "";
+  return String(
+    capabilities?.aggregationMessage
+      || capabilities?.buildMessage
+      || capabilities?.message
+      || capabilities?.progressMessage
+      || "真实客流原始数据聚合失败",
+  );
+}
+
+export function getRealOverallFlow(datasource) {
+  return cachedAnalysis(datasource, "overallFlow");
+}
+
+/** 把某个服务日的面板 bundle 写入与页面读取共用的会话缓存。 */
+export function primeRealPanelBundle(areaName, serviceDate, bundle) {
+  if (!bundle?.overallFlow) return bundle;
+  const datasource = realDatasource(areaName, serviceDate);
+  analysisCache.set(`${datasource}::overallFlow`, Promise.resolve(bundle.overallFlow));
+  return bundle;
+}
+
+/** 把首次预加载返回的各日期轻量数据写入与页面请求共用的缓存。 */
+export function primeRealPassengerFlowDates(areaName, payload = {}) {
+  const dates = payload?.dates && typeof payload.dates === "object" ? payload.dates : {};
+  Object.entries(dates).forEach(([serviceDate, bundle]) => primeRealPanelBundle(areaName, serviceDate, bundle));
+  return dates;
+}
+
+/**
+ * 取单个服务日的面板 bundle：先读浏览器持久缓存，未命中才请求后端并回写。
+ * signature 为后端 capabilities 下发的源指纹，源数据一变旧记录自然失效。
+ *
+ * persist=false 用于后台预取：那些日期只需进内存，落盘反而会把用户正在看的日期挤出
+ * LRU，并为了最终只保留几条而白写几十兆。
+ */
+export async function getRealPanelBundle(areaName, signature, serviceDate, options = {}) {
+  const persisted = await readPanelBundle(areaName, signature, serviceDate);
+  if (persisted) return persisted;
+  const preload = await getRealPassengerFlowPreload(realDatasource(areaName, serviceDate));
+  const dates = preload?.dates && typeof preload.dates === "object" ? preload.dates : {};
+  const bundle = dates[serviceDate] || dates[preload?.selectedServiceDate] || null;
+  // 回写是补偿动作，不阻塞调用方；写失败只是下次刷新回落到网络。
+  if (bundle && options.persist !== false) void writePanelBundle(areaName, signature, serviceDate, bundle);
+  return bundle;
+}
+
+/**
+ * 网站入口并行预热真实模式的完整首屏：线网、能力声明、选中服务日 bundle，
+ * 以及线路/站点/评价面板缓存。页面挂载后只切引用，不再进行第二轮冷加载。
+ */
+export function warmRealPassengerFlow(
+  areaName = DEFAULT_REAL_AREA,
+  preferredServiceDate = "",
+) {
+  const area = areaName || DEFAULT_REAL_AREA;
+  const requestedDate = String(preferredServiceDate || "");
+  const key = `${area}::${requestedDate || "latest"}`;
+  if (realWarmupPromises.has(key)) return realWarmupPromises.get(key);
+
+  const request = (async () => {
+    const datasource = realDatasource(area, REAL_AVERAGE_DATE);
+    const networkPromise = getRealNetwork(datasource);
+    let capabilities;
+    for (;;) {
+      capabilities = await getRealPassengerFlowCapabilities(datasource, { force: Boolean(capabilities) });
+      const capabilityError = realPassengerCapabilityError(capabilities);
+      if (capabilityError) throw new Error(capabilityError);
+      if (!isRealPassengerAggregatePending(capabilities)) break;
+      const attempt = Number(capabilities?.aggregationProgressPercent) || 0;
+      await new Promise((resolve) => setTimeout(resolve, attempt > 0 ? 5000 : 3000));
+    }
+
+    const dates = Array.isArray(capabilities?.serviceDates) ? capabilities.serviceDates : [];
+    if (!dates.length) throw new Error("真实客流数据中没有可用日期");
+    const serviceDate = dates.includes(requestedDate) ? requestedDate : dates.at(-1);
+    const signature = String(capabilities?.sourceSignature || "");
+    const [network, bundle] = await Promise.all([
+      networkPromise,
+      getRealPanelBundle(area, signature, serviceDate),
+    ]);
+    if (!bundle) throw new Error(`真实客流日期 ${serviceDate} 的面板缓存不可用`);
+
+    primeRealPanelBundle(area, serviceDate, bundle);
+    // 动态导入避免 modelDataCache -> realPassengerFlow 的静态循环；模块在应用启动
+    // 后已完成初始化，这里只把完整 bundle 灌入两边共同读取的模型缓存。
+    const { primeCachedRealPanels } = await import("@/utils/modelDataCache.js");
+    primeCachedRealPanels(realDatasource(area, serviceDate), bundle);
+    return { areaName: area, serviceDate, network, capabilities, bundle };
+  })().catch((error) => {
+    realWarmupPromises.delete(key);
+    throw error;
+  });
+  realWarmupPromises.set(key, request);
+  return request;
 }
 
 function writeMagic(view, magic) {
   for (let index = 0; index < magic.length; index += 1) view.setUint8(index, magic.charCodeAt(index));
 }
 
-function encodeTripEndsGrid(cells = [], cellSize = 100, cellStreetIndexes = []) {
+const MAIN_THREAD_CHUNK_SIZE = 1024;
+const STREET_INDEX_BUCKET_DEGREES = 0.02;
+
+function yieldToMainThread() {
+  if (globalThis.scheduler?.yield) return globalThis.scheduler.yield();
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function encodeTripEndsGrid(cells = [], cellSize = 100, cellStreetIndexes = []) {
   const buffer = new ArrayBuffer(18 + cells.length * 18);
   const view = new DataView(buffer);
   writeMagic(view, "PGRD");
@@ -344,7 +484,8 @@ function encodeTripEndsGrid(cells = [], cellSize = 100, cellStreetIndexes = []) 
   view.setUint32(6, cells.length, true);
   view.setFloat64(10, cellSize, true);
   let offset = 18;
-  cells.forEach((row, index) => {
+  for (let index = 0; index < cells.length; index += 1) {
+    const row = cells[index];
     view.setInt32(offset, Number(row?.[0]) || 0, true);
     view.setInt32(offset + 4, Number(row?.[1]) || 0, true);
     view.setUint32(offset + 8, Math.max(0, Math.round(Number(row?.[2]) || 0)), true);
@@ -352,12 +493,18 @@ function encodeTripEndsGrid(cells = [], cellSize = 100, cellStreetIndexes = []) 
     const streetIndex = Number(cellStreetIndexes[index]);
     view.setUint16(offset + 16, Number.isInteger(streetIndex) && streetIndex >= 0 ? Math.min(streetIndex, 0xfffe) : 0xffff, true);
     offset += 18;
-  });
+    if (index > 0 && index % MAIN_THREAD_CHUNK_SIZE === 0) await yieldToMainThread();
+  }
   return buffer;
 }
 
-function encodeTripEndsOdGrid(cells = [], pairs = [], cellSize = 100, cellStreetIndexes = []) {
-  const rows = pairs.filter((row) => cells[row?.[0]] && cells[row?.[1]] && Number(row?.[2]) > 0);
+async function encodeTripEndsOdGrid(cells = [], pairs = [], cellSize = 100, cellStreetIndexes = []) {
+  const rows = [];
+  for (let index = 0; index < pairs.length; index += 1) {
+    const row = pairs[index];
+    if (cells[row?.[0]] && cells[row?.[1]] && Number(row?.[2]) > 0) rows.push(row);
+    if (index > 0 && index % MAIN_THREAD_CHUNK_SIZE === 0) await yieldToMainThread();
+  }
   const buffer = new ArrayBuffer(18 + rows.length * 24);
   const view = new DataView(buffer);
   writeMagic(view, "PGOD");
@@ -365,7 +512,8 @@ function encodeTripEndsOdGrid(cells = [], pairs = [], cellSize = 100, cellStreet
   view.setUint32(6, rows.length, true);
   view.setFloat64(10, cellSize, true);
   let offset = 18;
-  rows.forEach((row) => {
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
     const origin = cells[row[0]];
     const destination = cells[row[1]];
     view.setInt32(offset, Number(origin[0]) || 0, true);
@@ -378,7 +526,8 @@ function encodeTripEndsOdGrid(cells = [], pairs = [], cellSize = 100, cellStreet
     view.setUint16(offset + 20, Number.isInteger(originStreet) && originStreet >= 0 ? Math.min(originStreet, 0xfffe) : 0xffff, true);
     view.setUint16(offset + 22, Number.isInteger(destinationStreet) && destinationStreet >= 0 ? Math.min(destinationStreet, 0xfffe) : 0xffff, true);
     offset += 24;
-  });
+    if (index > 0 && index % MAIN_THREAD_CHUNK_SIZE === 0) await yieldToMainThread();
+  }
   return buffer;
 }
 
@@ -439,12 +588,73 @@ function pointInStreet(point, shapes = []) {
   });
 }
 
+function streetBucketKey(x, y) {
+  return `${Math.floor(x / STREET_INDEX_BUCKET_DEGREES)}:${Math.floor(y / STREET_INDEX_BUCKET_DEGREES)}`;
+}
+
+function buildStreetSpatialIndex(streets) {
+  const buckets = new Map();
+  const globalCandidates = new Set();
+  streets.forEach((street, streetIndex) => {
+    street.shapes.forEach(({ bounds }) => {
+      if (!bounds) return;
+      const minX = Math.floor(bounds[0] / STREET_INDEX_BUCKET_DEGREES);
+      const maxX = Math.floor(bounds[2] / STREET_INDEX_BUCKET_DEGREES);
+      const minY = Math.floor(bounds[1] / STREET_INDEX_BUCKET_DEGREES);
+      const maxY = Math.floor(bounds[3] / STREET_INDEX_BUCKET_DEGREES);
+      if ((maxX - minX + 1) * (maxY - minY + 1) > 4096) {
+        globalCandidates.add(streetIndex);
+        return;
+      }
+      for (let x = minX; x <= maxX; x += 1) {
+        for (let y = minY; y <= maxY; y += 1) {
+          const key = `${x}:${y}`;
+          let candidates = buckets.get(key);
+          if (!candidates) {
+            candidates = new Set();
+            buckets.set(key, candidates);
+          }
+          candidates.add(streetIndex);
+        }
+      }
+    });
+  });
+  return { buckets, globalCandidates };
+}
+
+async function matchCellsToStreets(cells, cellSize, streets) {
+  const { buckets, globalCandidates } = buildStreetSpatialIndex(streets);
+  const indexes = new Int32Array(cells.length);
+  indexes.fill(-1);
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index];
+    const point = webMercatorToLngLat(
+      (Number(cell?.[0]) + 0.5) * cellSize,
+      (Number(cell?.[1]) + 0.5) * cellSize,
+    );
+    const localCandidates = buckets.get(streetBucketKey(point[0], point[1]));
+    if (localCandidates || globalCandidates.size) {
+      const candidates = globalCandidates.size
+        ? new Set([...(localCandidates || []), ...globalCandidates])
+        : localCandidates;
+      for (const streetIndex of candidates) {
+        if (pointInStreet(point, streets[streetIndex].shapes)) {
+          indexes[index] = streetIndex;
+          break;
+        }
+      }
+    }
+    if (index > 0 && index % MAIN_THREAD_CHUNK_SIZE === 0) await yieldToMainThread();
+  }
+  return indexes;
+}
+
 async function realStreetAggregation(datasource) {
   if (streetAggregationCache.has(datasource)) return streetAggregationCache.get(datasource);
   const promise = Promise.all([
     cachedAnalysis(datasource, "tripEnds"),
     getStreetsGeojson({ silentError: true }),
-  ]).then(([payload, streetResponse]) => {
+  ]).then(async ([payload, streetResponse]) => {
     const streetCollection = streetResponse?.data?.type === "FeatureCollection" ? streetResponse.data : streetResponse;
     const features = Array.isArray(streetCollection?.features) ? streetCollection.features : [];
     const streets = features.map((feature, index) => {
@@ -461,10 +671,7 @@ async function realStreetAggregation(datasource) {
     });
     const cellSize = Number(payload.cellSizeMeters) || 100;
     const cells = payload.cells || [];
-    const cellStreetIndexes = cells.map((cell) => {
-      const point = webMercatorToLngLat((Number(cell?.[0]) + 0.5) * cellSize, (Number(cell?.[1]) + 0.5) * cellSize);
-      return streets.findIndex((street) => pointInStreet(point, street.shapes));
-    });
+    const cellStreetIndexes = await matchCellsToStreets(cells, cellSize, streets);
     cells.forEach((cell, index) => {
       const street = streets[cellStreetIndexes[index]];
       if (!street) return;
@@ -532,12 +739,16 @@ export async function getRealTripEndsOdStreets(datasource) {
 
 export async function getRealTripEndsGrid(datasource) {
   const data = await realStreetAggregation(datasource);
-  return encodeTripEndsGrid(data.payload.cells || [], Number(data.payload.cellSizeMeters) || 100, data.cellStreetIndexes);
+  return await encodeTripEndsGrid(
+    data.payload.cells || [],
+    Number(data.payload.cellSizeMeters) || 100,
+    data.cellStreetIndexes,
+  );
 }
 
 export async function getRealTripEndsOdGrid(datasource) {
   const data = await realStreetAggregation(datasource);
-  return encodeTripEndsOdGrid(
+  return await encodeTripEndsOdGrid(
     data.payload.cells || [],
     data.payload.pairs || [],
     Number(data.payload.cellSizeMeters) || 100,

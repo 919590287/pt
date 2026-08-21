@@ -52,14 +52,8 @@ public final class MatsimPassengerProfileCache {
     private static final int IO_BUFFER_BYTES = 1 << 20;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
-    private static final Map<String, Map<String, Object>> MEMORY_CACHE = Collections.synchronizedMap(
-            new LinkedHashMap<>(4, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
-                    return size() > 2;
-                }
-            }
-    );
+    private static final BackendMemoryCache<String, Map<String, Object>> MEMORY_CACHE =
+            new BackendMemoryCache<>("passenger-profile-json", 48L * 1024 * 1024, BackendMemoryCache::estimate);
 
     private MatsimPassengerProfileCache() {
     }
@@ -181,6 +175,42 @@ public final class MatsimPassengerProfileCache {
         }
         Map<String, Object> demographics = profileFor(data, section, key);
         return withDemographics(detail, demographics);
+    }
+
+    /**
+     * 大模型 plans 不包含实际执行的 departureId，无法在不重新物化 events 的前提下
+     * 伪造单班次人口属性。因此班次面板复用所属 route 的 selected-plan 画像并明确
+     * 标注统计范围；小模型继续保留按实际班次 riderIds 生成的精确画像。
+     */
+    public static Map<String, Object> applyDepartureProfile(MatsimData data, Map<String, Object> detail) {
+        if (data == null || !data.isLargeModel() || detail == null || detail.isEmpty()
+                || !isReady(data) || isUnsupported(data)) {
+            return detail;
+        }
+        String key = routeKey(text(detail.get("lineId")), text(detail.get("routeId")));
+        Map<String, Object> routeProfile = profileFor(data, "routes", key);
+        if (routeProfile.isEmpty()) return detail;
+        Map<String, Object> scopedProfile = new LinkedHashMap<>(routeProfile);
+        scopedProfile.put("profileScope", "route");
+        scopedProfile.put("profileScopeLabel", "所属线路");
+        return withDemographics(detail, scopedProfile);
+    }
+
+    /** 班次时刻表整包只附一份 route 画像，避免为每个 departure 重复序列化相同数据。 */
+    public static Map<String, Object> applyDepartureBundleProfile(MatsimData data, Map<String, Object> bundle) {
+        if (data == null || !data.isLargeModel() || bundle == null || bundle.isEmpty()
+                || !isReady(data) || isUnsupported(data)) {
+            return bundle;
+        }
+        String key = routeKey(text(bundle.get("lineId")), text(bundle.get("routeId")));
+        Map<String, Object> routeProfile = profileFor(data, "routes", key);
+        if (routeProfile.isEmpty()) return bundle;
+        Map<String, Object> scopedProfile = new LinkedHashMap<>(routeProfile);
+        scopedProfile.put("profileScope", "route");
+        scopedProfile.put("profileScopeLabel", "所属线路");
+        Map<String, Object> enriched = new LinkedHashMap<>(bundle);
+        enriched.put("demographics", scopedProfile);
+        return enriched;
     }
 
     public static Map<String, Object> applyStationProfile(MatsimData data, Map<String, Object> detail) {
@@ -307,8 +337,40 @@ public final class MatsimPassengerProfileCache {
                 return;
             }
 
+            acceptProfile(PersonProfile.from(person, elements), routeKeys, groupKeys, stationNames, purposes);
+        }
+
+        void acceptRawPerson(Set<String> activities, String attributes, Integer age,
+                             List<TransitUse> transitUses) {
+            persons++;
+            if (transitUses == null || transitUses.isEmpty()) return;
+            Set<String> routeKeys = new LinkedHashSet<>();
+            Set<String> groupKeys = new LinkedHashSet<>();
+            Set<String> stationNames = new LinkedHashSet<>();
+            List<PurposeUse> purposes = new ArrayList<>();
+            for (TransitUse use : transitUses) {
+                if (use == null || use.routeId == null || use.routeId.isBlank()) continue;
+                String key = routeKey(use.lineId, use.routeId);
+                routeKeys.add(key);
+                Set<String> groups = context.groups(key);
+                groupKeys.addAll(groups);
+                String accessStation = context.station(use.accessFacilityId);
+                String egressStation = context.station(use.egressFacilityId);
+                if (!accessStation.isBlank()) stationNames.add(accessStation);
+                if (!egressStation.isBlank()) stationNames.add(egressStation);
+                if (use.purpose != null && !use.purpose.isBlank()) {
+                    purposes.add(new PurposeUse(key, groups, accessStation, use.purpose));
+                }
+            }
+            if (routeKeys.isEmpty()) return;
+            acceptProfile(PersonProfile.fromRaw(activities, attributes, age),
+                    routeKeys, groupKeys, stationNames, purposes);
+        }
+
+        private void acceptProfile(PersonProfile profile, Set<String> routeKeys,
+                                   Set<String> groupKeys, Set<String> stationNames,
+                                   List<PurposeUse> purposes) {
             transitRiders++;
-            PersonProfile profile = PersonProfile.from(person, elements);
             routeKeys.forEach(key -> routes.computeIfAbsent(key, ignored -> new Counts()).addRider(profile));
             groupKeys.forEach(key -> lineGroups.computeIfAbsent(key, ignored -> new Counts()).addRider(profile));
             stationNames.forEach(key -> stations.computeIfAbsent(key, ignored -> new Counts()).addRider(profile));
@@ -363,6 +425,13 @@ public final class MatsimPassengerProfileCache {
     private record PurposeUse(String routeKey, Set<String> groups, String accessStation, String purpose) {
     }
 
+    record TransitUse(String lineId, String routeId, String accessFacilityId,
+                      String egressFacilityId, String purpose) {
+        TransitUse withPurpose(String value) {
+            return new TransitUse(lineId, routeId, accessFacilityId, egressFacilityId, value);
+        }
+    }
+
     private record PersonProfile(boolean commuter, boolean student, boolean elderly,
                                  boolean shopping, boolean leisure, Set<String> activities) {
         static PersonProfile from(Person person, List<PlanElement> elements) {
@@ -373,8 +442,12 @@ public final class MatsimPassengerProfileCache {
                     if (!isInteractionActivity(type)) activities.add(type);
                 }
             }
-            String attributes = allAttributeText(person);
-            Integer age = age(person);
+            return fromRaw(activities, allAttributeText(person), age(person));
+        }
+
+        static PersonProfile fromRaw(Set<String> rawActivities, String rawAttributes, Integer age) {
+            Set<String> activities = rawActivities == null ? Set.of() : rawActivities;
+            String attributes = rawAttributes == null ? "" : rawAttributes.toLowerCase(Locale.ROOT);
             boolean commuter = hasActivity(activities, "home") && hasActivity(activities, "work")
                     || hasToken(attributes, "worker", "employee", "employed", "commuter", "通勤", "工作");
             boolean student = hasActivity(activities, "school", "educ", "university", "college", "小学", "中学", "学校", "教育")
@@ -570,7 +643,7 @@ public final class MatsimPassengerProfileCache {
     }
 
     private static void sourceFingerprint(MatsimData data, Map<String, Object> result) {
-        putFingerprint(result, "plans", data.getOutfile() == null ? null : data.getOutfile().getPlans());
+        putFingerprint(result, "plans", MatsimPlansDerivedCache.resolvePlansFile(data));
         putFingerprint(result, "schedule", data.getOutfile() == null ? null : data.getOutfile().getTransitSchedule());
         result.put("routePanelVersion", MatsimRoutePanelCache.ROUTE_PANEL_CACHE_VERSION);
     }

@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:stage": "vite build --mode staging",
     "preview": "vite preview",
+    "benchmark:trajectory-frame": "node scripts/benchmark-trajectory-frame.mjs",
     "test:unit": "vitest run",
     "type-check": "vue-tsc --build"
   },

@@ -28,15 +28,15 @@
         </div>
       </div>
 
-      <!-- Main Content Stage: Directly Presenting Radar Chart & Indicator Table -->
+      <!-- Main Content Stage: 左侧逐类雷达图 + 右侧指标明细表 -->
       <template v-else>
         <section class="tjfx-grid-row">
-          
-          <!-- Left Column: Radar Chart & District Selector -->
+
+          <!-- Left Column: 每类指标一张雷达图 + 行政区选区 -->
           <div class="tjfx-card-panel tjfx-radar-panel">
             <div class="panel-head flex-between">
               <div class="head-title-group">
-                <h2 class="panel-title">五维综合评估雷达图</h2>
+                <h2 class="panel-title">分类评估雷达图</h2>
               </div>
 
               <!-- 行政区选择器 -->
@@ -45,12 +45,10 @@
                   v-model="selectedDistrict"
                   placeholder="选择行政区"
                   size="small"
-                  clearable
                   class="tjfx-district-select"
-                  @change="handleDistrictChange"
                 >
                   <el-option
-                    v-for="dist in DISTRICT_OPTIONS"
+                    v-for="dist in districtOptions"
                     :key="dist"
                     :label="dist"
                     :value="dist"
@@ -59,18 +57,26 @@
               </div>
             </div>
 
-            <div class="radar-chart-container">
-              <el-auto-resizer class="chart-box">
-                <template #default="{ height, width }">
-                  <VChart
-                    v-if="width > 0 && height > 0"
-                    class="radar-chart"
-                    :option="radarChartOption"
-                    autoresize
-                    :update-options="{ notMerge: true }"
-                  />
-                </template>
-              </el-auto-resizer>
+            <!-- 细线分格的仪表盘：五格雷达，末格向右扩充占满一格，恰好铺满 2×3，不滚动 -->
+            <div class="radar-grid">
+              <div v-for="card in radarCards" :key="card.dimension" class="radar-cell">
+                <div class="radar-cell-head">
+                  <h3 class="radar-cell-title">{{ card.dimension }}</h3>
+                </div>
+                <div class="radar-cell-body">
+                  <el-auto-resizer class="chart-box">
+                    <template #default="{ height, width }">
+                      <VChart
+                        v-if="width > 0 && height > 0"
+                        class="radar-chart"
+                        :option="card.option"
+                        autoresize
+                        :update-options="{ notMerge: true }"
+                      />
+                    </template>
+                  </el-auto-resizer>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -80,21 +86,6 @@
               <div class="head-title-group">
                 <h2 class="panel-title">体检评估指标标准对比明细表</h2>
               </div>
-
-              <!-- Filter Tabs: Only 5 Dimensions -->
-              <div class="table-filter-tabs" role="tablist" aria-label="指标维度筛选">
-                <button
-                  v-for="dim in EVALUATION_DIMENSIONS"
-                  :key="dim"
-                  type="button"
-                  role="tab"
-                  :aria-selected="activeDimensionTab === dim"
-                  :class="['tab-item', activeDimensionTab === dim ? 'is-active' : '']"
-                  @click="activeDimensionTab = dim"
-                >
-                  {{ dim }}
-                </button>
-              </div>
             </div>
 
             <!-- Indicator Table Container -->
@@ -102,6 +93,7 @@
               <table class="tjfx-indicator-table">
                 <thead>
                   <tr>
+                    <th class="col-dim">指标类型</th>
                     <th class="col-name">评估指标名称 / 单位</th>
                     <th class="col-value text-right">模型统计值</th>
                     <th class="col-standard text-right">规范建议标准</th>
@@ -109,57 +101,50 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <template v-for="group in filteredGroups" :key="group.dimension">
-                    <!-- Dimension Group Divider -->
-                    <tr class="group-row" v-if="activeDimensionTab === 'ALL' || activeDimensionTab === 'FAILED'">
-                      <td colspan="4">
-                        <div class="group-title-tag">
-                          <span class="tag-bar"></span>
-                          <span class="group-name">{{ group.dimension }}</span>
-                          <span class="group-count">{{ group.indicators.length }} 项指标</span>
-                        </div>
-                      </td>
-                    </tr>
-
-                    <!-- Indicator Data Rows -->
-                    <tr
-                      v-for="ind in group.indicators"
-                      :key="ind.key"
-                      :class="['indicator-row', ind.display.cls]"
-                    >
-                      <td class="col-name">
-                        <div class="ind-info">
-                          <span class="ind-name">{{ ind.name }}</span>
-                          <span v-if="ind.unit" class="ind-unit">({{ ind.unit }})</span>
-                        </div>
-                      </td>
-                      <td class="col-value text-right">
-                        <span :class="['value-num', ind.display.cls]">{{ ind.display.text }}</span>
-                      </td>
-                      <td class="col-standard text-right">
-                        <span class="std-text">{{ ind.standardText }}</span>
-                      </td>
-                      <td class="col-gz text-right">
-                        <span class="gz-text">{{ ind.gzAvg != null ? formatNumber(ind.gzAvg) : '-' }}</span>
-                      </td>
-                    </tr>
-                  </template>
-
-                  <tr v-if="!hasFilteredIndicators" class="empty-row">
-                    <td colspan="4">
-                      <div class="empty-hint">
-                        <el-icon><Check /></el-icon>
-                        <span>当前筛选下暂无匹配指标</span>
+                  <tr
+                    v-for="row in tableRows"
+                    :key="row.key"
+                    :class="['indicator-row', row.display.cls, row.isDimensionStart ? 'is-dim-start' : '']"
+                  >
+                    <td v-if="row.rowSpan" class="col-dim" :rowspan="row.rowSpan">
+                      <div class="dim-cell">
+                        <span class="tag-bar"></span>
+                        <span class="dim-name">{{ row.dimension }}</span>
                       </div>
+                    </td>
+                    <td class="col-name">
+                      <div class="ind-info">
+                        <span class="ind-name">{{ row.name }}</span>
+                        <span v-if="row.unit" class="ind-unit">({{ row.unit }})</span>
+                      </div>
+                    </td>
+                    <td class="col-value text-right">
+                      <span :class="['value-num', row.display.cls]">{{ row.display.text }}</span>
+                    </td>
+                    <td class="col-standard text-right">
+                      <span class="std-text">{{ row.standardText }}</span>
+                      <span
+                        v-if="row.direction"
+                        class="dir-mark"
+                        :title="row.direction.label"
+                      >{{ row.direction.mark }}</span>
+                    </td>
+                    <td class="col-gz text-right">
+                      <span class="gz-text">{{ row.gzAvg != null ? formatNumber(row.gzAvg) : '-' }}</span>
                     </td>
                   </tr>
                 </tbody>
               </table>
             </div>
+
+            <p v-if="!isCityScope" class="table-footnote">
+              {{ districtScopedNames }} 按所选行政区（{{ activeDistrictLabel }}）统计，其余指标为全市口径，不随行政区变化。
+            </p>
           </div>
 
         </section>
       </template>
+
 
     </div>
   </div>
@@ -167,20 +152,28 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, inject, watch } from "vue";
-import { Loading, WarningFilled, Check } from "@element-plus/icons-vue";
+import { Loading, WarningFilled } from "@element-plus/icons-vue";
 import { VChart } from "@/plugins/echarts";
 import { chartInk, isDarkTheme } from "@/utils/chartInk";
 import { getCachedEvaluation } from "@/utils/modelDataCache.js";
+import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
 import {
   EVALUATION_DIMENSIONS,
   EVALUATION_INDICATORS,
+  RADAR_INDICATORS,
+  RADAR_MAX_SCORE,
+  RADAR_STANDARD_SCORE,
+  dimensionRadarScores,
+  directionInfo,
   isBetterThanStandard,
-  normalizeIndicator,
-  dimensionScores,
 } from "@/utils/evaluationStandards.js";
 
-const DISTRICT_OPTIONS = [
-  "全市",
+const DISPLAY_AREA_NAME = "广州市";
+const DISTRICT_ALL = "全市";
+// 行政区列表以后端 adminDistricts 为准（与地图选区、后端统计口径同名），
+// 请求未回来前先用本地兜底，避免下拉短暂空白。
+const FALLBACK_DISTRICT_OPTIONS = [
+  DISTRICT_ALL,
   "越秀区",
   "海珠区",
   "荔湾区",
@@ -197,28 +190,46 @@ const DISTRICT_OPTIONS = [
 const props = defineProps({
   model: String,
   district: {
+    // defineProps 会被提升到 setup 外，默认值只能写字面量，不能引用 DISTRICT_ALL
     type: String,
     default: "全市",
   },
 });
 
 const emit = defineEmits(["update:district"]);
-const selectedDistrict = ref(props.district || "全市");
 
-watch(() => props.district, (newDist) => {
-  if (newDist && newDist !== selectedDistrict.value) {
-    selectedDistrict.value = newDist;
-  }
+// 行政区只有 props.district（displayRange store）一个真值来源：下拉直接读写它，
+// 不再维护本地副本。原实现里本地 ref 与 props 各触发一次请求，两条链的
+// seq 守卫互相作废，选区经常停在旧数据上，看起来就是"选了没反应"。
+const selectedDistrict = computed({
+  get: () => props.district || DISTRICT_ALL,
+  set: (value) => emit("update:district", String(value || "").trim() || DISTRICT_ALL),
 });
 
-function handleDistrictChange(val) {
-  const target = val || "全市";
-  selectedDistrict.value = target;
-  emit("update:district", target);
-  fetchEvaluation();
-}
+const districtOptions = ref([...FALLBACK_DISTRICT_OPTIONS]);
+const activeDistrictLabel = computed(() => props.district || DISTRICT_ALL);
+const isCityScope = computed(() => activeDistrictLabel.value === DISTRICT_ALL);
+const districtScopedNames = computed(() => EVALUATION_INDICATORS
+  .filter((item) => item.districtScoped)
+  .map((item) => item.name)
+  .join("、"));
 
-const activeDimensionTab = ref("总体水平"); // Default to 总体水平 dimension
+function loadDistrictOptions() {
+  getCachedAdminDistricts(DISPLAY_AREA_NAME)
+    .then((data) => {
+      const names = Array.isArray(data?.districts)
+        ? data.districts.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+      if (!names.length) return;
+      districtOptions.value = [
+        DISTRICT_ALL,
+        ...names.filter((name, index, list) => name !== DISTRICT_ALL && list.indexOf(name) === index),
+      ];
+    })
+    .catch(() => {
+      /* 行政区列表失败时保留兜底列表，体检指标本身仍可按全市展示 */
+    });
+}
 
 const rightPanelHasContent = inject("rightPanelHasContent", ref(false));
 const activeDatavisualizationTab = inject("activeDatavisualizationTab", ref(""));
@@ -245,11 +256,20 @@ const evalError = ref("");
 let evalAbortController = null;
 let evalRequestSeq = 0;
 let evalRetryTimer = null;
-const EVAL_RETRY_INTERVAL = 5000;
+let evalRetryAttempt = 0;
+const EVAL_RETRY_BASE_MS = 5000;
+const EVAL_RETRY_MAX_ATTEMPTS = 8;
 
 function scheduleEvalRetry() {
   clearTimeout(evalRetryTimer);
-  evalRetryTimer = setTimeout(fetchEvaluation, EVAL_RETRY_INTERVAL);
+  if (evalRetryAttempt >= EVAL_RETRY_MAX_ATTEMPTS) {
+    evalStatus.value = "error";
+    evalError.value = "体检指标生成超时，请稍后重新加载";
+    return;
+  }
+  evalRetryAttempt += 1;
+  const delay = Math.min(30_000, EVAL_RETRY_BASE_MS * (2 ** Math.min(3, evalRetryAttempt - 1)));
+  evalRetryTimer = setTimeout(fetchEvaluation, delay);
 }
 
 function isCanceledRequest(error) {
@@ -267,7 +287,7 @@ function fetchEvaluation() {
   evalRequestSeq += 1;
   const seq = evalRequestSeq;
   const model = props.model;
-  const district = selectedDistrict.value || props.district || "全市";
+  const district = props.district || DISTRICT_ALL;
 
   if (evalStatus.value !== "generating") {
     evalStatus.value = "loading";
@@ -276,7 +296,7 @@ function fetchEvaluation() {
 
   getCachedEvaluation(model, district)
     .then((payload = {}) => {
-      if (seq !== evalRequestSeq || props.model !== model || selectedDistrict.value !== district) return;
+      if (seq !== evalRequestSeq || props.model !== model || props.district !== district) return;
       if (payload.status === "generating") {
         evalStatus.value = "generating";
         scheduleEvalRetry();
@@ -284,29 +304,24 @@ function fetchEvaluation() {
       }
       evalValues.value = payload.values || {};
       evalAvailability.value = payload.availability || {};
+      evalRetryAttempt = 0;
       evalStatus.value = "ready";
     })
     .catch((error) => {
       if (seq !== evalRequestSeq || props.model !== model
-        || selectedDistrict.value !== district || isCanceledRequest(error)) return;
-      const message = String(error?.message || "");
-      if (/超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message)) {
-        evalStatus.value = "generating";
-        scheduleEvalRetry();
-        return;
-      }
+        || props.district !== district || isCanceledRequest(error)) return;
       evalError.value = error?.message || "体检评估数据加载失败";
       evalStatus.value = "error";
     });
 }
 
-const evaluating = computed(() => evalStatus.value === "loading");
-
 onMounted(() => {
   updateRightPanelVisibility();
-  fetchEvaluation();
+  loadDistrictOptions();
 });
 
+// 模型/行政区任一变化都从这里唯一发起请求（含首帧 immediate），
+// 保证 evalRequestSeq 单调且与 props.district 一一对应。
 watch([() => props.model, () => props.district], () => {
   evalRequestSeq += 1;
   clearTimeout(evalRetryTimer);
@@ -314,9 +329,10 @@ watch([() => props.model, () => props.district], () => {
   evalValues.value = null;
   evalAvailability.value = {};
   evalError.value = "";
+  evalRetryAttempt = 0;
   evalStatus.value = "loading";
   fetchEvaluation();
-});
+}, { immediate: true });
 
 onUnmounted(() => {
   evalRequestSeq += 1;
@@ -391,67 +407,58 @@ function modelValueDisplay(indicator) {
   };
 }
 
-const failedIndicatorCount = computed(() => {
-  let count = 0;
-  EVALUATION_INDICATORS.forEach((ind) => {
-    const raw = modelValueOf(ind);
-    if (raw != null && isBetterThanStandard(raw, ind) === false) count += 1;
+/******************************** 单表 + 指标类型合并单元格 ********************************/
+// 一张表铺全部指标，首列"指标类型"用 rowspan 合并同类：
+// 每类首行携带 rowSpan，其余行不渲染该 td。
+const tableRows = computed(() => {
+  const rows = [];
+  EVALUATION_DIMENSIONS.forEach((dimension) => {
+    const indicators = EVALUATION_INDICATORS.filter((item) => item.dimension === dimension);
+    indicators.forEach((item, index) => {
+      rows.push({
+        ...item,
+        dimension,
+        display: modelValueDisplay(item),
+        direction: directionInfo(item),
+        rowSpan: index === 0 ? indicators.length : 0,
+        isDimensionStart: index === 0,
+      });
+    });
   });
-  return count;
+  return rows;
 });
 
-const indicatorGroups = computed(() => EVALUATION_DIMENSIONS.map((dimension) => ({
-  dimension,
-  indicators: EVALUATION_INDICATORS
-    .filter((item) => item.dimension === dimension)
-    .map((item) => ({ ...item, display: modelValueDisplay(item) })),
-})));
-
-const filteredGroups = computed(() => {
-  const tab = activeDimensionTab.value;
-  return indicatorGroups.value
-    .map((group) => {
-      let inds = group.indicators;
-      if (tab === "FAILED") {
-        inds = inds.filter((ind) => ind.display.cls === "is-worse");
-      } else if (tab !== "ALL" && group.dimension !== tab) {
-        inds = [];
-      }
-      return { dimension: group.dimension, indicators: inds };
-    })
-    .filter((group) => group.indicators.length > 0);
-});
-
-const hasFilteredIndicators = computed(() => filteredGroups.value.some((g) => g.indicators.length > 0));
-
-/******************************** 维度得分 ********************************/
-const modelDimScores = computed(() => dimensionScores((ind) => modelValueOf(ind)));
-const gzDimScores = computed(() => dimensionScores((ind) => ind.gzAvg));
-
-/******************************** 五维雷达图 ********************************/
+/******************************** 逐类雷达图（每个指标类型一张） ********************************/
 const MODEL_SERIES_COLOR = "#0071e3";
-const GZ_SERIES_COLOR = "#f97316";
+const STANDARD_SERIES_COLOR = "#f97316";
 const MODEL_SERIES_NAME = "模型统计值";
-const GZ_SERIES_NAME = "广州市平均(2023)";
+const STANDARD_SERIES_NAME = "规范建议标准";
 
-const modelNoDataDimensions = computed(() => new Set(
-  EVALUATION_DIMENSIONS.filter((dimension) => EVALUATION_INDICATORS
-    .filter((indicator) => indicator.dimension === dimension)
-    .every((indicator) => normalizeIndicator(modelValueOf(indicator), indicator) == null))
-));
+const radarDimensionScores = computed(() => dimensionRadarScores((indicator) => modelValueOf(indicator)));
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
 }
 
-const radarChartOption = computed(() => {
-  const round3 = (n) => Math.round((n || 0) * 1000) / 1000;
-  const modelData = EVALUATION_DIMENSIONS.map((dim) => round3(modelDimScores.value[dim]));
-  const gzData = EVALUATION_DIMENSIONS.map((dim) => round3(gzDimScores.value[dim]));
-  const noData = modelNoDataDimensions.value;
-  const reduceMotion = prefersReducedMotion();
+function percentText(score) {
+  return `${Math.round(score * 100)}%`;
+}
+
+/**
+ * 单个指标类型的雷达图配置：轴 = 该类里有规范建议标准的指标。
+ * 目前需求强度/场站设施各只有 1 项、运营服务 2 项，轴数不足 3 根时雷达是退化形态
+ * （一根轴是一条辐条、两根轴是一条直线）——这是指标表本身还没补全，补上就自然撑开，
+ * 不为此改成别的图形。
+ */
+function buildDimensionRadarOption(card) {
+  const members = RADAR_INDICATORS.filter((item) => item.dimension === card.dimension);
+  const scoreOf = (indicator) => card.scored.find((item) => item.indicator === indicator)?.score ?? null;
+  // 类内全部统计到才连面：radar 没法跳过空轴，连出来的多边形必然被拉到圆心，
+  // 看着就是"该项得 0 分"。缺项时只落点，点到虚线基准环的距离照样读得出达标情况。
+  const isComplete = members.length > 0 && card.scored.length === members.length;
   const ink = chartInk.value;
   const dark = isDarkTheme.value;
+  const reduceMotion = prefersReducedMotion();
 
   return {
     backgroundColor: "transparent",
@@ -459,44 +466,25 @@ const radarChartOption = computed(() => {
     animationDuration: reduceMotion ? 0 : 700,
     animationEasing: "cubicOut",
     tooltip: {
-      trigger: "item",
-      appendToBody: true,
-      padding: [10, 14],
-      extraCssText: `z-index:999;border-radius:12px;box-shadow:${ink.tooltipShadow};backdrop-filter:blur(8px);`,
-      backgroundColor: ink.tooltipBg,
-      borderColor: ink.tooltipBorder,
-      borderWidth: 1,
-      textStyle: { color: ink.tooltipText, fontSize: 13, fontFamily: "var(--dm2-font)" },
-      formatter: (params) => {
-        const isModel = params.name === MODEL_SERIES_NAME;
-        const rows = EVALUATION_DIMENSIONS.map((dim, index) => {
-          const value = isModel && noData.has(dim) ? "暂无数据" : (params.value?.[index] ?? "-");
-          return `<div style="display:flex;justify-content:space-between;gap:16px;margin-top:4px;"><span>${dim}</span><strong>${value}</strong></div>`;
-        }).join("");
-        return `<div style="font-weight:700;color:${params.color};margin-bottom:6px;font-size:13px;">${params.name}</div>${rows}`;
-      },
-    },
-    legend: {
-      bottom: 6,
-      icon: "circle",
-      itemWidth: 10,
-      itemHeight: 10,
-      itemGap: 24,
-      textStyle: { fontSize: 12, color: ink.text, fontWeight: 600, fontFamily: "var(--dm2-font)" },
-      data: [MODEL_SERIES_NAME, GZ_SERIES_NAME],
+      show: false,
     },
     radar: {
-      indicator: EVALUATION_DIMENSIONS.map((dim) => ({
-        name: noData.has(dim) ? `{name|${dim}}\n{na|暂无数据}` : `{name|${dim}}`,
-        max: 1.2,
+      indicator: members.map((indicator) => ({
+        name: scoreOf(indicator) == null
+          ? `{name|${indicator.shortName}}\n{na|暂无数据}`
+          : `{name|${indicator.shortName}}`,
+        max: RADAR_MAX_SCORE,
       })),
-      center: ["50%", "47%"],
-      radius: "64%",
-      splitNumber: 4,
+      center: ["50%", "53%"],
+      // 半径按轴数分档：3 轴以上左右两侧挂轴名，必须留出净空（42% 在 1366 宽下
+      // 仍会切掉"重复系数"半个字，收到 36%）；1~2 轴是竖直单轴，没有横向轴名，
+      // 放大到 48% 才不会在方格里缩成一小截。
+      radius: members.length >= 3 ? "36%" : "48%",
+      splitNumber: 3,
       axisName: {
         rich: {
-          name: { color: ink.text, fontSize: 13, fontWeight: 700, fontFamily: "var(--dm2-font)" },
-          na: { color: ink.textSoft, fontSize: 11, fontWeight: 500, padding: [4, 0, 0, 0] },
+          name: { color: ink.text, fontSize: 10, fontWeight: 700, fontFamily: "var(--dm2-font)" },
+          na: { color: ink.textSoft, fontSize: 9, fontWeight: 500, padding: [2, 0, 0, 0] },
         },
       },
       axisLine: { lineStyle: { color: ink.axisTick } },
@@ -515,24 +503,41 @@ const radarChartOption = computed(() => {
         symbolSize: 5,
         data: [
           {
-            value: modelData,
+            value: members.map(() => RADAR_STANDARD_SCORE),
+            name: STANDARD_SERIES_NAME,
+            // 轴数 <3 时基准环退化成一条线甚至一个点，虚线看不出来，补个小刻度标住 100% 的位置
+            symbol: members.length < 3 ? "rect" : "none",
+            symbolSize: [14, 2],
+            // 基准环只留虚线，不铺面：铺满 100% 的色块会把模型多边形整个吃掉
+            itemStyle: { color: STANDARD_SERIES_COLOR },
+            lineStyle: { color: STANDARD_SERIES_COLOR, width: 1.6, type: "dashed" },
+          },
+          // 一项都没统计到的类只留轴与基准环，不画任何模型图元
+          ...(card.scored.length ? [{
+            value: members.map(scoreOf),
             name: MODEL_SERIES_NAME,
+            symbol: "circle",
             itemStyle: { color: MODEL_SERIES_COLOR },
-            lineStyle: { color: MODEL_SERIES_COLOR, width: 2.5 },
-            areaStyle: { color: "rgba(0, 113, 227, 0.18)" },
-          },
-          {
-            value: gzData,
-            name: GZ_SERIES_NAME,
-            itemStyle: { color: GZ_SERIES_COLOR },
-            lineStyle: { color: GZ_SERIES_COLOR, width: 2, type: "dashed" },
-            areaStyle: { color: "rgba(249, 115, 22, 0.12)" },
-          },
+            lineStyle: isComplete
+              ? { color: MODEL_SERIES_COLOR, width: 2.2 }
+              : { width: 0, opacity: 0 },
+            ...(isComplete ? { areaStyle: { color: "rgba(0, 113, 227, 0.18)" } } : {}),
+          }] : []),
         ],
       },
     ],
   };
-});
+}
+
+const radarCards = computed(() => radarDimensionScores.value.map((card) => ({
+  ...card,
+  scoreText: card.score == null ? "暂无数据" : percentText(card.score),
+  // 类得分与表内单指标同一套语义：达到基准环即达标
+  scoreClass: card.score == null
+    ? "is-none"
+    : (card.score >= RADAR_STANDARD_SCORE ? "is-better" : "is-worse"),
+  option: buildDimensionRadarOption(card),
+})));
 </script>
 
 <script>
@@ -554,8 +559,11 @@ export default {
   font-family: var(--dm2-font, system-ui, -apple-system, sans-serif);
 }
 
-:global(html.dark) .tjfx-full-dashboard {
-  background: #0b1120;
+/* 暗色一律写成 `html.dark .x`（与 ModelLoadGate/MHeader 一致）：
+   scoped 里写 :global(html.dark) 作嵌套父级，编译后后代选择器会被整段丢掉，
+   规则最终落到 <html> 上，本组件一条都没生效。 */
+html.dark .tjfx-full-dashboard {
+  background: var(--dm2-surface-page, #0d1218);
 }
 
 .tjfx-inner-container {
@@ -567,7 +575,8 @@ export default {
 /* ── Main Dashboard 2-Column Grid ── */
 .tjfx-grid-row {
   display: grid;
-  grid-template-columns: 420px minmax(0, 1fr);
+  /* 左栏要塞下 5 张小雷达（2 列），比单图版略宽一点 */
+  grid-template-columns: minmax(460px, 33%) minmax(0, 1fr);
   gap: 20px;
   flex: 1;
   min-height: 0;
@@ -598,10 +607,13 @@ export default {
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      flex-wrap: wrap;
+      /* 不换行：窄屏下让副标题省略，而不是把行政区下拉挤到第二排 */
+      flex-wrap: nowrap;
     }
 
     .head-title-group {
+      min-width: 0;
+
       .panel-title {
         margin: 0;
         font-size: 16px;
@@ -609,44 +621,122 @@ export default {
         line-height: 1.25;
         color: var(--dm2-ink, #0f172a);
       }
+
+      /* 副标题必须单行：换行会把右侧行政区下拉挤到下一排，整个头部错位 */
+      .panel-subtitle {
+        margin: 4px 0 0;
+        font-size: 11.5px;
+        line-height: 1.4;
+        color: var(--dm2-muted, #64748b);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
     }
 
-    .district-select-wrapper {
-      display: flex;
-      align-items: center;
+  }
+}
 
-      .tjfx-district-select {
-        width: 110px;
+/* 行政区下拉：挂在页头，不能嵌在 .tjfx-card-panel 里，否则页头那个拿不到样式（会缩成空框） */
+.district-select-wrapper {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 
-        :deep(.el-input__wrapper) {
-          border-radius: var(--dm2-radius-pill, 9999px);
-          background: var(--dm2-surface-sunken, #f1f5f9);
-          box-shadow: none !important;
-          border: 1px solid var(--dm2-line-faint, rgba(0, 0, 0, 0.08));
-          font-size: 12px;
-          font-weight: 600;
+  .tjfx-district-select {
+    width: 110px;
 
-          &.is-focus, &:hover {
-            border-color: var(--dm2-accent, #0071e3);
-          }
-        }
+    :deep(.el-input__wrapper) {
+      border-radius: var(--dm2-radius-pill, 9999px);
+      background: var(--dm2-surface-sunken, #f1f5f9);
+      box-shadow: none !important;
+      border: 1px solid var(--dm2-line-faint, rgba(0, 0, 0, 0.08));
+      font-size: 12px;
+      font-weight: 600;
 
-        :deep(.el-input__inner) {
-          color: var(--dm2-ink, #0f172a);
-          font-weight: 600;
-        }
+      &.is-focus, &:hover {
+        border-color: var(--dm2-accent, #0071e3);
       }
+    }
+
+    :deep(.el-input__inner) {
+      color: var(--dm2-ink, #0f172a);
+      font-weight: 600;
     }
   }
 }
 
-/* Radar Chart Section */
+/* ── 左栏：五格雷达，2×3 细线分格，最后一格扩满整行 ──
+   不用嵌套卡片（卡中卡），改成 1px 发丝线切分的仪表盘；
+   行高按 1fr 均分并 overflow:hidden，任何视口都不出现滚动条。 */
 .tjfx-radar-panel {
-  .radar-chart-container {
+  .radar-grid {
     flex: 1;
-    min-height: 380px;
+    min-height: 400px;
+    margin-top: var(--dm2-space-3, 12px);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(3, minmax(0, 1fr));
+    /* gap 露出容器底色 = 发丝分隔线，比给每格描边少一半线宽误差 */
+    gap: 1px;
+    background: var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+    border: 1px solid var(--dm2-line-faint, rgba(17, 32, 58, 0.07));
+    border-radius: var(--dm2-radius-sm, 10px);
+    overflow: hidden;
+  }
+
+  .radar-cell {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--dm2-surface, #ffffff);
+    padding: var(--dm2-space-2, 8px) var(--dm2-space-2, 8px) var(--dm2-space-1, 4px);
+
+    &:last-child {
+      grid-column: span 2;
+    }
+  }
+
+  .radar-cell-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--dm2-space-1, 4px);
+    flex-shrink: 0;
+
+    .radar-cell-title {
+      margin: 0;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--dm2-ink, #0f172a);
+      white-space: nowrap;
+    }
+
+    .radar-cell-score {
+      margin-left: auto;
+      font-family: var(--dm2-font-num, tabular-nums);
+      font-size: 13px;
+      font-weight: 780;
+      white-space: nowrap;
+
+      &.is-better { color: #16a34a; }
+      &.is-worse { color: #dc2626; }
+      &.is-none { color: var(--dm2-muted, #667085); font-weight: 600; font-size: 11px; }
+    }
+
+    .radar-cell-count {
+      font-size: 10px;
+      /* muted-soft (#98a2b3) 在白底只有 ~2.6:1，正文级小字必须用 muted (~5:1) */
+      color: var(--dm2-muted, #667085);
+      white-space: nowrap;
+    }
+  }
+
+  .radar-cell-body {
+    flex: 1;
+    min-height: 0;
     width: 100%;
-    margin-top: 8px;
 
     .chart-box, .radar-chart {
       width: 100%;
@@ -657,39 +747,6 @@ export default {
 
 /* Indicator Table Section */
 .tjfx-table-panel {
-  .table-filter-tabs {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex-wrap: wrap;
-
-    .tab-item {
-      padding: 5px 12px;
-      border-radius: var(--dm2-radius-pill, 9999px);
-      background: var(--dm2-surface-sunken, #f1f5f9);
-      border: 1px solid transparent;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--dm2-muted, #64748b);
-      cursor: pointer;
-      transition: all 0.15s ease;
-
-      &:hover {
-        color: var(--dm2-ink, #0f172a);
-        background: rgba(0, 0, 0, 0.05);
-      }
-
-      &.is-active {
-        background: var(--dm2-accent, #0071e3);
-        color: #ffffff;
-      }
-
-      &.is-failed.is-active {
-        background: #ef4444;
-      }
-    }
-  }
-
   .table-scroll-wrapper {
     margin-top: 14px;
     overflow-y: auto;
@@ -722,48 +779,56 @@ export default {
       &.text-center { text-align: center; }
     }
 
-    .group-row {
-      td {
-        padding: 12px 12px 6px;
-        border-top: 1px solid var(--dm2-line-faint, rgba(0, 0, 0, 0.08));
+    /* 指标类型合并单元格：整类只有一格，竖直居中，右侧一条分隔线 */
+    .col-dim {
+      width: 104px;
+      vertical-align: middle;
+      border-right: 1px solid var(--dm2-line-faint, rgba(0, 0, 0, 0.07));
+    }
+
+    td.col-dim {
+      background: var(--dm2-surface-sunken, #f8fafc);
+    }
+
+    .dim-cell {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+
+      .tag-bar {
+        width: 3px;
+        height: 14px;
+        border-radius: 2px;
+        background: var(--dm2-accent, #0071e3);
+        flex-shrink: 0;
       }
 
-      .group-title-tag {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-
-        .tag-bar {
-          width: 3px;
-          height: 14px;
-          border-radius: 2px;
-          background: var(--dm2-accent, #0071e3);
-        }
-
-        .group-name {
-          font-size: 13px;
-          font-weight: 780;
-          color: var(--dm2-ink, #0f172a);
-        }
-
-        .group-count {
-          font-size: 11px;
-          color: var(--dm2-muted-soft, #94a3b8);
-        }
+      .dim-name {
+        font-size: 12.5px;
+        font-weight: 780;
+        color: var(--dm2-ink, #0f172a);
+        white-space: nowrap;
       }
     }
 
     .indicator-row {
       td {
-        padding: 10px 12px;
+        /* 17 行一次铺完，行高压到 1080p 下整表免滚动 */
+        padding: 8px 12px;
         border-bottom: 1px solid var(--dm2-line-faint, rgba(0, 0, 0, 0.05));
 
         &.text-right { text-align: right; }
         &.text-center { text-align: center; }
       }
 
-      &:hover {
+      /* 合并单元格跨行，行 hover 底色只能落在非合并列上，否则会盖掉整类 */
+      &:hover td:not(.col-dim) {
         background: rgba(0, 113, 227, 0.02);
+      }
+
+      /* 每类第一行加一条稍重的分隔线，替代原来的分组标题行 */
+      &.is-dim-start td {
+        border-top: 1px solid var(--dm2-line-faint, rgba(0, 0, 0, 0.08));
       }
 
       .ind-info {
@@ -783,16 +848,6 @@ export default {
         }
       }
 
-      .dim-badge {
-        display: inline-block;
-        padding: 2px 8px;
-        border-radius: 4px;
-        background: var(--dm2-surface-sunken, #f1f5f9);
-        color: var(--dm2-muted, #64748b);
-        font-size: 11px;
-        font-weight: 600;
-      }
-
       .value-num {
         font-family: var(--dm2-font-num, tabular-nums);
         font-weight: 750;
@@ -810,53 +865,13 @@ export default {
         font-weight: 600;
       }
 
-      .status-chip {
-        display: inline-block;
-        padding: 3px 10px;
-        border-radius: var(--dm2-radius-pill, 9999px);
+      /* 正负向角标：↑正向 / ↓负向 / ↔区间，紧跟建议值 */
+      .dir-mark {
+        margin-left: 5px;
         font-size: 11px;
         font-weight: 700;
-
-        &.is-better {
-          background: rgba(34, 197, 94, 0.12);
-          color: #16a34a;
-        }
-
-        &.is-worse {
-          background: rgba(239, 68, 68, 0.12);
-          color: #dc2626;
-        }
-
-        &.is-none {
-          background: rgba(148, 163, 184, 0.12);
-          color: #64748b;
-        }
-
-        &.is-neutral {
-          background: rgba(0, 113, 227, 0.1);
-          color: #0071e3;
-        }
-      }
-    }
-
-    .empty-row {
-      td {
-        padding: 40px 12px;
-        text-align: center;
-      }
-
-      .empty-hint {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        gap: 8px;
-        color: var(--dm2-muted, #64748b);
-        font-size: 13px;
-
-        .el-icon {
-          font-size: 24px;
-          color: #16a34a;
-        }
+        color: var(--dm2-muted-soft, #94a3b8);
+        cursor: help;
       }
     }
   }
@@ -939,24 +954,23 @@ export default {
 .tjfx-skeleton-stage {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 16px;
   height: 100%;
 
+  .sk-box {
+    border-radius: 16px;
+    background: linear-gradient(90deg, rgba(0, 0, 0, 0.04) 25%, rgba(0, 0, 0, 0.08) 37%, rgba(0, 0, 0, 0.04) 63%);
+    background-size: 400% 100%;
+    animation: skeleton-loading 1.4s ease infinite;
+  }
+
+  /* 骨架按最终版式：左栏雷达、右栏明细表 */
   .sk-grid-row {
     display: grid;
-    grid-template-columns: 420px 1fr;
+    grid-template-columns: minmax(460px, 33%) minmax(0, 1fr);
     gap: 20px;
     flex: 1;
-
-    .sk-box {
-      border-radius: 16px;
-      background: linear-gradient(90deg, rgba(0, 0, 0, 0.04) 25%, rgba(0, 0, 0, 0.08) 37%, rgba(0, 0, 0, 0.04) 63%);
-      background-size: 400% 100%;
-      animation: skeleton-loading 1.4s ease infinite;
-
-      &.sk-radar { height: 100%; }
-      &.sk-table { height: 100%; }
-    }
+    min-height: 0;
   }
 }
 
@@ -965,48 +979,74 @@ export default {
   100% { background-position: 0 50%; }
 }
 
-/* Dark Mode Theme Tokens Overrides */
-:global(html.dark) {
-  .tjfx-card-panel, .tjfx-state-card {
-    background: #1e293b;
-    border-color: rgba(255, 255, 255, 0.08);
-  }
+/* ── 暗色模式（html.dark，跟随底图选择） ── */
+html.dark .tjfx-card-panel,
+html.dark .tjfx-state-card {
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.97), rgba(13, 18, 25, 0.94));
+  border-color: rgba(255, 255, 255, 0.08);
+}
 
-  .tjfx-card-panel {
-    .panel-head {
-      border-bottom-color: rgba(255, 255, 255, 0.08);
-      .panel-title { color: #f8fafc; }
-      .panel-subtitle { color: #94a3b8; }
-    }
-  }
+html.dark .tjfx-card-panel .panel-head {
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
 
-  .tjfx-radar-panel .dim-chip {
-    background: rgba(255, 255, 255, 0.04);
-    .chip-name { color: #e2e8f0; }
-    .chip-value .score { color: #f8fafc; }
+html.dark .tjfx-card-panel .panel-head .panel-title,
+html.dark .tjfx-radar-panel .radar-cell-title {
+  color: #f8fafc;
+}
 
-    &:hover {
-      background: rgba(0, 113, 227, 0.15);
-    }
-  }
+html.dark .tjfx-card-panel .panel-head .panel-subtitle,
+html.dark .tjfx-radar-panel .radar-cell-count,
+html.dark .tjfx-radar-panel .legend-note {
+  color: #94a3b8;
+}
 
-  .tjfx-table-panel {
-    .tab-item {
-      background: rgba(255, 255, 255, 0.06);
-      color: #94a3b8;
-      &:hover { color: #f8fafc; background: rgba(255, 255, 255, 0.1); }
-    }
+/* 发丝分格盘：暗色下格子取面板底色，gap 与外框走暗色分隔线 */
+html.dark .tjfx-radar-panel .radar-grid {
+  background: rgba(148, 180, 220, 0.14);
+  border-color: rgba(148, 180, 220, 0.14);
+}
 
-    .tjfx-indicator-table {
-      thead { background: #1e293b; }
-      th { border-bottom-color: rgba(255, 255, 255, 0.12); color: #94a3b8; }
-      .group-row .group-name { color: #f8fafc; }
-      .indicator-row td { border-bottom-color: rgba(255, 255, 255, 0.05); }
-      .indicator-row:hover { background: rgba(255, 255, 255, 0.03); }
-      .ind-name { color: #f8fafc; }
-      .dim-badge { background: rgba(255, 255, 255, 0.06); color: #94a3b8; }
-      .std-text, .gz-text { color: #94a3b8; }
-    }
-  }
+html.dark .tjfx-radar-panel .radar-cell {
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.97), rgba(13, 18, 25, 0.94));
+}
+
+html.dark .tjfx-radar-panel .legend-row dt,
+html.dark .tjfx-radar-panel .legend-row dd b {
+  color: #e2e8f0;
+}
+
+html.dark .tjfx-radar-panel .legend-row dd {
+  color: #94a3b8;
+}
+
+html.dark .tjfx-state-card .state-content h3 { color: #f8fafc; }
+html.dark .tjfx-state-card .state-content p { color: #94a3b8; }
+html.dark .tjfx-state-card .state-icon { background: rgba(255, 255, 255, 0.06); }
+
+html.dark .tjfx-indicator-table thead { background: linear-gradient(180deg, rgba(16, 22, 30, 0.97), rgba(13, 18, 25, 0.94)); }
+html.dark .tjfx-indicator-table th {
+  border-bottom-color: rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+}
+html.dark .tjfx-indicator-table .col-dim { border-right-color: rgba(255, 255, 255, 0.08); }
+html.dark .tjfx-indicator-table td.col-dim { background: rgba(255, 255, 255, 0.03); }
+html.dark .tjfx-indicator-table .dim-cell .dim-name { color: #f8fafc; }
+html.dark .tjfx-indicator-table .indicator-row td { border-bottom-color: rgba(255, 255, 255, 0.05); }
+html.dark .tjfx-indicator-table .indicator-row.is-dim-start td { border-top-color: rgba(255, 255, 255, 0.08); }
+html.dark .tjfx-indicator-table .indicator-row:hover td:not(.col-dim) { background: rgba(255, 255, 255, 0.03); }
+html.dark .tjfx-indicator-table .ind-name { color: #f8fafc; }
+html.dark .tjfx-indicator-table .std-text,
+html.dark .tjfx-indicator-table .gz-text,
+html.dark .tjfx-indicator-table .dir-mark { color: #94a3b8; }
+
+html.dark .tjfx-table-panel .table-footnote {
+  border-top-color: rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+}
+
+html.dark .tjfx-skeleton-stage .sk-box {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05) 25%, rgba(255, 255, 255, 0.1) 37%, rgba(255, 255, 255, 0.05) 63%);
+  background-size: 400% 100%;
 }
 </style>

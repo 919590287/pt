@@ -153,6 +153,7 @@ const ROAD_LABEL_LAYER_KEY = `${FLOW_LAYER_KEY}-road-labels`;
 // 压在专题客流线层（0）之上，低于站点名称（1005）。
 const ROAD_LABEL_LAYER_ORDER = 1002;
 const GENERATING_POLL_MS = 8000;
+const GENERATING_POLL_MAX_ATTEMPTS = 20;
 
 const status = ref("loading"); // loading | generating | error | ready
 const errorMessage = ref("");
@@ -175,6 +176,7 @@ function formatInt(value) {
 // ---------------------------------------------------------------------------
 
 let pollTimer = null;
+let pollAttempt = 0;
 let requestSeq = 0;
 const pageActive = ref(true);
 let pendingLayerRefresh = false;
@@ -188,10 +190,17 @@ function isCanceledRequest(error) {
 
 function schedulePoll() {
   clearTimeout(pollTimer);
+  if (pollAttempt >= GENERATING_POLL_MAX_ATTEMPTS) {
+    status.value = "error";
+    errorMessage.value = "走廊缓存生成超时，请稍后手动重试";
+    return;
+  }
+  pollAttempt += 1;
+  const delay = Math.min(30_000, GENERATING_POLL_MS + (pollAttempt - 1) * 1500);
   pollTimer = setTimeout(() => {
+    pollTimer = null;
     if (pageActive.value) bootstrap();
-    else schedulePoll(); // 页面失活期间不发请求，激活后由轮询补上
-  }, GENERATING_POLL_MS);
+  }, delay);
 }
 
 function bootstrap() {
@@ -200,7 +209,10 @@ function bootstrap() {
   requestSeq += 1;
   const seq = requestSeq;
   const model = props.model;
-  if (status.value !== "generating") status.value = "loading";
+  if (status.value !== "generating") {
+    status.value = "loading";
+    pollAttempt = 0;
+  }
   errorMessage.value = "";
 
   getCachedCorridorSummary(model)
@@ -224,7 +236,8 @@ function bootstrap() {
           return null;
         }
         namesPayload.value = names;
-        links.value = getModelDerived(model, "corridorLinks", () => markRaw(parseCorridorLinks(linksBuffer)));
+        links.value = getModelDerived(model, `corridorLinks@${version}`, () => markRaw(parseCorridorLinks(linksBuffer)));
+        pollAttempt = 0;
         status.value = "ready";
         refreshMapLayers();
         return null;
@@ -233,11 +246,6 @@ function bootstrap() {
     .catch((error) => {
       if (seq !== requestSeq || props.model !== model || isCanceledRequest(error)) return;
       const message = String(error?.message || "");
-      if (/超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message)) {
-        status.value = "generating";
-        schedulePoll();
-        return;
-      }
       errorMessage.value = message || "走廊数据加载失败";
       status.value = "error";
     });
@@ -586,6 +594,7 @@ onMounted(bootstrap);
 
 onActivated(() => {
   pageActive.value = true;
+  if (status.value === "generating" && !pollTimer) schedulePoll();
   if (pendingLayerRefresh) {
     refreshMapLayers();
   } else if (status.value === "ready") {

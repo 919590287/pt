@@ -10,10 +10,12 @@
  * 采样为 5 级；气泡半径在 JS 侧按 sqrt 预计算成 feature 属性，paint 只做
  * 缩放级别微调，避免复杂表达式。
  */
-import { MAP_THEME } from "@/utils/mapTheme.js";
+import { MAP_THEME, railwayCasingColor, railwayLineWidth } from "@/utils/mapTheme.js";
+import { isDarkTheme } from "@/utils/uiTheme.js";
 import { adminDistrictOutlineStyle } from "@/utils/adminDistrictRange.js";
 import { sampleScheme } from "@/utils/colorSchemes.js";
 import { buildFlowCurveFeatureCollection, emptyFlowCurveCollection } from "@/views/datavisualization/utils/flowCurves.js";
+import { RailwayHatchLayerManager, metroHatchPathsFrom } from "@/views/datavisualization/layers/RailwayHatchLayer.js";
 
 const SRC_HUBS = "ta-hubs-src";
 const SRC_METRO_NETWORK = "ta-metro-network-src";
@@ -28,7 +30,10 @@ const SRC_DISTRICT = "ta-display-range-src";
 const LAYER_HEAT = "ta-heat";
 const LAYER_METRO_NETWORK = "ta-metro-network";
 const LAYER_METRO_NETWORK_ACTIVE = "ta-metro-network-active";
-const LAYER_METRO_NETWORK_DASH = "ta-metro-network-dash";
+// 斑马嵌槽改由 deck.gl 画（maplibre 的 line-dasharray 小数缩放级块长会忽长忽短，
+// 见 RailwayHatchLayer.js）；key 带 ta- 前缀以随页面切换挂起
+const DECK_METRO_HATCH_KEY = "ta-metro-network-hatch";
+const DECK_METRO_HATCH_ORDER = 200;
 const LAYER_DISTRICT = "ta-display-range-outline";
 const LAYER_FLOW_CASING = "ta-flow-casing";
 const LAYER_FLOW = "ta-flow";
@@ -42,8 +47,13 @@ const LAYER_HUB_LABELS = "ta-hub-labels";
 // 达到后放开全部站名（重叠由符号碰撞检测自动隐藏，随继续放大逐步全显）
 const LABEL_ALL_MINZOOM = 12;
 
+// 地铁线（铁路制式）主线缩放档位：常态与聚焦态两套；斑马嵌槽由 deck 侧从同一份
+// 档位表推导（RailwayHatchLayerManager.setWidthStops），两者必须同源。
+const METRO_RAIL_STOPS = [[8, 2], [11, 3.4], [14, 5.5], [16, 7.2]];
+const METRO_RAIL_STOPS_FOCUS = [[8, 4], [11, 6.4], [14, 9], [16, 11]];
+
 // 删除顺序：栈顶到栈底
-const ALL_LAYERS = [LAYER_STOP_LABELS, LAYER_HUB_LABELS, LAYER_HUBS, LAYER_STOPS, LAYER_LINKS, LAYER_ORIGIN_LINKS, LAYER_FLOW, LAYER_FLOW_CASING, LAYER_DISTRICT, LAYER_METRO_NETWORK_DASH, LAYER_METRO_NETWORK_ACTIVE, LAYER_METRO_NETWORK, LAYER_HEAT];
+const ALL_LAYERS = [LAYER_STOP_LABELS, LAYER_HUB_LABELS, LAYER_HUBS, LAYER_STOPS, LAYER_LINKS, LAYER_ORIGIN_LINKS, LAYER_FLOW, LAYER_FLOW_CASING, LAYER_DISTRICT, LAYER_METRO_NETWORK_ACTIVE, LAYER_METRO_NETWORK, LAYER_HEAT];
 const ALL_SOURCES = [SRC_HUBS, SRC_METRO_NETWORK, SRC_METRO_NETWORK_ACTIVE, SRC_FLOWS, SRC_HEAT, SRC_LINKS, SRC_ORIGIN_LINKS, SRC_STOPS, SRC_DISTRICT];
 
 export function emptyFeatureCollection() {
@@ -75,6 +85,11 @@ export class TransferLayerManager {
     this.boundMetroLineEnter = null;
     this.boundMetroLineLeave = null;
     this.sourceRefs = new Map(); // sourceId -> 上次 setData 的引用（引用相等短路）
+    this.hatch = new RailwayHatchLayerManager({
+      key: DECK_METRO_HATCH_KEY,
+      order: DECK_METRO_HATCH_ORDER,
+      beforeId: LAYER_STOPS,
+    });
   }
 
   get map() {
@@ -163,6 +178,8 @@ export class TransferLayerManager {
         },
       });
     }
+    // 区内地铁线：铁路制式（深色主线 + 等宽白/黄嵌槽虚线，浅色/暗色底图各一套）。
+    // 嵌槽宽与虚线周期都由主线宽推导，缩放时三者等比，不会出现虚线周期与线宽脱钩。
     if (!map.getLayer(LAYER_METRO_NETWORK_ACTIVE)) {
       this.addLayerBelowBuildings({
         id: LAYER_METRO_NETWORK_ACTIVE,
@@ -170,29 +187,19 @@ export class TransferLayerManager {
         source: SRC_METRO_NETWORK_ACTIVE,
         layout: { "line-join": "round", "line-cap": "round" },
         paint: {
-          "line-color": MAP_THEME.metro.line,
-          "line-opacity": 0.92,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 2, 11, 3.4, 14, 5.5, 16, 7.2],
+          "line-color": railwayCasingColor(isDarkTheme.value),
+          "line-opacity": 0.95,
+          "line-width": railwayLineWidth(METRO_RAIL_STOPS),
         },
       });
     }
-    if (!map.getLayer(LAYER_METRO_NETWORK_DASH)) {
-      this.addLayerBelowBuildings({
-        id: LAYER_METRO_NETWORK_DASH,
-        type: "line",
-        source: SRC_METRO_NETWORK_ACTIVE,
-        layout: { "line-join": "round" },
-        paint: {
-          "line-color": "#ffffff",
-          "line-opacity": 0.9,
-          "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.7, 11, 1.2, 14, 2, 16, 2.6],
-          "line-dasharray": [2.2, 2.8],
-        },
-      });
-    }
+    this.hatch.attach(this.mapWrapper);
+    this.hatch.setWidthStops(METRO_RAIL_STOPS);
+    this.hatch.setDark(isDarkTheme.value);
+    this.hatch.setVisible(true);
 
+    const style = adminDistrictOutlineStyle(isDarkTheme.value);
     if (!map.getLayer(LAYER_DISTRICT)) {
-      const style = adminDistrictOutlineStyle();
       this.addLayerBelowBuildings({
         id: LAYER_DISTRICT,
         type: "line",
@@ -200,6 +207,8 @@ export class TransferLayerManager {
         layout: { ...style.layout, visibility: "none" },
         paint: style.paint,
       });
+    } else {
+      map.setPaintProperty(LAYER_DISTRICT, "line-color", style.paint["line-color"]);
     }
 
     if (!map.getLayer(LAYER_FLOW_CASING)) {
@@ -361,6 +370,8 @@ export class TransferLayerManager {
   setMetroNetwork(collection, activeCollection = collection) {
     this.setSourceData(SRC_METRO_NETWORK, collection);
     this.setSourceData(SRC_METRO_NETWORK_ACTIVE, activeCollection);
+    // 换乘分析的 active source 已是"地铁线"专用集合，无需再按 mode 过滤
+    this.hatch.setPaths(metroHatchPathsFrom(activeCollection, () => true));
   }
 
   /**
@@ -405,11 +416,11 @@ export class TransferLayerManager {
     const opacityByLayer = {
       [LAYER_METRO_NETWORK]: detail ? 0.18 : MAP_THEME.network.outsideOpacity,
       [LAYER_METRO_NETWORK_ACTIVE]: detail ? 0.34 : 0.92,
-      [LAYER_METRO_NETWORK_DASH]: detail ? 0.28 : 0.9,
     };
     Object.entries(opacityByLayer).forEach(([layerId, opacity]) => {
       if (map.getLayer(layerId)) map.setPaintProperty(layerId, "line-opacity", opacity);
     });
+    this.hatch.setOpacity(detail ? 0.3 : 1);
   }
 
   /**
@@ -427,31 +438,29 @@ export class TransferLayerManager {
         detail ? 0 : MAP_THEME.network.outsideOpacity,
       );
     }
+    const stops = detail ? METRO_RAIL_STOPS_FOCUS : METRO_RAIL_STOPS;
     if (map.getLayer(LAYER_METRO_NETWORK_ACTIVE)) {
+      // 聚焦态换强调蓝主线并加粗，仍保留铁路嵌槽 —— 制式语言不随聚焦状态变化
       map.setPaintProperty(
         LAYER_METRO_NETWORK_ACTIVE,
         "line-color",
-        detail ? MAP_THEME.route.down : MAP_THEME.metro.line,
+        detail ? MAP_THEME.route.down : railwayCasingColor(isDarkTheme.value),
       );
-      map.setPaintProperty(
-        LAYER_METRO_NETWORK_ACTIVE,
-        "line-width",
-        detail
-          ? ["interpolate", ["linear"], ["zoom"], 8, 4, 11, 6.4, 14, 9, 16, 11]
-          : ["interpolate", ["linear"], ["zoom"], 8, 2, 11, 3.4, 14, 5.5, 16, 7.2],
-      );
-      map.setPaintProperty(LAYER_METRO_NETWORK_ACTIVE, "line-opacity", detail ? 1 : 0.92);
+      map.setPaintProperty(LAYER_METRO_NETWORK_ACTIVE, "line-width", railwayLineWidth(stops));
+      map.setPaintProperty(LAYER_METRO_NETWORK_ACTIVE, "line-opacity", detail ? 1 : 0.95);
     }
-    if (map.getLayer(LAYER_METRO_NETWORK_DASH)) {
-      map.setPaintProperty(
-        LAYER_METRO_NETWORK_DASH,
-        "line-width",
-        detail
-          ? ["interpolate", ["linear"], ["zoom"], 8, 1, 11, 1.7, 14, 2.6, 16, 3.2]
-          : ["interpolate", ["linear"], ["zoom"], 8, 0.7, 11, 1.2, 14, 2, 16, 2.6],
-      );
-      map.setPaintProperty(LAYER_METRO_NETWORK_DASH, "line-opacity", detail ? 0.96 : 0.9);
+    this.hatch.setWidthStops(stops);
+  }
+
+  /** 底图明暗切换：style 不重建，铁路制式的主线/嵌槽色需手动跟随（聚焦态主线保持强调蓝）。 */
+  applyRailwayTheme(focused = false) {
+    const map = this.map;
+    if (!map?.getLayer || !map?.setPaintProperty) return;
+    const dark = isDarkTheme.value;
+    if (map.getLayer(LAYER_METRO_NETWORK_ACTIVE) && !focused) {
+      map.setPaintProperty(LAYER_METRO_NETWORK_ACTIVE, "line-color", railwayCasingColor(dark));
     }
+    this.hatch.setDark(dark);
   }
 
   setVisibility(kind, visible) {
@@ -461,13 +470,15 @@ export class TransferLayerManager {
       heat: [LAYER_HEAT],
       flows: [LAYER_FLOW_CASING, LAYER_FLOW],
       hubs: [LAYER_HUBS, LAYER_HUB_LABELS],
-      metro: [LAYER_METRO_NETWORK, LAYER_METRO_NETWORK_ACTIVE, LAYER_METRO_NETWORK_DASH],
+      metro: [LAYER_METRO_NETWORK, LAYER_METRO_NETWORK_ACTIVE],
       links: [LAYER_ORIGIN_LINKS, LAYER_LINKS, LAYER_STOPS, LAYER_STOP_LABELS],
       district: [LAYER_DISTRICT],
     };
     (groups[kind] || []).forEach((layerId) => {
       if (map.getLayer(layerId)) map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
     });
+    // deck 斑马层不在 style.layers 里，跟着地铁分组单独开关
+    if (kind === "metro") this.hatch.setVisible(visible);
   }
 
   bindHubClick(handler) {
@@ -591,6 +602,7 @@ export class TransferLayerManager {
 
   /** 先删 layer 再删 source（平台约定顺序） */
   clear() {
+    this.hatch.dispose(); // deck 层不在 style.layers 里，ALL_LAYERS 那轮删不到
     this.unbindHubClick();
     this.unbindMetroLineClick();
     this.unbindBackgroundClick();

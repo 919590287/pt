@@ -137,14 +137,21 @@ export function createMapDisplayHost(rootEl) {
   host.style.position = "absolute";
   host.style.top = "0";
   host.style.left = "0";
-  // 百分比尺寸在 CSS zoom 下会自动按 zoom 换算（100% 恒等于铺满父容器的视觉尺寸），
-  // 宿主布局尺寸因此自然等于 容器/S，不需要也不能再除一次 S
-  host.style.width = "100%";
-  host.style.height = "100%";
+  // CSS zoom 会同时放大宿主的布局盒和画布。为了让放大后的视觉盒仍然
+  // 恰好铺满父容器，布局尺寸必须是父容器的 1/S。部分 Chromium 版本
+  // 对百分比尺寸的 zoom 处理不同，不能依赖“100% 会自动换算”的行为，
+  // 否则地图会被测量成左下角的一小块（服务器环境最容易触发）。
+  host.style.setProperty("--map-display-host-scale", String(currentScale));
+  host.style.width = `calc(100% / var(--map-display-host-scale, 1))`;
+  host.style.height = `calc(100% / var(--map-display-host-scale, 1))`;
+  host.style.transformOrigin = "top left";
 
   const apply = (scale) => {
+    host.style.setProperty("--map-display-host-scale", String(scale || 1));
     if (mapDisplayZoomSupported()) {
-      host.style.zoom = String(scale);
+      host.style.zoom = String(scale || 1);
+    } else {
+      host.style.zoom = "1";
     }
   };
   apply(currentScale);

@@ -85,6 +85,9 @@ export function buildLineRankEntries(panel, wantedMode) {
       operator: String(group?.operator || metrics.company || "-"),
       mode: wanted,
       flow,
+      // 组级原始指标原样带出：属性表要在排名的 5 个指标之外再取班次/车辆数/发车间隔，
+      // 由本函数统一完成"制式过滤 + 同名去重"后共用同一批线，避免两处各筛一遍筛出不同集合。
+      metrics,
       ...metricValues,
     };
     // 同名线路在搜索框中只能对应一行；与运行监测既有规则一致，保留客流较大的组。

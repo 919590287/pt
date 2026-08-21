@@ -1,8 +1,12 @@
 const DEFAULT_TILE_METERS = 4096;
+const SUPPORTED_SPATIAL_LAYOUTS = new Set([
+  "indexed-container-midpoint-envelope-v2",
+  "indexed-zstd-spatial-blocks-v3",
+]);
 
 export function supportsTrajectorySpatialChunks(manifest = {}) {
   const spatial = manifest?.spatial || {};
-  return spatial.layout === "indexed-container-midpoint-envelope-v2"
+  return SUPPORTED_SPATIAL_LAYOUTS.has(spatial.layout)
     && Number(spatial.tileSizeMeters) > 0;
 }
 

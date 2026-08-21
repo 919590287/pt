@@ -16,6 +16,7 @@ import {
   batchSharedDeckLayerUpdates,
   removeSharedDeckLayer,
   setSharedDeckLayer,
+  setSharedDeckLayersHidden,
 } from "./deckOverlayRegistry.js";
 
 function mapWrapper() {
@@ -64,5 +65,58 @@ describe("deckOverlayRegistry batching", () => {
     expect(wrapper.map.removeControl).not.toHaveBeenCalled();
     expect(overlay.setProps).toHaveBeenCalledTimes(1);
     expect(overlay.setProps).toHaveBeenLastCalledWith({ layers: [replacement] });
+  });
+});
+
+// deck 的 interleaved 图层是 maplibre custom layer，不出现在 getStyle().layers 里，
+// MapLayout 那套按样式图层前缀隐藏的逻辑碰不到它们。页面组切换靠下面这组接口挂起。
+describe("deckOverlayRegistry 页面组挂起", () => {
+  beforeEach(() => {
+    mocks.overlays.length = 0;
+  });
+
+  it("按前缀挂起离开页面的图层，保留其他页面的图层", () => {
+    const wrapper = mapWrapper();
+    const odLines = { id: "rm-busod-lines" };
+    const hubFlow = { id: "ta-hub-flow-deck" };
+    setSharedDeckLayer(wrapper, "rm-busod-lines", odLines, 0);
+    setSharedDeckLayer(wrapper, "ta-hub-flow-deck", hubFlow, 0);
+    const overlay = mocks.overlays[0];
+    overlay.setProps.mockClear();
+
+    setSharedDeckLayersHidden(wrapper, ["rm-", "pfa-"], true);
+
+    expect(overlay.setProps).toHaveBeenLastCalledWith({ layers: [hubFlow] });
+  });
+
+  it("恢复时不重建 overlay，原图层实例直接回到画面", () => {
+    const wrapper = mapWrapper();
+    const odLines = { id: "rm-busod-lines" };
+    setSharedDeckLayer(wrapper, "rm-busod-lines", odLines, 0);
+    const overlay = mocks.overlays[0];
+
+    setSharedDeckLayersHidden(wrapper, ["rm-"], true);
+    expect(overlay.setProps).toHaveBeenLastCalledWith({ layers: [] });
+    // 全部挂起也不能拆 overlay，否则每次切页面都要重建 WebGL 资源
+    expect(wrapper.map.removeControl).not.toHaveBeenCalled();
+
+    setSharedDeckLayersHidden(wrapper, ["rm-"], false);
+
+    expect(mocks.overlays).toHaveLength(1);
+    expect(overlay.setProps).toHaveBeenLastCalledWith({ layers: [odLines] });
+  });
+
+  it("挂起期间到达的数据更新不会漏画，恢复后带上最新图层", () => {
+    const wrapper = mapWrapper();
+    setSharedDeckLayer(wrapper, "rm-busod-lines", { id: "stale" }, 0);
+    const overlay = mocks.overlays[0];
+    setSharedDeckLayersHidden(wrapper, ["rm-"], true);
+
+    const fresh = { id: "fresh" };
+    setSharedDeckLayer(wrapper, "rm-busod-lines", fresh, 0);
+    expect(overlay.setProps).toHaveBeenLastCalledWith({ layers: [] });
+
+    setSharedDeckLayersHidden(wrapper, ["rm-"], false);
+    expect(overlay.setProps).toHaveBeenLastCalledWith({ layers: [fresh] });
   });
 });

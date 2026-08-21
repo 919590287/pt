@@ -38,14 +38,13 @@ import java.util.zip.GZIPOutputStream;
 /**
  * 大模型乘客上下车磁盘访问层。
  *
- * <p>平坦统计直接顺序扫描 {@code person-tracks.tsv.gz}；需要按人配对的统计先按 personId
- * 哈希到固定数量的 gzip 分区，再逐分区分组。这样内存上限与单个分区相关，不再与 2000 万条
- * 全量记录相关。分区是可复用的版本化工件，route/station/transfer/corridor/tripends 共用一次构建。</p>
+ * <p>按 personId 哈希到固定数量的 gzip 分区，平坦扫描与按人配对都直接读这一组
+ * 规范分区。构建完成后不再保留内容重复的 {@code person-tracks.tsv.gz}。</p>
  */
 @Slf4j
 public final class MatsimPersonTrackStore {
 
-    public static final String PARTITION_CACHE_VERSION = "person-track-partitions-v1";
+    public static final String PARTITION_CACHE_VERSION = "person-track-partitions-v2";
     private static final String MANIFEST_FILE = "manifest.json";
     private static final String BUCKET_PREFIX = "bucket-";
     private static final int DEFAULT_PARTITIONS = 64;
@@ -69,12 +68,14 @@ public final class MatsimPersonTrackStore {
     public static void forEachTrack(MatsimData data, Consumer<PTPersonTrack> consumer) {
         if (data == null || consumer == null) return;
         Set<PTPersonTrack> inMemory = data.getPersonTracks();
-        if (inMemory != null && !inMemory.isEmpty()) {
+        if (useInMemory(data, inMemory)) {
             inMemory.forEach(consumer);
             return;
         }
         requireDiskStore(data);
-        readTrackFile(MatsimAnalysisCache.personTracksPath(data), consumer);
+        for (int bucket = 0; bucket < partitionCount(); bucket++) {
+            readTrackFile(bucketPath(partitionDir(data), bucket), consumer);
+        }
     }
 
     /**
@@ -88,7 +89,7 @@ public final class MatsimPersonTrackStore {
                                      BiConsumer<Integer, Integer> partitionProgress) {
         if (data == null || consumer == null) return;
         Set<PTPersonTrack> inMemory = data.getPersonTracks();
-        if (inMemory != null && !inMemory.isEmpty()) {
+        if (useInMemory(data, inMemory)) {
             Map<String, List<PTPersonTrack>> grouped = new HashMap<>();
             for (PTPersonTrack track : inMemory) {
                 grouped.computeIfAbsent(personKey(track), ignored -> new ArrayList<>()).add(track);
@@ -112,6 +113,23 @@ public final class MatsimPersonTrackStore {
         }
     }
 
+    /**
+     * 防御性熔断：即使模型规模识别或旧缓存状态有误，也绝不把百万级以上内存集合
+     * 再复制进 personId 分组 Map。磁盘工件就绪时立即释放冗余对象并走固定分区。
+     */
+    private static boolean useInMemory(MatsimData data, Set<PTPersonTrack> tracks) {
+        if (tracks == null || tracks.isEmpty()) return false;
+        long limit = MatsimAnalysisCache.maxMaterializedPersonTracks();
+        if (tracks.size() <= limit || !MatsimAnalysisCache.isPersonTrackStoreReady(data)) {
+            return true;
+        }
+        int count = tracks.size();
+        data.setPersonTracks(new it.unimi.dsi.fastutil.objects.ObjectOpenHashSet<>());
+        log.warn("乘客明细访问切换为磁盘分区: model={}, releasedTracks={}, limit={}",
+                data.getName(), count, limit);
+        return false;
+    }
+
     public static boolean isPartitionStoreReady(MatsimData data) {
         Path dir = partitionDir(data);
         Path manifestPath = dir.resolve(MANIFEST_FILE);
@@ -121,7 +139,7 @@ public final class MatsimPersonTrackStore {
             if (!"ready".equals(manifest.get("status"))
                     || !PARTITION_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     || number(manifest.get("partitions")) != partitionCount()
-                    || !sourceSignature(data).equals(String.valueOf(manifest.get("sourceSignature")))) {
+                    || !eventsSignature(data).equals(String.valueOf(manifest.get("eventsSignature")))) {
                 return false;
             }
             for (int i = 0; i < partitionCount(); i++) {
@@ -134,9 +152,33 @@ public final class MatsimPersonTrackStore {
         }
     }
 
+    static long trackCount(MatsimData data) {
+        if (!isPartitionStoreReady(data)) return -1L;
+        try {
+            Map<String, Object> manifest = JSON.readValue(
+                    partitionDir(data).resolve(MANIFEST_FILE).toFile(), MAP_TYPE);
+            return number(manifest.get("trackCount"));
+        } catch (Exception e) {
+            throw new IllegalStateException("读取乘客明细分区数量失败", e);
+        }
+    }
+
     public static void preparePartitions(MatsimData data) {
         requireDiskStore(data);
         ensurePartitions(data);
+    }
+
+    /** 分区就绪后将其提升为唯一规范工件，原始 events 输入不受影响。 */
+    public static void promoteCanonical(MatsimData data) {
+        if (!isPartitionStoreReady(data)) {
+            throw new IllegalStateException("乘客明细分区未就绪: model=" + data.getName());
+        }
+        Path redundant = MatsimAnalysisCache.personTracksPath(data);
+        try {
+            Files.deleteIfExists(redundant);
+        } catch (Exception e) {
+            throw new IllegalStateException("删除重复乘客明细单体工件失败: " + redundant, e);
+        }
     }
 
     private static void ensurePartitions(MatsimData data) {
@@ -186,7 +228,7 @@ public final class MatsimPersonTrackStore {
             manifest.put("generatedAt", System.currentTimeMillis());
             manifest.put("partitions", partitions);
             manifest.put("trackCount", count);
-            manifest.put("sourceSignature", sourceSignature(data));
+            manifest.put("eventsSignature", eventsSignature(data));
             JSON.writeValue(buildDir.resolve(MANIFEST_FILE).toFile(), manifest);
 
             deleteTree(finalDir);
@@ -263,7 +305,7 @@ public final class MatsimPersonTrackStore {
     }
 
     private static void requireDiskStore(MatsimData data) {
-        if (!MatsimAnalysisCache.isPersonTrackStoreReady(data)) {
+        if (!isPartitionStoreReady(data) && !MatsimAnalysisCache.isPersonTrackSourceReady(data)) {
             throw new IllegalStateException("乘客明细磁盘工件未就绪: model=" + data.getName());
         }
     }
@@ -273,8 +315,31 @@ public final class MatsimPersonTrackStore {
         return Math.max(8, Math.min(128, configured));
     }
 
-    private static String sourceSignature(MatsimData data) {
-        return MatsimSourceFingerprint.signature(MatsimAnalysisCache.personTracksPath(data));
+    private static String eventsSignature(MatsimData data) {
+        if (data == null || data.getOutfile() == null) {
+            return "missing";
+        }
+        String current = MatsimSourceFingerprint.signature(data.getOutfile().getEvents());
+        if (!"missing".equals(current)) {
+            return current;
+        }
+        // events 是允许在服务器端归档的重型原始输入。分区工件已经把其
+        // 内容指纹写入自身 manifest；原始 events 缺失时复用该指纹，避免
+        // 因为无法重新计算指纹而把完整的 person-tracks 误判为缺失。
+        Path manifest = partitionDir(data).resolve(MANIFEST_FILE);
+        try {
+            if (Files.isRegularFile(manifest)) {
+                Map<String, Object> stored = JSON.readValue(manifest.toFile(), MAP_TYPE);
+                Object signature = stored.get("eventsSignature");
+                if (signature != null && !String.valueOf(signature).isBlank()
+                        && !"missing".equals(String.valueOf(signature))) {
+                    return String.valueOf(signature);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("读取乘客分区缓存 events 指纹失败: {}", manifest, e);
+        }
+        return "missing";
     }
 
     private static Path partitionDir(MatsimData data) {

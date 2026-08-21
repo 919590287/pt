@@ -12,6 +12,7 @@ import com.jts.gjcxfzksh.api.model.params.TileNetworkParam;
 import com.jts.gjcxfzksh.api.service.RouteService;
 import com.jts.gjcxfzksh.data.Datasource;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.annotation.Resource;
@@ -26,32 +27,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-
 @RestController
 @RequestMapping("/pt/route")
 @Tag(name = "线路总览", description = "线路总览")
 public class RouteController {
-
-    private static final int FULL_BINARY_CACHE_MAX_ENTRIES = 4;
 
     @Resource
     private RouteService routeService;
 
     /**
      * 全量线网二进制缓存：key 含模型加载版本（重载后旧字节自动失效），
-     * LRU 上限 {@value FULL_BINARY_CACHE_MAX_ENTRIES} 份，避免多模型场景内存无上限增长。
+     * 与全平台后端缓存共用字节预算。
      */
-    private final Map<String, byte[]> fullBinaryCache = Collections.synchronizedMap(
-            new LinkedHashMap<>(8, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, byte[]> eldest) {
-                    return size() > FULL_BINARY_CACHE_MAX_ENTRIES;
-                }
-            }
-    );
+    private final BackendMemoryCache<String, byte[]> fullBinaryCache =
+            new BackendMemoryCache<>("route-full-binary", 128L * 1024 * 1024, bytes -> bytes.length);
 
     @Operation(summary = "全部线路")
     @PostMapping("/lineAll")
@@ -69,6 +58,24 @@ public class RouteController {
     @PostMapping("/routePanelDetail")
     public AjaxResult routePanelDetail(@RequestBody RouteInfoParam param) {
         return AjaxResult.ok(routeService.routePanelDetail(param));
+    }
+
+    @Operation(summary = "仿真线路班次时刻表")
+    @PostMapping("/departureTimetable")
+    public AjaxResult departureTimetable(@RequestBody RouteInfoParam param) {
+        return AjaxResult.ok(routeService.departureTimetable(param));
+    }
+
+    @Operation(summary = "仿真班次客流模型级缓存")
+    @PostMapping("/departureBundle")
+    public AjaxResult departureBundle(@RequestBody DatasourceParam param) {
+        return AjaxResult.ok(routeService.departureBundle(param));
+    }
+
+    @Operation(summary = "仿真单班次客流面板")
+    @PostMapping("/departurePanel")
+    public AjaxResult departurePanel(@RequestBody RouteChartParam param) {
+        return AjaxResult.ok(routeService.departurePanel(param));
     }
 
     @Operation(summary = "总体客流变化(24小时×交通方式)服务端聚合")
@@ -160,8 +167,11 @@ public class RouteController {
         String datasource = String.valueOf(param.getDatasource());
         // key 带模型加载版本：unload/重载后版本递增，旧条目不再命中并被 LRU 逐出
         String cacheKey = datasource + "#v" + Datasource.currentLoadVersion(datasource);
-        return fullBinaryCache.computeIfAbsent(cacheKey,
-                ignored -> TileBinaryEncoder.encodeLinks(routeService.routeFull(param)));
+        byte[] cached = fullBinaryCache.get(cacheKey);
+        if (cached != null) return cached;
+        cached = TileBinaryEncoder.encodeLinks(routeService.routeFull(param));
+        fullBinaryCache.put(cacheKey, cached);
+        return cached;
     }
 
     @Operation(summary = "线路列表")

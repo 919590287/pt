@@ -60,7 +60,7 @@ function resolveSelectedBasemapOption() {
   if (!options.length) return null;
   let key = window.DEFAULT_BASEMAP_KEY || options[0].key;
   try {
-    key = window.localStorage?.getItem(window.BASEMAP_STORAGE_KEY || "gjcxfzksh:basemap") || key;
+    key = window.localStorage?.getItem(window.BASEMAP_STORAGE_KEY || "gjcxfzksh:basemap:v2") || key;
   } catch (error) {
     // 存储不可用则用部署默认值。
   }

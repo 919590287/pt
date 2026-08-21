@@ -47,6 +47,17 @@ public class MatsimConfig {
     private long largeModelEventsThresholdBytes = 8L * 1024 * 1024 * 1024;
 
     /**
+     * 高压缩比 CSV（legs/trips/activities/persons）虽然磁盘体积远小于 plans/events，
+     * 解压后的人员、车辆和乘客事件仍可能达到千万级。单类分析表超过 1GiB 时直接使用
+     * 大模型加载路径，避免仅按 output 总体积误判后把数千万对象装入堆。
+     */
+    @Value("${matsim.large-model-analysis-table-threshold-bytes:1073741824}")
+    private long largeModelAnalysisTableThresholdBytes = 1024L * 1024 * 1024;
+
+    @Value("${matsim.large-model-person-track-threshold:1500000}")
+    private long largeModelPersonTrackThreshold = 1_500_000L;
+
+    /**
      * 全部方案
      */
     @Getter
@@ -64,9 +75,18 @@ public class MatsimConfig {
             return;
         }
 
+        verifyAccessible(root, "数据目录");
+        if (cacheFolder != null && !cacheFolder.isBlank()) {
+            File cacheRoot = new File(cacheFolder);
+            if (cacheRoot.isDirectory()) {
+                verifyAccessible(cacheRoot, "缓存目录");
+            }
+        }
+
         Set<String> knownUsernames = loadKnownUsernames();
         File[] areaFolders = root.listFiles();
         if (areaFolders == null) {
+            log.warn("数据目录无法列出内容，方案列表为空: {}", root.getAbsolutePath());
             return;
         }
         Arrays.sort(areaFolders, Comparator.comparing(File::getName));
@@ -78,6 +98,31 @@ public class MatsimConfig {
             scanArea(areaFolder);
         }
         log.info("共找到{}个方案", schemes.size());
+    }
+
+    /**
+     * 目录"在，但读不进去"是容器部署最容易踩的坑：宿主机目录若保留了上传方的属主
+     * （从 macOS rsync 过去就是 uid 501）和 700 权限，容器里的 app 用户既列不了目录
+     * 也写不了文件。而这种状态下 File#listFiles 返回 null、Files#exists 返回 false，
+     * 全程不抛异常，表现为"模型列表空 + 登录报保存用户数据失败"，日志里看不出原因，
+     * 更糟的是空的用户表随后会把真实的 .gjcxfzksh-users.json 覆盖掉。这里提前拦下。
+     *
+     * 只拦"目录在但不可访问"。目录本身缺失沿用上面 mkdirs 的告警路径，
+     * 否则本机数据盘（U 盘）没插时后端会直接起不来。
+     */
+    private void verifyAccessible(File dir, String label) {
+        Path path = dir.toPath();
+        boolean readable = Files.isReadable(path);
+        boolean writable = Files.isWritable(path);
+        boolean traversable = Files.isExecutable(path);
+        if (readable && writable && traversable) {
+            return;
+        }
+        throw new BusinessException(label + "不可访问: " + dir.getAbsolutePath()
+                + "（可读=" + readable + " 可写=" + writable + " 可进入=" + traversable
+                + "，当前进程用户=" + System.getProperty("user.name") + "）。"
+                + "Docker 部署请把宿主机数据目录的属主改成容器内的 app 用户，例如："
+                + "chown -R 10001:10001 <PT_DATA_DIR> <PT_CACHE_DIR>");
     }
 
     public List<String> areaNames() {
@@ -241,8 +286,13 @@ public class MatsimConfig {
         Scheme.Desc desc = readDesc(key, data);
         boolean detectedLargeModel = outputSummary.bytes() >= Math.max(1L, largeModelThresholdBytes)
                 || outputSummary.plansBytes() >= Math.max(1L, largeModelPlansThresholdBytes)
-                || outputSummary.eventsBytes() >= Math.max(1L, largeModelEventsThresholdBytes);
-        boolean largeModel = detectedLargeModel || Boolean.TRUE.equals(desc.getLargeModel());
+                || outputSummary.eventsBytes() >= Math.max(1L, largeModelEventsThresholdBytes)
+                || outputSummary.analysisTableMaxBytes() >= Math.max(1L, largeModelAnalysisTableThresholdBytes)
+                || cachedPersonTrackCount(areaName, scope, modelName) >= Math.max(1L, largeModelPersonTrackThreshold);
+        // events/plans 可在整套缓存成功后由管理员人工归档。重启时 output
+        // 体积因此会骤降，不能把原大模型误判成小模型并改变加载策略。
+        boolean cachedLargeModel = cachedReadyLargeModel(areaName, scope, modelName);
+        boolean largeModel = detectedLargeModel || cachedLargeModel || Boolean.TRUE.equals(desc.getLargeModel());
         if (detectedLargeModel && Boolean.FALSE.equals(desc.getLargeModel())) {
             log.warn("[{}] desc.largeModel=false 不能降级自动识别的大模型，继续使用低内存模式", key);
         }
@@ -259,6 +309,22 @@ public class MatsimConfig {
         return scheme;
     }
 
+    private boolean cachedReadyLargeModel(String areaName, String scope, String modelName) {
+        Path manifest = cachePath(areaName, scope, modelName).resolve("manifest.json");
+        if (!Files.isRegularFile(manifest)) {
+            return false;
+        }
+        try {
+            Map<?, ?> cached = JSON.parseObject(Files.readString(manifest), Map.class);
+            return cached != null
+                    && "ready".equals(String.valueOf(cached.get("status")))
+                    && Boolean.TRUE.equals(cached.get("largeModel"));
+        } catch (Exception e) {
+            log.warn("读取已缓存的大模型标记失败: {}", manifest, e);
+            return false;
+        }
+    }
+
     public Path cacheRootPath() {
         if (cacheFolder != null && !cacheFolder.isBlank()) {
             return Path.of(cacheFolder).toAbsolutePath().normalize();
@@ -269,6 +335,26 @@ public class MatsimConfig {
             return parent.resolve("pt_cache").toAbsolutePath().normalize();
         }
         return dataRoot.resolve(".pt_cache").toAbsolutePath().normalize();
+    }
+
+    public long largeModelThresholdBytes() {
+        return largeModelThresholdBytes;
+    }
+
+    public long largeModelPlansThresholdBytes() {
+        return largeModelPlansThresholdBytes;
+    }
+
+    public long largeModelEventsThresholdBytes() {
+        return largeModelEventsThresholdBytes;
+    }
+
+    public long largeModelAnalysisTableThresholdBytes() {
+        return largeModelAnalysisTableThresholdBytes;
+    }
+
+    public long largeModelPersonTrackThreshold() {
+        return largeModelPersonTrackThreshold;
     }
 
     public Path cachePath(String areaName, String scope, String modelName) {
@@ -287,11 +373,12 @@ public class MatsimConfig {
     private OutputSummary summarizeOutput(File output) {
         File[] files = output.listFiles(file -> file.isFile() && !file.getName().startsWith(".") && !file.getName().startsWith("._"));
         if (files == null) {
-            return new OutputSummary(0L, 0L, 0L, false);
+            return new OutputSummary(0L, 0L, 0L, 0L, false);
         }
         long total = 0L;
         long plansBytes = 0L;
         long eventsBytes = 0L;
+        long analysisTableMaxBytes = 0L;
         boolean cuttable = false;
         for (File file : files) {
             long length = Math.max(0L, file.length());
@@ -304,11 +391,54 @@ public class MatsimConfig {
             if (lower.contains("events")) {
                 eventsBytes = eventsBytes > Long.MAX_VALUE - length ? Long.MAX_VALUE : eventsBytes + length;
             }
+            if (lower.endsWith(".csv") || lower.endsWith(".csv.gz")) {
+                if (lower.contains("legs") || lower.contains("trips")
+                        || lower.contains("activities") || lower.contains("persons")) {
+                    analysisTableMaxBytes = Math.max(analysisTableMaxBytes, length);
+                }
+            }
         }
-        return new OutputSummary(total, plansBytes, eventsBytes, cuttable);
+        return new OutputSummary(total, plansBytes, eventsBytes, analysisTableMaxBytes, cuttable);
     }
 
-    private record OutputSummary(long bytes, long plansBytes, long eventsBytes, boolean cuttable) {
+    private record OutputSummary(
+            long bytes,
+            long plansBytes,
+            long eventsBytes,
+            long analysisTableMaxBytes,
+            boolean cuttable
+    ) {
+    }
+
+    /**
+     * 已生成的乘客磁盘工件是比压缩文件大小更可靠的规模信号。即使顶层 manifest
+     * 因上次 OOM 为 failed，也必须沿用低内存模式，不能在下一次启动时再次 eager 加载。
+     */
+    private long cachedPersonTrackCount(String areaName, String scope, String modelName) {
+        Path modelCache = cachePath(areaName, scope, modelName);
+        if (!Files.isDirectory(modelCache)) return -1L;
+        try (var children = Files.list(modelCache)) {
+            for (Path dir : children
+                    .filter(Files::isDirectory)
+                    .filter(path -> path.getFileName().toString().startsWith("pt-events-v"))
+                    .toList()) {
+                Path manifest = dir.resolve("manifest.json");
+                if (!Files.isRegularFile(manifest)) continue;
+                Map<?, ?> cached = JSON.parseObject(Files.readString(manifest), Map.class);
+                Object value = cached == null ? null : cached.get("trackCount");
+                if (value instanceof Number number) return number.longValue();
+                if (value != null) {
+                    try {
+                        return Long.parseLong(String.valueOf(value));
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("读取乘客工件规模失败: model={}/{}/{}, error={}",
+                    areaName, scope, modelName, e.getMessage());
+        }
+        return -1L;
     }
 
     private Set<String> loadKnownUsernames() {

@@ -65,6 +65,32 @@ export const MAP_THEME = {
     line: "#dc4c5d",
   },
 
+  /**
+   * 铁路制式线形（OSM 通用画法，对齐业务样张）：深色主线 + 等宽嵌槽虚线，
+   * 虚线略窄于主线，两侧留出连续深色描边 —— 即"黑底白槽"的枕木斑马。
+   * 浅色底图槽为白，暗色底图槽为黄。
+   *
+   * 关键约束（斑马块不能随缩放变形）：MapLibre 的 line-dasharray 以线宽为单位，
+   * 且虚线纹理只在**整数缩放**重新烘焙。若线宽用 interpolate 连续变化，
+   * 纹理与实际线宽在整数级之间脱钩 —— 块长先被拉伸、过级时又猛地弹回，
+   * 就是"色块大小随缩放乱变"。因此线宽一律用 step 表达式按整数级取值，
+   * 与 MapLibre 重烘焙的时机对齐：同一缩放级内块长严格恒定，只在过级时换一档。
+   * 消费入口：maplibre 侧 railwayLineWidth() / railwayCasingWidth()，
+   * deck 侧 railwayHatchWidthAtZoom() / railwayHatchDashArray()，
+   * 配色 railwayCasingColor() / railwayHatchColor()。勿在调用点另写比例。
+   */
+  railway: {
+    casing: "#2f3439", // 浅色底图主线（近黑墨，非纯黑，避免在 Positron 上过硬）
+    casingDark: "#1f2129", // 暗色底图主线（深于底图但不吃掉黄槽对比）
+    hatch: "#ffffff", // 浅色底图嵌槽
+    hatchDark: "#f2c744", // 暗色底图嵌槽（样张黄）
+    hatchRatio: 0.58, // 槽宽 = 主线宽 × 该系数，余下留作主线自身的两侧深色边
+    hatchMinWidth: 1.2, // 槽宽下限（px）：低于 1px 时 MapLibre 虚线会闪断/消失
+    casingEdge: 1, // 主线之外每侧再加的深色描边（px）；主线本身即深色时可不画描边层
+    dash: [2.2, 2.2], // 以槽宽为单位的 [实, 空]，等长 → 黑白各半
+    stepZoomRange: [5, 20], // step 表达式覆盖的整数缩放范围（含端点）
+  },
+
   /** OD 连接线（方向与选中线路一致） */
   od: {
     up: "#f97316",
@@ -104,8 +130,11 @@ export const MAP_THEME = {
     alphaLow: 120,
     alpha: 205,
     streetLine: "#33475e", // 街道边界描边（冷墨蓝，与站名文字同族）
+    streetLineDark: "#ffffff", // dark底图下，街道边界为纯白
     streetLabel: "#1f3140",
+    streetLabelDark: "#f0f4f8",
     streetLabelHalo: "rgba(250,252,255,0.94)",
+    streetLabelHaloDark: "rgba(18,22,29,0.94)",
   },
 
   /**
@@ -122,8 +151,11 @@ export const MAP_THEME = {
     alphaLow: 120,
     alpha: 205,
     streetLine: "#33475e",
+    streetLineDark: "#ffffff",
     streetLabel: "#1f3140",
+    streetLabelDark: "#f0f4f8",
     streetLabelHalo: "rgba(250,252,255,0.94)",
+    streetLabelHaloDark: "rgba(18,22,29,0.94)",
   },
 
   /**
@@ -137,8 +169,11 @@ export const MAP_THEME = {
     widths: [1.2, 1.6, 2.2, 2.8, 3.6, 4.6, 5.8, 7.2],
     alpha: 200,
     streetLine: "#33475e",
+    streetLineDark: "#ffffff",
     streetLabel: "#1f3140",
+    streetLabelDark: "#f0f4f8",
     streetLabelHalo: "rgba(250,252,255,0.94)",
+    streetLabelHaloDark: "rgba(18,22,29,0.94)",
   },
 
   /**
@@ -249,4 +284,80 @@ export function hexToRgbArray(hex, alpha) {
 export function hexToRgba(hex, alpha = 1) {
   const [r, g, b] = hexToRgbArray(hex);
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ---- 铁路制式线形 ----------------------------------------------------------
+// 由 maplibre line 图层叠出：主线（全宽）+ 嵌槽虚线（窄一圈）；主线本身不是深色时
+// 再在其下垫一层描边。三组宽度都从同一份 [[zoom, width], ...] 档位表推导。
+//
+// ⚠️ 两条必须遵守的 MapLibre 约束（都是踩过的坑）：
+// 1. 含 ["zoom"] 的表达式只能出现在属性最外层。套进 ["*"]/["max"]/["+"] 后，
+//    该图层会被静默丢弃（不报错、不绘制）。所以档位值一律预算好再拼表达式。
+// 2. line-dasharray 的单位是线宽，且虚线纹理只在整数缩放重新烘焙。线宽若用
+//    interpolate 连续变化，块长会在整数级之间被拉伸、过级时弹回。所以线宽用
+//    step 按整数级取值，与纹理重烘焙时机对齐 —— 级内块长严格恒定。
+// 3. 承 2：line-dasharray 与"数据驱动线宽"不兼容，嵌槽层的宽度不接受数据驱动
+//    系数（客流分档只作用于彩色主线），保证全网斑马块尺寸统一。
+
+/** 主线色：浅色底图近黑、暗色底图深墨 */
+export function railwayCasingColor(dark = false) {
+  return dark ? MAP_THEME.railway.casingDark : MAP_THEME.railway.casing;
+}
+
+/** 嵌槽色：浅色底图白、暗色底图黄 */
+export function railwayHatchColor(dark = false) {
+  return dark ? MAP_THEME.railway.hatchDark : MAP_THEME.railway.hatch;
+}
+
+/** [[zoom, width], ...] 线性插值取某一缩放级的宽度（两端夹取） */
+export function railwayWidthAtZoom(stops, zoom) {
+  if (!stops.length) return 0;
+  if (zoom <= stops[0][0]) return stops[0][1];
+  const last = stops[stops.length - 1];
+  if (zoom >= last[0]) return last[1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [z0, w0] = stops[i];
+    const [z1, w1] = stops[i + 1];
+    if (zoom >= z0 && zoom <= z1) return w0 + (w1 - w0) * ((zoom - z0) / (z1 - z0));
+  }
+  return last[1];
+}
+
+/** 按整数缩放级取值的 step 表达式；每级值经 mapValue 变换 */
+function railwayWidthStep(stops, mapValue) {
+  const [minZoom, maxZoom] = MAP_THEME.railway.stepZoomRange;
+  const expression = ["step", ["zoom"], mapValue(railwayWidthAtZoom(stops, minZoom))];
+  for (let zoom = minZoom + 1; zoom <= maxZoom; zoom++) {
+    expression.push(zoom, mapValue(railwayWidthAtZoom(stops, zoom)));
+  }
+  return expression;
+}
+
+/** 主线宽；factorExpr 为数据驱动系数（如客流分档变粗），数据驱动表达式可以嵌套 */
+export function railwayLineWidth(stops, factorExpr = null) {
+  return railwayWidthStep(stops, (width) => (factorExpr ? ["*", width, factorExpr] : width));
+}
+
+/** 描边宽 = 主线宽 + 两侧 casingEdge；主线为彩色（客流着色）时才需要这层 */
+export function railwayCasingWidth(stops, factorExpr = null) {
+  const edge = MAP_THEME.railway.casingEdge * 2;
+  return railwayWidthStep(stops, (width) => (
+    factorExpr ? ["+", ["*", width, factorExpr], edge] : width + edge
+  ));
+}
+
+/** 当前缩放下的嵌槽线宽（像素）——供 deck.gl 一侧使用（deck 不吃 maplibre 表达式） */
+export function railwayHatchWidthAtZoom(stops, zoom) {
+  const { hatchRatio, hatchMinWidth } = MAP_THEME.railway;
+  return Math.max(hatchMinWidth, railwayWidthAtZoom(stops, zoom) * hatchRatio);
+}
+
+/**
+ * deck.gl PathStyleExtension 的 dashArray：[实, 空]，单位同样是"线宽的倍数"，
+ * 与 maplibre 的 line-dasharray 语义一致，所以两侧共用 MAP_THEME.railway.dash。
+ * 差别在实现：deck 在片元着色器里按路径距离取 mod 解析求值，无虚线纹理、无量化，
+ * 因此任意（含小数）缩放级下斑马块都严格等长 —— maplibre 的 dasharray 做不到。
+ */
+export function railwayHatchDashArray() {
+  return [...MAP_THEME.railway.dash];
 }

@@ -3,6 +3,7 @@ package com.jts.gjcxfzksh.data.id;
 import lombok.Data;
 import org.matsim.api.core.v01.Id;
 import org.matsim.api.core.v01.population.Person;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 
 import java.io.Serializable;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,7 +18,8 @@ public class PersonId extends Id<Person> implements Serializable {
     /**
      * 缓存重复的id不重复创建
      */
-    private static final ConcurrentMap<Id<Person>, PersonId> cache = new ConcurrentHashMap<>(1000);
+    private static final BackendMemoryCache<Id<Person>, PersonId> cache =
+            new BackendMemoryCache<>("id-person", 16L * 1024 * 1024, ignored -> 160L);
 
     /**
      * id

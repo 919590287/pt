@@ -2,6 +2,7 @@ package com.jts.gjcxfzksh.api.service;
 
 import com.jts.gjcxfzksh.api.model.params.RealDataCommitParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataParam;
+import com.jts.gjcxfzksh.api.model.params.VehicleCalculationSaveParam;
 import com.jts.gjcxfzksh.api.model.vo.RealDataExportVO;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -23,6 +24,8 @@ public interface RealDataService {
     RealDataExportVO exportVersion(String areaName, String versionId, String datasetType, String format);
 
     Map<String, Object> commitEdits(String username, RealDataCommitParam param);
+
+    Map<String, Object> saveVehicleCalculationResult(String username, VehicleCalculationSaveParam param);
 
     Map<String, Object> revertEdits(String username, RealDataParam param);
 

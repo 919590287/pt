@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- 临时验证页（勿提交到生产构建）：体检评估分析排版，vite dev 下直接访问 /harness-tjfx.html -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>体检评估分析 harness</title>
+  <style>
+    html, body, #app { margin: 0; height: 100%; }
+    .harness-stage { display: flex; flex-direction: column; height: 100%; }
+    .harness-bar {
+      flex: 0 0 auto; display: flex; gap: 16px; align-items: center;
+      padding: 6px 14px; background: #111827; color: #e5e7eb;
+      font: 12px/1.6 -apple-system, "PingFang SC", sans-serif;
+    }
+    .harness-scope { opacity: .7; }
+    .harness-body { flex: 1 1 auto; min-height: 0; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/harness-tjfx.mjs"></script>
+</body>
+</html>

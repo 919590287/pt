@@ -29,6 +29,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MatsimPlansDerivedCacheTest {
 
     @Test
+    void standardOutputPlansAlwaysTakePriorityOverParentFallback(@TempDir Path tempDir) throws Exception {
+        Path output = tempDir.resolve("output");
+        Path cache = tempDir.resolve("cache");
+        Files.createDirectories(output);
+        Files.createDirectories(cache);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        Path standardPlans = Files.write(output.resolve("output_plans.xml.gz"), new byte[]{1, 2, 3});
+        Files.write(tempDir.resolve("output_plans.xml.gz"), new byte[]{9, 8, 7});
+
+        MatsimData data = new MatsimData("plans-standard-priority", output.toString(), cache.toString(), true);
+
+        assertEquals(standardPlans.toAbsolutePath().toString(), MatsimPlansDerivedCache.resolvePlansFile(data));
+    }
+
+    @Test
+    void plansBesideOutputAreNeverUsedAsInput(@TempDir Path tempDir) throws Exception {
+        Path output = tempDir.resolve("output");
+        Path cache = tempDir.resolve("cache");
+        Files.createDirectories(output);
+        Files.createDirectories(cache);
+        new ConfigWriter(ConfigUtils.createConfig()).write(output.resolve("output_config.xml").toString());
+        Files.write(tempDir.resolve("output_plans.xml.gz"), new byte[]{1, 2, 3});
+
+        MatsimData data = new MatsimData("plans-parent-large", output.toString(), cache.toString(), true);
+
+        assertNull(data.getOutfile().getPlans());
+        assertNull(MatsimPlansDerivedCache.resolvePlansFile(data),
+                "output 上一级必须始终视为不可用，不能参与首次生成或重建");
+    }
+
+    @Test
     void coordinateStreetCacheReusesExactCoordinatesWithoutChangingResults() {
         AtomicInteger delegateCalls = new AtomicInteger();
         MatsimPopulationCache.StreetLocator delegate = (x, y) -> {

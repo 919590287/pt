@@ -14,9 +14,18 @@ import {
 } from "@/api/tripEnds.js";
 import { getCorridorLinksBinary, getCorridorNames, getCorridorSummary } from "@/api/corridor.js";
 import { getLinkSpeedMatrixBinary, getLinkSpeedSummary } from "@/api/linkspeed.js";
+import {
+  clearPersistedModelBinaries,
+  hasModelBinary,
+  readModelBinary,
+  writeModelBinary,
+} from "@/utils/modelBinaryStore.js";
 
 // 缓存的模型数上限（LRU）：监测页当前模型 + 方案编辑父模型 + 少量历史，超出淘汰最久未用的
-const MAX_CACHED_MODELS = 4;
+const MAX_CACHED_SIMULATION_MODELS = 4;
+// 真实数据每个日期的线路/站点面板都是大对象。只保留当前日期与少量相邻日期，
+// 持久缓存负责跨刷新复用，避免几十个日期同时常驻内存。
+const MAX_CACHED_REAL_MODELS = 6;
 // lineAll / routePanel / stationPanel 都是模型级大 payload。
 // 首次读取在机械硬盘或冷缓存下经常接近 60s，不能沿用全局接口超时。
 const HEAVY_MODEL_REQUEST_TIMEOUT_MS = 180_000;
@@ -25,6 +34,10 @@ const modelCache = new Map();
 const pendingControllers = new Map();
 const warmupPromises = new Map();
 const warmupRetryTimers = new Map();
+const analysisWarmupPromises = new Map();
+const analysisWarmupCompleted = new Set();
+const analysisWarmupGeneration = new Map();
+const persistentReadBypass = new Set();
 
 function modelKey(model) {
   return String(model || "");
@@ -39,11 +52,15 @@ function hasPendingFor(key) {
 }
 
 function evictStaleModels() {
-  while (modelCache.size > MAX_CACHED_MODELS) {
-    // 跳过在途模型，但继续寻找其后的最旧可淘汰项，避免一个慢请求让 LRU 整体失去上限。
-    const oldestKey = Array.from(modelCache.keys()).find((key) => !hasPendingFor(key));
-    if (oldestKey == null) break;
-    modelCache.delete(oldestKey);
+  for (const [real, limit] of [[false, MAX_CACHED_SIMULATION_MODELS], [true, MAX_CACHED_REAL_MODELS]]) {
+    let keys = Array.from(modelCache.keys()).filter((key) => isRealDatasource(key) === real);
+    while (keys.length > limit) {
+      // 跳过在途模型，但继续寻找其后的最旧可淘汰项，避免一个慢请求让 LRU 整体失去上限。
+      const oldestKey = keys.find((key) => !hasPendingFor(key));
+      if (oldestKey == null) break;
+      modelCache.delete(oldestKey);
+      keys = keys.filter((key) => key !== oldestKey);
+    }
   }
 }
 
@@ -184,16 +201,24 @@ export function getCachedStationPanel(model) {
   return sharedModelPanelRequest(model, "stationPanel", getStationPanel);
 }
 
+/** 首次真实数据预加载完成后，直接灌入所有日期的线路/站点索引缓存。 */
+export function primeCachedRealPanels(model, bundle = {}) {
+  const key = modelKey(model);
+  if (!isRealDatasource(key)) return;
+  const entry = entryFor(key);
+  if (bundle.routePanel && isPanelReady(bundle.routePanel, "routePanel")) {
+    entry.routePanelData = markRawDeepEnough(bundle.routePanel);
+  }
+  if (bundle.stationPanel && isPanelReady(bundle.stationPanel, "stationPanel")) {
+    entry.stationPanelData = markRawDeepEnough(bundle.stationPanel);
+  }
+  if (bundle.evaluation && bundle.evaluation.status !== "generating") {
+    entry["evaluation@全市Data"] = markRawDeepEnough(bundle.evaluation);
+  }
+}
+
 export function getCachedEvaluation(model, district = "全市") {
   const scope = String(district || "").trim() || "全市";
-  if (isRealDatasource(model)) {
-    return dataEvaluation(
-      { datasource: model, district: scope },
-      { silentError: true, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
-    ).then((res) => (
-      res?.data && typeof res.data === "object" ? markRawDeepEnough(res.data) : null
-    ));
-  }
   return sharedModelPanelRequest(
     model,
     `evaluation@${scope}`,
@@ -217,57 +242,102 @@ export function getCachedPopulationStreets(model, version = "") {
   return sharedModelPanelRequest(model, `populationStreets@${String(version)}`, getPopulationStreets);
 }
 
-// 人口栅格二进制：按模型键控缓存 ArrayBuffer + 并发去重（与换乘事件表同构）。
-export function getCachedPopulationGrid(model, version = "") {
+// 大二进制工件统一走三层缓存：页面内存 → IndexedDB → 网络。
+// 只有服务端 summary 提供了稳定版本时才读写持久层，以免无法失效。
+function sharedPersistentBinaryRequest(model, type, version, requestFn, options = {}) {
   const key = modelKey(model);
   if (!key) return Promise.resolve(null);
   const entry = entryFor(key);
   const versionKey = String(version);
-  const dataKey = `populationGridData@${versionKey}`;
-  const promiseKey = `populationGridPromise@${versionKey}`;
-  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
+  const compressedPrewarm = options.prewarmCompressed === true;
+  // 预热与实际读取不能共用 Promise：预热返回的是轻量就绪标记，页面读取
+  // 必须获得真正解压后的 ArrayBuffer。
+  const requestVariant = compressedPrewarm ? "@compressed-prewarm" : "";
+  const dataKey = `${type}Data@${versionKey}`;
+  const promiseKey = `${type}Promise@${versionKey}${requestVariant}`;
+  if (!compressedPrewarm && entry[dataKey]) return Promise.resolve(entry[dataKey]);
   if (entry[promiseKey]) return entry[promiseKey];
 
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  if (controller) pendingControllers.set(controllerKey(key, "populationGrid"), controller);
+  const pendingType = `${type}@${versionKey}${requestVariant}`;
+  const persistenceTypeKey = controllerKey(key, type);
+  if (controller) pendingControllers.set(controllerKey(key, pendingType), controller);
 
-  entry[promiseKey] = getPopulationGridBinary(
-    { datasource: key, v: version },
-    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
-  )
-    .then((response) => {
-      const buffer = response instanceof ArrayBuffer ? response : response?.data;
-      if (!(buffer instanceof ArrayBuffer)) return null;
-      entry[dataKey] = buffer;
-      return buffer;
-    })
+  const promise = (async () => {
+    if (!persistentReadBypass.has(persistenceTypeKey)) {
+      if (compressedPrewarm) {
+        // 只读元数据确认压缩工件存在；不从 IndexedDB 取 payload，更不解压。
+        if (await hasModelBinary(key, type, versionKey)) {
+          return { status: "compressed-ready", type, version: versionKey };
+        }
+      } else {
+        const persisted = await readModelBinary(key, type, versionKey);
+        if (persisted instanceof ArrayBuffer && persisted.byteLength > 0) {
+          entry[dataKey] = persisted;
+          return persisted;
+        }
+      }
+    }
+
+    const response = await requestFn(
+      { datasource: key, v: versionKey },
+      { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
+    );
+    const buffer = response instanceof ArrayBuffer ? response : response?.data;
+    if (!(buffer instanceof ArrayBuffer)) return null;
+    if (compressedPrewarm) {
+      // 网络响应仅作为压缩写入的瞬时输入；等待写入结束后不保留引用，GC 可立即回收。
+      await writeModelBinary(key, type, versionKey, buffer);
+      return { status: "compressed-ready", type, version: versionKey };
+    }
+    entry[dataKey] = buffer;
+    // IndexedDB 写入可能触发大块结构化克隆，放到空闲时段，不阻塞首次绘制。
+    if (typeof window !== "undefined") {
+      runWhenIdle(() => { void writeModelBinary(key, type, versionKey, buffer); });
+    }
+    return buffer;
+  })()
     .catch((error) => {
-      delete entry[dataKey];
+      if (!compressedPrewarm) delete entry[dataKey];
       if (!isCanceled(error)) {
         delete entry[promiseKey];
       }
       throw error;
     })
     .finally(() => {
-      if (entry[promiseKey]) delete entry[promiseKey];
-      const pendingKey = controllerKey(key, "populationGrid");
+      if (entry[promiseKey] === promise) delete entry[promiseKey];
+      const pendingKey = controllerKey(key, pendingType);
       if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
       evictStaleModels();
     });
 
-  return entry[promiseKey];
+  entry[promiseKey] = promise;
+  return promise;
+}
+
+// 人口栅格二进制：按模型+版本键控的内存/持久缓存 + 并发去重。
+export function getCachedPopulationGrid(model, version = "", options = {}) {
+  return sharedPersistentBinaryRequest(
+    model,
+    "population-grid",
+    version,
+    getPopulationGridBinary,
+    options,
+  );
 }
 
 /** 人口缓存契约升级时只清理人口工件，不影响同模型的线路/站点等大缓存。 */
 export function invalidateCachedPopulationBundle(model) {
   const key = modelKey(model);
   const entry = modelCache.get(key);
-  if (!key || !entry) return;
-  for (const field of Object.keys(entry)) {
-    if (field.startsWith("populationSummary")
-        || field.startsWith("populationStreets")
-        || field.startsWith("populationGrid")) {
-      delete entry[field];
+  if (!key) return;
+  if (entry) {
+    for (const field of Object.keys(entry)) {
+      if (field.startsWith("populationSummary")
+          || field.startsWith("populationStreets")
+          || field.startsWith("population-grid")) {
+        delete entry[field];
+      }
     }
   }
   for (const [pendingKey, controller] of pendingControllers.entries()) {
@@ -276,6 +346,10 @@ export function invalidateCachedPopulationBundle(model) {
       pendingControllers.delete(pendingKey);
     }
   }
+  const persistenceTypeKey = controllerKey(key, "population-grid");
+  persistentReadBypass.add(persistenceTypeKey);
+  void clearPersistedModelBinaries(key, "population-grid")
+    .finally(() => persistentReadBypass.delete(persistenceTypeKey));
 }
 
 export function getCachedTripEndsSummary(model) {
@@ -286,88 +360,18 @@ export function getCachedTripEndsStreets(model) {
   return sharedModelPanelRequest(model, "tripEndsStreets", getTripEndsStreets);
 }
 
-// 出行分布栅格二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口栅格同构）。
-export function getCachedTripEndsGrid(model, version = "") {
-  const key = modelKey(model);
-  if (!key) return Promise.resolve(null);
-  const entry = entryFor(key);
-  const dataKey = "tripEndsGridData";
-  const promiseKey = "tripEndsGridPromise";
-  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
-  if (entry[promiseKey]) return entry[promiseKey];
-
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  if (controller) pendingControllers.set(controllerKey(key, "tripEndsGrid"), controller);
-
-  entry[promiseKey] = getTripEndsGridBinary(
-    { datasource: key, v: version },
-    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
-  )
-    .then((response) => {
-      const buffer = response instanceof ArrayBuffer ? response : response?.data;
-      if (!(buffer instanceof ArrayBuffer)) return null;
-      entry[dataKey] = buffer;
-      return buffer;
-    })
-    .catch((error) => {
-      delete entry[dataKey];
-      if (!isCanceled(error)) {
-        delete entry[promiseKey];
-      }
-      throw error;
-    })
-    .finally(() => {
-      if (entry[promiseKey]) delete entry[promiseKey];
-      const pendingKey = controllerKey(key, "tripEndsGrid");
-      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
-      evictStaleModels();
-    });
-
-  return entry[promiseKey];
+// 出行分布栅格二进制。
+export function getCachedTripEndsGrid(model, version = "", options = {}) {
+  return sharedPersistentBinaryRequest(model, "tripends-grid", version, getTripEndsGridBinary, options);
 }
 
 export function getCachedTripEndsOdStreets(model) {
   return sharedModelPanelRequest(model, "tripEndsOdStreets", getTripEndsOdStreets);
 }
 
-// 公交OD栅格对二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口/出行分布栅格同构）。
-export function getCachedTripEndsOdGrid(model, version = "") {
-  const key = modelKey(model);
-  if (!key) return Promise.resolve(null);
-  const entry = entryFor(key);
-  const dataKey = "tripEndsOdGridData";
-  const promiseKey = "tripEndsOdGridPromise";
-  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
-  if (entry[promiseKey]) return entry[promiseKey];
-
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  if (controller) pendingControllers.set(controllerKey(key, "tripEndsOdGrid"), controller);
-
-  entry[promiseKey] = getTripEndsOdGridBinary(
-    { datasource: key, v: version },
-    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
-  )
-    .then((response) => {
-      const buffer = response instanceof ArrayBuffer ? response : response?.data;
-      if (!(buffer instanceof ArrayBuffer)) return null;
-      entry[dataKey] = buffer;
-      return buffer;
-    })
-    .catch((error) => {
-      delete entry[dataKey];
-      if (!isCanceled(error)) {
-        delete entry[promiseKey];
-      }
-      throw error;
-    })
-    .finally(() => {
-      if (entry[promiseKey]) delete entry[promiseKey];
-      const pendingKey = controllerKey(key, "tripEndsOdGrid");
-      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
-      evictStaleModels();
-    });
-
-  return entry[promiseKey];
+// 公交 OD 栅格对二进制。
+export function getCachedTripEndsOdGrid(model, version = "", options = {}) {
+  return sharedPersistentBinaryRequest(model, "tripends-od-grid", version, getTripEndsOdGridBinary, options);
 }
 
 export function getCachedCorridorSummary(model) {
@@ -378,129 +382,24 @@ export function getCachedCorridorNames(model) {
   return sharedModelPanelRequest(model, "corridorNames", getCorridorNames);
 }
 
-// 走廊路段二进制：按模型键控缓存 ArrayBuffer + 并发去重（与人口栅格同构）。
-export function getCachedCorridorLinks(model, version = "") {
-  const key = modelKey(model);
-  if (!key) return Promise.resolve(null);
-  const entry = entryFor(key);
-  const dataKey = "corridorLinksData";
-  const promiseKey = "corridorLinksPromise";
-  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
-  if (entry[promiseKey]) return entry[promiseKey];
-
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  if (controller) pendingControllers.set(controllerKey(key, "corridorLinks"), controller);
-
-  entry[promiseKey] = getCorridorLinksBinary(
-    { datasource: key, v: version },
-    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
-  )
-    .then((response) => {
-      const buffer = response instanceof ArrayBuffer ? response : response?.data;
-      if (!(buffer instanceof ArrayBuffer)) return null;
-      entry[dataKey] = buffer;
-      return buffer;
-    })
-    .catch((error) => {
-      delete entry[dataKey];
-      if (!isCanceled(error)) {
-        delete entry[promiseKey];
-      }
-      throw error;
-    })
-    .finally(() => {
-      if (entry[promiseKey]) delete entry[promiseKey];
-      const pendingKey = controllerKey(key, "corridorLinks");
-      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
-      evictStaleModels();
-    });
-
-  return entry[promiseKey];
+// 走廊路段二进制。
+export function getCachedCorridorLinks(model, version = "", options = {}) {
+  return sharedPersistentBinaryRequest(model, "corridor-links", version, getCorridorLinksBinary, options);
 }
 
 export function getCachedLinkSpeedSummary(model) {
   return sharedModelPanelRequest(model, "linkSpeedSummary", getLinkSpeedSummary);
 }
 
-// 链路车速矩阵二进制：按模型键控缓存 ArrayBuffer + 并发去重（与走廊路段表同构）。
-export function getCachedLinkSpeedMatrix(model, version = "") {
-  const key = modelKey(model);
-  if (!key) return Promise.resolve(null);
-  const entry = entryFor(key);
-  const dataKey = "linkSpeedMatrixData";
-  const promiseKey = "linkSpeedMatrixPromise";
-  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
-  if (entry[promiseKey]) return entry[promiseKey];
-
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  if (controller) pendingControllers.set(controllerKey(key, "linkSpeedMatrix"), controller);
-
-  entry[promiseKey] = getLinkSpeedMatrixBinary(
-    { datasource: key, v: version },
-    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
-  )
-    .then((response) => {
-      const buffer = response instanceof ArrayBuffer ? response : response?.data;
-      if (!(buffer instanceof ArrayBuffer)) return null;
-      entry[dataKey] = buffer;
-      return buffer;
-    })
-    .catch((error) => {
-      delete entry[dataKey];
-      if (!isCanceled(error)) {
-        delete entry[promiseKey];
-      }
-      throw error;
-    })
-    .finally(() => {
-      if (entry[promiseKey]) delete entry[promiseKey];
-      const pendingKey = controllerKey(key, "linkSpeedMatrix");
-      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
-      evictStaleModels();
-    });
-
-  return entry[promiseKey];
+// 链路车速矩阵二进制。
+export function getCachedLinkSpeedMatrix(model, version = "", options = {}) {
+  return sharedPersistentBinaryRequest(model, "link-speed-matrix", version, getLinkSpeedMatrixBinary, options);
 }
 
 // 换乘事件表二进制：按模型键控缓存 ArrayBuffer + 并发去重。
 // HTTP 层 ETag/immutable 由后端下发，浏览器缓存自动 304；内存层沿用 LRU entry。
-export function getCachedTransferEvents(model, version = "") {
-  const key = modelKey(model);
-  if (!key) return Promise.resolve(null);
-  const entry = entryFor(key);
-  const dataKey = "transferEventsData";
-  const promiseKey = "transferEventsPromise";
-  if (entry[dataKey]) return Promise.resolve(entry[dataKey]);
-  if (entry[promiseKey]) return entry[promiseKey];
-
-  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-  if (controller) pendingControllers.set(controllerKey(key, "transferEvents"), controller);
-
-  entry[promiseKey] = getTransferEventsBinary(
-    { datasource: key, v: version },
-    { silentError: true, signal: controller?.signal, timeout: HEAVY_MODEL_REQUEST_TIMEOUT_MS },
-  )
-    .then((response) => {
-      const buffer = response instanceof ArrayBuffer ? response : response?.data;
-      if (!(buffer instanceof ArrayBuffer)) return null;
-      entry[dataKey] = buffer;
-      return buffer;
-    })
-    .catch((error) => {
-      delete entry[dataKey];
-      if (!isCanceled(error)) {
-        delete entry[promiseKey];
-      }
-      throw error;
-    })
-    .finally(() => {
-      if (entry[promiseKey]) delete entry[promiseKey];
-      const pendingKey = controllerKey(key, "transferEvents");
-      if (pendingControllers.get(pendingKey) === controller) pendingControllers.delete(pendingKey);
-      evictStaleModels();
-    });
-
-  return entry[promiseKey];
+export function getCachedTransferEvents(model, version = "", options = {}) {
+  return sharedPersistentBinaryRequest(model, "transfer-events", version, getTransferEventsBinary, options);
 }
 
 function runWhenIdle(fn) {
@@ -509,6 +408,10 @@ function runWhenIdle(fn) {
     return;
   }
   setTimeout(fn, 0);
+}
+
+function waitForNextIdle() {
+  return new Promise((resolve) => runWhenIdle(resolve));
 }
 
 function clearWarmupRetry(key) {
@@ -561,46 +464,182 @@ function warmPanel(model, type, loader) {
 // 链路车速包（summary→matrix 连锁）：返回 summary 供 warmPanel 的 generating 重试判定，
 // 就绪时顺带把矩阵二进制拉进模型缓存——车辆运行监测开"路段公交车速"开关即出图，不再现场等待
 function loadLinkSpeedBundle(model) {
-  return getCachedLinkSpeedSummary(model).then((summary) => {
-    if (summary && summary.status !== "generating") {
+  return getCachedLinkSpeedSummary(model).then(async (summary) => {
+    if (shouldLoadBinaryBundle(summary)) {
       const version = String(summary.generatedAt || summary.cacheVersion || "");
-      getCachedLinkSpeedMatrix(model, version).catch(() => null);
+      const matrix = await getCachedLinkSpeedMatrix(model, version, { prewarmCompressed: true });
+      if (!matrix) return { status: "generating" };
     }
     return summary;
   });
 }
 
+// 换乘分析整包（summary→dict+events）也属于模型级交互缓存。
+// 必须在模型首次就绪后预取，而不是等用户进入换乘分析再下载事件表；
+// summary 仍在生成时只返回状态，由 warmPanel 的统一重试机制继续跟进。
+function loadTransferBundle(model) {
+  return getCachedTransferSummary(model).then(async (summary) => {
+    if (shouldLoadBinaryBundle(summary)) {
+      const version = String(summary.version || summary.generatedAt || summary.cacheVersion || "");
+      const dict = await getCachedTransferDict(model);
+      // summary 可能已落盘而 dict 尚在最后写入阶段，继续交给统一重试，不能把
+      // “字典仍生成中”误记成整包就绪。
+      if (!dict || dict.status === "generating") return dict || { status: "generating" };
+      const events = await getCachedTransferEvents(model, version, { prewarmCompressed: true });
+      if (!events) return { status: "generating" };
+    }
+    return summary;
+  });
+}
+
+function shouldLoadBinaryBundle(summary) {
+  return Boolean(summary)
+    && !["generating", "error", "unsupported", "nodata"].includes(summary.status);
+}
+
+function binaryBundleVersion(summary) {
+  return String(summary?.generatedAt || summary?.cacheVersion || "");
+}
+
+async function loadPopulationBundle(model) {
+  const summary = await getCachedPopulationSummary(model);
+  if (!shouldLoadBinaryBundle(summary)) return summary;
+  const version = binaryBundleVersion(summary);
+  const [gridResult, streetsResult] = await Promise.allSettled([
+    getCachedPopulationGrid(model, version, { prewarmCompressed: true }),
+    getCachedPopulationStreets(model, version),
+  ]);
+  const streets = streetsResult.status === "fulfilled" ? streetsResult.value : null;
+  if (gridResult.status !== "fulfilled" || !gridResult.value
+      || !streets || streets.status === "generating") return { status: "generating" };
+  return summary;
+}
+
+async function loadTripEndsBundle(model) {
+  const summary = await getCachedTripEndsSummary(model);
+  if (!shouldLoadBinaryBundle(summary)) return summary;
+  const version = binaryBundleVersion(summary);
+  const [gridResult, streetsResult] = await Promise.allSettled([
+    getCachedTripEndsGrid(model, version, { prewarmCompressed: true }),
+    getCachedTripEndsStreets(model),
+  ]);
+  const streets = streetsResult.status === "fulfilled" ? streetsResult.value : null;
+  if (gridResult.status !== "fulfilled" || !gridResult.value
+      || !streets || streets.status === "generating") return { status: "generating" };
+  return summary;
+}
+
+async function loadTripEndsOdBundle(model) {
+  const summary = await getCachedTripEndsSummary(model);
+  if (!shouldLoadBinaryBundle(summary)) return summary;
+  const version = binaryBundleVersion(summary);
+  const [gridResult, streetsResult] = await Promise.allSettled([
+    getCachedTripEndsOdGrid(model, version, { prewarmCompressed: true }),
+    getCachedTripEndsOdStreets(model),
+  ]);
+  const streets = streetsResult.status === "fulfilled" ? streetsResult.value : null;
+  if (gridResult.status !== "fulfilled" || !gridResult.value
+      || !streets || streets.status === "generating") return { status: "generating" };
+  return summary;
+}
+
+async function loadCorridorBundle(model) {
+  const summary = await getCachedCorridorSummary(model);
+  if (!shouldLoadBinaryBundle(summary)) return summary;
+  const version = binaryBundleVersion(summary);
+  const [linksResult, namesResult] = await Promise.allSettled([
+    getCachedCorridorLinks(model, version, { prewarmCompressed: true }),
+    getCachedCorridorNames(model),
+  ]);
+  const names = namesResult.status === "fulfilled" ? namesResult.value : null;
+  if (linksResult.status !== "fulfilled" || !linksResult.value
+      || !names || names.status === "generating") return { status: "generating" };
+  return summary;
+}
+
+/**
+ * 人口、出行分布、公交 OD、走廊四组分析数据逐批预热。
+ * 每批都先让出一个浏览器空闲时段，避免同时抢占服务器磁盘、网络和主线程。
+ */
+export function warmModelAnalysisBinaries(model, options = {}) {
+  const key = modelKey(model);
+  if (!key) return Promise.resolve(null);
+  const { force = false, waitForIdle = waitForNextIdle } = options;
+  if (!force && analysisWarmupCompleted.has(key)) return Promise.resolve({ status: "ready" });
+  if (analysisWarmupPromises.has(key)) return analysisWarmupPromises.get(key);
+
+  const generation = analysisWarmupGeneration.get(key) || 0;
+  const stages = [
+    ["populationBundle", loadPopulationBundle],
+    ["tripEndsBundle", loadTripEndsBundle],
+    ["tripEndsOdBundle", loadTripEndsOdBundle],
+    ["corridorBundle", loadCorridorBundle],
+  ];
+  const promise = (async () => {
+    for (const [type, loader] of stages) {
+      await waitForIdle();
+      if ((analysisWarmupGeneration.get(key) || 0) !== generation) return null;
+      await warmPanel(key, type, loader);
+    }
+    if ((analysisWarmupGeneration.get(key) || 0) === generation) {
+      analysisWarmupCompleted.add(key);
+      return { status: "ready" };
+    }
+    return null;
+  })().finally(() => {
+    if (analysisWarmupPromises.get(key) === promise) analysisWarmupPromises.delete(key);
+  });
+  analysisWarmupPromises.set(key, promise);
+  return promise;
+}
+
 // 模型进入前预热客流交互所需的前端缓存：
 // - lineAll / facilityAll：地图点选、线路/站点搜索、线网 GeoJSON
 // - routePanel：线路着色、选中线路右侧面板、断面客流
-// stationPanel 体量可能更大，默认放到 idle 后台预热，避免阻塞线路点选首屏；
-// 链路车速包（summary+矩阵）同批 idle 预热，与模型缓存一起就位。
+// 换乘整包在基础数据完成后单独一批；stationPanel / evaluation、链路车速、
+// 四组分析二进制继续在 idle 阶段逐批补齐，避免服务器冷磁盘同时读多个大文件。
 export function warmModelInteractionCache(model, options = {}) {
   const key = modelKey(model);
   if (!key) return Promise.resolve(null);
+  const generation = analysisWarmupGeneration.get(key) || 0;
   const { includeStationPanel = true, includeEvaluation = true, waitForHeavy = false } = options;
   const warmupKey = `${key}::${includeStationPanel ? "station" : "line"}::${includeEvaluation ? "eval" : "noeval"}::${waitForHeavy ? "wait" : "idle"}`;
   if (warmupPromises.has(warmupKey)) return warmupPromises.get(warmupKey);
 
-  const warmHeavyPanels = () => Promise.allSettled([
-    includeStationPanel ? warmPanel(key, "stationPanel", getCachedStationPanel) : Promise.resolve(null),
-    includeEvaluation ? warmPanel(key, "evaluation", getCachedEvaluation) : Promise.resolve(null),
-    warmPanel(key, "linkSpeed", loadLinkSpeedBundle),
-  ]);
+  const warmHeavyPanels = async () => {
+    await Promise.allSettled([
+      includeStationPanel ? warmPanel(key, "stationPanel", getCachedStationPanel) : Promise.resolve(null),
+      includeEvaluation ? warmPanel(key, "evaluation", getCachedEvaluation) : Promise.resolve(null),
+    ]);
+    if ((analysisWarmupGeneration.get(key) || 0) !== generation) return;
+    await waitForNextIdle();
+    if ((analysisWarmupGeneration.get(key) || 0) !== generation) return;
+    await warmPanel(key, "linkSpeed", loadLinkSpeedBundle);
+  };
 
   const promise = Promise.all([
     getCachedLineAll(key),
     getCachedFacilityAll(key),
     getCachedRoutePanel(key),
   ])
-    .then(([lines, facilities, routePanel]) => {
-      if (includeStationPanel || includeEvaluation) {
-        if (waitForHeavy) {
-          return warmHeavyPanels().then(() => ({ lines, facilities, routePanel }));
-        }
-        runWhenIdle(warmHeavyPanels);
+    .then(async ([lines, facilities, routePanel]) => {
+      // 换乘事件表可能很大，等基础地图数据读完再启动，不与它们抢冷磁盘。
+      const transferSummary = await warmPanel(key, "transferBundle", loadTransferBundle);
+      const result = { lines, facilities, routePanel, transferSummary };
+      if (waitForHeavy) {
+        await warmHeavyPanels();
+        return result;
       }
-      return { lines, facilities, routePanel };
+      // Vitest/SSR 没有 window，不留后台计时器；生产浏览器才自动继续预热。
+      if (typeof window !== "undefined") {
+        runWhenIdle(async () => {
+          if ((analysisWarmupGeneration.get(key) || 0) !== generation) return;
+          await warmHeavyPanels();
+          if ((analysisWarmupGeneration.get(key) || 0) !== generation) return;
+          await warmModelAnalysisBinaries(key);
+        });
+      }
+      return result;
     })
     .finally(() => {
       if (warmupPromises.get(warmupKey) === promise) warmupPromises.delete(warmupKey);
@@ -668,6 +707,9 @@ export function __modelCacheKeys() {
 export function clearModelDataCache(model) {
   const key = modelKey(model);
   if (!key) return;
+  analysisWarmupGeneration.set(key, (analysisWarmupGeneration.get(key) || 0) + 1);
+  analysisWarmupCompleted.delete(key);
+  analysisWarmupPromises.delete(key);
   modelCache.delete(key);
   for (const pendingKey of Array.from(warmupPromises.keys())) {
     if (pendingKey.startsWith(`${key}::`)) {
@@ -689,6 +731,17 @@ export function clearModelDataCache(model) {
 
 export function abortOtherModelDataRequests(activeModel) {
   const activeKey = modelKey(activeModel);
+  for (const key of new Set([
+    ...modelCache.keys(),
+    ...analysisWarmupPromises.keys(),
+    ...analysisWarmupCompleted.values(),
+  ])) {
+    if (key !== activeKey) {
+      analysisWarmupGeneration.set(key, (analysisWarmupGeneration.get(key) || 0) + 1);
+      analysisWarmupPromises.delete(key);
+      analysisWarmupCompleted.delete(key);
+    }
+  }
   for (const [pendingKey, controller] of pendingControllers.entries()) {
     if (!pendingKey.startsWith(`${activeKey}::`)) {
       controller.abort();

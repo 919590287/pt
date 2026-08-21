@@ -35,6 +35,12 @@ public interface RouteService {
 
     Map<String, Object> routePanelDetail(RouteInfoParam param);
 
+    Map<String, Object> departureTimetable(RouteInfoParam param);
+
+    Map<String, Object> departureBundle(DatasourceParam param);
+
+    Map<String, Object> departurePanel(RouteChartParam param);
+
     /**
      * 总体客流变化（24 小时 × 交通方式）服务端聚合
      */

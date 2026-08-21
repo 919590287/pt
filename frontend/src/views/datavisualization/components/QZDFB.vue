@@ -1,12 +1,11 @@
-<!-- 出行分布监测（公交出行监测模块，人口分布监测的同级子模块；原「起终点分布监测」，
-     文件名/qzd- 前缀/rm-tripends-* 图层 id 为历史内部标识，保持不动）
-     地图：仿真与真实模式统一使用按起终点人次加权的核密度热力图
-     （maplibre，rm-tripends-heat-*），并叠加街道边界/名称占比标注（maplibre，rm-tripends-street-*）。
-     右侧：起点/终点切换 + 按街道占比排序榜，teleport 到 index.vue 的右侧容器（同 RKFB 模式）；
-     热力图例浮在地图左下角（teleport 到 body，结构同客流分析地图图例）。
+<!-- 出行分布监测（公交出行监测模块，人口分布监测的同级子模块；原「起终点分布监测」）
+     地图：复用人口分布监测相同的 100m 栅格（deck.gl GridCellLayer，rm-tripends-grid）
+     + 街道边界/名称占比标注（maplibre，rm-tripends-street-*）。
+     右侧：起点/终点切换 + 按街道占比排序榜，teleport 到 index.vue 的右侧容器；
+     图例：栅格人次区间图例，浮在地图左下角（teleport 到 body）。
      口径：本次活动出行的起终点——plans 中含 pt leg 的 trip，
-     起点=出行前置活动位置、终点=出行后置活动位置（不再是上/下车站点）；
-     一律直出已加载模型的原始人次，不做任何数量缩放；grid.bin 复用 PGRD 契约（home 列=起点、work 列=终点）。 -->
+     起点=出行前置活动位置、终点=出行后置活动位置；
+     grid.bin 复用 PGRD 契约（home 列=起点、work 列=终点）。 -->
 <template>
   <teleport to="#datavisualization_index_box2" defer>
     <div class="qzd-card" aria-label="出行分布面板">
@@ -121,32 +120,31 @@
     </div>
   </teleport>
 
-  <!-- 地图图例：两种数据源共用相对热度样式；pageActive 防止 KeepAlive 切页后残留 -->
+  <!-- 栅格分布图例：地图左下角浮动（复用人口分布 100m 栅格图例结构）；pageActive 防止 KeepAlive 切页后残留 -->
   <teleport to="body">
     <div
       v-if="status === 'ready' && pageActive"
       class="qzd-map-legend"
-      aria-label="出行分布热力图例"
-      :title="`按${metricLabel}人次加权的相对热度`"
+      aria-label="出行分布栅格图例（人次）"
       @click.stop
     >
       <div class="qzd-map-legend-head">
-        <span class="qzd-map-legend-title">出行分布热力（相对热度）</span>
+        <span class="qzd-map-legend-title">{{ metricLabel }}栅格分布（人次）</span>
       </div>
-      <div class="qzd-heat-scale" aria-hidden="true">
-        <span>低</span>
-        <i :style="{ background: heatLegendGradient }"></i>
-        <span>高</span>
+      <div v-for="item in legendItems" :key="item.label" class="qzd-map-legend-item">
+        <span class="qzd-map-legend-swatch" :style="{ background: item.color }" aria-hidden="true"></span>
+        <span class="qzd-map-legend-label">{{ item.label }}</span>
       </div>
-      <p class="qzd-heat-note">{{ heatPointCount }} 个起终点单元，按{{ metricLabel }}人次加权</p>
     </div>
   </teleport>
 </template>
 
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, shallowRef, watch, inject, markRaw } from "vue";
-import { removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
+import { GridCellLayer } from "@deck.gl/layers";
+import { setSharedDeckLayer, removeSharedDeckLayer } from "../layers/deckOverlayRegistry.js";
 import { MAP_THEME } from "@/utils/mapTheme.js";
+import { isDarkTheme } from "@/utils/uiTheme.js";
 import {
   getCachedTripEndsGrid,
   getCachedTripEndsStreets,
@@ -157,11 +155,13 @@ import { fetchStreetsGeojsonOnce } from "../utils/streetsGeojson.js";
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import {
   parsePopulationGrid,
+  buildGridPositions,
+  buildGridColors,
+  buildGridElevations,
+  buildDensityLegendItems,
+  GRID_STREET_SENTINEL,
+  CELL_AREA_KM2,
 } from "../utils/populationGrid.js";
-import {
-  buildTripEndsHeatmapFeatureCollection,
-  filterTripEndsHeatmapFeatureCollection,
-} from "../utils/tripEndsHeatmap.js";
 import { isRealDatasource } from "@/utils/realPassengerFlow.js";
 
 const props = defineProps({
@@ -177,15 +177,15 @@ const METRIC_OPTIONS = [
   { key: "origin", label: "出行起点" },
   { key: "destination", label: "出行终点" },
 ];
-// 保留旧 deck 图层 key 仅用于清理热更新/模式切换前可能残留的栅格层。
-const LEGACY_GRID_LAYER_KEY = "rm-tripends-grid";
-const HEAT_SOURCE_ID = "rm-tripends-heat-source";
-const HEAT_LAYER_ID = "rm-tripends-heat-layer";
+const GRID_LAYER_KEY = "rm-tripends-grid";
+// 3D 柱高：P99 格高 1500m、最矮非零格 200m，平方根压缩高低差（见 buildGridElevations）。
+const TRIPENDS_HEIGHT_REFERENCE = 1500;
+const TRIPENDS_HEIGHT_MIN = 200;
 const STREET_SOURCE_ID = "rm-tripends-streets";
 const STREET_LINE_ID = "rm-tripends-street-line";
 const STREET_LABEL_ID = "rm-tripends-street-label";
 const GENERATING_POLL_MS = 8000;
-const HEAT_RAMP = MAP_THEME.tripEnds.ramp.slice(1);
+const GENERATING_POLL_MAX_ATTEMPTS = 20;
 
 const status = ref("loading"); // loading | generating | unsupported | error | ready
 const errorMessage = ref("");
@@ -198,8 +198,14 @@ const streetsGeojson = shallowRef(null); // 模型无关街道面
 const displayRange = useDisplayRangeStore();
 const scopeLabel = computed(() => displayRange.selected || DISPLAY_RANGE_ALL);
 const metricLabel = computed(() => (metric.value === "origin" ? "出行起点" : "出行终点"));
-const heatPointCount = ref(0);
-const heatLegendGradient = `linear-gradient(90deg, ${HEAT_RAMP.join(", ")})`;
+
+const legendItems = computed(() =>
+  buildDensityLegendItems(
+    MAP_THEME.tripEnds.breaks.map((b) => Math.round(b * CELL_AREA_KM2)),
+    MAP_THEME.tripEnds.ramp,
+    (v) => formatInt(v),
+  ),
+);
 
 function formatInt(value) {
   if (!Number.isFinite(value)) return "--";
@@ -211,6 +217,7 @@ function formatInt(value) {
 // ---------------------------------------------------------------------------
 
 let pollTimer = null;
+let pollAttempt = 0;
 let requestSeq = 0;
 const pageActive = ref(true);
 let pendingLayerRefresh = false;
@@ -224,10 +231,17 @@ function isCanceledRequest(error) {
 
 function schedulePoll() {
   clearTimeout(pollTimer);
+  if (pollAttempt >= GENERATING_POLL_MAX_ATTEMPTS) {
+    status.value = "error";
+    errorMessage.value = "出行分布缓存生成超时，请稍后手动重试";
+    return;
+  }
+  pollAttempt += 1;
+  const delay = Math.min(30_000, GENERATING_POLL_MS + (pollAttempt - 1) * 1500);
   pollTimer = setTimeout(() => {
+    pollTimer = null;
     if (pageActive.value) bootstrap();
-    else schedulePoll(); // 页面失活期间不发请求，激活后由轮询补上
-  }, GENERATING_POLL_MS);
+  }, delay);
 }
 
 function bootstrap() {
@@ -236,7 +250,10 @@ function bootstrap() {
   requestSeq += 1;
   const seq = requestSeq;
   const model = props.model;
-  if (status.value !== "generating") status.value = "loading";
+  if (status.value !== "generating") {
+    status.value = "loading";
+    pollAttempt = 0;
+  }
   errorMessage.value = "";
 
   getCachedTripEndsSummary(model)
@@ -267,7 +284,8 @@ function bootstrap() {
           schedulePoll();
           return null;
         }
-        grid.value = getModelDerived(model, "tripEndsGrid", () => markRaw(parsePopulationGrid(gridBuffer)));
+        grid.value = getModelDerived(model, `tripEndsGrid@${version}`, () => markRaw(parsePopulationGrid(gridBuffer)));
+        pollAttempt = 0;
         streetStats.value = streetsPayload;
         streetsGeojson.value = geojson;
         status.value = "ready";
@@ -278,11 +296,6 @@ function bootstrap() {
     .catch((error) => {
       if (seq !== requestSeq || props.model !== model || isCanceledRequest(error)) return;
       const message = String(error?.message || "");
-      if (/超时|网关|服务|服务器|连接|Network|timeout|temporar/i.test(message)) {
-        status.value = "generating";
-        schedulePoll();
-        return;
-      }
       errorMessage.value = message || "出行分布数据加载失败";
       status.value = "error";
     });
@@ -339,66 +352,63 @@ const scopeStreetMask = computed(() => {
 });
 
 // ---------------------------------------------------------------------------
-// 地图图层：两种数据源共用 maplibre 热力图 + 街道边界/标注
+// 地图图层：完全复用人口分布监测的 100m deck 栅格 (GridCellLayer) + maplibre 街道描边/标注
 // ---------------------------------------------------------------------------
 
-function heatPayload() {
+function gridLayerInstance() {
   const data = grid.value;
   const model = props.model;
   if (!data || !model) return null;
+  const positions = getModelDerived(model, "tripEndsGridPositions", () => markRaw(buildGridPositions(data)));
   const counts = metric.value === "origin" ? data.home : data.work;
-  const base = getModelDerived(model, `tripEndsHeat:v2:${metric.value}`, () =>
-    markRaw(buildTripEndsHeatmapFeatureCollection(data, counts)),
+  if (!counts) return null;
+  const baseColors = getModelDerived(model, `tripEndsGridColors:${metric.value}`, () =>
+    markRaw(buildGridColors(counts, MAP_THEME.tripEnds)),
+  );
+  const baseElevations = getModelDerived(model, `tripEndsGridElevations:q99pow-v3:${metric.value}`, () =>
+    markRaw(buildGridElevations(counts, {
+      referenceHeight: TRIPENDS_HEIGHT_REFERENCE,
+      minHeight: TRIPENDS_HEIGHT_MIN,
+    })),
   );
   const mask = scopeStreetMask.value;
-  if (!mask) return base;
-  return getModelDerived(model, `tripEndsHeat:v2:${metric.value}:${scopeLabel.value}`, () =>
-    markRaw(filterTripEndsHeatmapFeatureCollection(base, mask)),
-  );
-}
-
-function ensureHeatLayer(map) {
-  if (!map.getSource(HEAT_SOURCE_ID)) {
-    map.addSource(HEAT_SOURCE_ID, {
-      type: "geojson",
-      data: { type: "FeatureCollection", features: [] },
-    });
+  let colors = mask || props.threeDimensional ? baseColors.slice() : baseColors;
+  let elevations = baseElevations;
+  if (props.threeDimensional) {
+    for (let k = 0; k < data.count; k++) {
+      if (colors[k * 4 + 3] > 0) colors[k * 4 + 3] = 255;
+    }
   }
-  if (!map.getLayer(HEAT_LAYER_ID)) {
-    const layer = {
-      id: HEAT_LAYER_ID,
-      type: "heatmap",
-      source: HEAT_SOURCE_ID,
-      maxzoom: 24,
-      paint: {
-        "heatmap-weight": ["coalesce", ["get", "weight"], 0],
-        "heatmap-intensity": ["interpolate", ["linear"], ["zoom"], 8, 0.82, 12, 1.05, 16, 1.28],
-        // 采用约 3km 的固定地理带宽：像素半径按 zoom 指数增长，避免同一热区缩放后忽大忽小。
-        // 两种数据源都使用该带宽，保持热区覆盖和色阶表达一致。
-        "heatmap-radius": ["interpolate", ["exponential", 2], ["zoom"], 8, 4.8, 16, 1228.8],
-        "heatmap-opacity": ["interpolate", ["linear"], ["zoom"], 8, 0.82, 14, 0.9, 18, 0.84],
-        "heatmap-color": [
-          "interpolate",
-          ["linear"],
-          ["heatmap-density"],
-          0, "rgba(0,0,0,0)",
-          0.08, HEAT_RAMP[0],
-          0.24, HEAT_RAMP[1],
-          0.42, HEAT_RAMP[2],
-          0.6, HEAT_RAMP[3],
-          0.78, HEAT_RAMP[4],
-          0.9, HEAT_RAMP[5],
-          1, HEAT_RAMP[HEAT_RAMP.length - 1],
-        ],
+  if (mask) {
+    elevations = baseElevations.slice();
+    for (let k = 0; k < data.count; k++) {
+      const streetIdx = data.street[k];
+      if (streetIdx === GRID_STREET_SENTINEL || !mask[streetIdx]) {
+        colors[k * 4 + 3] = 0;
+        elevations[k] = 0;
+      }
+    }
+  }
+  return new GridCellLayer({
+    id: GRID_LAYER_KEY,
+    beforeId: STREET_LINE_ID,
+    data: {
+      length: data.count,
+      attributes: {
+        getPosition: { value: positions, size: 2 },
+        getFillColor: { value: colors, size: 4 },
+        getElevation: { value: elevations, size: 1 },
       },
-    };
-    if (map.getLayer(STREET_LINE_ID)) map.addLayer(layer, STREET_LINE_ID);
-    else map.addLayer(layer);
-  }
+    },
+    cellSize: (Number(summary.value?.cellSizeMeters) > 0 ? Number(summary.value.cellSizeMeters) : 100) * 1.02,
+    extruded: props.threeDimensional,
+    elevationScale: 1,
+    opacity: 1,
+    pickable: false,
+  });
 }
 
 // 街道 FeatureCollection 附加展示属性（label/占比）。
-// 行政区模式：区外街道轮廓/名称整体不下发（用户定版：只显示范围内部）。
 function decoratedStreetsGeojson() {
   const fc = streetsGeojson.value;
   if (!fc) return null;
@@ -423,7 +433,12 @@ function decoratedStreetsGeojson() {
 }
 
 function ensureStreetLayers(map) {
+  const isDark = isDarkTheme.value;
   const theme = MAP_THEME.tripEnds;
+  const streetLineColor = isDark ? (theme.streetLineDark || "#ffffff") : theme.streetLine;
+  const streetLabelColor = isDark ? (theme.streetLabelDark || "#f0f4f8") : theme.streetLabel;
+  const streetLabelHaloColor = isDark ? (theme.streetLabelHaloDark || "rgba(18,22,29,0.94)") : theme.streetLabelHalo;
+
   if (!map.getSource(STREET_SOURCE_ID)) {
     map.addSource(STREET_SOURCE_ID, { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   }
@@ -432,12 +447,20 @@ function ensureStreetLayers(map) {
       id: STREET_LINE_ID,
       type: "line",
       source: STREET_SOURCE_ID,
+      layout: {
+        "line-join": "round",
+        "line-cap": "butt",
+      },
       paint: {
-        "line-color": theme.streetLine,
+        "line-color": streetLineColor,
         "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1, 12, 1.8],
         "line-opacity": ["case", ["==", ["get", "inScope"], 1], 0.88, 0.3],
+        "line-dasharray": [1, 0],
       },
     });
+  } else {
+    map.setPaintProperty(STREET_LINE_ID, "line-color", streetLineColor);
+    map.setPaintProperty(STREET_LINE_ID, "line-dasharray", [1, 0]);
   }
   if (!map.getLayer(STREET_LABEL_ID)) {
     map.addLayer({
@@ -451,19 +474,25 @@ function ensureStreetLayers(map) {
         "text-max-width": 8,
       },
       paint: {
-        "text-color": theme.streetLabel,
-        "text-halo-color": theme.streetLabelHalo,
+        "text-color": streetLabelColor,
+        "text-halo-color": streetLabelHaloColor,
         "text-halo-width": 1.4,
         "text-opacity": ["case", ["==", ["get", "inScope"], 1], 1, 0.55],
       },
     });
+  } else {
+    map.setPaintProperty(STREET_LABEL_ID, "text-color", streetLabelColor);
+    map.setPaintProperty(STREET_LABEL_ID, "text-halo-color", streetLabelHaloColor);
   }
 }
+
+watch(isDarkTheme, () => {
+  refreshMapLayers();
+});
 
 function refreshMapLayers() {
   if (status.value !== "ready") return;
   if (!pageActive.value) {
-    // 失活期间不动共享地图，激活时补一次，避免图层漏到其他页面
     pendingLayerRefresh = true;
     return;
   }
@@ -475,14 +504,11 @@ function refreshMapLayers() {
   try {
     ensureStreetLayers(map);
     map.getSource(STREET_SOURCE_ID)?.setData(geojson);
-    removeSharedDeckLayer(wrapper, LEGACY_GRID_LAYER_KEY);
-    ensureHeatLayer(map);
-    const payload = heatPayload();
-    map.getSource(HEAT_SOURCE_ID)?.setData(payload?.collection || { type: "FeatureCollection", features: [] });
-    heatPointCount.value = payload?.pointCount || 0;
+    const layer = gridLayerInstance();
+    if (layer) setSharedDeckLayer(wrapper, GRID_LAYER_KEY, layer, 0);
+    else removeSharedDeckLayer(wrapper, GRID_LAYER_KEY);
     pendingLayerRefresh = false;
   } catch (error) {
-    // 地图尚未就绪（样式加载中等）时静默，数据/指标变化会再次触发
     pendingLayerRefresh = true;
     console.warn("[出行分布监测] 图层刷新失败，等待下次触发", error);
   }
@@ -491,15 +517,12 @@ function refreshMapLayers() {
 function removeMapLayers() {
   const wrapper = MapRef.value;
   const map = wrapper?.map;
-  removeSharedDeckLayer(wrapper, LEGACY_GRID_LAYER_KEY);
+  removeSharedDeckLayer(wrapper, GRID_LAYER_KEY);
   if (!map || !map.getStyle) return;
   try {
     if (map.getLayer(STREET_LABEL_ID)) map.removeLayer(STREET_LABEL_ID);
     if (map.getLayer(STREET_LINE_ID)) map.removeLayer(STREET_LINE_ID);
-    if (map.getLayer(HEAT_LAYER_ID)) map.removeLayer(HEAT_LAYER_ID);
     if (map.getSource(STREET_SOURCE_ID)) map.removeSource(STREET_SOURCE_ID);
-    if (map.getSource(HEAT_SOURCE_ID)) map.removeSource(HEAT_SOURCE_ID);
-    heatPointCount.value = 0;
   } catch (error) {
     console.warn("[出行分布监测] 图层清理失败", error);
   }
@@ -523,203 +546,160 @@ function streetBounds(code) {
       if (pt[1] > maxY) maxY = pt[1];
     }
   };
-  const geometry = feature.geometry || {};
-  if (geometry.type === "Polygon") geometry.coordinates.forEach(scanRing);
-  else if (geometry.type === "MultiPolygon") geometry.coordinates.forEach((poly) => poly.forEach(scanRing));
-  const bounds = Number.isFinite(minX) ? [[minX, minY], [maxX, maxY]] : null;
-  streetBoundsCache.set(code, bounds);
+  const scanGeom = (geom) => {
+    if (!geom) return;
+    if (geom.type === "Polygon") geom.coordinates.forEach(scanRing);
+    else if (geom.type === "MultiPolygon") geom.coordinates.forEach((p) => p.forEach(scanRing));
+  };
+  scanGeom(feature.geometry);
+  const bounds = Number.isFinite(minX) ? [minX, minY, maxX, maxY] : null;
+  if (bounds) streetBoundsCache.set(code, bounds);
   return bounds;
 }
 
 function focusStreet(code) {
-  const bounds = streetBounds(code);
   const map = MapRef.value?.map;
-  if (!bounds || !map?.fitBounds) return;
-  map.fitBounds(bounds, { padding: 90, duration: 600, maxZoom: 13.5 });
+  if (!map) return;
+  const bounds = streetBounds(code);
+  if (!bounds) return;
+  map.fitBounds(bounds, { padding: 48, maxZoom: 14.5, duration: 800 });
 }
 
 // ---------------------------------------------------------------------------
-// 生命周期
+// 响应式联动与生命周期
 // ---------------------------------------------------------------------------
 
-watch(metric, () => refreshMapLayers());
-watch(() => displayRange.selected, () => refreshMapLayers());
+watch(() => props.model, () => {
+  grid.value = null;
+  summary.value = null;
+  streetStats.value = null;
+  streetBoundsCache.clear();
+  bootstrap();
+});
 
-onMounted(bootstrap);
+watch([metric, () => props.threeDimensional], () => {
+  refreshMapLayers();
+});
+
+watch(scopeLabel, () => {
+  refreshMapLayers();
+});
+
+onMounted(() => {
+  bootstrap();
+});
 
 onActivated(() => {
   pageActive.value = true;
-  // KeepAlive 失活时会主动从共享 overlay 注销图层，回来后用内存数据重建。
-  if (status.value === "ready" || pendingLayerRefresh) refreshMapLayers();
+  if (status.value === "generating" && !pollTimer) schedulePoll();
+  if (pendingLayerRefresh || status.value === "ready") {
+    refreshMapLayers();
+  }
 });
 
 onDeactivated(() => {
   pageActive.value = false;
-  // Deck 图层不属于 MyMap.layers，MapLayout 的页面图层暂存无法自动摘除它。
-  // 必须显式从共享 overlay 注销，否则切到数据管理/换乘分析后仍会继续渲染。
-  pendingLayerRefresh = status.value === "ready";
   removeMapLayers();
 });
 
 onUnmounted(() => {
-  requestSeq += 1;
+  pageActive.value = false;
   clearTimeout(pollTimer);
   removeMapLayers();
 });
 </script>
 
 <style lang="scss" scoped>
-/* teleport 节点带本组件 scope，样式自持（同 RKFB），视觉语言对齐 index.vue 的 rm- 面板体系 */
 .qzd-card {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  width: 100%;
   box-sizing: border-box;
 }
 
 .qzd-title {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--dm2-space-3, 12px);
-  padding: 0 0 10px;
-  border-bottom: 1px solid var(--dm2-line-faint);
+  margin-bottom: 12px;
 
   h2 {
     margin: 0;
-    color: var(--dm2-ink);
-    font-size: 18px;
-    line-height: 1.18;
+    font-size: 16px;
     font-weight: 780;
+    color: var(--dm2-ink);
   }
 }
 
-.qzd-scope {
-  flex-shrink: 0;
-  max-width: 108px;
-  margin-top: 2px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  border: 1px solid var(--dm2-line-faint);
-  color: var(--dm2-muted);
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* —— 指标切换 —— */
 .qzd-metric-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin-top: 12px;
+  display: flex;
   padding: 3px;
   border-radius: 10px;
-  background: rgba(28, 32, 36, 0.05);
+  background: var(--dm2-surface-sunken, #f1f5f9);
+  margin-bottom: 12px;
 }
 
 .qzd-metric-btn {
+  flex: 1;
   appearance: none;
-  border: 0;
-  border-radius: 8px;
-  padding: 7px 0;
+  border: none;
   background: transparent;
+  padding: 6px 10px;
+  border-radius: 8px;
   color: var(--dm2-muted);
   font-size: 12.5px;
-  font-weight: 720;
+  font-weight: 680;
   cursor: pointer;
-  transition: background 0.18s ease, color 0.18s ease;
-
-  &:hover {
-    color: var(--dm2-ink);
-  }
+  transition: all 0.2s ease;
 
   &.active {
     background: #fff;
-    color: var(--dm2-accent-strong, #0071e3);
-    box-shadow: 0 1px 4px rgba(28, 32, 36, 0.12);
-  }
-
-  &:active {
-    transform: scale(0.98);
+    color: var(--dm2-ink);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
   }
 }
 
-/* —— 主指标 —— */
 .qzd-hero {
-  margin-top: 14px;
-}
-
-.qzd-hero-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.qzd-hero-label {
-  color: var(--dm2-muted);
-  font-size: 12px;
-  font-weight: 700;
+  margin-bottom: 14px;
 }
 
 .qzd-hero-value {
-  margin: 4px 0 0;
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
 
   strong {
-    color: var(--dm2-ink);
-    font-size: 30px;
-    line-height: 1.1;
+    font-size: 26px;
     font-weight: 800;
-    letter-spacing: -0.01em;
-    font-variant-numeric: tabular-nums;
+    font-family: var(--dm2-font-num);
+    color: var(--dm2-ink);
+    letter-spacing: -0.02em;
   }
 
   em {
-    margin-left: 5px;
-    color: var(--dm2-muted);
-    font-size: 12px;
     font-style: normal;
-    font-weight: 650;
+    font-size: 12px;
+    color: var(--dm2-muted);
+    font-weight: 600;
   }
 }
 
-/* —— 街道占比榜单 —— */
 .qzd-street-rank {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  margin-top: 14px;
 }
 
 .qzd-rank-head {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 0 2px 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 48px;
+  gap: 8px;
+  padding: 0 4px 6px;
   border-bottom: 1px solid var(--dm2-line-faint);
   color: var(--dm2-muted);
-  font-size: 10.5px;
-  font-weight: 700;
-}
-
-.qzd-rank-head-name {
-  flex: 1;
-  min-width: 0;
+  font-size: 11px;
+  font-weight: 680;
 }
 
 .qzd-rank-head-value {
-  flex-shrink: 0;
-  width: 96px;
   text-align: right;
 }
 
 .qzd-rank-head-share {
-  flex-shrink: 0;
-  width: 64px;
   text-align: right;
 }
 
@@ -727,16 +707,19 @@ onUnmounted(() => {
   margin: 0;
   padding: 0;
   list-style: none;
+
+  li {
+    margin-top: 4px;
+  }
 }
 
 .qzd-rank-row {
-  appearance: none;
-  display: block;
   width: 100%;
-  border: 0;
-  padding: 8px 2px 7px;
+  appearance: none;
+  border: none;
   background: transparent;
-  border-bottom: 1px solid var(--dm2-line-faint);
+  padding: 6px 4px;
+  border-radius: 6px;
   text-align: left;
   cursor: pointer;
   transition: background 0.15s ease;
@@ -744,63 +727,53 @@ onUnmounted(() => {
   &:hover {
     background: rgba(0, 113, 227, 0.05);
   }
-
-  &:active {
-    transform: translateY(1px);
-  }
 }
 
 .qzd-rank-main {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 48px;
+  gap: 8px;
   align-items: baseline;
-  gap: 6px;
 }
 
 .qzd-rank-name {
-  flex: 1;
-  min-width: 0;
-  color: var(--dm2-ink);
   font-size: 12.5px;
-  font-weight: 720;
-  white-space: nowrap;
+  font-weight: 680;
+  color: var(--dm2-ink);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .qzd-rank-district {
-  margin-left: 4px;
-  color: var(--dm2-muted);
-  font-size: 10.5px;
   font-style: normal;
-  font-weight: 650;
+  font-size: 10.5px;
+  color: var(--dm2-muted);
+  margin-left: 4px;
+  font-weight: 500;
 }
 
 .qzd-rank-value {
-  flex-shrink: 0;
-  width: 96px;
-  text-align: right;
-  color: var(--dm2-ink);
+  font-family: var(--dm2-font-num);
   font-size: 12.5px;
-  font-weight: 760;
-  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  color: var(--dm2-ink);
+  text-align: right;
 }
 
 .qzd-rank-share {
-  flex-shrink: 0;
-  width: 64px;
-  text-align: right;
+  font-family: var(--dm2-font-num);
+  font-size: 11px;
   color: var(--dm2-muted);
-  font-size: 11.5px;
-  font-weight: 680;
-  font-variant-numeric: tabular-nums;
+  text-align: right;
 }
 
 .qzd-rank-bar {
   display: block;
-  height: 4px;
-  margin-top: 6px;
+  height: 3px;
   border-radius: 999px;
-  background: rgba(61, 110, 166, 0.12);
+  background: rgba(0, 113, 227, 0.1);
+  margin-top: 4px;
   overflow: hidden;
 }
 
@@ -808,100 +781,11 @@ onUnmounted(() => {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: #3d6ea6; /* mapTheme network.line 同源钢青蓝，单色编码数量 */
+  background: var(--dm2-accent-strong, #0071e3);
   transition: width 0.35s ease;
 }
 
-.qzd-rank-footnote {
-  margin: 8px 2px 0;
-  color: var(--dm2-muted);
-  font-size: 10.5px;
-  line-height: 1.4;
-  font-weight: 620;
-}
-
-/* —— 地图左下角栅格客流图例（与客流分析 map-flow-legend 同结构同定位） —— */
-.qzd-map-legend {
-  position: fixed;
-  left: calc(276px * var(--app-layout-scale, 1));
-  bottom: 20px;
-  z-index: calc(var(--z-panel, 1300) + 10);
-  min-width: 148px;
-  max-width: 220px;
-  padding: 10px 12px;
-  border: 1px solid var(--app-border, rgba(21, 105, 222, 0.16));
-  border-radius: 10px;
-  background: var(--app-panel-bg, rgba(255, 255, 255, 0.94));
-  box-shadow: var(--app-shadow-sm, 0 8px 24px rgba(13, 38, 76, 0.16));
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--app-ink-soft, #475467);
-  /* 拦截点击避免穿透到地图 */
-  pointer-events: auto;
-}
-
-.qzd-map-legend-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 2px;
-}
-
-.qzd-map-legend-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--app-ink, #344054);
-}
-
-.qzd-map-legend-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.qzd-map-legend-swatch {
-  width: 22px;
-  height: 6px;
-  border-radius: 3px;
-  flex: none;
-}
-
-.qzd-map-legend-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.qzd-heat-scale {
-  display: grid;
-  grid-template-columns: auto minmax(112px, 1fr) auto;
-  align-items: center;
-  gap: 7px;
-  margin-top: 2px;
-  font-size: 10px;
-  font-weight: 700;
-
-  i {
-    display: block;
-    height: 10px;
-    border-radius: 999px;
-    box-shadow: inset 0 0 0 1px rgba(31, 49, 64, 0.12);
-  }
-}
-
-.qzd-heat-note {
-  margin: 2px 0 0;
-  color: var(--dm2-muted, #667085);
-  font-size: 10px;
-  line-height: 1.35;
-  font-weight: 620;
-}
-
-/* —— 状态与骨架 —— */
+/* ── 状态与骨架 ── */
 .qzd-status {
   display: flex;
   flex-direction: column;
@@ -1011,6 +895,61 @@ onUnmounted(() => {
   }
 }
 
+/* —— 地图左下角密度图例（与人口分布 map-legend 同结构同定位） —— */
+.qzd-map-legend {
+  position: fixed;
+  left: calc(276px * var(--app-layout-scale, 1));
+  bottom: 20px;
+  z-index: calc(var(--z-panel, 1300) + 10);
+  min-width: 148px;
+  max-width: 220px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border, rgba(21, 105, 222, 0.16));
+  border-radius: 10px;
+  background: var(--app-panel-bg, rgba(255, 255, 255, 0.94));
+  box-shadow: var(--app-shadow-sm, 0 8px 24px rgba(13, 38, 76, 0.16));
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--app-ink-soft, #475467);
+  pointer-events: auto;
+}
+
+.qzd-map-legend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.qzd-map-legend-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--app-ink, #344054);
+}
+
+.qzd-map-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qzd-map-legend-swatch {
+  width: 22px;
+  height: 6px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.qzd-map-legend-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── 暗色模式（html.dark，跟随底图选择） ── */
 html.dark .qzd-metric-switch {
   background: rgba(148, 180, 220, 0.1);
@@ -1026,7 +965,6 @@ html.dark .qzd-rank-bar {
   background: rgba(148, 180, 220, 0.16);
 }
 html.dark .qzd-map-legend {
-  /* --app-ink-soft 未定义，浅色落在 fallback #475467，暗色需显式提亮 */
   color: #c2cddd;
 }
 html.dark .qzd-status-icon.is-error {

@@ -119,31 +119,18 @@ public final class MatsimPrecomputedCache {
     // （含全模型 1/32 线路的完整 links；模型数据常在外置盘），选线（正向+反向并发）
     // 单次可达数百毫秒。索引/分片解析结果按绝对路径（含缓存版本目录）做小容量 LRU，
     // manifest 就绪校验结果按 cacheDir 记忆化；同 JVM 内重建缓存时统一失效（见 invalidateMemoryCache）。
-    private static final int ROUTE_INDEX_MEMORY_LIMIT = 4;
-    private static final int ROUTE_SHARD_MEMORY_LIMIT = 8;
-    private static final Map<String, Map<String, String>> ROUTE_INDEX_MEMORY =
-            java.util.Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Map<String, String>> eldest) {
-                    return size() > ROUTE_INDEX_MEMORY_LIMIT;
-                }
-            });
-    private static final Map<String, Map<String, RouteDetailVO>> ROUTE_SHARD_MEMORY =
-            java.util.Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Map<String, RouteDetailVO>> eldest) {
-                    return size() > ROUTE_SHARD_MEMORY_LIMIT;
-                }
-            });
-    private static final Set<String> READY_CACHE_DIRS = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final BackendMemoryCache<String, Map<String, String>> ROUTE_INDEX_MEMORY =
+            new BackendMemoryCache<>("visual-route-index", 32L * 1024 * 1024, BackendMemoryCache::estimate);
+    private static final BackendMemoryCache<String, Map<String, RouteDetailVO>> ROUTE_SHARD_MEMORY =
+            new BackendMemoryCache<>("visual-route-shards", 128L * 1024 * 1024, BackendMemoryCache::estimate);
+    private static final BackendMemoryCache<String, Boolean> READY_CACHE_DIRS =
+            new BackendMemoryCache<>("visual-ready-probes", 4L * 1024 * 1024, ignored -> 96L);
 
     private static void invalidateMemoryCache(MatsimData data) {
         String cacheDirPrefix = cacheDir(data).toString();
         READY_CACHE_DIRS.removeIf(key -> key.startsWith(cacheDirPrefix + "::"));
         ROUTE_INDEX_MEMORY.remove(routeIndexPath(data).toString());
-        synchronized (ROUTE_SHARD_MEMORY) {
-            ROUTE_SHARD_MEMORY.keySet().removeIf(key -> key.startsWith(cacheDirPrefix));
-        }
+        ROUTE_SHARD_MEMORY.removeIf(key -> key.startsWith(cacheDirPrefix));
     }
 
     private MatsimPrecomputedCache() {
@@ -311,7 +298,7 @@ public final class MatsimPrecomputedCache {
         // visualCacheTag 除源文件 revision 外还包含面积和 visual 公式版本。
         // 只用 modelRevision 会在用户补填面积后仍命中进程内旧 info.json。
         String memoKey = cacheDir(data) + "::" + visualCacheTag(data);
-        if (READY_CACHE_DIRS.contains(memoKey)) {
+        if (READY_CACHE_DIRS.get(memoKey) != null) {
             return true;
         }
         try {
@@ -320,7 +307,7 @@ public final class MatsimPrecomputedCache {
                     && VISUAL_CACHE_VERSION.equals(manifest.get("cacheVersion"))
                     && sameSources(data, manifest);
             if (ready) {
-                READY_CACHE_DIRS.add(memoKey);
+                READY_CACHE_DIRS.put(memoKey, Boolean.TRUE);
             }
             return ready;
         } catch (Exception e) {

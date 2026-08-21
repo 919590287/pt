@@ -65,6 +65,67 @@ export function trajectoryPrefetchBlockCount({
   return Math.max(1, Math.min(Math.max(1, Number(maxBlocks) || 1), memoryBlocks, latencyBlocks));
 }
 
+// 远端播放时一个 10s 块在 50x 下仅可消费 200ms。并发度按“块请求耗时 / 块可播放时长”
+// 自适应，但不超过后端 trajectory-query-concurrency（生产默认 2），既填满服务器能力，
+// 又避免浏览器并发堆积让解压、Worker 建索引和内存预算失控。
+export function trajectoryPrefetchConcurrency({
+  chunkSeconds = 10,
+  speed = 1,
+  ewmaMs = 400,
+  highMs = 600,
+  maxConcurrent = 2,
+} = {}) {
+  const seconds = Math.max(1, Number(chunkSeconds) || 10);
+  const playbackSpeed = Math.max(1, Number(speed) || 1);
+  const blockPlaybackMs = seconds * 1000 / playbackSpeed;
+  const requestMs = Math.max(Number(ewmaMs) || 0, (Number(highMs) || 0) * 0.85);
+  const required = Math.max(1, Math.ceil(requestMs / Math.max(1, blockPlaybackMs)));
+  return Math.min(Math.max(1, Number(maxConcurrent) || 1), required);
+}
+
+export function trajectoryPlaybackGate({
+  desiredTime = 0,
+  cursorTime = 0,
+  chunkSeconds = 30,
+  activeChunkStart = null,
+  targetChunkReady = false,
+  snapshotRange = null,
+} = {}) {
+  const seconds = Math.max(1, Number(chunkSeconds) || 30);
+  const desired = Math.max(0, Number(desiredTime) || 0);
+  const cursor = Math.max(0, Number(cursorTime) || 0);
+  const snapshotStart = Number(snapshotRange?.start);
+  const snapshotEnd = Number(snapshotRange?.end);
+  const desiredInSnapshot = Number.isFinite(snapshotStart)
+    && Number.isFinite(snapshotEnd)
+    && desired >= snapshotStart
+    && desired < snapshotEnd;
+  if (targetChunkReady || desiredInSnapshot) {
+    return { blocked: false, time: desired, loadTime: null };
+  }
+
+  const cursorStart = Math.floor(cursor / seconds) * seconds;
+  const normalizedActiveStart = Number(activeChunkStart);
+  const cursorInSnapshot = Number.isFinite(snapshotStart)
+    && Number.isFinite(snapshotEnd)
+    && cursor >= snapshotStart
+    && cursor < snapshotEnd;
+  let loadTime = Math.floor(desired / seconds) * seconds;
+  let blockedTime = cursor;
+  if (Number.isFinite(normalizedActiveStart) && normalizedActiveStart === cursorStart) {
+    loadTime = cursorStart + seconds;
+    blockedTime = Math.max(cursor, loadTime - 0.001);
+  } else if (cursorInSnapshot) {
+    loadTime = cursorStart;
+    blockedTime = Math.max(cursor, snapshotEnd - 0.001);
+  }
+  return {
+    blocked: true,
+    time: Math.min(desired, blockedTime),
+    loadTime,
+  };
+}
+
 function nextFrameCapacity(count) {
   let capacity = MIN_FRAME_CAPACITY;
   while (capacity < count) {

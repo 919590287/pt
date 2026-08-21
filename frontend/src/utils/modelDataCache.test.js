@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { reactive, ref, isReactive } from "vue";
 
 vi.mock("@/api/facility.js", () => ({
@@ -19,28 +19,96 @@ vi.mock("@/api/population.js", () => ({
   getPopulationStreets: vi.fn(() => Promise.resolve({ data: { status: "ready", streets: [] } })),
   getPopulationGridBinary: vi.fn(() => Promise.resolve({ data: new ArrayBuffer(18) })),
 }));
+vi.mock("@/api/tripEnds.js", () => ({
+  getTripEndsSummary: vi.fn(() => Promise.resolve({
+    data: { status: "ready", cacheVersion: "trip-v3" },
+  })),
+  getTripEndsStreets: vi.fn(() => Promise.resolve({ data: { status: "ready", streets: [] } })),
+  getTripEndsOdStreets: vi.fn(() => Promise.resolve({ data: { status: "ready", pairs: [] } })),
+  getTripEndsGridBinary: vi.fn(() => Promise.resolve({ data: new ArrayBuffer(18) })),
+  getTripEndsOdGridBinary: vi.fn(() => Promise.resolve({ data: new ArrayBuffer(18) })),
+}));
+vi.mock("@/api/corridor.js", () => ({
+  getCorridorSummary: vi.fn(() => Promise.resolve({
+    data: { status: "ready", cacheVersion: "corridor-v4" },
+  })),
+  getCorridorNames: vi.fn(() => Promise.resolve({ data: { status: "ready", names: [] } })),
+  getCorridorLinksBinary: vi.fn(() => Promise.resolve({ data: new ArrayBuffer(10) })),
+}));
+vi.mock("@/api/transfer.js", () => ({
+  getTransferSummary: vi.fn(() => Promise.resolve({ data: { status: "ready", version: "transfer-v3" } })),
+  getTransferDict: vi.fn(() => Promise.resolve({ data: { status: "ready", hubs: [] } })),
+  getTransferEventsBinary: vi.fn(() => Promise.resolve({ data: new ArrayBuffer(10) })),
+}));
 
 import {
   getCachedEvaluation,
   getCachedLineAll,
+  getCachedRoutePanel,
+  getCachedStationPanel,
   getCachedPopulationGrid,
   getCachedPopulationStreets,
+  getCachedTripEndsGrid,
+  getCachedCorridorLinks,
   getModelDerived,
   invalidateModelDerived,
   getModelScopedMap,
   setScopedWithLimit,
   clearModelDataCache,
+  invalidateCachedPopulationBundle,
   abortOtherModelDataRequests,
   __modelCacheKeys,
+  primeCachedRealPanels,
+  warmModelAnalysisBinaries,
+  warmModelInteractionCache,
 } from "./modelDataCache.js";
 import { getLineAll } from "@/api/route.js";
 import { dataEvaluation } from "@/api/data.js";
 import { getPopulationGridBinary, getPopulationStreets } from "@/api/population.js";
+import { getTripEndsGridBinary, getTripEndsOdGridBinary } from "@/api/tripEnds.js";
+import { getCorridorLinksBinary } from "@/api/corridor.js";
+import { getTransferDict, getTransferEventsBinary, getTransferSummary } from "@/api/transfer.js";
+import {
+  configureModelBinaryStoreBackend,
+  resetModelBinaryStoreBackend,
+  writeModelBinary,
+} from "./modelBinaryStore.js";
+
+function memoryBinaryBackend() {
+  const payloads = new Map();
+  const metadata = new Map();
+  return {
+    payloads,
+    metadata,
+    async get(key) { return payloads.get(key) || null; },
+    async put(record) {
+      payloads.set(record.key, {
+        buffer: record.buffer.slice(0),
+        compression: record.compression,
+        rawBytes: record.rawBytes,
+      });
+      const { buffer: _buffer, ...meta } = record;
+      metadata.set(record.key, meta);
+      return true;
+    },
+    async touch(key, usedAt) {
+      const row = metadata.get(key);
+      if (row) metadata.set(key, { ...row, usedAt });
+    },
+    async remove(keys) {
+      keys.forEach((key) => { payloads.delete(key); metadata.delete(key); });
+    },
+    async listMeta() { return [...metadata.values()]; },
+  };
+}
 
 beforeEach(() => {
+  configureModelBinaryStoreBackend(memoryBinaryBackend());
   for (const key of __modelCacheKeys()) clearModelDataCache(key);
   vi.clearAllMocks();
 });
+
+afterEach(() => resetModelBinaryStoreBackend());
 
 describe("modelDataCache 派生缓存", () => {
   it("getModelDerived 同一模型同一键只构建一次", () => {
@@ -100,17 +168,55 @@ describe("modelDataCache 模型作用域 Map 与 LRU", () => {
     expect(keys).toContain("m1");
     expect(keys).not.toContain("m2");
   });
+
+  it("真实数据日期面板使用小型 LRU，避免全日期常驻内存", () => {
+    for (let day = 1; day <= 32; day += 1) {
+      const date = `2026-03-${String(day).padStart(2, "0")}`;
+      getModelDerived(`real::广州市::service-date::${date}`, "k", () => ({}));
+    }
+    const keys = __modelCacheKeys().filter((key) => key.startsWith("real::"));
+    expect(keys.length).toBeLessThanOrEqual(6);
+    expect(keys).toContain("real::广州市::service-date::2026-03-32");
+  });
 });
 
 describe("modelDataCache 请求缓存 markRaw", () => {
-  it("真实模式评估不复用旧结果，仿真模式仍按行政区缓存", async () => {
+  it("模型交互预热会提前缓存换乘整包，后续调用不重复下载", async () => {
+    await warmModelInteractionCache("m1", {
+      includeStationPanel: false,
+      includeEvaluation: false,
+    });
+    await warmModelInteractionCache("m1", {
+      includeStationPanel: false,
+      includeEvaluation: false,
+    });
+
+    expect(getTransferSummary).toHaveBeenCalledTimes(1);
+    expect(getTransferDict).toHaveBeenCalledTimes(1);
+    expect(getTransferEventsBinary).toHaveBeenCalledTimes(1);
+  });
+
+  it("首次加载灌入真实线路与站点面板后直接命中，不再发请求", async () => {
+    const model = "real::广州市::service-date::2026-03-10";
+    const routePanel = { status: "ready", routes: { r1: {} } };
+    const stationPanel = { status: "ready", stations: { s1: {} } };
+    const evaluation = { status: "ready", values: { khl: 100 } };
+    primeCachedRealPanels(model, { routePanel, stationPanel, evaluation });
+
+    expect(await getCachedRoutePanel(model)).toBe(routePanel);
+    expect(await getCachedStationPanel(model)).toBe(stationPanel);
+    expect(await getCachedEvaluation(model, "全市")).toBe(evaluation);
+    expect(dataEvaluation).not.toHaveBeenCalled();
+  });
+
+  it("真实与仿真评估均按数据源和行政区缓存", async () => {
     await getCachedEvaluation("real::广州市", "南沙区");
     await getCachedEvaluation("real::广州市", "南沙区");
-    expect(dataEvaluation).toHaveBeenCalledTimes(2);
+    expect(dataEvaluation).toHaveBeenCalledTimes(1);
 
     await getCachedEvaluation("simulation-model", "南沙区");
     await getCachedEvaluation("simulation-model", "南沙区");
-    expect(dataEvaluation).toHaveBeenCalledTimes(3);
+    expect(dataEvaluation).toHaveBeenCalledTimes(2);
   });
 
   it("getCachedLineAll 结果不可被深代理，且并发去重", async () => {
@@ -132,6 +238,76 @@ describe("modelDataCache 请求缓存 markRaw", () => {
     await getCachedPopulationGrid("m1", "population-v10");
     await getCachedPopulationGrid("m1", "population-v11");
     expect(getPopulationGridBinary).toHaveBeenCalledTimes(2);
+  });
+
+  it("IndexedDB 命中时直接返回大二进制，刷新后不再请求服务器", async () => {
+    const persisted = new Uint8Array([6, 2, 8, 4]).buffer;
+    await writeModelBinary("m1", "population-grid", "population-v11", persisted);
+
+    const result = await getCachedPopulationGrid("m1", "population-v11");
+
+    expect([...new Uint8Array(result)]).toEqual([6, 2, 8, 4]);
+    expect(getPopulationGridBinary).not.toHaveBeenCalled();
+  });
+
+  it("人口缓存契约失效后同时绕过内存与 IndexedDB", async () => {
+    await writeModelBinary(
+      "m1",
+      "population-grid",
+      "population-v11",
+      new Uint8Array([1, 1]).buffer,
+    );
+    await getCachedPopulationGrid("m1", "population-v11");
+    expect(getPopulationGridBinary).not.toHaveBeenCalled();
+
+    invalidateCachedPopulationBundle("m1");
+    const result = await getCachedPopulationGrid("m1", "population-v11");
+
+    expect(result.byteLength).toBe(18);
+    expect(getPopulationGridBinary).toHaveBeenCalledTimes(1);
+  });
+
+  it("出行网格和走廊二进制缓存按版本隔离", async () => {
+    await getCachedTripEndsGrid("m1", "trip-v1");
+    await getCachedTripEndsGrid("m1", "trip-v1");
+    await getCachedTripEndsGrid("m1", "trip-v2");
+    expect(getTripEndsGridBinary).toHaveBeenCalledTimes(2);
+
+    await getCachedCorridorLinks("m1", "corridor-v1");
+    await getCachedCorridorLinks("m1", "corridor-v1");
+    await getCachedCorridorLinks("m1", "corridor-v2");
+    expect(getCorridorLinksBinary).toHaveBeenCalledTimes(2);
+  });
+
+  it("人口、出行分布、公交 OD、走廊按四个 idle 批次顺序预热", async () => {
+    const waitForIdle = vi.fn(() => Promise.resolve());
+
+    await warmModelAnalysisBinaries("m1", { force: true, waitForIdle });
+
+    expect(waitForIdle).toHaveBeenCalledTimes(4);
+    const requestOrder = [
+      getPopulationGridBinary.mock.invocationCallOrder[0],
+      getTripEndsGridBinary.mock.invocationCallOrder[0],
+      getTripEndsOdGridBinary.mock.invocationCallOrder[0],
+      getCorridorLinksBinary.mock.invocationCallOrder[0],
+    ];
+    expect(requestOrder.every(Number.isFinite)).toBe(true);
+    expect(requestOrder).toEqual([...requestOrder].sort((left, right) => left - right));
+  });
+
+  it("分析预热只落压缩工件，实际读取才展开并进入内存缓存", async () => {
+    const backend = memoryBinaryBackend();
+    configureModelBinaryStoreBackend(backend);
+    const waitForIdle = vi.fn(() => Promise.resolve());
+
+    await warmModelAnalysisBinaries("m1", { force: true, waitForIdle });
+    const requestsAfterWarm = getPopulationGridBinary.mock.calls.length;
+    expect(backend.metadata.size).toBe(4);
+
+    const result = await getCachedPopulationGrid("m1", "population-v11");
+    expect(result).toBeInstanceOf(ArrayBuffer);
+    expect(result.byteLength).toBe(18);
+    expect(getPopulationGridBinary).toHaveBeenCalledTimes(requestsAfterWarm);
   });
 
   it("旧请求结束不会移除清缓存后启动的新请求控制器", async () => {

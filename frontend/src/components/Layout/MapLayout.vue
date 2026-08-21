@@ -1,10 +1,10 @@
 <!-- MapLayout -->
 <template>
-  <div class="MapLayout">
+  <div class="MapLayout" :class="{ 'is-mapless-workspace': route.meta?.maplessWorkspace }">
     <MHeader></MHeader>
-    <div id="mapRoot" role="region" aria-label="公交数字孪生地图"></div>
-    <!-- 依赖模型的页面等目标模型就绪；数据管理始终可挂载。 -->
-    <RouterView v-if="route.meta?.requiresModel === false || !modelRuntime.gateVisible" v-slot="{ Component }">
+    <div id="mapRoot" role="region" aria-label="公交数字孪生地图" :aria-hidden="route.meta?.maplessWorkspace ? 'true' : 'false'"></div>
+    <!-- 已保存的运行态静默恢复；只有冷首开或确认模型未加载时才显示门禁。 -->
+    <RouterView v-if="route.meta?.requiresModel === false || usesRealData || !modelRuntime.gateVisible" v-slot="{ Component }">
       <KeepAlive :include="CACHED_PAGE_COMPONENTS">
         <component :is="Component" />
       </KeepAlive>
@@ -15,17 +15,18 @@
 
 <script setup>
 import "maplibre-gl/dist/maplibre-gl.css";
-import { onBeforeUnmount, onMounted, provide, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, shallowRef, watch } from "vue";
 import { useRoute } from "vue-router";
 import MHeader from "./MHeader.vue";
 import ModelLoadGate from "@/components/ModelLoadGate.vue";
 import { useModelRuntimeStore } from "@/stores/modelRuntime.js";
+import { useModelSelectionStore } from "@/stores/modelSelection.js";
 import { useDisplayRangeStore, DISPLAY_RANGE_ALL } from "@/stores/displayRange.js";
 import { MyMap, MapLayer, DEFAULT_MAP_LAYER_STYLE, CityBuildingsLayer, lngLatToWebMercator } from "@/mymap/index.js";
-import { getCachedAdminDistricts, warmRealData } from "@/utils/realDataCache.js";
-import { warmRealPassengerFlow } from "@/utils/realPassengerFlow.js";
+import { getCachedAdminDistricts } from "@/utils/realDataCache.js";
 import { activeDistrictContext, normalizeAdminDistrictCollection } from "@/utils/adminDistrictRange.js";
 import { quarantineInactiveStyleLayers } from "@/utils/mapLayerOwnership.js";
+import { setSharedDeckLayersHidden } from "@/views/datavisualization/layers/deckOverlayRegistry.js";
 
 defineOptions({
   name: "MapLayout",
@@ -53,8 +54,12 @@ const MapRef = shallowRef(null);
 provide("MapRef", MapRef);
 
 const modelRuntime = useModelRuntimeStore();
+const modelSelection = useModelSelectionStore();
 const displayRangeStore = useDisplayRangeStore();
 const route = useRoute();
+const usesRealData = computed(
+  () => modelSelection.getSelection("datavisualization").sourceMode === "real",
+);
 
 // 共享地图上属于 MapLayout 自己的常驻图层（底图瓦片、建筑）；其余图层都归当前激活页面组所有
 const baseLayerIds = new Set();
@@ -64,6 +69,60 @@ const pageLayerStash = new Map();
 const styleVisibilityStash = new Map();
 let styleOwnershipReconcileFrame = null;
 let districtCameraSeq = 0;
+let persistCameraHandler = null;
+
+function restoredMapCamera() {
+  return modelSelection.getSelection("datavisualization").mapCamera;
+}
+
+function persistMapCamera() {
+  const map = MapRef.value;
+  if (!map?.center || !Number.isFinite(Number(map.zoom))) return;
+  modelSelection.setSelection("datavisualization", {
+    mapCamera: {
+      center: [...map.center],
+      zoom: Number(map.zoom),
+      pitch: Number(map.pitch),
+      rotation: Number(map.rotation),
+    },
+  });
+}
+
+function initializeMap() {
+  if (MapRef.value || route.meta?.maplessWorkspace) return;
+  const camera = restoredMapCamera();
+  MapRef.value = new MyMap({
+    rootId: "mapRoot",
+    center: camera?.center || [12634609, 2659952],
+    zoom: camera?.zoom ?? 10.74,
+    pitch: camera?.pitch ?? 90,
+    rotation: camera?.rotation ?? 0,
+    openGPUPick: true,
+    noControls: false,
+    enableRotate: false,
+  });
+
+  const mapLayer = new MapLayer({ tileClass: DEFAULT_MAP_LAYER_STYLE, zIndex: -1 });
+  MapRef.value.addLayer(mapLayer);
+  baseLayerIds.add(mapLayer.id);
+
+  const buildingLayerConfig = window.CITY_BUILDINGS_LAYER || {};
+  if (buildingLayerConfig.enabled !== false) {
+    const buildingLayer = new CityBuildingsLayer({
+      ...buildingLayerConfig,
+      zIndex: buildingLayerConfig.zIndex ?? 8,
+    });
+    MapRef.value.addLayer(buildingLayer);
+    baseLayerIds.add(buildingLayer.id);
+  }
+
+  if (!camera) focusSharedDisplayRange();
+  MapRef.value.map?.on?.("styledata", scheduleStyleLayerOwnershipReconcile);
+  MapRef.value.restoredSessionCamera = Boolean(camera);
+  persistCameraHandler = persistMapCamera;
+  MapRef.value.map?.on?.("moveend", persistCameraHandler);
+  scheduleStyleLayerOwnershipReconcile();
+}
 
 async function focusSharedDisplayRange() {
   const selected = displayRangeStore.selected;
@@ -158,11 +217,19 @@ function stashPageLayers(groupKey, stylePrefixes) {
     gl.setLayoutProperty(styleLayer.id, "visibility", "none");
   }
   styleVisibilityStash.set(groupKey, visibility);
+
+  // deck 的 interleaved 图层是 maplibre custom layer，不会出现在 getStyle().layers 里
+  // （maplibre 的 Style#serialize 明确跳过 custom layer），上面这轮遍历碰不到它们。
+  // 必须让 deck 注册表按同一套前缀挂起，否则客流流向的 OD 线、人口栅格、客流走廊
+  // 等会跟着用户跑到数据管理页继续显示。
+  setSharedDeckLayersHidden(map, stylePrefixes, true);
 }
 
-function restorePageLayers(groupKey) {
+function restorePageLayers(groupKey, stylePrefixes) {
   const map = MapRef.value;
   if (!map) return;
+  // 与 stashPageLayers 对称：deck 图层实例一直留在注册表里，解除挂起即刻重现，不重建
+  setSharedDeckLayersHidden(map, stylePrefixes, false);
   const stashed = pageLayerStash.get(groupKey) || [];
   pageLayerStash.delete(groupKey);
   stashed.forEach((layer) => {
@@ -189,7 +256,7 @@ watch(
     // 运行监测 ↔ 客流分析：同组同实例，仅 mode prop 变化，不做任何图层挪动
     if (prevGroup?.key === nextGroup?.key) return;
     if (prevGroup) stashPageLayers(prevGroup.key, prevGroup.stylePrefixes);
-    if (nextGroup) restorePageLayers(nextGroup.key);
+    if (nextGroup) restorePageLayers(nextGroup.key, nextGroup.stylePrefixes);
     scheduleStyleLayerOwnershipReconcile();
   },
 );
@@ -201,14 +268,29 @@ watch(
 );
 
 watch(
-  () => route.meta?.requiresModel,
-  (requiresModel) => {
-    if (requiresModel === false) {
+  [() => route.meta?.requiresModel, usesRealData],
+  ([requiresModel, realMode]) => {
+    if (requiresModel === false || realMode) {
       modelRuntime.pauseModelDemand();
     } else {
-      modelRuntime.bootstrap();
+      // Bootstrap failures are rendered by ModelLoadGate. Never leave an
+      // unhandled promise rejection here: on a cold server refresh it can
+      // otherwise interrupt sibling watchers and make the whole page appear
+      // permanently stuck at “检查模型状态”.
+      void modelRuntime.bootstrap().catch((error) => {
+        console.warn("[MapLayout] model bootstrap deferred", error);
+      });
     }
   },
+  { immediate: true },
+);
+
+watch(
+  () => route.meta?.maplessWorkspace,
+  (mapless) => {
+    if (!mapless) initializeMap();
+  },
+  { flush: "post" },
 );
 
 // 门禁重新亮起（模型全部被卸载）时 KeepAlive 子树整体销毁，暂存图层随之失效
@@ -223,48 +305,16 @@ watch(
 );
 
 onMounted(() => {
-  MapRef.value = new MyMap({
-    rootId: "mapRoot",
-    center: [12634609, 2659952],
-    // center: [12636614, 2642694.2],
-    zoom: 10.74,
-    openGPUPick: true,
-    noControls: false,
-    enableRotate: false,
-  });
-
-  const _MapLayer = new MapLayer({ tileClass: DEFAULT_MAP_LAYER_STYLE, zIndex: -1 });
-  MapRef.value.addLayer(_MapLayer);
-  baseLayerIds.add(_MapLayer.id);
-
-  const buildingLayerConfig = window.CITY_BUILDINGS_LAYER || {};
-  if (buildingLayerConfig.enabled !== false) {
-    const _CityBuildingsLayer = new CityBuildingsLayer({
-      ...buildingLayerConfig,
-      zIndex: buildingLayerConfig.zIndex ?? 8,
-    });
-    MapRef.value.addLayer(_CityBuildingsLayer);
-    baseLayerIds.add(_CityBuildingsLayer.id);
-  }
-
-  warmRealData("广州市");
-  warmRealPassengerFlow("广州市").catch(() => null);
-  focusSharedDisplayRange();
-
-  if (route.meta?.requiresModel !== false) {
-    modelRuntime.bootstrap();
-  } else {
-    modelRuntime.pauseModelDemand();
-  }
+  initializeMap();
 
   // styledata 会在异步 addLayer / setLayoutProperty 后触发。每个渲染帧只扫描一次，
   // 将非当前页面的晚到图层立即隔离，堵住“静置后串出线网/站点层”的竞态。
-  MapRef.value.map?.on?.("styledata", scheduleStyleLayerOwnershipReconcile);
-  scheduleStyleLayerOwnershipReconcile();
 });
 
 onBeforeUnmount(() => {
   MapRef.value?.map?.off?.("styledata", scheduleStyleLayerOwnershipReconcile);
+  if (persistCameraHandler) MapRef.value?.map?.off?.("moveend", persistCameraHandler);
+  persistCameraHandler = null;
   if (typeof styleOwnershipReconcileFrame === "number" && typeof cancelAnimationFrame === "function") {
     cancelAnimationFrame(styleOwnershipReconcileFrame);
   }
@@ -288,6 +338,15 @@ onBeforeUnmount(() => {
     width: 100%;
     height: 100%;
     min-height: 100%;
+  }
+
+  &.is-mapless-workspace {
+    background: var(--app-surface-soft);
+
+    #mapRoot {
+      visibility: hidden;
+      pointer-events: none;
+    }
   }
 }
 </style>

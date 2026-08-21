@@ -1,6 +1,7 @@
 package com.jts.gjcxfzksh.data;
 
 import com.jts.gjcxfzksh.data.entry.Database;
+import com.jts.gjcxfzksh.data.entry.Scheme;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -47,6 +48,22 @@ class DatasourceLifecycleTest {
         assertTrue(Datasource.loadingStatus(registeredName));
         assertEquals("canceling", Datasource.loadStatusDetail(registeredName).getStage());
         assertFalse(Datasource.loadStatus(registeredName));
+    }
+
+    @Test
+    void missingCacheWaitStateDoesNotLoadScenario() throws Exception {
+        registeredName = "lifecycle-waiting-cache";
+        Scheme scheme = new Scheme();
+        scheme.setName(registeredName);
+
+        Datasource.awaitCacheThenLoadVisual(scheme);
+
+        assertNull(Datasource.peek(registeredName));
+        assertFalse(Datasource.loadStatus(registeredName));
+        assertFalse(Datasource.loadingStatus(registeredName));
+        assertTrue(Datasource.retainLoadedRequested(registeredName));
+        assertEquals("waiting_cache", Datasource.loadStatusDetail(registeredName).getStage());
+        assertEquals(scheme, map("runtimeSchemes").get(registeredName));
     }
 
     @Test

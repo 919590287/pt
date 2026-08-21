@@ -3,6 +3,27 @@ import { ref } from "vue";
 
 const STORAGE_KEY = "gjcxfzksh:model-selection";
 
+function normalizeViewState(value) {
+  if (!value || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([, item]) => typeof item === "string"),
+  );
+}
+
+function normalizeMapCamera(value) {
+  const center = Array.isArray(value?.center) ? value.center.map(Number) : [];
+  const zoom = Number(value?.zoom);
+  const pitch = Number(value?.pitch);
+  const rotation = Number(value?.rotation);
+  if (center.length !== 2 || !center.every(Number.isFinite) || !Number.isFinite(zoom)) return null;
+  return {
+    center,
+    zoom,
+    pitch: Number.isFinite(pitch) ? pitch : 90,
+    rotation: Number.isFinite(rotation) ? rotation : 0,
+  };
+}
+
 function readSelections() {
   if (typeof sessionStorage === "undefined") return {};
   try {
@@ -27,7 +48,9 @@ export const useModelSelectionStore = defineStore("modelSelection", () => {
       sourceMode: selection.sourceMode === "real" ? "real" : "simulation",
       scheme: selection.scheme || "",
       model: selection.model || "",
-      realServiceDate: selection.realServiceDate || "average",
+      realServiceDate: selection.realServiceDate || "",
+      viewState: normalizeViewState(selection.viewState),
+      mapCamera: normalizeMapCamera(selection.mapCamera),
     };
   }
 
@@ -40,7 +63,9 @@ export const useModelSelectionStore = defineStore("modelSelection", () => {
         sourceMode: next.sourceMode === "real" ? "real" : "simulation",
         scheme: next.scheme || "",
         model: next.model || "",
-        realServiceDate: next.realServiceDate || "average",
+        realServiceDate: next.realServiceDate || "",
+        viewState: normalizeViewState(next.viewState),
+        mapCamera: normalizeMapCamera(next.mapCamera),
       },
     };
     writeSelections(selections.value);

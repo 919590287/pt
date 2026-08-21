@@ -56,6 +56,8 @@ public class Datasource {
     private static final Map<String, ModelLoadStatus> statusMap = new ConcurrentHashMap<>();
     private static final Set<String> retainLoadedRequests = ConcurrentHashMap.newKeySet();
     private static final Map<String, Long> loadVersionMap = new ConcurrentHashMap<>();
+    // Scheme 本身即为第一级 CATALOG 运行态，不持有 MATSim 大对象。
+    private static final Map<String, Scheme> runtimeSchemes = new ConcurrentHashMap<>();
     private static final Map<String, Object> lifecycleLocks = new ConcurrentHashMap<>();
     private static final ExecutorService LOAD_EXECUTOR = Executors.newFixedThreadPool(1, r -> {
         Thread thread = new Thread(r, "matsim-model-loader");
@@ -101,6 +103,28 @@ public class Datasource {
             data.matsim_data().setLastRequestTime(System.currentTimeMillis());
             return data;
         }
+    }
+
+    /** 显式需要 plans/facilities 的计算入口；VISUAL 模型只在此处才重载为 COMPUTE。 */
+    public static Database computeData(String name) {
+        Database current = peek(name);
+        if (current != null && current.matsim_data().getRuntimeTier() == MatsimData.RuntimeTier.COMPUTE) {
+            return data(name);
+        }
+        Scheme scheme = runtimeSchemes.get(name);
+        if (scheme == null) throw new RuntimeException("数据[" + name + "]未注册");
+        synchronized (lifecycleLock(name)) {
+            current = dataMap.get(name);
+            if (current != null && current.matsim_data().getRuntimeTier() == MatsimData.RuntimeTier.COMPUTE) {
+                return data(name);
+            }
+            loadVersionMap.merge(name, 1L, Long::sum);
+            Database removed = dataMap.remove(name);
+            if (removed != null) MatsimRouteSpatialIndex.release(removed.matsim_data());
+            loadStatusMap.remove(name);
+        }
+        loadSynchronously(scheme, false);
+        return data(name);
     }
 
     /**
@@ -157,10 +181,12 @@ public class Datasource {
         synchronized (lifecycleLock(name)) {
             // 仅供测试和内部注册表维护使用；生产卸载统一走 unload。
             loadVersionMap.merge(name, 1L, Long::sum);
-            dataMap.remove(name);
+            Database removed = dataMap.remove(name);
+            if (removed != null) MatsimRouteSpatialIndex.release(removed.matsim_data());
             loadStatusMap.remove(name);
             statusMap.remove(name);
             retainLoadedRequests.remove(name);
+            runtimeSchemes.remove(name);
         }
     }
 
@@ -168,7 +194,8 @@ public class Datasource {
         synchronized (lifecycleLock(name)) {
             retainLoadedRequests.remove(name);
             loadVersionMap.merge(name, 1L, Long::sum);
-            dataMap.remove(name);
+            Database removed = dataMap.remove(name);
+            if (removed != null) MatsimRouteSpatialIndex.release(removed.matsim_data());
             loadStatusMap.remove(name);
             // 解析器不可中途强停；保留 loading 标记直到旧任务真正退出，防止同一模型并发重复解析。
             boolean canceling = loadingStatus(name);
@@ -178,28 +205,63 @@ public class Datasource {
         }
     }
 
-    public static void loadAsync(Scheme scheme) {
+    /**
+     * 保证模型进入加载队列。
+     *
+     * @return 仅当本次调用真正创建了新加载任务时返回 true；
+     *         已加载或已在加载时返回 false。
+     */
+    public static boolean loadAsync(Scheme scheme) {
+        return loadAsync(scheme, false);
+    }
+
+    /**
+     * 缓存命中时的日常展示入口。只加载路网、公交时刻表和公交车辆，
+     * plans/population/facilities/道路车辆保持在磁盘规范工件中。
+     */
+    public static boolean loadVisualAsync(Scheme scheme) {
+        return loadAsync(scheme, true);
+    }
+
+    /**
+     * 缓存缺失时只登记用户需求，不在常驻主进程提前构造完整 MATSim Scenario。
+     * 独立缓存构建进程成功后由 ModelCacheManager 调用 loadVisualAsync。
+     */
+    public static void awaitCacheThenLoadVisual(Scheme scheme) {
         String name = scheme.getName();
+        runtimeSchemes.put(name, scheme);
+        retainLoadedRequests.add(name);
+        if (loadStatus(name) || loadingStatus(name)) return;
+        ModelLoadStatus waiting = setStatus(name, "waiting_cache", "等待首次缓存生成", false, false);
+        waiting.resetProgress("缓存生成完成后将以低内存可视态加载");
+        waiting.setProgressPercent(1);
+    }
+
+    private static boolean loadAsync(Scheme scheme, boolean visualOnly) {
+        String name = scheme.getName();
+        runtimeSchemes.put(name, scheme);
         retainLoadedRequests.add(name);
         if (loadStatus(name)) {
             setStatus(name, "ready", "模型已加载", true, false);
-            return;
+            return false;
         }
         Boolean previous = loadingStatusMap.putIfAbsent(name, true);
         if (Boolean.TRUE.equals(previous)) {
-            return;
+            return false;
         }
         long loadVersion = currentLoadVersion(name);
-        ModelLoadStatus queued = setStatus(name, "queued", "模型加载已进入后台队列", false, true);
+        String targetLabel = visualOnly ? "低内存可视态" : "完整计算态";
+        ModelLoadStatus queued = setStatus(name, "queued", targetLabel + "加载已进入后台队列", false, true);
         queued.resetProgress("等待后台加载队列");
         queued.setProgressPercent(2);
         LOAD_EXECUTOR.submit(() -> {
             try {
-                load(scheme, loadVersion, true);
+                load(scheme, loadVersion, true, visualOnly);
             } catch (Throwable e) {
                 log.error("后台加载模型失败: model={}, error={}", name, e.getMessage(), e);
             }
         });
+        return true;
     }
 
     public static boolean retainLoadedRequested(String name) {
@@ -207,18 +269,19 @@ public class Datasource {
     }
 
     public static void load(Scheme scheme) {
-        loadSynchronously(scheme);
+        loadSynchronously(scheme, false);
     }
 
     public static void loadForCache(Scheme scheme) {
-        loadSynchronously(scheme);
+        loadSynchronously(scheme, false);
     }
 
-    private static void loadSynchronously(Scheme scheme) {
+    private static void loadSynchronously(Scheme scheme, boolean visualOnly) {
         String name = scheme.getName();
+        runtimeSchemes.put(name, scheme);
         while (!loadStatus(name)) {
             if (loadingStatusMap.putIfAbsent(name, true) == null) {
-                load(scheme, currentLoadVersion(name), true);
+                load(scheme, currentLoadVersion(name), true, visualOnly);
                 return;
             }
             try {
@@ -242,8 +305,9 @@ public class Datasource {
         return currentLoadVersion(name) != expectedVersion;
     }
 
-    private static void load(Scheme scheme, long expectedVersion, boolean cancelable) {
+    private static void load(Scheme scheme, long expectedVersion, boolean cancelable, boolean visualOnly) {
         String name = scheme.getName();
+        runtimeSchemes.put(name, scheme);
         if (cancelable && isStaleLoad(name, expectedVersion)) {
             log.info("跳过已取消的模型加载: model={}", name);
             return;
@@ -251,7 +315,8 @@ public class Datasource {
         loadingStatusMap.put(scheme.getName(), true);
         long startTime = System.currentTimeMillis();
         long estimatedTotalMs = expectedLoadMs(scheme);
-        ModelLoadStatus status = setStatus(scheme.getName(), "loading_config", "正在加载基础路网和公交模型", false, true);
+        ModelLoadStatus status = setStatus(scheme.getName(), "loading_config",
+                visualOnly ? "正在加载低内存可视模型" : "正在加载基础路网和公交模型", false, true);
         status.resetProgress("正在准备加载");
         status.setStartedAt(startTime);
         status.setEstimatedTotalMs(estimatedTotalMs);
@@ -264,7 +329,7 @@ public class Datasource {
             // 加载。loadConfig 内部是一次性阻塞读取，进度按预计总时长在 3%→85% 区间做时间插值，
             // 预计总时长优先取上次成功加载的真实耗时（load-stats.json），首次按 output 体量估算。
             status.beginPhase(3, 82, Math.round(estimatedTotalMs * 0.85), "正在加载路网、公交与出行链数据");
-            loadConfig(data);
+            loadConfig(data, visualOnly);
             // 基础模型就绪时只建立轻量空间索引。大型面板/乘客明细按需读取，
             // 避免“后续加载”仍主动解压数十 MB JSON/TSV 并长期占用堆。
             status.beginPhase(85, 12, Math.round(estimatedTotalMs * 0.15), "正在构建线路空间索引");
@@ -276,12 +341,15 @@ public class Datasource {
             synchronized (lifecycleLock(name)) {
                 if (isStaleLoad(name, expectedVersion)) {
                     log.info("模型加载完成但请求已取消，不写入内存: model={}", name);
+                    MatsimRouteSpatialIndex.release(data);
                     return;
                 }
                 dataMap.put(scheme.getName(), new Database(data));
                 loadStatusMap.put(scheme.getName(), true);
             }
-            status = setStatus(scheme.getName(), "ready", "模型基础数据已加载，缓存将在后台生成", true, false);
+            status = setStatus(scheme.getName(), "ready",
+                    visualOnly ? "模型低内存可视态已加载" : "模型基础数据已加载，缓存将在后台生成",
+                    true, false);
             status.setStartedAt(startTime);
             status.setFinishedAt(endTime);
             status.setProgressPercent(100);
@@ -304,13 +372,55 @@ public class Datasource {
             loadingStatusMap.remove(scheme.getName(), true);
             // 用户在旧任务取消期间重新点击加载：旧任务退出后自动提交当前代际，避免请求丢失。
             if (stale && retainLoadedRequests.contains(name) && !loadStatus(name)) {
-                loadAsync(scheme);
+                loadAsync(scheme, visualOnly);
             }
         }
     }
 
     private static Object lifecycleLock(String name) {
         return lifecycleLocks.computeIfAbsent(name, ignored -> new Object());
+    }
+
+    /**
+     * 完成缓存发布后执行三级运行态治理：活跃模型保持 COMPUTE，其余先降为 VISUAL，
+     * 超出可视名额的最久未访问模型回到纯 CATALOG。
+     */
+    public static void enforceRuntimeTiers(String activeModel, int maxComputeModels, int maxVisualModels) {
+        int computeLimit = Math.max(1, maxComputeModels);
+        int visualLimit = Math.max(0, maxVisualModels);
+        List<Database> compute = dataMap.values().stream()
+                .filter(database -> database.matsim_data().getRuntimeTier() == MatsimData.RuntimeTier.COMPUTE)
+                .sorted(java.util.Comparator.comparingLong(
+                        database -> database.matsim_data().getLastRequestTime()))
+                .toList();
+        int toDemote = Math.max(0, compute.size() - computeLimit);
+        for (Database database : compute) {
+            MatsimData data = database.matsim_data();
+            if (toDemote <= 0) break;
+            if (data.getName().equals(activeModel)) continue;
+            data.demoteToVisual();
+            toDemote--;
+        }
+
+        List<Database> visual = dataMap.values().stream()
+                .filter(database -> database.matsim_data().getRuntimeTier() == MatsimData.RuntimeTier.VISUAL)
+                .sorted(java.util.Comparator.comparingLong(
+                        database -> database.matsim_data().getLastRequestTime()))
+                .toList();
+        int toCatalog = Math.max(0, visual.size() - visualLimit);
+        for (Database database : visual) {
+            if (toCatalog-- <= 0) break;
+            String name = database.matsim_data().getName();
+            synchronized (lifecycleLock(name)) {
+                if (dataMap.remove(name, database)) {
+                    MatsimRouteSpatialIndex.release(database.matsim_data());
+                    loadStatusMap.remove(name);
+                    retainLoadedRequests.remove(name);
+                    loadVersionMap.merge(name, 1L, Long::sum);
+                    log.info("模型已降级为目录运行态: model={}", name);
+                }
+            }
+        }
     }
 
     private static final com.fasterxml.jackson.databind.ObjectMapper LOAD_STATS_JSON = new com.fasterxml.jackson.databind.ObjectMapper();
@@ -450,6 +560,7 @@ public class Datasource {
                 MatsimStationPanelCache.prepareOnModelLoad(data);
                 phase(phaseProgress, 94, "可视化：生成完整道路与公交瓦片");
                 MatsimPrecomputedCache.prepareOnModelLoad(data);
+                MatsimLargeModelNetworkCache.prepareTransitNetwork(data);
                 phase(phaseProgress, 97, "索引：构建线路空间索引");
                 MatsimRouteSpatialIndex.prepareOnModelLoad(data);
                 runCacheWarmupHooks(data);
@@ -479,6 +590,7 @@ public class Datasource {
             MatsimStationPanelCache.prepareOnModelLoad(data);
             phase(phaseProgress, 94, "可视化：生成网络与公交瓦片");
             MatsimPrecomputedCache.prepareOnModelLoad(data);
+            MatsimLargeModelNetworkCache.prepareTransitNetwork(data);
             phase(phaseProgress, 97, "索引：构建线路空间索引");
             MatsimRouteSpatialIndex.prepareOnModelLoad(data);
             // personTracks 此时已就绪（小模型来自 events 解析，大模型来自轨迹缓存），
@@ -512,13 +624,15 @@ public class Datasource {
                 safe / 3600, (safe % 3600) / 60, safe % 60);
     }
 
-    private static void loadConfig(MatsimData data) {
+    private static void loadConfig(MatsimData data, boolean visualOnly) {
         MatsimOutFile outfile = data.getOutfile();
         Config cfg = outfile.loadConfig();
-        cfg.network().setInputFile(data.isLargeModel()
+        cfg.network().setInputFile(visualOnly
+                ? MatsimLargeModelNetworkCache.resolveTransitNetworkInput(data)
+                : data.isLargeModel()
                 ? MatsimLargeModelNetworkCache.resolveNetworkInput(data)
                 : outfile.getNetwork());
-        if (data.isLargeModel()) {
+        if (data.isLargeModel() || visualOnly) {
             cfg.plans().setInputFile(null);
             cfg.facilities().setInputFile(null);
             cfg.vehicles().setVehiclesFile(null);
@@ -526,7 +640,8 @@ public class Datasource {
             if (cfg.global().getNumberOfThreads() > runtimeThreads) {
                 cfg.global().setNumberOfThreads(runtimeThreads);
             }
-            log.info("模型[{}]进入大模型轻量加载模式，跳过 plans/facilities/vehicles eager 读取", data.getName());
+            log.info("模型[{}]进入{}，跳过 plans/facilities/vehicles eager 读取",
+                    data.getName(), visualOnly ? "缓存命中可视加载模式" : "大模型轻量加载模式");
         } else {
             cfg.plans().setInputFile(outfile.getPlans());
         }
@@ -558,10 +673,10 @@ public class Datasource {
         }
         cfg.getModules().get("transit").addParam("transitScheduleFile", outfile.getTransitSchedule());
         cfg.getModules().get("transit").addParam("vehiclesFile", outfile.getTransitVehicles());
-        if (!data.isLargeModel() && outfile.getFacilities() != null) {
+        if (!data.isLargeModel() && !visualOnly && outfile.getFacilities() != null) {
             cfg.getModules().get("facilities").addParam("inputFacilitiesFile", outfile.getFacilities());
         }
-        if (!data.isLargeModel() && outfile.getVehicles() != null) {
+        if (!data.isLargeModel() && !visualOnly && outfile.getVehicles() != null) {
             cfg.getModules().get("vehicles").addParam("vehiclesFile", outfile.getVehicles());
         }
         // 如果typicalDuration == 0 设置为1小时
@@ -574,6 +689,9 @@ public class Datasource {
         MutableScenario scenario = (MutableScenario) ScenarioUtils.loadScenario(cfg);
         data.config = cfg;
         data.scenario = scenario;
+        if (visualOnly) {
+            data.setRuntimeTier(MatsimData.RuntimeTier.VISUAL);
+        }
 
         // 路网坐标转换
         String globalCRS = cfg.global().getCoordinateSystem();
@@ -634,7 +752,7 @@ public class Datasource {
         }
 
         // plans。原始 output 必须保持只读，加载阶段不再回写 plans 文件。
-        if (!data.isLargeModel() && data.getPopulation() != null) {
+        if (!data.isLargeModel() && !visualOnly && data.getPopulation() != null) {
             inputCRS = cfg.plans().getInputCRS();
             String planCRS = (String) data.getPopulation().getAttributes().getAttribute("coordinateReferenceSystem");
             ctf = ctf(globalCRS, inputCRS, planCRS);

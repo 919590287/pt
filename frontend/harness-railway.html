@@ -1,0 +1,229 @@
+<!doctype html>
+<!--
+  铁路制式线形调参 / 回归 harness（与 harness-corridor.html 同类）。
+  直接引用 src/utils/mapTheme.js 的 railway 令牌与 helper，所见即运行监测/换乘分析所画。
+  用途：不进登录墙就能核对浅色/暗色配色，以及"缩放时斑马块尺寸不变"这条硬指标。
+  访问：vite dev 下 /harness-railway.html
+
+  window.__measure() 沿每条线扫一行像素做游程统计，直接给出白块/暗块的实际屏幕像素长度；
+  window.__sweep([z...]) 扫一组缩放级返回对比表 —— 判断块长是否恒定看这个，别靠肉眼。
+  地图容器固定像素尺寸，避免无头环境下 canvas 尺寸竞态影响读数。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>铁路制式线形 harness</title>
+  <style>
+    html, body { margin: 0; font-family: system-ui, sans-serif; background: #fafafa; }
+    #map { width: 1000px; height: 420px; }
+    .panel { padding: 8px 12px; font-size: 12px; line-height: 1.8; }
+    .panel button { font: inherit; margin-right: 6px; cursor: pointer; }
+    .panel code { font-size: 11px; }
+    table { border-collapse: collapse; font-size: 11px; margin: 8px 12px; }
+    td, th { border: 1px solid #ccc; padding: 2px 8px; text-align: right; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="panel" id="panel">
+    <button id="toggle">切换明暗</button><span id="mode">浅色</span>
+    · zoom <span id="zoom"></span> · 主线宽 <span id="w"></span>px
+    <button id="sweep">扫描各缩放级块长</button>
+    <div>A dasharray·连续插值（旧） · B/C/D dasharray·整数级 step（仍不均） · E deck.gl 解析式虚线（最终实现）</div>
+    <div><code id="tokens"></code></div>
+  </div>
+  <div id="table"></div>
+
+  <script type="module">
+    import maplibregl from "maplibre-gl";
+    import "maplibre-gl/dist/maplibre-gl.css";
+    import { RailwayHatchLayerManager } from "./src/views/datavisualization/layers/RailwayHatchLayer.js";
+    import {
+      MAP_THEME, railwayCasingColor, railwayCasingWidth, railwayHatchColor,
+      railwayLineWidth, railwayWidthAtZoom,
+    } from "./src/utils/mapTheme.js";
+
+    const STOPS = [[8, 2], [11, 3.4], [14, 5.5], [16, 7.2]];
+    // 反例专用（业务代码已不再有 maplibre 虚线，这两个只活在 harness 里）：
+    // legacyWidth = 连续 interpolate；stepHatchWidth = 按整数级 step 的槽宽。
+    // 两者配 line-dasharray 都做不出均匀斑马，留在这里是为了看得见差距。
+    const legacyWidth = (stops, ratio = 1, min = 0) => {
+      const e = ["interpolate", ["linear"], ["zoom"]];
+      for (const [z, w] of stops) e.push(z, Math.max(min, w * ratio));
+      return e;
+    };
+    const stepHatchWidth = (stops) => {
+      const { hatchRatio, hatchMinWidth } = MAP_THEME.railway;
+      const [minZoom, maxZoom] = MAP_THEME.railway.stepZoomRange;
+      const at = (z) => Math.max(hatchMinWidth, railwayWidthAtZoom(stops, z) * hatchRatio);
+      const e = ["step", ["zoom"], at(minZoom)];
+      for (let z = minZoom + 1; z <= maxZoom; z++) e.push(z, at(z));
+      return e;
+    };
+
+    // 四条平行水平线，便于按像素行做游程统计
+    const LATS = { A: 23.154, B: 23.147, C: 23.140, D: 23.133, E: 23.126 };
+    const horiz = (lat) => ({
+      type: "FeatureCollection",
+      features: [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: [[113.10, lat], [113.70, lat]] } }],
+    });
+
+    let dark = false;
+    let scale = 1;
+    const map = new maplibregl.Map({
+      container: "map",
+      center: [113.40, 23.140],
+      zoom: 13,
+      // __measure 要读回帧缓冲；MapLibre v5 起该选项挪进 canvasContextAttributes
+      canvasContextAttributes: { preserveDrawingBuffer: true },
+      style: {
+        version: 8,
+        sources: Object.fromEntries(Object.entries(LATS).map(([k, lat]) => [k.toLowerCase(), { type: "geojson", data: horiz(lat) }])),
+        layers: [{ id: "bg", type: "background", paint: { "background-color": "#eeece6" } }],
+      },
+    });
+
+    const solid = (id, source, color, width) => ({
+      id, type: "line", source,
+      layout: { "line-join": "round", "line-cap": "butt" },
+      paint: { "line-color": color, "line-width": width },
+    });
+    const hatchLayer = (id, source, width) => ({
+      id, type: "line", source,
+      paint: { "line-color": railwayHatchColor(dark), "line-width": width, "line-dasharray": [...MAP_THEME.railway.dash] },
+    });
+
+    map.on("load", () => {
+      const { hatchRatio, hatchMinWidth } = MAP_THEME.railway;
+      // A：旧做法对照 —— 主线/槽宽都连续插值
+      map.addLayer(solid("a-line", "a", railwayCasingColor(dark), legacyWidth(STOPS)));
+      map.addLayer(hatchLayer("a-hatch", "a", legacyWidth(STOPS, hatchRatio, hatchMinWidth)));
+
+      // B：新做法 —— step 按整数级取值
+      map.addLayer(solid("b-line", "b", railwayCasingColor(dark), railwayLineWidth(STOPS)));
+      map.addLayer(hatchLayer("b-hatch", "b", stepHatchWidth(STOPS)));
+
+      // C：换乘分析口径（= B，纯铁路制式）
+      map.addLayer(solid("c-line", "c", railwayCasingColor(dark), railwayLineWidth(STOPS)));
+      map.addLayer(hatchLayer("c-hatch", "c", stepHatchWidth(STOPS)));
+
+      // D：运行监测口径 —— 深色描边 + 客流着色主线 + 同一套斑马
+      map.addLayer(solid("d-casing", "d", railwayCasingColor(dark), railwayCasingWidth(STOPS)));
+      map.addLayer(solid("d-line", "d", "#f5ce3e", railwayLineWidth(STOPS)));
+      map.addLayer(hatchLayer("d-hatch", "d", stepHatchWidth(STOPS)));
+
+      // E：最终实现 —— 实心主线走 maplibre，斑马走 RailwayHatchLayerManager（deck.gl）
+      map.addLayer(solid("e-line", "e", railwayCasingColor(dark), railwayLineWidth(STOPS)));
+      hatchMgr.attach({ map });
+      hatchMgr.setWidthStops(STOPS);
+      hatchMgr.setPaths([[[113.10, LATS.E], [113.70, LATS.E]]]);
+      hatchMgr.setVisible(true);
+
+      map.resize();
+      report();
+    });
+
+    // 管理器自己监听 zoom 按整数级同步槽宽，这里不必再挂钩子
+    const hatchMgr = new RailwayHatchLayerManager({ key: "harness-metro-hatch", order: 100 });
+    function syncDeck() {
+      hatchMgr.setDark(dark);
+      hatchMgr.setWidthStops(STOPS.map(([z, w]) => [z, w * scale]));
+    }
+
+    function applyTheme() {
+      map.setPaintProperty("bg", "background-color", dark ? "#1b1b23" : "#eeece6");
+      ["a-line", "b-line", "c-line", "d-casing", "e-line"].forEach((id) => map.setPaintProperty(id, "line-color", railwayCasingColor(dark)));
+      ["a-hatch", "b-hatch", "c-hatch", "d-hatch"].forEach((id) => map.setPaintProperty(id, "line-color", railwayHatchColor(dark)));
+      syncDeck();
+      document.getElementById("mode").textContent = dark ? "暗色" : "浅色";
+    }
+
+    function report() {
+      document.getElementById("zoom").textContent = map.getZoom().toFixed(2);
+      document.getElementById("w").textContent = railwayWidthAtZoom(STOPS, map.getZoom()).toFixed(2);
+      document.getElementById("tokens").textContent =
+        `hatchRatio ${MAP_THEME.railway.hatchRatio} · dash [${MAP_THEME.railway.dash}] · casingEdge ${MAP_THEME.railway.casingEdge}`;
+    }
+    map.on("zoom", report);
+    document.getElementById("toggle").addEventListener("click", () => { dark = !dark; applyTheme(); });
+
+    // ---- 像素游程统计：沿每条线中心扫一行，量白块/暗块的实际屏幕像素长度 ----
+    window.__measure = () => {
+      const canvas = map.getCanvas();
+      const dpr = canvas.width / canvas.clientWidth;
+      const scratch = document.createElement("canvas");
+      scratch.width = canvas.width;
+      scratch.height = canvas.height;
+      const ctx = scratch.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(canvas, 0, 0);
+      const out = {};
+      for (const [key, lat] of Object.entries(LATS)) {
+        const y = Math.round(map.project([113.40, lat]).y * dpr);
+        if (y < 0 || y >= canvas.height) { out[key] = "off-screen"; continue; }
+        const px = ctx.getImageData(0, y, canvas.width, 1).data;
+        const runs = [];
+        let current = null, length = 0;
+        for (let x = 0; x < canvas.width; x++) {
+          const lum = 0.2126 * px[x * 4] + 0.7152 * px[x * 4 + 1] + 0.0722 * px[x * 4 + 2];
+          const bright = lum > 150;
+          if (bright === current) length++;
+          else { if (current !== null) runs.push({ bright: current, length }); current = bright; length = 1; }
+        }
+        const mid = runs.slice(1, -1); // 丢掉首尾不完整段
+        const blocks = mid.filter((r) => r.bright).map((r) => r.length / dpr);
+        const gaps = mid.filter((r) => !r.bright).map((r) => r.length / dpr);
+        const avg = (arr) => (arr.length ? Number((arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(2)) : null);
+        out[key] = { block: avg(blocks), gap: avg(gaps), n: blocks.length };
+      }
+      return { zoom: Number(map.getZoom().toFixed(2)), ...out };
+    };
+
+    /**
+     * 放大倍率：把线宽档位整体 ×k 后重建各层宽度。
+     * 块长/槽宽/线宽是同一套比例，×k 不改变"随缩放是否变形"的性质，
+     * 只是把差异放大到肉眼（及截图）可辨 —— 用来对比 A（旧·连续插值）与 B（新·整数级 step）。
+     */
+    window.__setScale = (k = 1) => {
+      scale = k;
+      const { hatchRatio, hatchMinWidth } = MAP_THEME.railway;
+      const s = STOPS.map(([z, w]) => [z, w * k]);
+      map.setPaintProperty("a-line", "line-width", legacyWidth(s));
+      map.setPaintProperty("a-hatch", "line-width", legacyWidth(s, hatchRatio, hatchMinWidth * k));
+      for (const id of ["b", "c"]) {
+        map.setPaintProperty(`${id}-line`, "line-width", railwayLineWidth(s));
+        map.setPaintProperty(`${id}-hatch`, "line-width", stepHatchWidth(s));
+      }
+      map.setPaintProperty("d-casing", "line-width", railwayCasingWidth(s));
+      map.setPaintProperty("d-line", "line-width", railwayLineWidth(s));
+      map.setPaintProperty("d-hatch", "line-width", stepHatchWidth(s));
+      map.setPaintProperty("e-line", "line-width", railwayLineWidth(s));
+      syncDeck();
+      return k;
+    };
+
+    window.__sweep = async (zooms = [12, 12.25, 12.5, 12.75, 13, 13.25, 13.5, 13.75, 14, 14.5, 15, 16]) => {
+      const rows = [];
+      for (const z of zooms) {
+        map.jumpTo({ center: [113.40, 23.140], zoom: z });
+        await new Promise((resolve) => {
+          if (map.loaded()) requestAnimationFrame(() => requestAnimationFrame(resolve));
+          else map.once("idle", () => requestAnimationFrame(resolve));
+        });
+        rows.push(window.__measure());
+      }
+      renderTable(rows);
+      return rows;
+    };
+
+    function renderTable(rows) {
+      const head = `<tr><th>zoom</th><th>A 块</th><th>B 块</th><th>C 块</th><th>D 块</th></tr>`;
+      const body = rows.map((r) => `<tr><td>${r.zoom}</td><td>${r.A?.block ?? "-"}</td><td>${r.B?.block ?? "-"}</td><td>${r.C?.block ?? "-"}</td><td>${r.D?.block ?? "-"}</td></tr>`).join("");
+      document.getElementById("table").innerHTML = `<table>${head}${body}</table>`;
+    }
+
+    document.getElementById("sweep").addEventListener("click", () => window.__sweep());
+    window.__map = map;
+    window.__setDark = (v) => { dark = Boolean(v); applyTheme(); };
+  </script>
+</body>
+</html>

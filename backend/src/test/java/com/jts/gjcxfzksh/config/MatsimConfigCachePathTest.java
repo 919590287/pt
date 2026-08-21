@@ -88,6 +88,52 @@ class MatsimConfigCachePathTest {
     }
 
     @Test
+    void compressedAnalysisTableEntersLargeModeBeforeAnyCacheExists() throws Exception {
+        MatsimConfig config = new MatsimConfig();
+        Path dataRoot = tempDir.resolve("analysis-table-data");
+        Path output = dataRoot.resolve("广州/仿真数据/public/高压缩模型/output");
+        Files.createDirectories(output);
+        Files.write(output.resolve("output_legs.csv.gz"), new byte[]{1, 2, 3, 4});
+        setField(config, "folder", dataRoot.toString());
+        setField(config, "cacheFolder", tempDir.resolve("analysis-table-cache").toString());
+        setField(config, "largeModelThresholdBytes", 100L);
+        setField(config, "largeModelPlansThresholdBytes", 100L);
+        setField(config, "largeModelEventsThresholdBytes", 100L);
+        setField(config, "largeModelAnalysisTableThresholdBytes", 4L);
+
+        config.init();
+
+        assertTrue(config.getSchemes().get("广州/public/高压缩模型").isLargeModel());
+    }
+
+    @Test
+    void failedTopManifestStillUsesLargeModeFromPassengerTrackCount() throws Exception {
+        MatsimConfig config = new MatsimConfig();
+        Path dataRoot = tempDir.resolve("failed-cache-data");
+        Path cacheRoot = tempDir.resolve("failed-cache-root");
+        Path output = dataRoot.resolve("广州/仿真数据/public/V6/output");
+        Path modelCache = cacheRoot.resolve("广州/public/V6");
+        Files.createDirectories(output);
+        Files.createDirectories(modelCache.resolve("pt-events-v3"));
+        Files.writeString(output.resolve("output_config.xml"), "<config/>");
+        Files.writeString(modelCache.resolve("manifest.json"),
+                "{\"status\":\"failed\",\"largeModel\":false}");
+        Files.writeString(modelCache.resolve("pt-events-v3/manifest.json"),
+                "{\"status\":\"ready\",\"trackCount\":20639152}");
+        setField(config, "folder", dataRoot.toString());
+        setField(config, "cacheFolder", cacheRoot.toString());
+        setField(config, "largeModelThresholdBytes", 100L);
+        setField(config, "largeModelPlansThresholdBytes", 100L);
+        setField(config, "largeModelEventsThresholdBytes", 100L);
+        setField(config, "largeModelAnalysisTableThresholdBytes", 100L);
+        setField(config, "largeModelPersonTrackThreshold", 1_500_000L);
+
+        config.init();
+
+        assertTrue(config.getSchemes().get("广州/public/V6").isLargeModel());
+    }
+
+    @Test
     void descCanExplicitlyEnableLargeModeBelowAutomaticThreshold() throws Exception {
         MatsimConfig config = new MatsimConfig();
         Path dataRoot = tempDir.resolve("override-data");
@@ -105,6 +151,33 @@ class MatsimConfigCachePathTest {
         config.init();
 
         assertTrue(config.getSchemes().get("广州/public/显式模型").isLargeModel());
+    }
+
+    @Test
+    void readyCachePreservesLargeModeAfterEventsAndPlansAreArchived() throws Exception {
+        MatsimConfig config = new MatsimConfig();
+        Path dataRoot = tempDir.resolve("archived-data");
+        Path cacheRoot = tempDir.resolve("archived-cache");
+        Path output = dataRoot.resolve("广州/仿真数据/public/V6/output");
+        Path modelCache = cacheRoot.resolve("广州/public/V6");
+        Files.createDirectories(output);
+        Files.createDirectories(modelCache);
+        Files.writeString(output.resolve("output_config.xml"), "<config/>");
+        Files.writeString(modelCache.resolve("manifest.json"), """
+                {"status":"ready","largeModel":true}
+                """);
+        setField(config, "folder", dataRoot.toString());
+        setField(config, "cacheFolder", cacheRoot.toString());
+        setField(config, "largeModelThresholdBytes", 100L);
+        setField(config, "largeModelPlansThresholdBytes", 100L);
+        setField(config, "largeModelEventsThresholdBytes", 100L);
+
+        config.init();
+
+        var scheme = config.getSchemes().get("广州/public/V6");
+        assertTrue(scheme.isLargeModel());
+        assertEquals(9L, scheme.getOutputBytes());
+        assertTrue(!scheme.isCuttable());
     }
 
     private static void setField(Object target, String name, Object value) throws Exception {

@@ -16,7 +16,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,37 +42,86 @@ final class MatsimPanelReadCache {
     private static final long MAX_DETAIL_MEMORY_BYTES = 2L * 1024 * 1024;
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
-    private static final Set<String> ROUTE_SECTIONS = Set.of("routes", "lineGroups");
+    // departureRoutes 与线路索引在同一次流式扫描中分片，避免模型加载时重复解压巨型 panel。
+    private static final Set<String> ROUTE_SECTIONS = Set.of("routes", "lineGroups", "departureRoutes");
     private static final Set<String> STATION_SECTIONS = Set.of("stations");
 
-    private static final Map<String, Map<String, Object>> INDEX_MEMORY = Collections.synchronizedMap(
-            new LinkedHashMap<>(8, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
-                    return size() > Math.max(1,
-                            Integer.getInteger("gjcxfzksh.panel-index-memory-entries", 4));
-                }
-            }
-    );
-    private static final Map<String, Map<String, Object>> DETAIL_MEMORY = Collections.synchronizedMap(
-            new LinkedHashMap<>(128, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
-                    return size() > Math.max(8,
-                            Integer.getInteger("gjcxfzksh.panel-detail-memory-entries", 64));
-                }
-            }
-    );
+    private static final BackendMemoryCache<String, Map<String, Object>> INDEX_MEMORY =
+            new BackendMemoryCache<>("panel-index", 64L * 1024 * 1024, BackendMemoryCache::estimate);
+    private static final BackendMemoryCache<String, Map<String, Object>> DETAIL_MEMORY =
+            new BackendMemoryCache<>("panel-detail", 192L * 1024 * 1024, BackendMemoryCache::estimate);
 
     private MatsimPanelReadCache() {
     }
 
     static Map<String, Object> readRouteIndex(MatsimData data, Path panelPath) {
-        return readIndex(data, panelPath, "route", ROUTE_SECTIONS);
+        Map<String, Object> combined = readIndex(data, panelPath, "route", ROUTE_SECTIONS);
+        if (!combined.containsKey("departureRoutes")) return combined;
+        Map<String, Object> result = new LinkedHashMap<>(combined);
+        result.remove("departureRoutes");
+        return result;
+    }
+
+    static Map<String, Object> readDepartureIndex(MatsimData data, Path panelPath) {
+        Map<String, Object> combined = readIndex(data, panelPath, "route", ROUTE_SECTIONS);
+        Map<String, Object> result = new LinkedHashMap<>();
+        copy(combined, result, "status", "cacheVersion", "generatedAt", "payloadKind", "detailShards");
+        result.put("routes", combined.get("departureRoutes") instanceof Map<?, ?> routes ? routes : Map.of());
+        return result;
     }
 
     static Map<String, Object> readStationIndex(MatsimData data, Path panelPath) {
         return readIndex(data, panelPath, "station", STATION_SECTIONS);
+    }
+
+    /**
+     * 兼容极少数仍需整体 panel 的内部调用：从规范分片工件按需重组，
+     * 不再为此在磁盘上同时保留一份重复的单体 JSON。
+     */
+    static Map<String, Object> readFull(
+            MatsimData data,
+            Path panelPath,
+            String kind
+    ) {
+        Set<String> sections = "route".equals(kind) ? ROUTE_SECTIONS : STATION_SECTIONS;
+        try {
+            Path dir = ensureBuilt(data, panelPath, kind, sections);
+            Map<String, Object> result = new LinkedHashMap<>(readIndex(data, panelPath, kind, sections));
+            for (String section : sections) {
+                Map<String, Object> details = new LinkedHashMap<>();
+                for (int shard = 0; shard < SHARDS; shard++) {
+                    Path file = shardPath(dir, section, shard);
+                    if (!Files.isRegularFile(file)) continue;
+                    try (InputStream in = gzipInput(file)) {
+                        details.putAll(JSON.readValue(in, MAP_TYPE));
+                    }
+                }
+                result.put(section, details);
+            }
+            result.remove("payloadKind");
+            result.remove("detailShards");
+            return result;
+        } catch (Exception e) {
+            throw new IllegalStateException("规范面板分片重组失败: model=" + data.getName()
+                    + ", kind=" + kind, e);
+        }
+    }
+
+    static boolean canonicalReady(Path panelPath, String kind) {
+        return ready(derivedDir(panelPath, kind), panelPath, kind);
+    }
+
+    static void promoteCanonical(MatsimData data, Path panelPath, String kind) {
+        Set<String> sections = "route".equals(kind) ? ROUTE_SECTIONS : STATION_SECTIONS;
+        try {
+            Path dir = ensureBuilt(data, panelPath, kind, sections);
+            // 分片目录已原子发布后，单体输入只是构建中间物，删除它保证同类数据只有一份规范工件。
+            Files.deleteIfExists(panelPath);
+            markSourceReleased(dir);
+        } catch (Exception e) {
+            throw new IllegalStateException("面板规范工件发布失败: model=" + data.getName()
+                    + ", kind=" + kind, e);
+        }
     }
 
     static Map<String, Object> readDetail(
@@ -196,6 +244,10 @@ final class MatsimPanelReadCache {
         manifest.put("sourceSize", Files.size(panelPath));
         manifest.put("sourceModified", Files.getLastModifiedTime(panelPath).toMillis());
         manifest.put("entries", entries);
+        manifest.put("canonical", true);
+        // build 后源仍存在，只有 promoteCanonical 成功删除源后才改为 false。
+        // 这使开发/修复流程中替换单体源仍能触发重建，又能在正式发布后忽略外部坏文件。
+        manifest.put("sourceRetained", true);
         manifest.put("generatedAt", System.currentTimeMillis());
         JSON.writeValue(tmpDir.resolve(MANIFEST_FILE).toFile(), manifest);
 
@@ -218,6 +270,13 @@ final class MatsimPanelReadCache {
     private static Map<String, Object> summary(String kind, String section, Map<String, Object> detail) {
         Map<String, Object> result = new LinkedHashMap<>();
         if ("route".equals(kind)) {
+            if ("departureRoutes".equals(section)) {
+                // 全模型索引只保留 route 定位字段；每条线路的时刻表随详情分片读取，
+                // 避免几十万 departure 元数据再次常驻 JVM。
+                copy(detail, result, "lineId", "lineName", "routeId", "routeName", "stationCount");
+                result.put("_summary", true);
+                return result;
+            }
             copy(detail, result, "lineId", "lineName", "routeId", "routeName", "routeKey",
                     "lineGroup", "mode", "desc", "hourlyFlow", "metrics", "routeIds", "routeKeys");
             Object segmentsValue = detail.get("segments");
@@ -276,9 +335,21 @@ final class MatsimPanelReadCache {
         if (!Files.isRegularFile(manifestPath) || !Files.isRegularFile(dir.resolve(INDEX_FILE))) return false;
         try {
             Map<String, Object> manifest = JSON.readValue(manifestPath.toFile(), MAP_TYPE);
-            return "ready".equals(manifest.get("status"))
+            boolean common = "ready".equals(manifest.get("status"))
                     && CACHE_VERSION.equals(manifest.get("cacheVersion"))
-                    && kind.equals(manifest.get("kind"))
+                    && kind.equals(manifest.get("kind"));
+            if (!common) return false;
+            boolean canonical = Boolean.TRUE.equals(manifest.get("canonical"));
+            boolean sourceRetained = Boolean.TRUE.equals(manifest.get("sourceRetained"));
+            // 正式发布且已释放源后，同路径偶然出现的单体文件不再是权威来源。
+            if (canonical && !sourceRetained) return true;
+            // v2 早期版本在发布时只落了 sourceRetained=false，未同步写 canonical=true。
+            // false 是发布流程删除单体源后才会写入的显式状态，因此可以安全视为规范分片；
+            // 否则升级后的最终校验会把完整缓存误判为缺失并诱发无意义的全量重算。
+            if (Boolean.FALSE.equals(manifest.get("sourceRetained"))) return true;
+            // 删除源与更新 manifest 之间即使进程退出，已完整原子发布的分片仍可恢复使用。
+            if (canonical && !Files.isRegularFile(source)) return true;
+            return Files.isRegularFile(source)
                     && longNumber(manifest.get("sourceSize")) == Files.size(source)
                     && longNumber(manifest.get("sourceModified")) == Files.getLastModifiedTime(source).toMillis();
         } catch (Exception e) {
@@ -288,6 +359,23 @@ final class MatsimPanelReadCache {
 
     private static long longNumber(Object value) {
         return value instanceof Number number ? number.longValue() : -1L;
+    }
+
+    private static void markSourceReleased(Path dir) throws Exception {
+        Path manifestPath = dir.resolve(MANIFEST_FILE);
+        Map<String, Object> manifest = JSON.readValue(manifestPath.toFile(), MAP_TYPE);
+        if (Boolean.TRUE.equals(manifest.get("canonical"))
+                && Boolean.FALSE.equals(manifest.get("sourceRetained"))) return;
+        manifest.put("canonical", true);
+        manifest.put("sourceRetained", false);
+        Path temporary = manifestPath.resolveSibling(MANIFEST_FILE + ".tmp-" + System.nanoTime());
+        JSON.writeValue(temporary.toFile(), manifest);
+        try {
+            Files.move(temporary, manifestPath,
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception noAtomic) {
+            Files.move(temporary, manifestPath, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     private static long estimatedJsonBytes(Map<String, Object> value) {
@@ -304,12 +392,8 @@ final class MatsimPanelReadCache {
 
     private static void invalidateMemory(Path targetDir) {
         String prefix = targetDir.toAbsolutePath().normalize().toString();
-        synchronized (INDEX_MEMORY) {
-            INDEX_MEMORY.keySet().removeIf(key -> key.startsWith(prefix));
-        }
-        synchronized (DETAIL_MEMORY) {
-            DETAIL_MEMORY.keySet().removeIf(key -> key.startsWith(prefix));
-        }
+        INDEX_MEMORY.removeIf(key -> key.startsWith(prefix));
+        DETAIL_MEMORY.removeIf(key -> key.startsWith(prefix));
     }
 
     /** 清理 v2 早期“每个源指纹一个目录”遗留，只限当前 panel 目录与已校验前缀。 */

@@ -36,8 +36,8 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
         if (cached != null) {
             return (List<PTLink>) (List<?>) cached;
         }
-        if (data.isLargeModel()) {
-            throw new BusinessException("大模型路网瓦片缓存尚未就绪，请稍后重试");
+        if (!data.hasFullRoadNetwork()) {
+            throw new BusinessException("可视态路网瓦片缓存尚未就绪，请稍后重试");
         }
         if (MatsimAnalysisCache.isTrajectoryBuildActive()) {
             throw new BusinessException("轨迹缓存生成中，路网数据暂不可用，请稍后重试");
@@ -73,8 +73,8 @@ public class NetworkServiceImpl extends DatasourceService implements NetworkServ
     @Override
     public List<PTLink> full(TileNetworkParam param) {
         MatsimData data = matsim_data(param);
-        if (data.isLargeModel()) {
-            throw new BusinessException("大模型不支持全量路网返回，请使用瓦片接口");
+        if (!data.hasFullRoadNetwork()) {
+            throw new BusinessException("可视态不支持全量路网返回，请使用瓦片接口");
         }
         Network network = data.getNetwork();
         Map<String, Double> linkFlows = linkFlows(data);

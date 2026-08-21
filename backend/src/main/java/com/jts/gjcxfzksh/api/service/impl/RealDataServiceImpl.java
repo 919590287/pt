@@ -4,9 +4,12 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.TypeReference;
 import com.jts.gjcxfzksh.api.model.params.RealDataCommitParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataParam;
+import com.jts.gjcxfzksh.api.model.params.VehicleCalculationSaveParam;
 import com.jts.gjcxfzksh.api.model.vo.RealDataExportVO;
 import com.jts.gjcxfzksh.api.service.RealDataService;
 import com.jts.gjcxfzksh.config.MatsimConfig;
+import com.jts.gjcxfzksh.data.cache.RealPopulationCache;
+import com.jts.gjcxfzksh.data.cache.BackendMemoryCache;
 import com.jts.gjcxfzksh.exception.BusinessException;
 import jakarta.annotation.Resource;
 import lombok.extern.slf4j.Slf4j;
@@ -79,8 +82,11 @@ public class RealDataServiceImpl implements RealDataService {
     private static final String EDIT_STATE_FOLDER = "_edit_state";
     private static final String VERSION_FOLDER = "_versions";
     private static final DateTimeFormatter VERSION_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS");
+    // 线路标准字段不含 dir/interval：这两列在真实数据里全为占位值（dir 恒 "0"、interval 恒 "15"），
+    // 已从 routes.shp 移除，方向由线路名的 "(起点--终点)" 区分、发车间隔改由 am_gap/pm_gap/off_gap 承载。
+    // 校验只要求「不能缺少标准字段」，仍带这两列的旧数据照常可读可写。
     private static final List<String> STANDARD_ROUTE_FIELDS = List.of(
-            "line_id", "dir", "route_id", "first", "last", "interval", "mode", "name", "price", "company"
+            "line_id", "route_id", "first", "last", "mode", "name", "price", "company"
     );
     private static final List<String> STANDARD_STOP_FIELDS = List.of(
             "line_id", "dir", "stop_id", "stop_name", "seq", "lon", "lat"
@@ -101,13 +107,16 @@ public class RealDataServiceImpl implements RealDataService {
     private static final String GEOMETRY_FIELD = "geometry";
     private static final String EXISTENCE_FIELD = "__existence__";
     private static final String DELETION_FIELD = "__deletion__";
+    // 线路 SHP 的权威配车数字段；自动测算和手动保存必须写同一列。
+    private static final String ROUTE_FLEET_COUNT_FIELD = "load_num";
     private static final double EARTH_RADIUS_METERS = 6_378_137.0;
     private static final double COVERAGE_300_METERS = 300.0;
     private static final double COVERAGE_500_METERS = 500.0;
+    private static final double PHYSICAL_STATION_CLUSTER_METERS = 200.0;
     private static final int MAX_EVIDENCE_IMAGES = 6;
     private static final int MAX_EVIDENCE_DATA_URL_LENGTH = 2_000_000;
     private static final int MAX_REAL_DATA_CACHE_ENTRIES = 6;
-    private static final int OVERVIEW_CACHE_VERSION = 2;
+    private static final int OVERVIEW_CACHE_VERSION = 4;
     private static final int MAX_PENDING_SHP_COMPARISONS = 100;
     private static final long PENDING_SHP_COMPARISON_TTL_MS = 30 * 60 * 1_000L;
     private static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
@@ -115,15 +124,25 @@ public class RealDataServiceImpl implements RealDataService {
     @Resource
     MatsimConfig matsimConfig;
 
-    private final Map<String, CachedOverview> overviewCache = new ConcurrentHashMap<>();
-    private final Map<String, CachedRealData> realDataCache = new ConcurrentHashMap<>();
+    private final BackendMemoryCache<String, CachedOverview> overviewCache =
+            new BackendMemoryCache<>("real-data-overview", 48L * 1024 * 1024,
+                    cached -> BackendMemoryCache.estimate(cached.overview));
+    private final BackendMemoryCache<String, CachedRealData> realDataCache =
+            new BackendMemoryCache<>("real-data-core", 160L * 1024 * 1024,
+                    cached -> BackendMemoryCache.estimate(cached.data));
     private final Map<String, PendingShpComparison> pendingShpComparisons = new ConcurrentHashMap<>();
     // 数据盘（外置 USB）探测缓存：状态文件原文按 (size,mtime) 校验、目录签名按短 TTL 复用，
     // 把每请求的盘 I/O 压到近零；一切写路径经 writeEditState 统一失效。
     private static final long FS_PROBE_TTL_MS = 2_000;
-    private final Map<String, CachedStateText> stateTextCache = new ConcurrentHashMap<>();
-    private final Map<String, CachedSignature> signatureCache = new ConcurrentHashMap<>();
-    private final Map<String, CachedRealData> adminDistrictCache = new ConcurrentHashMap<>();
+    private final BackendMemoryCache<String, CachedStateText> stateTextCache =
+            new BackendMemoryCache<>("real-data-state-text", 16L * 1024 * 1024,
+                    cached -> 96L + cached.text.length() * 2L);
+    private final BackendMemoryCache<String, CachedSignature> signatureCache =
+            new BackendMemoryCache<>("real-data-signatures", 8L * 1024 * 1024,
+                    cached -> 96L + cached.value.length() * 2L);
+    private final BackendMemoryCache<String, CachedRealData> adminDistrictCache =
+            new BackendMemoryCache<>("real-data-admin-districts", 64L * 1024 * 1024,
+                    cached -> BackendMemoryCache.estimate(cached.data));
     // 冷缓存单飞：core/routeStops 双请求与并发用户共享同一次全量 SHP 读取
     private final Map<String, Object> realDataComputeLocks = new ConcurrentHashMap<>();
     // 提交/切版按区域加锁，替代方法级 synchronized 的跨区域串行
@@ -208,8 +227,8 @@ public class RealDataServiceImpl implements RealDataService {
             long derivedEnriched = System.nanoTime();
             Map<String, Object> stations = uniqueStationsFromRouteStops(routeStops);
             long stationsBuilt = System.nanoTime();
-            int lineCount = numberValue(lines.get("featureCount")).intValue();
-            int stationCount = numberValue(stations.get("featureCount")).intValue();
+            int lineCount = physicalLineCount(lines);
+            int stationCount = physicalStationCount(stations);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("areaName", areaName);
             result.put("versionId", target.id());
@@ -219,7 +238,7 @@ public class RealDataServiceImpl implements RealDataService {
             result.put("routeStops", routeStops);
             result.put("depots", depots);
             result.put("bounds", mergeBounds(mergeBounds(boundsOf(lines), boundsOf(stations)), boundsOf(depots)));
-            result.put("overview", overview(areaName, dataRoot, stateFile(root), lineCount, stationCount, stations));
+            result.put("overview", overview(areaName, dataRoot, stateFile(root), lines, lineCount, stationCount, stations));
             long overviewBuilt = System.nanoTime();
             result.put("history", historySummary(root));
             long historyBuilt = System.nanoTime();
@@ -450,6 +469,93 @@ public class RealDataServiceImpl implements RealDataService {
         }
     }
 
+    @Override
+    public Map<String, Object> saveVehicleCalculationResult(String username, VehicleCalculationSaveParam param) {
+        synchronized (areaWriteLock(param == null ? null : param.getAreaName())) {
+            stateTextCache.clear();
+            String areaName = safeText(param == null ? null : param.getAreaName());
+            String baseVersionId = safeText(param == null ? null : param.getBaseVersionId());
+            Integer vehicleCount = param == null ? null : param.getVehicleCount();
+            LinkedHashSet<String> requestedFeatureIds = new LinkedHashSet<>();
+            if (param != null && param.getFeatureIds() != null) {
+                param.getFeatureIds().stream()
+                        .map(this::safeText)
+                        .filter(value -> !value.isBlank())
+                        .forEach(requestedFeatureIds::add);
+            }
+            if (areaName.isBlank()) {
+                throw new BusinessException("区域名称不能为空");
+            }
+            if (param.getBaseRevision() == null || baseVersionId.isBlank()) {
+                throw new BusinessException("缺少数据版本信息，请重新选择线路后再保存");
+            }
+            if (requestedFeatureIds.isEmpty() || requestedFeatureIds.size() > 100) {
+                throw new BusinessException("保存的线路要素无效");
+            }
+            if (vehicleCount == null || vehicleCount < 1 || vehicleCount > 100_000) {
+                throw new BusinessException("配车数必须是 1 至 100000 之间的整数");
+            }
+
+            Path root = matsimConfig.realDataPath(areaName);
+            assertFreshRevision(root, param.getBaseRevision());
+            Map<String, Object> state = readEditState(root);
+            assertFreshBaseVersion(state, baseVersionId);
+            TargetVersion active = activeTargetVersion(state);
+            Map<String, Object> lines = readStandardShp(
+                    dataRootForVersion(root, active).resolve(BUS_LINE_FOLDER),
+                    STANDARD_ROUTE_FIELDS,
+                    LineString.class,
+                    "线路"
+            );
+            if (!active.materializedData()) {
+                applyUploadComparableEdits(active.operations(), lines, "line");
+            }
+
+            List<Map<String, Object>> operations = new ArrayList<>();
+            Set<String> matchedFeatureIds = new LinkedHashSet<>();
+            for (Map<String, Object> feature : mutableMapList(lines.get("features"))) {
+                String featureId = safeText(feature.get("id"));
+                if (!requestedFeatureIds.contains(featureId)) {
+                    continue;
+                }
+                matchedFeatureIds.add(featureId);
+                featureProperties(feature).put(ROUTE_FLEET_COUNT_FIELD, vehicleCount);
+
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("targetId", featureId);
+                payload.put("feature", feature);
+                payload.put("changedFields", List.of(ROUTE_FLEET_COUNT_FIELD));
+
+                Map<String, Object> operation = new LinkedHashMap<>();
+                operation.put("operationId", "vehicle_calculation_" + UUID.randomUUID());
+                operation.put("datasetType", "line");
+                operation.put("type", "replace_line_vehicle_calculation");
+                operation.put("targetId", featureId);
+                operation.put("title", "保存配车测算结果");
+                operation.put("detail", "配车数：" + vehicleCount + " 辆");
+                operation.put("changedFields", List.of(ROUTE_FLEET_COUNT_FIELD));
+                operation.put("payload", payload);
+                operations.add(operation);
+            }
+            if (!matchedFeatureIds.containsAll(requestedFeatureIds)) {
+                throw new BusinessException("线路数据已变化，请重新选择线路后再保存");
+            }
+
+            RealDataCommitParam commitParam = new RealDataCommitParam();
+            commitParam.setAreaName(areaName);
+            commitParam.setDatasetType("line");
+            commitParam.setBaseRevision(param.getBaseRevision());
+            commitParam.setBaseVersionId(baseVersionId);
+            commitParam.setMessage("保存配车测算结果：" + safeText(param.getRouteName()) + "，配车 " + vehicleCount + " 辆");
+            commitParam.setOperations(operations);
+            Map<String, Object> result = doCommitEdits(username, commitParam);
+            result.put("fieldName", ROUTE_FLEET_COUNT_FIELD);
+            result.put("vehicleCount", vehicleCount);
+            result.put("updatedFeatureCount", operations.size());
+            return result;
+        }
+    }
+
     private Map<String, Object> doCommitEdits(String username, RealDataCommitParam param) {
         // 写路径绕开探测缓存：修订号冲突检查必须基于盘上最新状态
         stateTextCache.clear();
@@ -670,12 +776,22 @@ public class RealDataServiceImpl implements RealDataService {
         }
     }
 
-    private Map<String, Object> overview(String areaName, Path root, Path editFile, int lineCount, int stationCount, Map<String, Object> stations) {
+    private Map<String, Object> overview(
+            String areaName,
+            Path root,
+            Path editFile,
+            Map<String, Object> lines,
+            int lineCount,
+            int stationCount,
+            Map<String, Object> stations
+    ) {
         Path lineFolder = root.resolve(BUS_LINE_FOLDER);
         Path stationFolder = root.resolve(BUS_STATION_FOLDER);
         Path adminFolder = root.resolve(ADMIN_AREA_FOLDER);
+        Path populationFile = RealPopulationCache.sourcePath(matsimConfig.realDataPath(areaName));
         String signature = overviewSignature(lineFolder, stationFolder, editFile)
-                + adminBoundarySignature(adminFolder);
+                + adminBoundarySignature(adminFolder)
+                + overviewSignature(populationFile);
         CachedOverview cached = overviewCache.get(areaName);
         if (cached != null && cached.signature().equals(signature)) {
             return new LinkedHashMap<>(cached.overview());
@@ -686,12 +802,12 @@ public class RealDataServiceImpl implements RealDataService {
             return diskCached;
         }
 
-        double networkScaleKm = readTotalLengthMeters(lineFolder) / 1000.0;
+        double networkScaleKm = featureCollectionLengthMeters(lines) / 2.0 / 1000.0;
         AdminArea adminArea = readAdminArea(adminFolder);
-        CoverageResult coverage = coverageFromStationCollection(stations, adminFolder, adminArea);
-        Map<String, Object> overview = overviewStats(lineCount, stationCount, networkScaleKm, adminArea.areaKm2(), coverage.city());
-        // 分区覆盖：各行政区的 300/500m 被服务面积与自身面积，供前端按"建成区面积"重算分区覆盖率
-        overview.put("districtCoverage", coverage.districts());
+        RealPopulationCache.StationPopulationCoverage populationCoverage =
+                RealPopulationCache.stationPopulationCoverage(populationFile, stationLngLat(stations));
+        Map<String, Object> overview = overviewStats(
+                lineCount, stationCount, networkScaleKm, adminArea.areaKm2(), populationCoverage);
         overviewCache.put(areaName, new CachedOverview(signature, new LinkedHashMap<>(overview)));
         writeOverviewDiskCache(areaName, signature, overview);
         return overview;
@@ -756,18 +872,163 @@ public class RealDataServiceImpl implements RealDataService {
                 .normalize();
     }
 
-    private Map<String, Object> overviewStats(int lineCount, int stationCount, double networkScaleKm, double adminAreaKm2, CoverageStats coverageStats) {
+    private Map<String, Object> overviewStats(
+            int lineCount,
+            int stationCount,
+            double networkScaleKm,
+            double adminAreaKm2,
+            RealPopulationCache.StationPopulationCoverage populationCoverage) {
         Map<String, Object> overview = new LinkedHashMap<>();
         overview.put("lineCount", lineCount);
         overview.put("networkScaleKm", round2(networkScaleKm));
         overview.put("networkDensityKmPerKm2", adminAreaKm2 > 0 ? round4(networkScaleKm / adminAreaKm2) : null);
         overview.put("stationCount", stationCount);
-        overview.put("stationCoverage300Rate", coverageRate(coverageStats.coverage300Km2(), adminAreaKm2));
-        overview.put("stationCoverage500Rate", coverageRate(coverageStats.coverage500Km2(), adminAreaKm2));
-        overview.put("stationCoverage300Km2", round2(coverageStats.coverage300Km2()));
-        overview.put("stationCoverage500Km2", round2(coverageStats.coverage500Km2()));
+        RealPopulationCache.ScopePopulationCoverage city =
+                populationCoverage == null ? null : populationCoverage.city();
+        overview.put("stationPopulationCoverage300Rate",
+                city == null ? null : roundNullable2(city.coverage300Percent()));
+        overview.put("stationPopulationCoverage500Rate",
+                city == null ? null : roundNullable2(city.coverage500Percent()));
+        overview.put("residentPopulation", city == null ? null : city.residentPersons());
+        Map<String, Object> districts = new LinkedHashMap<>();
+        if (populationCoverage != null) {
+            populationCoverage.districts().forEach((name, coverage) -> {
+                Map<String, Object> values = new LinkedHashMap<>();
+                values.put("residentPopulation", coverage.residentPersons());
+                values.put("coverage300Rate", roundNullable2(coverage.coverage300Percent()));
+                values.put("coverage500Rate", roundNullable2(coverage.coverage500Percent()));
+                districts.put(name, values);
+            });
+        }
+        overview.put("districtPopulationCoverage", districts);
         overview.put("adminAreaKm2", round2(adminAreaKm2));
         return overview;
+    }
+
+    private List<double[]> stationLngLat(Map<String, Object> stationCollection) {
+        Object featuresValue = stationCollection.get("features");
+        if (!(featuresValue instanceof List<?> features)) return List.of();
+        List<double[]> result = new ArrayList<>();
+        for (Object item : features) {
+            if (!(item instanceof Map<?, ?> feature)) continue;
+            Object geometryValue = feature.get("geometry");
+            if (!(geometryValue instanceof Map<?, ?> geometry)) continue;
+            Object coordinatesValue = geometry.get("coordinates");
+            if (!(coordinatesValue instanceof List<?> coordinates) || coordinates.size() < 2) continue;
+            if (coordinates.get(0) instanceof Number lng && coordinates.get(1) instanceof Number lat
+                    && Double.isFinite(lng.doubleValue()) && Double.isFinite(lat.doubleValue())) {
+                result.add(new double[]{lng.doubleValue(), lat.doubleValue()});
+            }
+        }
+        return result;
+    }
+
+    private int physicalLineCount(Map<String, Object> lines) {
+        Set<String> families = new LinkedHashSet<>();
+        int fallbackIndex = 0;
+        for (Map<String, Object> feature : mutableMapList(lines.get("features"))) {
+            Map<String, Object> properties = featureProperties(feature);
+            String name = firstText(properties, "name", "line_id", "route_id");
+            String family = routeFamilyName(name);
+            families.add(family.isBlank() ? "line-index:" + fallbackIndex : family);
+            fallbackIndex += 1;
+        }
+        return families.size();
+    }
+
+    private String routeFamilyName(String value) {
+        String text = safeText(value).trim();
+        while (text.endsWith(")") || text.endsWith("）")) {
+            int depth = 0;
+            int openIndex = -1;
+            for (int index = text.length() - 1; index >= 0; index--) {
+                char character = text.charAt(index);
+                if (character == ')' || character == '）') {
+                    depth += 1;
+                } else if (character == '(' || character == '（') {
+                    depth -= 1;
+                    if (depth == 0) {
+                        openIndex = index;
+                        break;
+                    }
+                }
+            }
+            if (openIndex <= 0) break;
+            String endpointText = text.substring(openIndex + 1, text.length() - 1);
+            if (Stream.of(endpointText.split("\\s*(?:--|—|－|至|到)\\s*"))
+                    .map(String::trim)
+                    .filter(part -> !part.isBlank())
+                    .count() < 2) {
+                break;
+            }
+            text = text.substring(0, openIndex).trim();
+        }
+        return text;
+    }
+
+    private double featureCollectionLengthMeters(Map<String, Object> lines) {
+        double total = 0;
+        for (Map<String, Object> feature : mutableMapList(lines.get("features"))) {
+            Geometry geometry = geometryFromGeoJson(feature.get("geometry"));
+            if (geometry != null && !geometry.isEmpty()) {
+                total += geometryLengthMeters(geometry);
+            }
+        }
+        return total;
+    }
+
+    private int physicalStationCount(Map<String, Object> stations) {
+        Map<String, List<Coordinate>> coordinatesByName = new LinkedHashMap<>();
+        int fallbackCount = 0;
+        for (Map<String, Object> feature : mutableMapList(stations.get("features"))) {
+            String name = normalizePhysicalStationName(firstText(featureProperties(feature),
+                    "stop_name", "name", "station_name", "站点名称"));
+            Coordinate coordinate = firstPointCoordinate(feature);
+            if (name.isBlank() || coordinate == null) {
+                fallbackCount += 1;
+                continue;
+            }
+            coordinatesByName.computeIfAbsent(name, ignored -> new ArrayList<>()).add(coordinate);
+        }
+        int count = fallbackCount;
+        for (List<Coordinate> coordinates : coordinatesByName.values()) {
+            int[] parents = new int[coordinates.size()];
+            for (int index = 0; index < parents.length; index++) parents[index] = index;
+            for (int left = 0; left < coordinates.size(); left++) {
+                for (int right = left + 1; right < coordinates.size(); right++) {
+                    if (distanceMeters(coordinates.get(left), coordinates.get(right)) <= PHYSICAL_STATION_CLUSTER_METERS) {
+                        unionStationClusters(parents, left, right);
+                    }
+                }
+            }
+            Set<Integer> roots = new LinkedHashSet<>();
+            for (int index = 0; index < parents.length; index++) roots.add(findStationCluster(parents, index));
+            count += roots.size();
+        }
+        return count;
+    }
+
+    private String normalizePhysicalStationName(String value) {
+        return safeText(value).trim()
+                .replaceFirst("\\s*[\uff08(][^\uff09)]*[\uff09)]\\s*$", "")
+                .replaceFirst("[\\s_-]*[0-9]+$", "")
+                .replaceFirst("\\s*(?:总站|站)\\s*$", "")
+                .trim();
+    }
+
+    private int findStationCluster(int[] parents, int index) {
+        int current = index;
+        while (parents[current] != current) {
+            parents[current] = parents[parents[current]];
+            current = parents[current];
+        }
+        return current;
+    }
+
+    private void unionStationClusters(int[] parents, int left, int right) {
+        int leftRoot = findStationCluster(parents, left);
+        int rightRoot = findStationCluster(parents, right);
+        if (leftRoot != rightRoot) parents[rightRoot] = leftRoot;
     }
 
     private void applyCurrentEdits(List<Map<String, Object>> operations, Map<String, Object> lines, Map<String, Object> routeStops, Map<String, Object> depots) {
@@ -4142,13 +4403,13 @@ public class RealDataServiceImpl implements RealDataService {
     private void invalidateAreaRealDataCaches(String areaName) {
         overviewCache.remove(areaName);
         String prefix = safeText(areaName) + "::";
-        realDataCache.keySet().removeIf(key -> key.startsWith(prefix));
+        realDataCache.removeIf(key -> key.startsWith(prefix));
     }
 
     private void trimRealDataCache() {
         int overflow = realDataCache.size() - MAX_REAL_DATA_CACHE_ENTRIES;
         if (overflow <= 0) return;
-        realDataCache.entrySet().stream()
+        realDataCache.snapshot().entrySet().stream()
                 .sorted(Comparator.comparingLong(entry -> entry.getValue().createdAt()))
                 .limit(overflow)
                 .map(Map.Entry::getKey)
@@ -4686,6 +4947,10 @@ public class RealDataServiceImpl implements RealDataService {
 
     private double round2(double value) {
         return Math.round(value * 100.0) / 100.0;
+    }
+
+    private Double roundNullable2(Double value) {
+        return value == null ? null : round2(value);
     }
 
     private Number numberValue(Object value) {

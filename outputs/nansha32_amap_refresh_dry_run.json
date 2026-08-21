@@ -1,0 +1,305 @@
+{
+  "mode": "dry-run",
+  "timestamp": "20260812_163910",
+  "backup": "",
+  "authority": "/Volumes/USB DISK/pt_data/广州市/真实数据/公交线路站点",
+  "amap_lines": [
+    {
+      "line_id": "440100013959",
+      "name": "南沙32路(广大附中南沙实验学校站--蕉门公交总站)",
+      "geometry_points": 321,
+      "stops": [
+        {
+          "seq": 1,
+          "bv_id": "BV11503363",
+          "name": "广大附中南沙实验学校站",
+          "stop_id": "PF17641",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.48591498590208,
+          "lat": 22.78726609559987
+        },
+        {
+          "seq": 2,
+          "bv_id": "BV10014993",
+          "name": "庙南村站",
+          "stop_id": "PF17779",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.49478599036547,
+          "lat": 22.770273312296265
+        },
+        {
+          "seq": 3,
+          "bv_id": "BV11669460",
+          "name": "花语阳光花园站",
+          "stop_id": "PF17782",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.49779553731089,
+          "lat": 22.770047437123786
+        },
+        {
+          "seq": 4,
+          "bv_id": "BV09306699",
+          "name": "庙南路中",
+          "stop_id": "PF17755",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.49879985620817,
+          "lat": 22.772996497386217
+        },
+        {
+          "seq": 5,
+          "bv_id": "BV11621753",
+          "name": "明珠湾小学站",
+          "stop_id": "PF17733",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.50007818623497,
+          "lat": 22.77510064507137
+        },
+        {
+          "seq": 6,
+          "bv_id": "BV09397162",
+          "name": "南沙体育馆站",
+          "stop_id": "PF17647",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.51315151499573,
+          "lat": 22.786390396659836
+        },
+        {
+          "seq": 7,
+          "bv_id": "BV11479076",
+          "name": "黄阁南路站",
+          "stop_id": "PF17632",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.51667114090331,
+          "lat": 22.78885456742589
+        },
+        {
+          "seq": 8,
+          "bv_id": "BV10015898",
+          "name": "滨海水晶湾站",
+          "stop_id": "PF17698",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.52874728125313,
+          "lat": 22.780258914827503
+        },
+        {
+          "seq": 9,
+          "bv_id": "BV10323105",
+          "name": "滨海花园站",
+          "stop_id": "PF17657",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.52631544579022,
+          "lat": 22.785458909482212
+        },
+        {
+          "seq": 10,
+          "bv_id": "BV11583739",
+          "name": "南沙中心医院西门站",
+          "stop_id": "PF17629",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.52694617669191,
+          "lat": 22.788948371552156
+        },
+        {
+          "seq": 11,
+          "bv_id": "BV10413212",
+          "name": "蕉门河社区服务中心站",
+          "stop_id": "PF17598",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.52773838871796,
+          "lat": 22.792530197827286
+        },
+        {
+          "seq": 12,
+          "bv_id": "BV10381619",
+          "name": "万达广场站",
+          "stop_id": "PF17537",
+          "mapping_method": "nearest_existing_platform",
+          "lon": 113.52991967736817,
+          "lat": 22.798050846950748
+        },
+        {
+          "seq": 13,
+          "bv_id": "BV10015889",
+          "name": "南沙牌坊站",
+          "stop_id": "PF17432",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.53053215635882,
+          "lat": 22.803635435537007
+        },
+        {
+          "seq": 14,
+          "bv_id": "BV10525622",
+          "name": "蕉门公交总站",
+          "stop_id": "PF17429",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.52211294805817,
+          "lat": 22.803795438193514
+        }
+      ]
+    },
+    {
+      "line_id": "440100013964",
+      "name": "南沙32路(蕉门公交总站--广大附中南沙实验学校)",
+      "geometry_points": 245,
+      "stops": [
+        {
+          "seq": 1,
+          "bv_id": "BV10525622",
+          "name": "蕉门公交总站",
+          "stop_id": "PF17429",
+          "mapping_method": "nearest_existing_platform",
+          "lon": 113.52201665069087,
+          "lat": 22.80361024250826
+        },
+        {
+          "seq": 2,
+          "bv_id": "BV10015889",
+          "name": "南沙牌坊站",
+          "stop_id": "PF17438",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.53038070766424,
+          "lat": 22.80354009029563
+        },
+        {
+          "seq": 3,
+          "bv_id": "BV10381619",
+          "name": "万达广场站",
+          "stop_id": "PF17546",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.52946834314064,
+          "lat": 22.797575873520536
+        },
+        {
+          "seq": 4,
+          "bv_id": "BV10413212",
+          "name": "蕉门河社区服务中心站",
+          "stop_id": "PF17589",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.52781256674982,
+          "lat": 22.793298125727432
+        },
+        {
+          "seq": 5,
+          "bv_id": "BV10015900",
+          "name": "滨海半岛站",
+          "stop_id": "PF17640",
+          "mapping_method": "nearest_existing_platform",
+          "lon": 113.52655202904793,
+          "lat": 22.787795738003968
+        },
+        {
+          "seq": 6,
+          "bv_id": "BV11479076",
+          "name": "黄阁南路",
+          "stop_id": "PF17628",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.51803058827996,
+          "lat": 22.789608118949385
+        },
+        {
+          "seq": 7,
+          "bv_id": "BV09397162",
+          "name": "南沙体育馆站",
+          "stop_id": "PF17651",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.51266588664446,
+          "lat": 22.78619106826072
+        },
+        {
+          "seq": 8,
+          "bv_id": "BV11621753",
+          "name": "明珠湾小学站",
+          "stop_id": "PF17718",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.50129328268531,
+          "lat": 22.77732155413787
+        },
+        {
+          "seq": 9,
+          "bv_id": "BV09306699",
+          "name": "庙南路中",
+          "stop_id": "PF17750",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.4990597229455,
+          "lat": 22.773634069661913
+        },
+        {
+          "seq": 10,
+          "bv_id": "BV11669460",
+          "name": "花语阳光花园",
+          "stop_id": "PF17781",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.49769618964262,
+          "lat": 22.770048138332584
+        },
+        {
+          "seq": 11,
+          "bv_id": "BV10014993",
+          "name": "庙南村站",
+          "stop_id": "PF17778",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.49488232681708,
+          "lat": 22.77028259917497
+        },
+        {
+          "seq": 12,
+          "bv_id": "BV11388446",
+          "name": "庙南高速路口站",
+          "stop_id": "PF17737",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.49014648630184,
+          "lat": 22.77483288200167
+        },
+        {
+          "seq": 13,
+          "bv_id": "BV11503363",
+          "name": "广大附中南沙实验学校",
+          "stop_id": "PF17641",
+          "mapping_method": "exact_line_occurrence",
+          "lon": 113.48591498590208,
+          "lat": 22.78726609559987
+        }
+      ]
+    }
+  ],
+  "validation": {
+    "route_attribute_fields": [
+      "line_id",
+      "route_id",
+      "first",
+      "last",
+      "mode",
+      "name",
+      "price",
+      "company",
+      "dep_count",
+      "first_dep",
+      "last_dep",
+      "timetable",
+      "am_peak",
+      "pm_peak",
+      "am_gap",
+      "pm_gap",
+      "off_gap",
+      "capacity",
+      "op_time",
+      "load_num",
+      "approved_c"
+    ],
+    "route_attribute_records_unchanged": 2228,
+    "refreshed_stop_counts": {
+      "440100013959": 14,
+      "440100013964": 13
+    },
+    "refreshed_endpoints": {
+      "440100013959": [
+        "广大附中南沙实验学校站",
+        "蕉门公交总站"
+      ],
+      "440100013964": [
+        "蕉门公交总站",
+        "广大附中南沙实验学校"
+      ]
+    }
+  }
+}

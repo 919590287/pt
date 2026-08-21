@@ -1,0 +1,72 @@
+{
+  "service_date_start": "2026-07-01",
+  "service_date_end": "2026-07-15",
+  "service_dates_with_card_data": 15,
+  "date_violations": 0,
+  "card": {
+    "raw_rows": 2104266,
+    "in_scope_rows": 1004586,
+    "direction_and_stop_valid_rows": 591825,
+    "direction_and_stop_valid_rate": 0.589123,
+    "line_level_accepted_rows": 887612,
+    "line_level_accepted_rate": 0.88356
+  },
+  "run": {
+    "raw_rows": 1797892,
+    "in_scope_rows": 1550730,
+    "route_mapped_rows": 1446374,
+    "route_mapping_rate": 0.932703,
+    "valid_stop_event_rows": 1343150
+  },
+  "passenger_to_actual_departure": {
+    "passenger_rows": 591825,
+    "matched_rows": 550376,
+    "match_rate": 0.929964
+  },
+  "shp_schedule_direction_coverage": {
+    "actual_direction_ids": 159,
+    "actual_direction_ids_with_schedule": 159,
+    "coverage_rate": 1.0
+  },
+  "planned_to_actual_departure": {
+    "tolerance_seconds": 900,
+    "planned_departures_on_actual_direction_days": 62593,
+    "actual_departures": 60381,
+    "matched_departures": 52253,
+    "planned_match_rate": 0.834806,
+    "actual_covered_rate": 0.865388,
+    "timing_mae_seconds": 217.16,
+    "timing_median_seconds": 89,
+    "timing_p95_seconds": 660
+  },
+  "nansha_32": [
+    {
+      "authority_line_id": "440100013959",
+      "service_days": 15,
+      "planned_departures_per_day": 39,
+      "planned_departures": 585,
+      "actual_departures": 564,
+      "matched_departures": 562,
+      "planned_match_rate": 0.960684,
+      "actual_covered_rate": 0.996454,
+      "timing_mae_seconds": 26.62,
+      "timing_median_seconds": 15,
+      "timing_p95_seconds": 64,
+      "matched_passengers": 2758
+    },
+    {
+      "authority_line_id": "440100013964",
+      "service_days": 15,
+      "planned_departures_per_day": 39,
+      "planned_departures": 585,
+      "actual_departures": 564,
+      "matched_departures": 563,
+      "planned_match_rate": 0.962393,
+      "actual_covered_rate": 0.998227,
+      "timing_mae_seconds": 54.97,
+      "timing_median_seconds": 41,
+      "timing_p95_seconds": 123,
+      "matched_passengers": 2495
+    }
+  ]
+}

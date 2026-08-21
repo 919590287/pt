@@ -2,7 +2,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { getModelList, getSchemeList, loadModel } from "@/api/scheme.js";
 import { useModelSelectionStore } from "@/stores/modelSelection.js";
-import { isModelUsable, unifiedModelProgress } from "@/utils/modelLoadProgress.js";
+import { isModelRuntimeReady, unifiedModelProgress } from "@/utils/modelLoadProgress.js";
 import { clearModelDataCache } from "@/utils/modelDataCache.js";
 
 /**
@@ -13,10 +13,12 @@ import { clearModelDataCache } from "@/utils/modelDataCache.js";
  *   高频轮询直到就绪、就绪后降频心跳（感知"全部被卸载"后重新亮门禁）。
  */
 export const useModelRuntimeStore = defineStore("modelRuntime", () => {
+  const modelSelectionStore = useModelSelectionStore();
   const schemes = ref([]);
   const modelsByScheme = ref({});
-  const gateScheme = ref("");
-  const gateTarget = ref("");
+  const persistedSelection = modelSelectionStore.getSelection("datavisualization");
+  const gateScheme = ref(persistedSelection.scheme || "");
+  const gateTarget = ref(persistedSelection.model || "");
   const bootstrapped = ref(false);
   const gateError = ref("");
   const isSwitchingTarget = ref(false);
@@ -35,14 +37,37 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
   const allModels = computed(() => Object.values(modelsByScheme.value).flat());
   const gateModels = computed(() => modelsByScheme.value[gateScheme.value] || []);
   const gateModel = computed(() => gateModels.value.find((item) => item.name === gateTarget.value) || null);
-  const anyModelReady = computed(() => allModels.value.some(isModelUsable));
+  const anyModelReady = computed(() => allModels.value.some(isModelRuntimeReady));
+
+  // 目标方案的模型目录是否已经取回。gateModels 为空有两种完全不同的含义：
+  //   1) 目录还没取回来——只是"还不知道"；
+  //   2) 目录取回来了，里面确实没有模型——才是"暂无可用模型"。
+  // 两者混为一谈会同时造成用户报的两个现象：门禁标题误报"暂无可用模型"，
+  // 以及 gateVisible 误判为 true 让 MapLayout 的 RouterView v-if 把整页卸载
+  // （KeepAlive 缓存与图层暂存一并作废），切回来必须整页重建，切换因此很慢。
+  const gateCatalogKnown = computed(
+    () => !gateScheme.value || Object.prototype.hasOwnProperty.call(modelsByScheme.value, gateScheme.value),
+  );
+
   // 门禁只服从用户当前目标；其他方案中任意模型 ready 不能误放行到错误数据源。
-  const gateVisible = computed(() => !isModelUsable(gateModel.value));
+  const gateVisible = computed(() => {
+    // 刷新只恢复模型运行态。缓存状态是功能级信息，不得把已加载模型
+    // 重新判定为“不可用”，否则每次刷新都会重发 loadModel。
+    if (isModelRuntimeReady(gateModel.value)) return false;
+    // 刷新时先沿用持久化目标，目录核验在后台静默进行。只有目录明确返回
+    // 该模型未加载后才重新显示门禁；冷首开没有目标，仍保留原门禁。
+    if (gateTarget.value && !gateCatalogKnown.value) return false;
+    // 首开（bootstrapped 之前）仍然亮门禁，显示"正在检查模型状态"。
+    // 已经起来之后，目录未知只说明这一拍还没拿到状态，不足以把整页拆掉——
+    // startGatePolling / startHeartbeat 的首拍是立即发起的，窗口只有一个往返。
+    if (bootstrapped.value && !gateCatalogKnown.value) return false;
+    return true;
+  });
   const gateProgress = computed(() => unifiedModelProgress(gateModel.value));
 
   function restoredSelection() {
     try {
-      return useModelSelectionStore().getSelection("datavisualization");
+      return modelSelectionStore.getSelection("datavisualization");
     } catch {
       return { sourceMode: "simulation", scheme: "", model: "" };
     }
@@ -51,7 +76,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
   function rememberSelection(scheme, model) {
     try {
       const current = restoredSelection();
-      useModelSelectionStore().setSelection("datavisualization", {
+      modelSelectionStore.setSelection("datavisualization", {
         // 模型门禁只记忆下次切回仿真时使用的方案/模型，不得覆盖
         // 用户当前选中的真实数据模式与真实日期。
         sourceMode: current.sourceMode,
@@ -126,7 +151,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     if (!Array.isArray(list) || !list.length) return null;
     return (
       list.find((item) => item.name === preferredName)
-      || list.find((item) => isModelUsable(item))
+      || list.find((item) => isModelRuntimeReady(item))
       || list.find((item) => item.isDefault === true || item.default === true)
       // 缓存已就绪的模型只差本体加载，最快能把平台"点亮"
       || list.find((item) => item.cacheStatus === "ready")
@@ -164,7 +189,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
           await fetchModels(gateScheme.value);
         }
         if (seq !== pollSeq) return;
-        if (isModelUsable(gateModel.value)) {
+        if (isModelRuntimeReady(gateModel.value)) {
           onGateOpened();
           return;
         }
@@ -211,7 +236,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     gateError.value = "";
     if (gateScheme.value && gateTarget.value) {
       const target = gateModels.value.find((item) => item.name === gateTarget.value);
-      if (isModelUsable(target)) {
+      if (isModelRuntimeReady(target)) {
         rememberSelection(gateScheme.value, gateTarget.value);
       }
     }
@@ -223,7 +248,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     gateError.value = "";
     if (!modelName) return;
     const item = (modelsByScheme.value[scheme] || []).find((model) => model.name === modelName);
-    if (isModelUsable(item)) return;
+    if (isModelRuntimeReady(item)) return;
     isSwitchingTarget.value = true;
     try {
       // 同名模型重载/缓存重建前先清除浏览器派生缓存；完成后的 loadVersion/
@@ -241,9 +266,11 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
   /** 门禁面板里手动切换方案 */
   async function selectGateScheme(scheme) {
     if (!scheme || scheme === gateScheme.value) return;
+    // 先取目录、再切 gateScheme。反过来的话 gateModels 会先空一拍，
+    // 门禁面板当场闪一下"当前方案暂无可用模型"，而那时目录还在路上。
+    const list = await fetchModels(scheme);
     gateScheme.value = scheme;
     gateTarget.value = "";
-    const list = await fetchModels(scheme);
     const target = pickTargetModel(list, restoredSelection().model);
     if (target) await activateTarget(scheme, target.name);
   }
@@ -298,7 +325,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
       if (target) {
         gateTarget.value = target.name;
       }
-      if (isModelUsable(target)) {
+      if (isModelRuntimeReady(target)) {
         onGateOpened();
         startHeartbeat();
       } else {
@@ -339,6 +366,7 @@ export const useModelRuntimeStore = defineStore("modelRuntime", () => {
     allModels,
     anyModelReady,
     gateVisible,
+    gateCatalogKnown,
     gateModels,
     gateModel,
     gateProgress,

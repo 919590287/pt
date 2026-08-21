@@ -7,7 +7,7 @@
           <span class="gate-spinner" :class="{ 'is-failed': progress.failed }" aria-hidden="true"></span>
           <div class="gate-head-text">
             <div class="gate-title">{{ gateTitle }}</div>
-            <div class="gate-subtitle">当前页面依赖所选模型，加载完成后自动进入；数据管理仍可独立使用</div>
+            <div class="gate-subtitle">{{ gateSubtitle }}</div>
           </div>
         </div>
 
@@ -46,12 +46,14 @@
             <span>已用 {{ formatDuration(progress.elapsedSeconds) }}</span>
             <span>预计剩余 {{ formatDuration(progress.etaSeconds) }}</span>
           </div>
-          <div v-if="runtime.gateError" class="gate-error">{{ runtime.gateError }}</div>
-          <div v-if="progress.failed || runtime.gateError" class="gate-actions">
-            <el-button type="primary" :loading="runtime.isSwitchingTarget" @click="runtime.retryGateLoad">重新加载</el-button>
+          <div v-if="gateError" class="gate-error">{{ gateError }}</div>
+          <div v-if="progress.failed || gateError" class="gate-actions">
+            <el-button type="primary" :loading="retrying" @click="retryGateLoad">重新加载</el-button>
           </div>
         </template>
-        <div v-else-if="runtime.bootstrapped" class="gate-empty">
+        <!-- catalogResolved：目录确实取回来了才敢说"没有"。目录在途时 gateModels
+             同样是空的，但那只是还没拿到，误报成"暂无可用模型"会让用户以为数据没了。 -->
+        <div v-else-if="catalogResolved" class="gate-empty">
           {{ hasSchemes ? "当前方案暂无可用模型，请先导入或生成模型。" : "暂无可用方案，请先导入模型数据。" }}
         </div>
       </div>
@@ -69,13 +71,29 @@ const runtime = useModelRuntimeStore();
 const route = useRoute();
 const progress = computed(() => runtime.gateProgress);
 const hasSchemes = computed(() => runtime.schemes.length > 0);
-const gateApplies = computed(() => route.meta?.requiresModel !== false && runtime.gateVisible);
+const gateApplies = computed(() => (
+  route.meta?.requiresModel !== false
+  && runtime.gateVisible
+));
+const gateError = computed(() => runtime.gateError);
+const retrying = computed(() => runtime.isSwitchingTarget);
+
+// 目录已取回（而不是还在路上）才算"确实没有模型"。见 modelRuntime.gateCatalogKnown。
+const catalogResolved = computed(() => runtime.bootstrapped && runtime.gateCatalogKnown);
 
 const gateTitle = computed(() => {
-  if (!runtime.bootstrapped) return "正在检查模型状态";
+  if (!catalogResolved.value) return "正在检查模型状态";
   if (!hasSchemes.value || !runtime.gateModels.length) return "暂无可用模型";
   return progress.value.title;
 });
+
+const gateSubtitle = computed(() => (
+  "当前页面依赖所选模型，加载完成后自动进入；派生缓存在后台按需读取"
+));
+
+function retryGateLoad() {
+  void runtime.retryGateLoad();
+}
 
 function modelLabel(item) {
   const text = String(item?.displayName || item?.name || "").trim();

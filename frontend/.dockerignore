@@ -1,0 +1,9 @@
+node_modules/
+gjcxfzksh_web_dist/
+dist/
+.DS_Store
+*.log
+tsconfig.tsbuildinfo
+harness-corridor*
+.idea/
+.vscode/

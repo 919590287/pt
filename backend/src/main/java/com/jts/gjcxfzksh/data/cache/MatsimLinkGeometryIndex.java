@@ -203,6 +203,22 @@ final class MatsimLinkGeometryIndex {
         return lengthMeters[index];
     }
 
+    float relativeFromX(int index) {
+        return fromX[index];
+    }
+
+    float relativeFromY(int index) {
+        return fromY[index];
+    }
+
+    float relativeToX(int index) {
+        return toX[index];
+    }
+
+    float relativeToY(int index) {
+        return toY[index];
+    }
+
     double originX() {
         return originX;
     }

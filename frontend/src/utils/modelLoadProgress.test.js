@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDuration, isModelUsable, unifiedModelProgress } from "./modelLoadProgress.js";
+import { formatDuration, isModelRuntimeReady, isModelUsable, unifiedModelProgress } from "./modelLoadProgress.js";
 
 describe("unifiedModelProgress", () => {
   it("空模型返回检查态", () => {
@@ -94,6 +94,12 @@ describe("isModelUsable / formatDuration", () => {
     expect(isModelUsable({ loadStatus: true, cacheStatus: "ready" })).toBe(true);
     expect(isModelUsable({ loadStatus: true, cacheStatus: "building" })).toBe(false);
     expect(isModelUsable({ loadStatus: false, cacheStatus: "ready" })).toBe(false);
+  });
+
+  it("运行态已加载时不受派生缓存失败影响", () => {
+    expect(isModelRuntimeReady({ loadStatus: true, cacheStatus: "failed" })).toBe(true);
+    expect(isModelRuntimeReady({ loadStatus: true, cacheStatus: "building" })).toBe(true);
+    expect(isModelRuntimeReady({ loadStatus: false, cacheStatus: "ready" })).toBe(false);
   });
 
   it("时长格式化", () => {

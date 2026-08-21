@@ -5,6 +5,7 @@ import com.jts.gjcxfzksh.api.common.CurrentUser;
 import com.jts.gjcxfzksh.api.model.params.RealDataCommitParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataExportParam;
 import com.jts.gjcxfzksh.api.model.params.RealDataParam;
+import com.jts.gjcxfzksh.api.model.params.VehicleCalculationSaveParam;
 import com.jts.gjcxfzksh.api.model.vo.RealDataExportVO;
 import com.jts.gjcxfzksh.api.service.RealDataService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -80,6 +81,12 @@ public class RealDataController {
     @PostMapping("/commitEdits")
     public AjaxResult commitEdits(@RequestBody RealDataCommitParam param) {
         return AjaxResult.ok(realDataService.commitEdits(CurrentUser.getUsername(), param));
+    }
+
+    @Operation(summary = "保存配车测算结果到线路 SHP")
+    @PostMapping("/vehicleCalculation")
+    public AjaxResult saveVehicleCalculationResult(@RequestBody VehicleCalculationSaveParam param) {
+        return AjaxResult.ok(realDataService.saveVehicleCalculationResult(CurrentUser.getUsername(), param));
     }
 
     @Operation(summary = "切换真实数据版本")

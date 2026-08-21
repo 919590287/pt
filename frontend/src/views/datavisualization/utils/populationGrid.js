@@ -144,23 +144,44 @@ export function buildGridColors(counts, { breaks, ramp, alphaLow = 120, alpha = 
 }
 
 /**
- * 按人口密度 / 客流构建 3D 柱高（米）。
- * 直接线性计算：高度 = 单格数值 × valueMultiplier ÷ heightDivisor。
- * valueMultiplier 用于把单格计数换算成目标口径：人口传 1/CELL_AREA_KM2，出行传 1。
+ * 按人口 / 客流构建 3D 柱高（米）。
+ * 线性映射会被少数极高格拉爆（高格上万米、多数格贴地看不出差别），这里改为
+ * 「分位归一 + 幂次压缩 + 最小高度」：
+ *   高度 = minHeight + (referenceHeight - minHeight) × (值 / 参考值)^exponent
+ * 参考值取非零格的 referenceQuantile 分位（默认 P99），因此对人口/出行两套量纲自适应；
+ * exponent < 1 压缩高低差，minHeight 保证最小的非零格也有可见厚度。
+ * 超过参考值的格子不封顶（仍按同一曲线继续升高），保留峰值可辨识度。
  */
 export function buildGridElevations(
   counts,
   {
-    valueMultiplier = 1,
-    heightDivisor = 1,
+    referenceQuantile = 0.99,
+    referenceHeight = 1500,
+    minHeight = 200,
+    exponent = 0.5,
   } = {},
 ) {
-  const multiplier = Number(valueMultiplier) > 0 ? Number(valueMultiplier) : 1;
-  const divisor = Number(heightDivisor) > 0 ? Number(heightDivisor) : 1;
-  const elevations = new Float32Array(counts.length);
-  for (let k = 0; k < counts.length; k++) {
-    const value = Math.max(0, Number(counts[k]) || 0) * multiplier;
-    if (value > 0) elevations[k] = value / divisor;
+  const n = counts.length;
+  const elevations = new Float32Array(n);
+  let nonZero = 0;
+  for (let k = 0; k < n; k++) if (counts[k] > 0) nonZero++;
+  if (!nonZero) return elevations;
+
+  const sorted = new Float64Array(nonZero);
+  let p = 0;
+  for (let k = 0; k < n; k++) {
+    const value = counts[k];
+    if (value > 0) sorted[p++] = value;
+  }
+  sorted.sort();
+  const idx = Math.min(nonZero - 1, Math.max(0, Math.round(referenceQuantile * (nonZero - 1))));
+  const reference = sorted[idx] || sorted[nonZero - 1];
+
+  const span = Math.max(0, referenceHeight - minHeight);
+  for (let k = 0; k < n; k++) {
+    const value = Math.max(0, Number(counts[k]) || 0);
+    if (value <= 0) continue;
+    elevations[k] = minHeight + span * Math.pow(value / reference, exponent);
   }
   return elevations;
 }

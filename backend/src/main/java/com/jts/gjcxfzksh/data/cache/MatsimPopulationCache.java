@@ -124,15 +124,8 @@ public final class MatsimPopulationCache {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
-    /** summary/streets 读取记忆化：2 模型 × 2 工件（模式照 MatsimTransferCache.MEMORY_CACHE）。 */
-    private static final Map<String, Map<String, Object>> MEMORY_CACHE = Collections.synchronizedMap(
-            new LinkedHashMap<>(8, 0.75f, true) {
-                @Override
-                protected boolean removeEldestEntry(Map.Entry<String, Map<String, Object>> eldest) {
-                    return size() > 4;
-                }
-            }
-    );
+    private static final BackendMemoryCache<String, Map<String, Object>> MEMORY_CACHE =
+            new BackendMemoryCache<>("population-json", 64L * 1024 * 1024, BackendMemoryCache::estimate);
 
     private static final GeometryFactory GF = new GeometryFactory();
     /** 街道面索引与原始 gz 字节的进程级单例（模型无关，全模型共享；JTS 1.20 PreparedGeometry 读线程安全）。 */

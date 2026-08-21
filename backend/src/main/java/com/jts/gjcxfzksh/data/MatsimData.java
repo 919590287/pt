@@ -13,7 +13,9 @@ import org.matsim.api.core.v01.network.Network;
 import org.matsim.api.core.v01.population.Population;
 import org.matsim.core.config.Config;
 import org.matsim.core.scenario.MutableScenario;
+import org.matsim.core.population.PopulationUtils;
 import org.matsim.facilities.ActivityFacilities;
+import org.matsim.facilities.FacilitiesUtils;
 import org.matsim.pt.transitSchedule.api.TransitRoute;
 import org.matsim.pt.transitSchedule.api.TransitSchedule;
 import org.matsim.vehicles.Vehicles;
@@ -28,6 +30,15 @@ import java.util.Set;
 @Data
 @Slf4j
 public class MatsimData {
+
+    public enum RuntimeTier {
+        /** 仅模型目录/指纹，不持有 MATSim 对象。 */
+        CATALOG,
+        /** 保留路网、公交时刻表与压缩工件，释放 population/facilities 等计算态。 */
+        VISUAL,
+        /** 优化/重算所需的完整场景。 */
+        COMPUTE
+    }
 
     public MatsimData(String name, String folder) {
         this(name, folder, defaultCacheFolder(name), false);
@@ -130,6 +141,8 @@ public class MatsimData {
      */
     private long lastRequestTime = 0;
 
+    private volatile RuntimeTier runtimeTier = RuntimeTier.COMPUTE;
+
     /**
      * route
      */
@@ -166,7 +179,7 @@ public class MatsimData {
 
     /** 当前内存网络是否可安全用于道路统计、吸附和寻路。 */
     public boolean hasFullRoadNetwork() {
-        return !largeModel;
+        return !largeModel && runtimeTier == RuntimeTier.COMPUTE;
     }
 
     /**
@@ -193,6 +206,25 @@ public class MatsimData {
 
     public ActivityFacilities getAfs() {
         return scenario.getActivityFacilities();
+    }
+
+    /**
+     * 原地降级为可视运行态。此操作只在规范磁盘工件全部 ready 后调用；
+     * 线网/时刻表仍可供地图与详情展示，大体量 plans/person/facilities 可被 GC。
+     */
+    public synchronized long demoteToVisual() {
+        if (runtimeTier != RuntimeTier.COMPUTE || scenario == null) return 0L;
+        long releasedObjects = (long) scenario.getPopulation().getPersons().size()
+                + scenario.getActivityFacilities().getFacilities().size()
+                + personTracks.size() + routes.size();
+        scenario.setPopulation(PopulationUtils.createPopulation(config));
+        scenario.setActivityFacilities(FacilitiesUtils.createActivityFacilities());
+        personTracks = new ObjectOpenHashSet<>();
+        routes = new Object2ObjectOpenHashMap<>();
+        linkFlows = null;
+        runtimeTier = RuntimeTier.VISUAL;
+        log.info("模型已降级为可视运行态: model={}, releasedObjects~{}", name, releasedObjects);
+        return releasedObjects;
     }
 
 

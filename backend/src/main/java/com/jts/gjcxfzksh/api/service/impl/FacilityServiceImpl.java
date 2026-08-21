@@ -6,6 +6,8 @@ import com.jts.gjcxfzksh.api.model.params.StationInfoParam;
 import com.jts.gjcxfzksh.api.model.pt.PTCoord;
 import com.jts.gjcxfzksh.api.model.vo.FacilityVO;
 import com.jts.gjcxfzksh.api.service.FacilityService;
+import com.jts.gjcxfzksh.data.MatsimData;
+import com.jts.gjcxfzksh.data.cache.MatsimPassengerProfileCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimStationPanelCache;
 import org.matsim.api.core.v01.Id;
@@ -46,7 +48,9 @@ public class FacilityServiceImpl extends DatasourceService implements FacilitySe
 
     @Override
     public Map<String, Object> stationPanelDetail(StationInfoParam param) {
-        return MatsimStationPanelCache.readStationPanelDetail(
-                matsim_data(param), param.getStationName(), param.getFacilityId());
+        MatsimData data = matsim_data(param);
+        return MatsimPassengerProfileCache.applyStationProfile(data,
+                MatsimStationPanelCache.readStationPanelDetail(
+                        data, param.getStationName(), param.getFacilityId()));
     }
 }

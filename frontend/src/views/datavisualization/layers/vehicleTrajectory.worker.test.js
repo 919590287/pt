@@ -11,7 +11,9 @@ import { buildBinarySecondIndex, frameTransfer, segmentFrameFromBinary } from ".
 import {
   VehicleTrajectoryLayer,
   parseVehicleTrajectoryBinaryChunk,
+  trajectoryPlaybackGate,
   trajectoryPrefetchBlockCount,
+  trajectoryPrefetchConcurrency,
   trajectoryWorkerPayload,
 } from "./VehicleTrajectoryLayer.js";
 
@@ -144,6 +146,60 @@ describe("vehicle trajectory viewport sampling", () => {
       chunkBytes: 28 * 1024 * 1024,
       maxBytes: 128 * 1024 * 1024,
     })).toBe(4);
+  });
+
+  it("uses both server query slots only when remote latency can outrun playback", () => {
+    expect(trajectoryPrefetchConcurrency({
+      chunkSeconds: 10,
+      speed: 10,
+      ewmaMs: 350,
+      highMs: 500,
+      maxConcurrent: 2,
+    })).toBe(1);
+
+    expect(trajectoryPrefetchConcurrency({
+      chunkSeconds: 10,
+      speed: 50,
+      ewmaMs: 420,
+      highMs: 650,
+      maxConcurrent: 2,
+    })).toBe(2);
+  });
+
+  it("holds playback at the loaded block boundary until the next block is ready", () => {
+    expect(trajectoryPlaybackGate({
+      desiredTime: 10.2,
+      cursorTime: 9.9,
+      chunkSeconds: 10,
+      activeChunkStart: 0,
+      targetChunkReady: false,
+    })).toEqual({
+      blocked: true,
+      time: 9.999,
+      loadTime: 10,
+    });
+
+    expect(trajectoryPlaybackGate({
+      desiredTime: 30,
+      cursorTime: 9.999,
+      chunkSeconds: 10,
+      activeChunkStart: 0,
+      targetChunkReady: false,
+    }).loadTime).toBe(10);
+  });
+
+  it("releases playback immediately after the target block becomes ready", () => {
+    expect(trajectoryPlaybackGate({
+      desiredTime: 10.2,
+      cursorTime: 9.999,
+      chunkSeconds: 10,
+      activeChunkStart: 10,
+      targetChunkReady: true,
+    })).toEqual({
+      blocked: false,
+      time: 10.2,
+      loadTime: null,
+    });
   });
 
   it("turns a worker LRU miss into a reloadable lightweight-key miss", async () => {

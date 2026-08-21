@@ -18,6 +18,7 @@ import com.jts.gjcxfzksh.api.service.RouteService;
 import com.jts.gjcxfzksh.data.MatsimData;
 import com.jts.gjcxfzksh.data.cache.MatsimPrecomputedCache;
 import com.jts.gjcxfzksh.data.cache.MatsimPersonTrackStore;
+import com.jts.gjcxfzksh.data.cache.MatsimPassengerProfileCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRoutePanelCache;
 import com.jts.gjcxfzksh.data.cache.MatsimRouteSpatialIndex;
 import com.jts.gjcxfzksh.data.entry.PTPersonTrack;
@@ -45,6 +46,8 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class RouteServiceImpl extends DatasourceService implements RouteService {
+
+    private static final String REAL_DATASOURCE_PREFIX = "real::";
 
 
     @Override
@@ -74,7 +77,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         if (cached != null) {
             return cached;
         }
-        if (matsim_data.isLargeModel()) {
+        if (!matsim_data.hasFullRoadNetwork()) {
             // 大模型不允许回退到 2000 万级 personTracks 全表扫描。
             throw new BusinessException("大模型线路详情缓存尚未就绪");
         }
@@ -120,7 +123,8 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         }
         TransitRoute transitRoute = lineRoute.route();
         String lineId = lineRoute.lineId();
-        if (matsim_data.isLargeModel()) {
+        if (matsim_data.isLargeModel()
+                || matsim_data.getRuntimeTier() == MatsimData.RuntimeTier.VISUAL) {
             Map<String, Object> detail = MatsimRoutePanelCache.readRoutePanelDetail(
                     matsim_data, lineId, transitRoute.getId().toString());
             if (detail.get("metrics") instanceof Map<?, ?> metrics) {
@@ -132,11 +136,11 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
                 result.put("mzl", peakAverageLoadRate instanceof Number number
                         ? number.doubleValue() / 100.0 : null);
                 result.put("xlklqd", metric(metrics, "passengerStrength"));
-                // 大模型不物化 plans；无可靠线路候车时间缓存时明确返回 null，不能伪装成 0。
+                // VISUAL/大模型运行态不物化 plans；无可靠线路候车时间缓存时明确返回 null。
                 result.put("pjhcsj", null);
                 return result;
             }
-            throw new BusinessException("大模型线路客流缓存尚未就绪");
+            throw new BusinessException("线路客流缓存尚未就绪");
         }
         Network network = matsim_data.getNetwork();
         Map<String, Object> result = new HashMap<>();
@@ -232,7 +236,39 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
 
     @Override
     public Map<String, Object> routePanelDetail(RouteInfoParam param) {
-        return MatsimRoutePanelCache.readRoutePanelDetail(matsim_data(param), param.getLineId(), param.getRouteId());
+        MatsimData data = matsim_data(param);
+        return MatsimPassengerProfileCache.applyRouteProfile(data,
+                MatsimRoutePanelCache.readRoutePanelDetail(data, param.getLineId(), param.getRouteId()));
+    }
+
+    @Override
+    public Map<String, Object> departureTimetable(RouteInfoParam param) {
+        requireSimulationDatasource(param);
+        MatsimData data = matsim_data(param);
+        return MatsimPassengerProfileCache.applyDepartureBundleProfile(data,
+                MatsimRoutePanelCache.readDepartureTimetable(data, param.getLineId(), param.getRouteId()));
+    }
+
+    @Override
+    public Map<String, Object> departureBundle(DatasourceParam param) {
+        requireSimulationDatasource(param);
+        return MatsimRoutePanelCache.readDepartureBundle(matsim_data(param));
+    }
+
+    @Override
+    public Map<String, Object> departurePanel(RouteChartParam param) {
+        requireSimulationDatasource(param);
+        MatsimData data = matsim_data(param);
+        return MatsimPassengerProfileCache.applyDepartureProfile(data,
+                MatsimRoutePanelCache.readDeparturePanel(
+                        data, param.getLineId(), param.getRouteId(), param.getDepartureId()));
+    }
+
+    private void requireSimulationDatasource(DatasourceParam param) {
+        if (param != null && param.getDatasource() != null
+                && param.getDatasource().startsWith(REAL_DATASOURCE_PREFIX)) {
+            throw new BusinessException("真实数据源不支持班次客流监测");
+        }
     }
 
     @Override
@@ -258,8 +294,8 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
         if (cached != null) {
             return (List<PTLink>) (List<?>) cached;
         }
-        if (matsimData.isLargeModel()) {
-            throw new BusinessException("大模型公交线路瓦片缓存尚未就绪，请稍后重试");
+        if (!matsimData.hasFullRoadNetwork()) {
+            throw new BusinessException("可视态公交线路瓦片缓存尚未就绪，请稍后重试");
         }
         return List.of();
     }
@@ -267,8 +303,8 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public List<PTLink> routeFull(TileNetworkParam param) {
         MatsimData matsimData = matsim_data(param);
-        if (matsimData.isLargeModel()) {
-            throw new BusinessException("大模型不支持全量线路返回，请使用瓦片接口");
+        if (!matsimData.hasFullRoadNetwork()) {
+            throw new BusinessException("可视态不支持全量线路返回，请使用瓦片接口");
         }
         Network network = matsimData.getNetwork();
         Set<Id<Link>> routeLinkIds = new LinkedHashSet<>();
@@ -301,7 +337,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
     @Override
     public List<FacilityFlowVO> routeFlow(RouteChartParam param) {
         MatsimData matsimData = matsim_data(param);
-        if (matsimData.isLargeModel()) {
+        if (!matsimData.hasFullRoadNetwork()) {
             return largeModelRouteFlow(param, matsimData);
         }
         List<PTPersonTrack> data = queryPTTrack(param);
@@ -592,7 +628,7 @@ public class RouteServiceImpl extends DatasourceService implements RouteService 
      */
     private List<PTPersonTrack> queryPTTrack(RouteChartParam param) {
         MatsimData data = matsim_data(param);
-        if (data.isLargeModel()) {
+        if (!data.hasFullRoadNetwork()) {
             throw new BusinessException("大模型不支持请求时扫描全量乘客明细，请使用预聚合面板接口");
         }
         boolean single = Boolean.TRUE.equals(param.getSingle());

@@ -45,11 +45,11 @@ public final class MatsimPlansDerivedCache {
     }
 
     public static void prepareAllOnModelLoad(MatsimData data) {
-        prepare(data, true, true, data.isLargeModel());
+        prepare(data, true, true, true);
     }
 
     public static void prepareAllOnModelLoad(MatsimData data, LongConsumer progress) {
-        prepare(data, true, true, data.isLargeModel(), progress);
+        prepare(data, true, true, true, progress);
     }
 
     static void preparePopulationOnModelLoad(MatsimData data) {
@@ -81,12 +81,35 @@ public final class MatsimPlansDerivedCache {
             }
 
             if (data.isLargeModel() && !hasReadablePlans(data)) {
-                String plans = data.getOutfile() == null ? null : data.getOutfile().getPlans();
+                String plans = resolvePlansFile(data);
                 String message = "模型缺少可读取的 plans，相关能力不受支持: " + plans;
                 if (buildPopulation) MatsimPopulationCache.writeUnsupportedManifest(data, message);
                 if (buildTripEnds) MatsimTripEndsCache.writeUnsupportedEndpointManifest(data, message);
                 if (buildPassengerProfiles) MatsimPassengerProfileCache.writeUnsupportedManifest(data, message);
                 log.warn("{} model={}", message, data.getName());
+                return;
+            }
+
+            // 其他 plans 派生工件已经 ready、只缺画像时，走不创建 MATSim Id 的
+            // 原生 SAX 路径。StreamingPopulationReader 会把千万级 person/link Id
+            // 留在全局缓存，即使 Person 本身已释放也会最终耗尽 heap。
+            if (buildPassengerProfiles
+                    && !buildPopulation && !buildTripEnds) {
+                long startedAt = System.currentTimeMillis();
+                MatsimPassengerProfileCache.Aggregation profiles =
+                        MatsimPassengerProfileCache.newAggregation(
+                                MatsimPassengerProfileCache.buildContext(data));
+                try {
+                    long persons = MatsimPassengerProfileRawReader.read(
+                            Path.of(resolvePlansFile(data)), profiles, progress);
+                    log.info("画像 plans 原生流式扫描完成: model={}, persons={}, elapsedMs={}",
+                            data.getName(), persons, System.currentTimeMillis() - startedAt);
+                    MatsimPassengerProfileCache.storeBuiltAggregation(data, profiles, startedAt);
+                } catch (Throwable e) {
+                    MatsimPassengerProfileCache.writeFailedManifest(data);
+                    if (e instanceof RuntimeException runtimeException) throw runtimeException;
+                    throw new RuntimeException("画像 plans 原生流式扫描失败: " + e.getMessage(), e);
+                }
                 return;
             }
 
@@ -222,7 +245,7 @@ public final class MatsimPlansDerivedCache {
     private static int resolveWorkers(MatsimData data, int requestedWorkers) {
         int workers = Math.max(1, requestedWorkers);
         if (data.isLargeModel()) {
-            String plansFile = data.getOutfile() == null ? null : data.getOutfile().getPlans();
+            String plansFile = resolvePlansFile(data);
             if (plansFile == null || plansFile.isBlank() || !Files.isRegularFile(Path.of(plansFile))) {
                 return 1;
             }
@@ -237,7 +260,7 @@ public final class MatsimPlansDerivedCache {
     }
 
     private static boolean hasReadablePlans(MatsimData data) {
-        String plans = data == null || data.getOutfile() == null ? null : data.getOutfile().getPlans();
+        String plans = resolvePlansFile(data);
         if (plans == null || plans.isBlank()) return false;
         try {
             return Files.isRegularFile(Path.of(plans)) && Files.isReadable(Path.of(plans));
@@ -248,7 +271,7 @@ public final class MatsimPlansDerivedCache {
 
     /** 大模型只读一次 plans；坐标转换器由每个 worker 按同一 CRS 规则独立创建。 */
     private static void streamPlans(MatsimData data, ParallelPersonSink sink, LongConsumer progress) {
-        String plansFile = data.getOutfile() == null ? null : data.getOutfile().getPlans();
+        String plansFile = resolvePlansFile(data);
         if (plansFile == null || plansFile.isBlank() || !Files.isRegularFile(Path.of(plansFile))) {
             throw new IllegalStateException("共享plans扫描缺少可读取文件: model=" + data.getName()
                     + ", plans=" + plansFile);
@@ -284,6 +307,11 @@ public final class MatsimPlansDerivedCache {
         });
         reader.readFile(plansFile);
         if (progress != null) progress.accept(persons[0]);
+    }
+
+    static String resolvePlansFile(MatsimData data) {
+        return data == null || data.getOutfile() == null
+                ? null : data.getOutfile().getPlans();
     }
 
     record ScanResult(MatsimPopulationCache.Aggregation population,
